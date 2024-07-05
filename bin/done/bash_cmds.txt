@@ -1,0 +1,723 @@
+mkdir -p ~/test_commands && cd ~/test_commands
+for i in {1..5}; do
+    echo "This is file $i" > file$i.txt
+done
+find . -name "*.txt" | xargs wc -l | sort -n
+find . -name "*.txt" | xargs wc -l | sort -n | awk '{print $2}'
+sed -i 's/is/was/' file*.txt
+grep -l "was" file*.txt | cut -d'.' -f1 | sort
+cat file1.txt | tr '[:lower:]' '[:upper:]' | tee file1_upper.txt | wc -c
+diff file1.txt file1_upper.txt
+head -n 3 file*.txt | tail -n 1
+cat file*.txt | sort | uniq > combined_sorted.txt
+split -l 2 combined_sorted.txt split_file_
+ls | grep "^split_file_" | xargs rm
+du -sh * | sort -h
+for i in {1..1000}; do echo "Line $i of the test file" >> large_file.txt; done
+gzip large_file.txt
+gzip -l large_file.txt.gz
+gunzip large_file.txt.gz
+cut -d' ' -f1,3 large_file.txt | paste -d',' - - > rearranged_file.txt
+comm large_file.txt rearranged_file.txt
+od -c large_file.txt | head -n 5
+fold -w 50 large_file.txt | head -n 5
+expand -t 4 large_file.txt | unexpand -a | head -n 5
+pr -h "Large File Sample" -l 50 large_file.txt | head -n 20
+echo -e "1 Apple\n2 Banana\n3 Cherry" > fruits.txt
+echo -e "1 Red\n2 Yellow\n3 Red" > colors.txt
+join fruits.txt colors.txt > fruit_colors.txt
+look "Line 5" large_file.txt | head -n 5
+nl -b a large_file.txt | head -n 5
+seq 10 | factor
+sha256sum large_file.txt > large_file_sha256.txt
+sha256sum -c large_file_sha256.txt
+base64 fruits.txt > fruits_base64.txt
+base64 -d fruits_base64.txt
+curl -s "http://example.com" | html2text | grep -i "example" | sed 's/example/sample/g'
+date "+%Y-%m-%d %H:%M:%S"
+cal -3
+uname -a
+lscpu | grep "CPU(s):"
+free -h
+df -h
+hostname
+ip addr | grep "inet " | awk '{print $2}'
+ps aux | grep "bash" | grep -v grep
+top -b -n 1 | head -n 15
+who
+last | head -n 5
+touch test_permissions.txt
+chmod 755 test_permissions.txt
+chown $(whoami):$(whoami) test_permissions.txt
+ls -l test_permissions.txt
+cd ..
+rm -rf test_commands
+mkdir -p ~/test_commands_part2 && cd ~/test_commands_part2
+mkfifo my_pipe
+timeout 5s cat my_pipe &
+printf "Hello, named pipe!\n" > my_pipe
+pgrep bash
+renice -n 10 -p $$
+chrt -f -p 50 $$
+ionice -c 2 -n 0 -p $$
+fallocate -l 100M large_file
+truncate -s 50M large_file
+b2sum large_file > large_file.b2
+echo "Hello, base32!" | basenc --base32 | basenc -d --base32
+shred -u large_file
+sudo nsenter -t 1 -m -u -n -i sh -c 'echo "Hello from PID 1 namespace"'
+unshare --fork --pid --mount-proc sh -c 'echo $$'
+taskset -p 0x01 $$
+choom -p $$ -n 300
+getconf PAGE_SIZE
+getent passwd root
+sudo ldconfig -p | grep libc
+sudo localedef -f UTF-8 -i en_US en_US.UTF-8
+ldd /bin/bash
+sudo pldd 1
+prlimit --pid $$ --cpu=10
+infocmp -C xterm | captoinfo
+infocmp xterm | infotocap
+echo -e "xterm-custom|xterm with custom settings,\n\tcolors#8,\n\tcols#80,\n\tlines#24,\n\tsgr0=\\E[m,\n\t$" > custom.terminfo
+tic -x custom.terminfo
+toe | head -n 5
+tput cols; tput lines
+reset
+tset
+setterm --bold on
+mesg y
+echo "Test message" | wall
+echo "Hello" | write root
+dmesg | tail -n 5
+sysctl -a | grep vm.swappiness
+sudo ldconfig -v | grep -i libc
+sudo update-alternatives --list editor
+sudo chattr +i important_file
+lsattr important_file
+sudo chattr -i important_file
+touch acl_test_file
+setfacl -m u:nobody:r acl_test_file
+getfacl acl_test_file
+mkdir -p dir1/dir2
+echo "find me" > dir1/dir2/file.txt
+rgrep "find me" .
+echo "compress me" > file_to_compress
+gzip file_to_compress
+echo "don't compress me" > file_to_compress
+zdiff file_to_compress.gz file_to_compress
+zgrep "compress" file_to_compress.gz
+cd ..
+rm -rf test_commands_part2
+cd /root
+mkdir -p projects/web projects/docs projects/scripts
+ls -l
+cd projects
+ls -l
+echo "Hello, World!" > web/index.html
+echo "Project documentation" > docs/README.md
+echo "#!/bin/bash\necho 'Hello from bash!'" > scripts/hello.sh
+chmod +x scripts/hello.sh
+ls -R
+find . -type f | wc -l
+grep -r "Hello" .
+cd /root
+ls -l | grep "projects" | awk '{print $9, $5}'
+ls -l | grep "^d" | wc -l
+find . -type f -exec ls -lh {} + | awk '{print $9, $5}' > file_sizes.txt
+cat file_sizes.txt
+du -sh * | sort -rh | head -n 5
+rm -rf projects file_sizes.txt
+#!/bin/bash
+mkdir -p ~/advanced_bash_playground && cd ~/advanced_bash_playground
+for i in {1..20}; do
+    echo "Content for file $i" > file_$i.txt
+done
+find . -type f -name "*.txt" | xargs wc -l | sort -n
+grep -r "Content" . | sed 's/Content/Data/'
+cat file_*.txt | tr ' ' '\n' | sort | uniq -c | sort -nr | head -n 5
+paste file_1.txt file_2.txt | column -t > combined.txt
+tar -cvf archive.tar file_*.txt
+gzip archive.tar
+zcat archive.tar.gz | tar -tvf - | awk '{print $6}'
+lscpu | grep "CPU(s):"
+free -h | awk '/^Mem:/ {print $3 "/" $2}'
+df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{ print $5 " " $1 }'
+ss -tuln
+ip -br addr show
+ps aux --sort=-%cpu | head -n 6
+pgrep -f "bash" | xargs -I {} ps -o pid,ppid,cmd -p {}
+useradd -m testuser
+passwd -e testuser
+chage -l testuser
+dd if=/dev/urandom of=random_data bs=1M count=10
+split -b 2M random_data split_file_
+cat split_file_* > reconstructed_file
+diff random_data reconstructed_file
+echo "The quick brown fox jumps over the lazy dog" > pangram.txt
+tr ' ' '\n' < pangram.txt | sort | uniq -c | sort -nr
+date -d "next Friday" +%Y-%m-%d
+cal -3
+date -d "2 weeks ago" +%A
+mkdir -p depth_{1..3}/{a..c}
+find depth_* -type d | xargs -I {} touch {}/.hidden_file
+find depth_* -type f -name ".hidden_file" -delete
+echo "Hello, World!" | rev
+echo "HELLO WORLD" | tr 'A-Z' 'a-z' | sed 's/^./\U&/'
+seq 10 | paste -sd+ | bc
+echo "scale=2; 22/7" | bc
+fallocate -l 100M large_file
+truncate -s 50M large_file
+b2sum large_file > large_file.b2
+echo "Hello, base32!" | base32 | base32 -d
+shred -u large_file
+taskset -p 0x01 $$
+choom -p $$ -n 300
+getconf PAGE_SIZE
+getent passwd root
+pldd 1
+prlimit --pid $$ --cpu=10
+captoinfo xterm > xterm.info
+infotocap xterm.info > xterm.cap
+tic -x xterm.info
+toe | head -n 5
+tput cols; tput lines
+reset
+tset
+setterm --bold on
+mesg y
+wall "Test message"
+dmesg | tail -n 5
+sysctl -a | grep vm.swappiness
+update-alternatives --list editor
+chattr +i important_file
+lsattr important_file
+chattr -i important_file
+touch acl_test_file
+setfacl -m u:nobody:r acl_test_file
+getfacl acl_test_file
+mkdir -p dir1/dir2
+echo "find me" > dir1/dir2/file.txt
+rgrep "find me" .
+echo "compress me" > file_to_compress
+gzip file_to_compress
+echo "don't compress me" > file_to_compress
+zdiff file_to_compress.gz file_to_compress
+zgrep "compress" file_to_compress.gz
+mkdir -p projects/{web,docs,scripts}
+echo "Hello, World!" > projects/web/index.html
+echo "Project documentation" > projects/docs/README.md
+echo '#!/bin/bash\necho "Hello from bash!"' > projects/scripts/hello.sh
+chmod +x projects/scripts/hello.sh
+find projects -type f | wc -l
+grep -r "Hello" projects
+ls -l | grep "projects" | awk '{print $9, $5}'
+ls -l | grep "^d" | wc -l
+find . -type f -exec ls -lh {} + | awk '{print $9, $5}' > file_sizes.txt
+cat file_sizes.txt
+du -sh * | sort -rh | head -n 5
+addpart /dev/null 1 1 1
+delpart /dev/null 1
+blkid | cut -d: -f1 | xargs -n1 lsblk -no NAME,SIZE,TYPE,MOUNTPOINT
+lastlog | tail -n 5
+last | head -n 5
+who
+w
+users
+id
+groups
+sudo -l
+su -c 'echo "Running as root"' root
+sudoedit /etc/sudoers.d/example
+script -c 'echo "This is a recorded session"' session.log
+scriptreplay session.log
+cmp file_1.txt file_2.txt
+comm file_1.txt file_2.txt
+cut -d' ' -f1 file_1.txt
+expand file_1.txt | unexpand > file_1_tabs.txt
+fold -w 30 file_1.txt
+join file_1.txt file_2.txt
+nl file_1.txt
+od -c file_1.txt | head -n 5
+pr -h "File Sample" -l 20 file_1.txt
+ptx file_1.txt
+sed 's/file/document/' file_1.txt
+sort -u file_1.txt file_2.txt
+split -l 2 file_1.txt split_
+tac file_1.txt
+tail -n 5 file_1.txt
+tee file_copy.txt < file_1.txt
+tr 'a-z' 'A-Z' < file_1.txt
+uniq -c file_1.txt
+wc -l file_*.txt
+xargs -n1 < file_1.txt
+yes "test" | head -n 5
+zcat file_to_compress.gz
+zcmp file_to_compress.gz file_to_compress
+zdiff file_to_compress.gz file_to_compress
+zegrep "compress" file_to_compress.gz
+zfgrep "compress" file_to_compress.gz
+zforce file_to_compress.gz
+zgrep "compress" file_to_compress.gz
+zless file_to_compress.gz
+zmore file_to_compress.gz
+znew file_to_compress.gz
+arch
+base64 file_1.txt | base64 -d
+basename /path/to/file.txt
+chcon -t user_home_t file_1.txt
+chfn -f "Test User" $(whoami)
+chgrp users file_1.txt
+chmod 644 file_1.txt
+chown $(whoami):users file_1.txt
+chrt -f -p 1 $$
+cksum file_1.txt
+clear
+cmp file_1.txt file_2.txt
+cp file_1.txt file_1_copy.txt
+csplit file_1.txt 2
+cut -d' ' -f1 file_1.txt
+date
+df -h
+diff file_1.txt file_2.txt
+diff3 file_1.txt file_2.txt file_3.txt
+dir
+dircolors
+dirname /path/to/file.txt
+du -sh *
+env
+expr 2 + 2
+factor 42
+false
+fgrep "Content" file_*.txt
+find . -type f -name "*.txt"
+flock /tmp/lockfile -c 'echo "Locked"'
+fmt file_1.txt
+fold -w 30 file_1.txt
+getopt -o ab:c:: --long alpha,beta:,gamma:: -- -a -b beta -c -d
+grep "Content" file_*.txt
+groups
+gunzip file_to_compress.gz
+gzip file_to_compress
+head -n 5 file_1.txt
+hostid
+hostname
+iconv -f UTF-8 -t ASCII//TRANSLIT file_1.txt
+id
+install -m 644 file_1.txt /tmp/file_1.txt
+ionice -c 2 -n 7 -p $$
+join file_1.txt file_2.txt
+kill -l
+lastlog | tail -n 5
+link file_1.txt hard_link
+ln -s file_1.txt soft_link
+locale
+logger "Test log message"
+logname
+ls -la
+lsattr file_1.txt
+lsb_release -a
+lscpu
+lsfd
+md5sum file_1.txt
+mkdir test_dir
+mkfifo test_pipe
+mknod test_block b 8 0
+more file_1.txt
+mount | column -t
+mountpoint /
+mv file_1.txt renamed_file_1.txt
+namei /path/to/file
+nice -n 10 echo "Nice!"
+nl file_1.txt
+nohup sleep 10 &
+nproc
+numfmt --to=iec 1000000
+od -c file_1.txt
+paste file_1.txt file_2.txt
+pathchk /path/to/check
+pidof bash
+pinky
+pr -h "Test File" file_1.txt
+printenv
+printf "Hello, %s!\n" World
+prlimit --pid $$ --as
+pwd
+readlink soft_link
+realpath soft_link
+rename 's/\.txt$/.text/' *.txt
+renice -n 10 -p $$
+rev file_1.txt
+rm file_1_copy.txt
+rmdir test_dir
+runcon system_u:system_r:unconfined_t:s0 ls
+script -c 'echo "Recorded session"' session.log
+scriptreplay session.log timing.log
+sed 's/Content/Data/' file_*.txt
+seq 1 5
+setarch $(uname -m) --uname-2.6 uname -a
+setpriv --reuid=1000 --regid=1000 --clear-groups id
+setsid sleep 100 &
+setterm --foreground red
+sha1sum file_1.txt
+sha224sum file_1.txt
+sha256sum file_1.txt
+sha384sum file_1.txt
+sha512sum file_1.txt
+shred -u file_to_delete
+shuf -i 1-10 -n 5
+sleep 1
+sort file_1.txt
+split -b 1K file_1.txt
+stat file_1.txt
+stdbuf -oL ls
+stty -a
+sum file_1.txt
+sync
+tac file_1.txt
+tail -n 5 file_1.txt
+tar -cvf archive.tar file_*.txt
+tee copy.txt < file_1.txt
+test -f file_1.txt && echo "File exists"
+timeout 5s sleep 10
+touch new_file.txt
+tr 'a-z' 'A-Z' < file_1.txt
+true
+truncate -s 1M large_file
+tsort <<< $'a b\nb c\na c'
+tty
+uname -a
+unexpand file_1.txt
+uniq file_1.txt
+unlink soft_link
+update-alternatives --list editor
+uptime
+users
+uuidgen
+vdir
+wc -l file_*.txt
+whereis bash
+which bash
+who
+whoami
+x86_64
+xargs -n1 < file_1.txt
+yes "test" | head -n 5
+cd ..
+rm -rf advanced_bash_playground
+mkdir -p ~/advanced_bash_playground_2 && cd ~/advanced_bash_playground_2
+seq 1 100 > numbers.txt
+sort -n numbers.txt > sorted_numbers.txt
+uniq -c sorted_numbers.txt > unique_counts.txt
+cut -d' ' -f2 unique_counts.txt > unique_numbers.txt
+paste numbers.txt sorted_numbers.txt > combined_numbers.txt
+expand -t 4 combined_numbers.txt > expanded_numbers.txt
+unexpand expanded_numbers.txt > tabbed_numbers.txt
+pr -n -h "Number List" tabbed_numbers.txt > formatted_numbers.txt
+split -l 10 formatted_numbers.txt split_numbers_
+cat split_numbers_* > reconstructed_numbers.txt
+diff formatted_numbers.txt reconstructed_numbers.txt
+cmp formatted_numbers.txt reconstructed_numbers.txt
+cksum formatted_numbers.txt reconstructed_numbers.txt
+md5sum formatted_numbers.txt reconstructed_numbers.txt
+sha256sum formatted_numbers.txt reconstructed_numbers.txt
+wc -l formatted_numbers.txt
+nl formatted_numbers.txt > line_numbered.txt
+head -n 20 line_numbered.txt | tail -n 10
+sed -n '11,20p' line_numbered.txt
+awk 'NR >= 11 && NR <= 20' line_numbered.txt
+grep -n "^" line_numbered.txt | sed -n '11,20p'
+tr ' ' ',' < line_numbered.txt > comma_separated.txt
+column -t -s ',' comma_separated.txt > columnar_data.txt
+fold -w 50 columnar_data.txt > wrapped_data.txt
+pr -T -w 100 wrapped_data.txt > pretty_printed.txt
+od -c pretty_printed.txt | head -n 10
+hexdump -C pretty_printed.txt | head -n 10
+strings pretty_printed.txt | head -n 10
+rev pretty_printed.txt | tac > reversed_data.txt
+comm sorted_numbers.txt unique_numbers.txt
+join -1 1 -2 1 sorted_numbers.txt unique_numbers.txt > joined_data.txt
+paste -d ',' sorted_numbers.txt unique_numbers.txt > merged_data.csv
+cut -d ',' -f1 merged_data.csv > extracted_column.txt
+tr '[:lower:]' '[:upper:]' < pretty_printed.txt > uppercase_data.txt
+tr -d '[:digit:]' < uppercase_data.txt > non_digit_data.txt
+tr -s '[:space:]' < non_digit_data.txt > compressed_spaces.txt
+sort -u compressed_spaces.txt > unique_lines.txt
+uniq -d unique_lines.txt > duplicate_lines.txt
+comm -23 unique_lines.txt duplicate_lines.txt > single_occurrence_lines.txt
+split -b 1K pretty_printed.txt split_file_
+cat split_file_* > reassembled_file.txt
+diff pretty_printed.txt reassembled_file.txt
+patch pretty_printed.txt -o patched_file.txt <<EOF
+1c1
+< PRETTY PRINTED DATA
+---
+> MODIFIED PRETTY PRINTED DATA
+EOF
+diff pretty_printed.txt patched_file.txt
+sdiff pretty_printed.txt patched_file.txt | head -n 5
+grep -v '^#' /etc/passwd | cut -d: -f1,3,6 | column -t -s ':'
+last | head -n 10
+who | cut -d' ' -f1 | sort | uniq
+w -h | awk '{print $1 " " $3 " " $4}'
+ps aux | sort -nrk 3,3 | head -n 5
+top -b -n 1 | head -n 10
+free -h
+df -h | grep -vE '^(Filesystem|tmpfs|cdrom)'
+lsblk
+mount | column -t
+ip addr | grep 'inet ' | awk '{print $2}'
+ss -tuln
+netstat -tuln
+lsof -i
+iptables -L
+route -n
+arp -e
+hostname -I
+dig +short google.com
+nslookup google.com
+host google.com
+traceroute google.com
+ping -c 4 google.com
+wget -q -O- http://example.com | html2text
+curl -s http://example.com | grep title
+date -u
+cal -3
+uptime
+uname -a
+lscpu
+lsmem
+lspci
+lsusb
+dmidecode | grep -A3 '^System Information'
+cat /proc/cpuinfo | grep 'model name' | uniq
+cat /proc/meminfo | grep MemTotal
+cat /etc/os-release
+lsb_release -a
+getconf LONG_BIT
+arch
+file /bin/bash
+ldd /bin/bash
+objdump -f /bin/bash | grep architecture
+readelf -h /bin/bash | grep Machine
+strings /bin/bash | grep -i version
+nm /bin/bash | head -n 10
+xxd /bin/bash | head -n 10
+base64 /bin/bash | head -n 10
+od -x /bin/bash | head -n 10
+cpio -it < /boot/initrd.img-$(uname -r) | head -n 20
+tar -tvf /var/log/apt/history.log.1.gz | head -n 10
+zcat /var/log/apt/history.log.1.gz | head -n 20
+bzcat /var/log/apt/history.log.2.bz2 | head -n 20
+xzcat /var/log/apt/history.log.3.xz | head -n 20
+gzip -l /var/log/apt/history.log.1.gz
+bzip2 -t /var/log/apt/history.log.2.bz2
+xz -l /var/log/apt/history.log.3.xz
+cd ..
+rm -rf advanced_bash_playground_2
+mkdir -p ~/advanced_bash_playground_3 && cd ~/advanced_bash_playground_3
+fallocate -l 10M large_file.bin
+dd if=/dev/urandom of=random_data.bin bs=1M count=5
+split -b 1M random_data.bin split_random_
+cat split_random_* > reconstructed_random.bin
+cmp random_data.bin reconstructed_random.bin
+b2sum random_data.bin > random_data.b2
+sha512sum random_data.bin > random_data.sha512
+md5sum random_data.bin > random_data.md5
+base64 random_data.bin > random_data.base64
+base64 -d random_data.base64 > decoded_random.bin
+cmp random_data.bin decoded_random.bin
+hexdump -C random_data.bin | head -n 10
+xxd random_data.bin | head -n 10
+od -t x1z -A x random_data.bin | head -n 10
+strings random_data.bin | head -n 10
+file random_data.bin
+stat random_data.bin
+touch -d "2 days ago" old_file.txt
+find . -type f -mtime -2
+touch -t 202301010000 specific_date_file.txt
+find . -type f -newermt "2023-01-01" -not -newermt "2023-01-02"
+mkdir -p dir1/subdir1 dir2/subdir2
+tree
+find . -type d -exec chmod 755 {} \;
+find . -type f -exec chmod 644 {} \;
+getfacl .
+setfacl -m u:nobody:rx dir1
+getfacl dir1
+tar -cvf archive.tar dir1 dir2
+gzip archive.tar
+zcat archive.tar.gz | tar -tvf -
+tar -xvf archive.tar.gz -C /tmp
+diff -r dir1 /tmp/dir1
+rsync -av dir1/ /tmp/dir1_sync/
+diff -r dir1 /tmp/dir1_sync
+sudo useradd -m testuser
+sudo passwd -e testuser
+sudo chage -l testuser
+sudo usermod -aG sudo testuser
+sudo userdel -r testuser
+getent passwd | tail -n 5
+getent group | tail -n 5
+lastlog | tail -n 5
+sudo aureport --auth --summary -i
+sudo ausearch -m USER_LOGIN -sv no
+sudo lastb | head -n 5
+w
+who -a
+pinky
+sudo fdisk -l
+sudo sfdisk -l
+sudo sgdisk --print /dev/sda
+sudo blkid
+sudo badblocks -sv /dev/sda
+sudo fsck -N /dev/sda1
+sudo e2fsck -n /dev/sda1
+sudo dumpe2fs /dev/sda1 | head -n 20
+sudo tune2fs -l /dev/sda1 | grep -E 'Block count|Inode count'
+sudo resize2fs -P /dev/sda1
+sudo lvdisplay | head -n 20
+sudo vgdisplay | head -n 20
+sudo pvdisplay | head -n 20
+sudo dmsetup info
+sudo mdadm --detail /dev/md0
+sudo hdparm -I /dev/sda | head -n 20
+sudo smartctl -a /dev/sda | head -n 20
+lscpu
+lshw -short
+dmidecode | grep -A3 '^System Information'
+sudo ipmitool chassis status
+sudo ipmitool sensor list
+sudo ethtool eth0
+sudo mtr google.com
+traceroute google.com
+host -t mx google.com
+dig google.com +short
+nslookup -type=ns google.com
+whois google.com | head -n 20
+sudo tcpdump -i eth0 -c 10
+sudo netstat -tunapl
+ss -tunapl
+sudo lsof -i
+sudo iptables -L
+sudo ip6tables -L
+sudo ufw status
+sudo systemctl list-units --type=service
+sudo journalctl -n 20
+sudo dmesg | tail -n 20
+ps aux --sort=-%cpu | head -n 5
+top -b -n 1 | head -n 20
+free -h
+vmstat 1 5
+iostat -x 1 5
+sar -u 1 5
+sudo strace -c ls
+sudo ltrace -c ls
+sudo perf stat ls
+pmap $(pgrep bash | head -n1)
+ldd /bin/bash
+objdump -d /bin/bash | head -n 20
+readelf -h /bin/bash
+file /bin/bash
+strings /bin/bash | grep -i version
+nm /bin/bash | head -n 20
+sudo chroot /mnt /bin/bash
+sudo unshare --fork --pid --mount-proc bash
+sudo nsenter -t 1 -m -u -n -i sh -c 'ps aux'
+sudo capsh --print
+sudo getcap /bin/ping
+sudo setcap cap_net_raw+ep /bin/ping
+sudo sysctl -a | grep vm.swappiness
+sudo sysctl vm.swappiness=10
+ulimit -a
+sudo nice -n -20 sleep 1
+sudo ionice -c 1 -n 0 dd if=/dev/zero of=/tmp/test bs=1M count=100
+sudo chrt -f -p 99 $$
+taskset -p 0x01 $$
+sudo tee /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor <<< "performance"
+echo 1 | sudo tee /sys/devices/system/cpu/cpu0/online
+cat /proc/cmdline
+cat /proc/cpuinfo | grep -E 'processor|model name|cpu MHz'
+cat /proc/meminfo | grep -E 'MemTotal|MemFree|MemAvailable'
+cat /proc/interrupts
+cat /proc/softirqs
+cat /proc/version
+cat /etc/lsb-release
+lsb_release -a
+hostnamectl
+timedatectl
+localectl
+sudo update-locale LANG=en_US.UTF-8
+sudo dpkg-reconfigure tzdata
+sudo apt-get update
+sudo apt-get upgrade -s
+sudo apt-get dist-upgrade -s
+sudo apt-get autoremove -s
+sudo apt-get autoclean
+sudo apt-cache search nginx
+sudo apt-cache show nginx
+sudo debconf-show mysql-server
+sudo debconf-get-selections | grep mysql-server
+cd ..
+rm -rf advanced_bash_playground_3
+mkdir -p ~/filesystem_playground && cd ~/filesystem_playground
+mkdir -p dir1/subdir1 dir2/subdir2 dir3/subdir3
+echo "Content for file 1" > dir1/file1.txt
+echo "Content for file 2" > dir2/file2.txt
+echo "Content for file 3" > dir3/file3.txt
+echo "Hidden file" > .hidden_file
+ls
+ls -l
+ls -la
+ls -R
+tree
+find . | sed -e "s/[^-][^\/]*\// |/g" -e "s/|\([^ ]\)/|-\1/"
+du -sh *
+du -h --max-depth=2
+file *
+ls -i
+stat dir1/file1.txt
+find . -name "*.txt"
+find . -type f -size +1c
+grep "Content" */*.txt
+cat dir1/file1.txt
+less dir1/file1.txt
+head -n 2 dir*/file*.txt
+tail -n 1 dir*/file*.txt
+diff dir1/file1.txt dir2/file2.txt
+cmp dir1/file1.txt dir2/file2.txt
+cp dir1/file1.txt dir3/file1_copy.txt
+mv dir2/file2.txt dir2/file2_renamed.txt
+ln -s dir1/file1.txt symlink_to_file1
+ln dir3/file3.txt hardlink_to_file3
+ls -l symlink_to_file1 hardlink_to_file3
+readlink symlink_to_file1
+ls -l dir1/file1.txt
+chmod 644 dir1/file1.txt
+ls -l dir1/file1.txt
+sudo chown root:root dir1/file1.txt
+ls -l dir1/file1.txt
+sudo chown $(whoami):$(whoami) dir1/file1.txt
+lsattr dir1/file1.txt
+sudo chattr +i dir1/file1.txt
+lsattr dir1/file1.txt
+sudo chattr -i dir1/file1.txt
+getfacl dir1/file1.txt
+setfacl -m u:nobody:r dir1/file1.txt
+getfacl dir1/file1.txt
+df -h
+mount | column -t
+findmnt
+df -i
+lsblk
+sudo blkid
+file dir1/file1.txt
+strings dir1/file1.txt
+dd if=/dev/zero of=loopfile bs=1M count=10
+sudo losetup -f loopfile
+sudo mkfs.ext4 /dev/loop0
+mkdir loopdir
+sudo mount /dev/loop0 loopdir
+df -h loopdir
+sudo umount loopdir
+sudo losetup -d /dev/loop0
+cd ..
+rm -rf filesystem_playground
