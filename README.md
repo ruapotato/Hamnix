@@ -1,15 +1,14 @@
 # Hamnix
 
-Hamnix is an advanced terminal emulator that uses a fine-tuned large language model to simulate a Linux terminal environment. It processes input character-by-character and generates responses that mimic real terminal behavior, including VT100 control sequences.
+Hamnix is an advanced terminal emulator that uses a fine-tuned large language model to simulate a Linux terminal environment. It processes input commands and generates responses that mimic real terminal behavior.
 
 ## Features
 
-- Character-by-character input processing
-- VT100 control sequence parsing and execution
+- Command-based input processing
+- Realistic terminal output generation
 - Command history navigation
 - Basic tab completion
-- Cursor movement within the current line
-- Backspace and line editing support
+- Simulated Linux environment
 
 ## Installation
 
@@ -34,26 +33,46 @@ Run the script:
 python ./bin/run_hamnix.py
 ```
 
-Use the terminal emulator as you would a regular Linux terminal. Special key combinations are supported:
-
-- Up/Down arrows: Navigate command history
-- Left/Right arrows: Move cursor within the current line
-- Tab: Basic command completion
-- Ctrl+C: Exit the emulator
+Use the terminal emulator as you would a regular Linux terminal. Enter commands and receive simulated responses.
 
 ## Training Data
 
 Hamnix expects the model to be trained on data in the following format:
 
 ```json
-{"text": "\nc"}
-{"text": "c\na"}
-{"text": "ca\nt"}
-{"text": "cat\n\n"}
-{"text": "cat\n\ncat: file.txt: No such file or directory\r\n\u001b[?2004huser@host:~$ "}
+{"text": "Command: pwd\nOutput:\n/"}
+{"text": "Command: ls\nOutput:\nbin\nboot\ndev\netc\nhome\nlib\nlib64\nmedia\nmnt\nopt\nproc\nroot\nrun\nsbin\nsrv\nsys\ntmp\nusr\nvar"}
+{"text": "Command: echo $HOME\nOutput:\n/root"}
 ```
 
-Each line represents a state transition in the terminal, with the input character and resulting output.
+Each entry represents a command and its corresponding output in the simulated terminal environment.
+
+## Project Structure
+
+The project is organized as follows:
+
+```
+hamnix/
+├── bin/
+│   ├── chroot_bin/
+│   │   ├── auto_term.py
+│   │   └── bash_cmds.txt
+│   ├── model_tester.py
+│   ├── old/
+│   │   ├── done/
+│   │   │   ├── bash_cmds.txt
+│   │   │   ├── cd_ls.jsonl
+│   │   │   └── terminal_log.jsonl
+│   │   └── train_data/
+│   │       ├── cd_ls.jsonl
+│   │       └── terminal_log.jsonl
+│   ├── run_hamnix.py
+│   ├── setup_and_run_chroot.sh
+│   └── train_data/
+│       └── terminal_log.jsonl
+├── qwen_finetune_config.yml
+└── [other project files and directories]
+```
 
 ## Contributing
 

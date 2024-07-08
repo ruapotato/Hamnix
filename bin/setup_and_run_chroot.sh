@@ -16,8 +16,9 @@ DEBIAN_RELEASE="bookworm"
 DEBIAN_MIRROR="http://deb.debian.org/debian/"
 DATA_COLLECTION_SCRIPT="auto_term.py"
 COMMANDS_FILE="bash_cmds.txt"
+CHROOT_BIN_DIR="chroot_bin"
 
-INSTALL="python3,python3-pyte,bash,sudo"
+INSTALL="python3,python3-pyte,python3-pexpect,bash,sudo"
 
 # Create chroot directory if it doesn't exist
 mkdir -p $CHROOT_PATH
@@ -34,11 +35,11 @@ debootstrap --include $INSTALL --variant=$DEBOOTSTRAP_VARIANT $DEBIAN_RELEASE $C
 
 # Copy the data collection script into the chroot
 echo "Copying data collection script into chroot..."
-cp $DATA_COLLECTION_SCRIPT $CHROOT_PATH/root/
+cp $CHROOT_BIN_DIR/$DATA_COLLECTION_SCRIPT $CHROOT_PATH/root/
 
 # Copy the commands file into the chroot
 echo "Copying commands file into chroot..."
-cp $COMMANDS_FILE $CHROOT_PATH/root/
+cp $CHROOT_BIN_DIR/$COMMANDS_FILE $CHROOT_PATH/root/
 
 # Make the script executable
 chmod +x $CHROOT_PATH/root/$DATA_COLLECTION_SCRIPT
@@ -65,8 +66,8 @@ trap cleanup EXIT
 # Run the data collection script inside the chroot
 echo "Running data collection script in chroot..."
 chroot $CHROOT_PATH /bin/bash -c "cd /root && python3 $DATA_COLLECTION_SCRIPT"
-cp $CHROOT_PATH/root/terminal_log.jsonl ./
-chown user:user ./terminal_log.jsonl
-echo "Data collection complete. Output saved in ./terminal_log.jsonl"
+cp $CHROOT_PATH/root/terminal_log.jsonl ./train_data/
+chown $SUDO_USER:$SUDO_USER ./train_data/terminal_log.jsonl
+echo "Data collection complete. Output saved in ./train_data/terminal_log.jsonl"
 
 # Cleanup is handled by the trap

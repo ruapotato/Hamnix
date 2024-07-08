@@ -1,99 +1,103 @@
 #!/usr/bin/python3
 import sys
 import json
-import pyte
 import os
-import select
-import fcntl
-import termios
-import struct
-import pty
-import signal
-import tty
-import time
-
-def get_terminal_size():
-    h, w, hp, wp = struct.unpack('HHHH',
-        fcntl.ioctl(0, termios.TIOCGWINSZ,
-        struct.pack('HHHH', 0, 0, 0, 0)))
-    return w, h
+import subprocess
+import random
+import argparse
 
 def write_to_config(config_file, data):
+    formatted_data = f"Command: {data['input']}\nOutput:\n{data['stdout']}"
+    if data['stderr']:
+        formatted_data += f"\nError:\n{data['stderr']}"
+    
     with open(config_file, 'a') as f:
-        json.dump(data, f)
+        json.dump({"text": formatted_data}, f)
         f.write('\n')
-
-def handle_sigchld(signum, frame):
-    os.wait()
-
-def process_input(fd, data, config_file):
-    for char in data:
-        char_bytes = bytes([char])
-        os.write(fd, char_bytes)
-        if char == 9:  # Tab character
-            write_to_config(config_file, {"type": "input", "content": "\\t"})
-        else:
-            write_to_config(config_file, {"type": "input", "content": char_bytes.decode('utf-8', errors='replace')})
-        time.sleep(0.005)  # Simulate typing speed
-
-def get_shell():
-    return '/bin/bash' 
-
-def setup_child_process():
-    shell = get_shell()
-    os.environ['TERM'] = 'xterm-256color'
-    os.environ['SHELL'] = shell
-    os.execl(shell, shell)
-
-def set_raw_mode(fd):
-    old_settings = termios.tcgetattr(fd)
-    tty.setraw(fd)
-    return old_settings
-
-def restore_terminal(fd, old_settings):
-    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 def read_commands_from_file(filename):
     with open(filename, 'r') as f:
         return [line.strip() for line in f if line.strip()]
 
-def main():
+def get_valid_subdirectories(path):
+    try:
+        return [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d)) and not d.startswith('.')]
+    except (PermissionError, FileNotFoundError):
+        return []
+
+def generate_random_path(current_path):
+    if random.choice([True, False]):  # Decide between absolute and relative path
+        # Absolute path
+        root_dirs = ['/bin', '/etc', '/home', '/usr', '/var']
+        new_path = random.choice(root_dirs)
+    else:
+        # Relative path
+        new_path = current_path
+
+    for _ in range(random.randint(0, 3)):
+        subdirs = get_valid_subdirectories(new_path)
+        if not subdirs:
+            break
+        new_path = os.path.join(new_path, random.choice(subdirs))
+    
+    return new_path
+
+def run_command(cmd, cwd):
+    try:
+        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, cwd=cwd)
+        return cmd, result.stdout.strip(), result.stderr.strip()
+    except subprocess.CalledProcessError as e:
+        return cmd, e.stdout.strip(), e.stderr.strip()
+
+def main(num_random_commands):
     config_file = "terminal_log.jsonl"
-    columns, lines = get_terminal_size()
     
-    screen = pyte.Screen(columns, lines)
-    stream = pyte.Stream(screen)
+    commands = read_commands_from_file('./bash_cmds.txt')
+    for cmd in commands:
+        input_content, stdout_content, stderr_content = run_command(cmd, '/')
+        write_to_config(config_file, {
+            "input": input_content,
+            "stdout": stdout_content,
+            "stderr": stderr_content
+        })
     
-    signal.signal(signal.SIGCHLD, handle_sigchld)
-
-    pid, fd = pty.fork()
-
-    if pid == 0:  # Child process
-        setup_child_process()
-    else:  # Parent process
-        old_settings = set_raw_mode(sys.stdin.fileno())
-        try:
-            commands = read_commands_from_file('./bash_cmds.txt')
-            for cmd in commands:
-                process_input(fd, (cmd + '\n').encode(), config_file)
-                while True:
-                    rlist, _, _ = select.select([fd], [], [], 0.1)
-                    if fd in rlist:
-                        try:
-                            data = os.read(fd, 1024)
-                            if not data:
-                                break
-                            stream.feed(data.decode('utf-8', errors='replace'))
-                            sys.stdout.buffer.write(data)
-                            sys.stdout.flush()
-                            write_to_config(config_file, {"type": "output", "vt100": data.decode('utf-8', errors='replace')})
-                        except OSError:
-                            break
-                    else:
-                        break
-            os.close(fd)
-        finally:
-            restore_terminal(sys.stdin.fileno(), old_settings)
+    # Generate random navigation commands
+    current_path = "/"
+    for _ in range(num_random_commands):
+        new_path = generate_random_path(current_path)
+        
+        # Record the cd command without actually running it
+        write_to_config(config_file, {
+            "input": f"cd {new_path}",
+            "stdout": "",
+            "stderr": ""
+        })
+        
+        current_path = new_path  # Update the current path
+        
+        # Run 'pwd' command
+        pwd_cmd = "pwd"
+        _, stdout_content, stderr_content = run_command(pwd_cmd, current_path)
+        write_to_config(config_file, {
+            "input": pwd_cmd,
+            "stdout": current_path,  # Use the current_path instead of actual output
+            "stderr": stderr_content
+        })
+        
+        # Run 'ls' with variations after each navigation
+        ls_variation = random.choice(['ls -alh', 'ls -al', 'ls'])
+        ls_cmd = f"{ls_variation}"
+        _, stdout_content, stderr_content = run_command(ls_cmd, current_path)
+        write_to_config(config_file, {
+            "input": ls_cmd,
+            "stdout": stdout_content,
+            "stderr": stderr_content
+        })
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Generate terminal commands for LLM training.")
+    parser.add_argument("--num_commands", type=int, default=500000,
+                        help="Number of random navigation commands to generate (default: 500000)")
+    args = parser.parse_args()
+    
+    main(args.num_commands)

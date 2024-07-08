@@ -1,1 +1,76 @@
+pwd
 ls
+ls -la
+cd /
+ls -l
+cd /root
+echo $HOME
+whoami
+uname -a
+cat /etc/os-release
+df -h
+free -m
+top -n 1
+ps aux
+ip addr
+hostname
+date
+uptime
+which bash
+echo $PATH
+ls /bin
+ls /usr/bin
+cat /etc/passwd
+grep root /etc/passwd
+id
+groups
+touch test_file.txt
+echo "Hello, World!" > test_file.txt
+cat test_file.txt
+cp test_file.txt test_file_copy.txt
+mv test_file_copy.txt renamed_file.txt
+rm test_file.txt
+mkdir test_dir
+cd test_dir
+pwd
+cd ..
+rmdir test_dir
+find / -name "*.conf" 2>/dev/null
+grep -r "debian" /etc 2>/dev/null
+du -sh /root
+tail -n 5 /var/log/dpkg.log
+head -n 5 /etc/apt/sources.list
+apt update
+apt list --upgradable
+dpkg -l | grep ^ii
+systemctl list-units --type=service
+journalctl -n 20 --no-pager
+lsblk
+mount
+env
+echo $SHELL
+type ls
+alias
+history
+man ls | head -n 20
+apropos directory
+whereis python3
+file /bin/bash
+lsof -i :22
+netstat -tuln
+ss -tuln
+iptables -L
+ping -c 4 8.8.8.8
+traceroute google.com
+nslookup google.com
+dig google.com
+wget -q -O- http://example.com
+curl -I http://example.com
+# File and text processing
+sed 's/Hello/Goodbye/' test_file.txt
+awk '{print $1}' /etc/passwd
+sort -r /etc/passwd
+uniq -c <<< $(echo -e "apple\nbanana\napple\ncherry\nbanana")
+cut -d: -f1 /etc/passwd
+tr '[:lower:]' '[:upper:]' <<< "hello world"
+grep -E '[0-9]{3}-[0-9]{3}-[0-9]{4}' test_file.txt

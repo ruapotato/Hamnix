@@ -1,80 +1,51 @@
 #!/usr/bin/python3
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import re
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from peft import PeftModel, PeftConfig
 import sys
 import termios
 import tty
-import os
 import readline
-
-class VT100Parser:
-    def __init__(self):
-        self.buffer = ""
-        self.vt100_regex = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
-
-    def process_output(self, model_output):
-        self.buffer += model_output
-        processed_output = []
-        
-        while True:
-            match = self.vt100_regex.search(self.buffer)
-            if not match:
-                break
-            
-            before_seq = self.buffer[:match.start()]
-            vt_seq = match.group()
-            self.buffer = self.buffer[match.end():]
-            
-            if before_seq:
-                processed_output.append(("text", before_seq))
-            processed_output.append(("vt100", vt_seq))
-        
-        if self.buffer:
-            processed_output.append(("text", self.buffer))
-            self.buffer = ""
-        
-        return processed_output
 
 class TerminalEmulator:
     def __init__(self, model_path):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto").to(self.device)
+        
+        # Load the base model
+        base_model_path = "Qwen/Qwen2-1.5B"
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_path, torch_dtype="auto")
+        
+        # Load the LoRA adapter
+        peft_config = PeftConfig.from_pretrained(model_path)
+        self.model = PeftModel.from_pretrained(base_model, model_path, torch_dtype="auto").to(self.device)
+        
+        # Load the tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.current_state = ""
-        self.parser = VT100Parser()
+        
         self.command_history = []
         self.history_index = 0
         self.current_line = ""
         self.cursor_pos = 0
 
-    def generate_response(self, input_char):
-        prompt = f"{self.current_state}\n{input_char}"
+    def generate_response(self, command):
+        prompt = f"Command: {command}\nOutput:"
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=100,
+                max_new_tokens=1000,
                 do_sample=True,
                 temperature=0.7,
                 pad_token_id=self.tokenizer.eos_token_id
             )
 
         response = self.tokenizer.decode(output[0], skip_special_tokens=True)
-        # Find the last occurrence of the prompt in the response
-        last_prompt_index = response.rfind(prompt)
-        if last_prompt_index != -1:
-            response = response[last_prompt_index + len(prompt):]
+        # Extract only the output part
+        output_start = response.find("Output:")
+        if output_start != -1:
+            response = response[output_start + 7:].strip()
         return response
-
-    def display_output(self, processed_output):
-        for output_type, content in processed_output:
-            if output_type == "text":
-                sys.stdout.write(content)
-            elif output_type == "vt100":
-                sys.stdout.write(content)  # For now, we're just writing VT100 sequences directly
-            sys.stdout.flush()
 
     def handle_special_keys(self, char):
         if char == '\x1b':  # ESC sequence
@@ -153,31 +124,35 @@ class TerminalEmulator:
             tty.setcbreak(sys.stdin.fileno())
             
             while True:
-                char = sys.stdin.read(1)
-                if char == '\n':
-                    print()  # Move to next line
+                sys.stdout.write("$ ")
+                sys.stdout.flush()
+                self.current_line = ""
+                self.cursor_pos = 0
+                
+                while True:
+                    char = sys.stdin.read(1)
+                    if char == '\n':
+                        print()  # Move to next line
+                        break
+                    elif not self.handle_special_keys(char):
+                        self.current_line = self.current_line[:self.cursor_pos] + char + self.current_line[self.cursor_pos:]
+                        self.cursor_pos += 1
+                        sys.stdout.write(char)
+                        sys.stdout.write(self.current_line[self.cursor_pos:])
+                        sys.stdout.write('\b' * (len(self.current_line) - self.cursor_pos))
+                        sys.stdout.flush()
+                
+                if self.current_line:
                     self.command_history.append(self.current_line)
                     self.history_index = len(self.command_history)
-                    response = self.generate_response(self.current_line + '\n')
-                    processed_output = self.parser.process_output(response)
-                    self.display_output(processed_output)
-                    self.current_state = ""
-                    self.current_line = ""
-                    self.cursor_pos = 0
-                elif not self.handle_special_keys(char):
-                    self.current_line = self.current_line[:self.cursor_pos] + char + self.current_line[self.cursor_pos:]
-                    self.cursor_pos += 1
-                    sys.stdout.write(char)
-                    sys.stdout.write(self.current_line[self.cursor_pos:])
-                    sys.stdout.write('\b' * (len(self.current_line) - self.cursor_pos))
-                    sys.stdout.flush()
-                self.current_state += char
+                    response = self.generate_response(self.current_line)
+                    print(response)
         except KeyboardInterrupt:
             print("\nExiting...")
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 if __name__ == "__main__":
-    model_path = "path/to/your/trained/model"  # Update this with your model path
+    model_path = "../test_checkpoint"  # Path to the fine-tuned model
     emulator = TerminalEmulator(model_path)
     emulator.run()
