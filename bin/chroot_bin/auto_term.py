@@ -7,12 +7,16 @@ import random
 import argparse
 
 def write_to_config(config_file, data):
-    formatted_data = f"Command: {data['input']}\nOutput:\n{data['stdout']}"
+    formatted_data = {
+        "current_dir": data['current_dir'],
+        "input": data['input'],
+        "stdout": data['stdout']
+    }
     if data['stderr']:
-        formatted_data += f"\nError:\n{data['stderr']}"
+        formatted_data['stdout'] += f"\nError: {data['stderr']}"
     
     with open(config_file, 'a') as f:
-        json.dump({"text": formatted_data}, f)
+        json.dump(formatted_data, f)
         f.write('\n')
 
 def read_commands_from_file(filename):
@@ -53,35 +57,36 @@ def main(num_random_commands):
     config_file = "terminal_log.jsonl"
     
     commands = read_commands_from_file('./bash_cmds.txt')
+    current_path = "/"
     for cmd in commands:
-        input_content, stdout_content, stderr_content = run_command(cmd, '/')
+        input_content, stdout_content, stderr_content = run_command(cmd, current_path)
         write_to_config(config_file, {
+            "current_dir": current_path,
             "input": input_content,
             "stdout": stdout_content,
             "stderr": stderr_content
         })
     
     # Generate random navigation commands
-    current_path = "/"
     for _ in range(num_random_commands):
         new_path = generate_random_path(current_path)
         
-        # Record the cd command without actually running it
+        # Record the cd command
         write_to_config(config_file, {
+            "current_dir": current_path,
             "input": f"cd {new_path}",
-            "stdout": "",
+            "stdout": f"Changed directory to {new_path}",
             "stderr": ""
         })
         
         current_path = new_path  # Update the current path
         
         # Run 'pwd' command
-        pwd_cmd = "pwd"
-        _, stdout_content, stderr_content = run_command(pwd_cmd, current_path)
         write_to_config(config_file, {
-            "input": pwd_cmd,
-            "stdout": current_path,  # Use the current_path instead of actual output
-            "stderr": stderr_content
+            "current_dir": current_path,
+            "input": "pwd",
+            "stdout": current_path,
+            "stderr": ""
         })
         
         # Run 'ls' with variations after each navigation
@@ -89,6 +94,7 @@ def main(num_random_commands):
         ls_cmd = f"{ls_variation}"
         _, stdout_content, stderr_content = run_command(ls_cmd, current_path)
         write_to_config(config_file, {
+            "current_dir": current_path,
             "input": ls_cmd,
             "stdout": stdout_content,
             "stderr": stderr_content
@@ -96,8 +102,8 @@ def main(num_random_commands):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate terminal commands for LLM training.")
-    parser.add_argument("--num_commands", type=int, default=500000,
-                        help="Number of random navigation commands to generate (default: 500000)")
+    parser.add_argument("--num_commands", type=int, default=50000,
+                        help="Number of random navigation commands to generate (default: 50000)")
     args = parser.parse_args()
     
     main(args.num_commands)

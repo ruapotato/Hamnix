@@ -1,14 +1,16 @@
 # Hamnix
 
-Hamnix is an advanced terminal emulator that uses a fine-tuned large language model to simulate a Linux terminal environment. It processes input commands and generates responses that mimic real terminal behavior.
+Hamnix is an advanced AI-powered Linux terminal simulator that uses a fine-tuned large language model to provide a realistic command-line experience. It processes input commands and generates responses that mimic real terminal behavior, allowing users to practice and learn Linux commands in a safe, simulated environment.
 
 ## Features
 
-- Command-based input processing
-- Realistic terminal output generation
+- Realistic simulation of Linux terminal environment
+- Support for a wide range of common Linux commands
 - Command history navigation
 - Basic tab completion
-- Simulated Linux environment
+- Simulated file system state maintenance
+- Error handling and appropriate error messages
+- Interactive learning environment for Linux command practice
 
 ## Installation
 
@@ -23,7 +25,7 @@ Hamnix is an advanced terminal emulator that uses a fine-tuned large language mo
    pip install torch transformers
    ```
 
-3. Download or prepare your trained model and update the `model_path` in the script.
+3. Download or prepare your trained model and update the `model_path` in the `run_hamnix.py` script.
 
 ## Usage
 
@@ -33,19 +35,19 @@ Run the script:
 python ./bin/run_hamnix.py
 ```
 
-Use the terminal emulator as you would a regular Linux terminal. Enter commands and receive simulated responses.
+Use the terminal simulator as you would a regular Linux terminal. Enter commands and receive simulated responses.
 
 ## Training Data
 
-Hamnix expects the model to be trained on data in the following format:
+Hamnix now uses an InstructGPT approach for fine-tuning. The training data is expected to be in the following format:
 
 ```json
-{"text": "Command: pwd\nOutput:\n/"}
-{"text": "Command: ls\nOutput:\nbin\nboot\ndev\netc\nhome\nlib\nlib64\nmedia\nmnt\nopt\nproc\nroot\nrun\nsbin\nsrv\nsys\ntmp\nusr\nvar"}
-{"text": "Command: echo $HOME\nOutput:\n/root"}
+{"current_dir": "/home/user", "input": "ls -l", "stdout": "total 0\ndrwxr-xr-x 2 user user 4096 Jul 8 10:00 Documents\ndrwxr-xr-x 2 user user 4096 Jul 8 10:00 Downloads"}
+{"current_dir": "/", "input": "pwd", "stdout": "/"}
+{"current_dir": "/etc", "input": "cat hosts", "stdout": "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\nfe00::0 ip6-localnet\nff00::0 ip6-mcastprefix\nff02::1 ip6-allnodes\nff02::2 ip6-allrouters"}
 ```
 
-Each entry represents a command and its corresponding output in the simulated terminal environment.
+Each entry represents the current directory, a command, and its corresponding output in the simulated terminal environment.
 
 ## Project Structure
 
@@ -74,9 +76,27 @@ hamnix/
 └── [other project files and directories]
 ```
 
+## Training
+
+To train the model using the InstructGPT approach:
+
+1. Prepare your training data in the format described above.
+2. Update the `qwen_finetune_config.yml` file with appropriate parameters.
+3. Run the fine-tuning script (not included in this repository).
+
+## Current Status and Ongoing Work
+
+Hamnix is an ongoing project with active development. Current focus areas include:
+
+- Improving consistency in maintaining file system state
+- Enhancing performance on complex commands and long sequences
+- Reducing hallucination of non-existent files or directories
+- Implementing a web interface for easier access
+- Developing specific learning modules for different Linux topics
+
 ## Contributing
 
-Contributions to Hamnix are welcome! Please feel free to submit pull requests, create issues, or suggest new features.
+Contributions to Hamnix are welcome! Please feel free to submit pull requests, create issues, or suggest new features. We're particularly interested in contributions that address our current focus areas.
 
 ## License
 
