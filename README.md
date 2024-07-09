@@ -1,16 +1,19 @@
 # Hamnix
 
-Hamnix is an advanced AI-powered Linux terminal simulator that uses a fine-tuned large language model to provide a realistic command-line experience. It processes input commands and generates responses that mimic real terminal behavior, allowing users to practice and learn Linux commands in a safe, simulated environment.
+Hamnix is an advanced AI-powered terminal simulator that uses a large language model to provide a unique command-line experience. It processes input commands and generates responses that mimic terminal behavior, allowing users to interact with an AI-driven command-line interface.
 
 ## Features
 
-- Realistic simulation of Linux terminal environment
-- Support for a wide range of common Linux commands
+- AI-powered simulation of a terminal environment
+- Dynamic command generation based on user input
+- Intelligent caching of generated commands
+- Advanced tab completion for commands and filesystem paths
+- Redo functionality for command regeneration
+- Support for a wide range of commands
 - Command history navigation
-- Basic tab completion
-- Simulated file system state maintenance
-- Error handling and appropriate error messages
-- Interactive learning environment for Linux command practice
+- Simulated file system state (with occasional creative interpretations)
+- Error handling and appropriate (sometimes humorous) error messages
+- Interactive environment for exploring AI-generated command responses
 
 ## Installation
 
@@ -25,29 +28,21 @@ Hamnix is an advanced AI-powered Linux terminal simulator that uses a fine-tuned
    pip install torch transformers
    ```
 
-3. Download or prepare your trained model and update the `model_path` in the `run_hamnix.py` script.
+3. Ensure you have the necessary model files for the DeepSeek Coder 6.7B Instruct model.
 
 ## Usage
 
 Run the script:
 
 ```
-python ./bin/run_hamnix.py
+python ./bin/hamnix_v2.py
 ```
 
-Use the terminal simulator as you would a regular Linux terminal. Enter commands and receive simulated responses.
+Use the AI-powered terminal simulator by entering commands as you would in a regular terminal. Hamnix will generate responses based on its AI model.
 
-## Training Data
-
-Hamnix now uses an InstructGPT approach for fine-tuning. The training data is expected to be in the following format:
-
-```json
-{"current_dir": "/home/user", "input": "ls -l", "stdout": "total 0\ndrwxr-xr-x 2 user user 4096 Jul 8 10:00 Documents\ndrwxr-xr-x 2 user user 4096 Jul 8 10:00 Downloads"}
-{"current_dir": "/", "input": "pwd", "stdout": "/"}
-{"current_dir": "/etc", "input": "cat hosts", "stdout": "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\nfe00::0 ip6-localnet\nff00::0 ip6-mcastprefix\nff02::1 ip6-allnodes\nff02::2 ip6-allrouters"}
-```
-
-Each entry represents the current directory, a command, and its corresponding output in the simulated terminal environment.
+Special features:
+- Use tab for command and path completion.
+- Start a command with '!' to force regeneration of that command.
 
 ## Project Structure
 
@@ -56,47 +51,24 @@ The project is organized as follows:
 ```
 hamnix/
 ├── bin/
-│   ├── chroot_bin/
-│   │   ├── auto_term.py
-│   │   └── bash_cmds.txt
-│   ├── model_tester.py
-│   ├── old/
-│   │   ├── done/
-│   │   │   ├── bash_cmds.txt
-│   │   │   ├── cd_ls.jsonl
-│   │   │   └── terminal_log.jsonl
-│   │   └── train_data/
-│   │       ├── cd_ls.jsonl
-│   │       └── terminal_log.jsonl
-│   ├── run_hamnix.py
-│   ├── setup_and_run_chroot.sh
-│   └── train_data/
-│       └── terminal_log.jsonl
-├── qwen_finetune_config.yml
+│   ├── hamnix_v2.py
+│   └── [other script files]
 └── [other project files and directories]
 ```
-
-## Training
-
-To train the model using the InstructGPT approach:
-
-1. Prepare your training data in the format described above.
-2. Update the `qwen_finetune_config.yml` file with appropriate parameters.
-3. Run the fine-tuning script (not included in this repository).
 
 ## Current Status and Ongoing Work
 
 Hamnix is an ongoing project with active development. Current focus areas include:
 
-- Improving consistency in maintaining file system state
-- Enhancing performance on complex commands and long sequences
-- Reducing hallucination of non-existent files or directories
-- Implementing a web interface for easier access
-- Developing specific learning modules for different Linux topics
+- Improving consistency in command interpretation and response generation
+- Enhancing the realism of the simulated file system state
+- Expanding the range of recognized and properly handled commands
+- Implementing more advanced features like piping and redirection
+- Developing a web interface for easier access
 
 ## Contributing
 
-Contributions to Hamnix are welcome! Please feel free to submit pull requests, create issues, or suggest new features. We're particularly interested in contributions that address our current focus areas.
+Contributions to Hamnix are welcome! Please feel free to submit pull requests, create issues, or suggest new features. We're particularly interested in contributions that address our current focus areas or bring new ideas to the project.
 
 ## License
 
@@ -119,4 +91,4 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## Acknowledgements
 
-This project was developed with assistance from Claude.ai, an AI language model created by Anthropic, PBC.
+This project used Claude.ai.

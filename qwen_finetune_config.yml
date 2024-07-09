@@ -11,21 +11,25 @@ datasets:
   - path: ../bin/train_data/terminal_log.jsonl
     ds_type: json
     type: completion
-    field: text
-    num_proc: 16  # adjust based on your available CPU cores
-
+    prompt_template: "System: You are a Linux terminal simulator. Maintain the current directory state and respond accurately to commands.\nUser: Current directory: {{current_dir}}\nCommand: {{input}}\nAssistant: "
+    response_template: "{{stdout}}"
+    input_columns:
+      - current_dir
+      - input
+    output_column: stdout
+    num_proc: 16
 
 dataset_prepared_path: ./prepared_data
 val_set_size: 0.05
-output_dir: ./qwen-1.5b-finetuned
+output_dir: ./qwen-1.5b-instructgpt-finetuned
 
-sequence_len: 512
+sequence_len: 2048
 sample_packing: true
 pad_to_sequence_len: true
 
 adapter: lora
 lora_model_dir:
-lora_r: 8
+lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.05
 lora_target_modules:
@@ -34,18 +38,12 @@ lora_target_modules:
   - v_proj
   - o_proj
 
-wandb_project: qwen-finetune
-wandb_entity:
-wandb_watch:
-wandb_run_id:
-wandb_log_model:
-
 gradient_accumulation_steps: 2
 micro_batch_size: 2
-num_epochs: 3
+num_epochs: 5
 optimizer: adamw_bnb_8bit
 lr_scheduler: cosine
-learning_rate: 0.0002
+learning_rate: 0.0001
 train_on_inputs: false
 group_by_length: true
 bf16: auto
@@ -53,8 +51,11 @@ fp16: false
 tf32: true
 
 warmup_steps: 100
-eval_steps: 100
-save_steps: 100
+eval_steps: 3000
+save_steps: 3000
+logging_steps: 100
 
 gradient_checkpointing: true
 flash_attention: true
+
+dataset_processes: 16
