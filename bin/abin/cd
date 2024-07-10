@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+import sys
+import os
+import json
+
+def update_shared_env():
+    with open('/tmp/hamnix_env_update.json', 'w') as f:
+        json.dump(dict(os.environ), f)
+
+def main():
+    try:
+        # Check if the required argument is provided
+        if len(sys.argv) != 2:
+            raise ValueError("Exactly one argument is required")
+
+        # Change the directory and update os.environ['PWD']
+        os.chdir(sys.argv[1])
+        os.environ['PWD'] = os.getcwd()
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        update_shared_env()
+        return 1
+
+    update_shared_env()
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

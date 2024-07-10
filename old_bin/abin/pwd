@@ -1,0 +1,19 @@
+#!/usr/bin/python
+import sys
+import os
+
+def main():
+    try:
+        if len(sys.argv) > 1:
+            print(f"Usage: {sys.argv[0]}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            cwd = os.getcwd()
+            print(cwd)
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()

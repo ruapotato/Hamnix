@@ -8,12 +8,13 @@ Hamnix is an advanced AI-powered terminal simulator that uses a large language m
 - Dynamic command generation based on user input
 - Intelligent caching of generated commands
 - Advanced tab completion for commands and filesystem paths
-- Redo functionality for command regeneration
+- Force regeneration of commands with '!' prefix
 - Support for a wide range of commands
 - Command history navigation
-- Simulated file system state (with occasional creative interpretations)
-- Error handling and appropriate (sometimes humorous) error messages
+- Simulated file system state with persistent changes
+- Error handling and appropriate error messages
 - Interactive environment for exploring AI-generated command responses
+- Kernel-shell architecture for improved stability and performance
 
 ## Installation
 
@@ -32,11 +33,15 @@ Hamnix is an advanced AI-powered terminal simulator that uses a large language m
 
 ## Usage
 
-Run the script:
+1. Start the Hamnix kernel:
+   ```
+   python ./bin/hamnix_kernel.py
+   ```
 
-```
-python ./bin/hamnix_v2.py
-```
+2. In a separate terminal, start the Hamnix shell:
+   ```
+   python ./bin/hamsh.py
+   ```
 
 Use the AI-powered terminal simulator by entering commands as you would in a regular terminal. Hamnix will generate responses based on its AI model.
 
@@ -51,17 +56,18 @@ The project is organized as follows:
 ```
 hamnix/
 ├── bin/
-│   ├── hamnix_v2.py
-│   └── [other script files]
-└── [other project files and directories]
+│   ├── abin/             # Directory for generated command scripts
+├── hamnix_kernel.py  # Hamnix kernel script
+├── hamsh.py          # Hamnix shell script
+
 ```
 
 ## Current Status and Ongoing Work
 
 Hamnix is an ongoing project with active development. Current focus areas include:
 
-- Improving consistency in command interpretation and response generation
-- Enhancing the realism of the simulated file system state
+- Improving stability and error handling in kernel-shell communication
+- Enhancing the consistency of command execution and environment updates
 - Expanding the range of recognized and properly handled commands
 - Implementing more advanced features like piping and redirection
 - Developing a web interface for easier access
@@ -91,4 +97,4 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## Acknowledgements
 
-This project used Claude.ai.
+This project used Claude.ai for development assistance and documentation generation.

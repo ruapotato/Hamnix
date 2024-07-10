@@ -1,0 +1,21 @@
+#!/usr/bin/python3
+import sys
+import os
+
+def main():
+    try:
+        if len(sys.argv) > 1:
+            path = sys.argv[1]
+            if not os.path.exists(path):
+                print(f"cd: {path} is not a directory", file=sys.stderr)
+                sys.exit(1)
+            os.chdir(path)
+        else:
+            os.chdir("/")
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
