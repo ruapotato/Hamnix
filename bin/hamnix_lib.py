@@ -57,3 +57,12 @@ async def communicate_with_kernel(message, timeout=30, retries=3):
             logger.error(f"Error communicating with kernel: {str(e)}")
             raise
 
+async def extend_script(command, args):
+    logger.debug(f"Extending script for command: {command} with args: {args}")
+    message = {
+        'type': 'extend_command',
+        'command': command,
+        'args': args,
+        'context_id': 'hamsh'
+    }
+    return await communicate_with_kernel(message)

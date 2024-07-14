@@ -6,12 +6,13 @@ Hamnix is an advanced AI-powered terminal simulator that uses a large language m
 
 - AI-powered simulation of a terminal environment
 - Dynamic command generation based on user input
-- Intelligent caching of generated commands
+- Intelligent caching and extension of generated commands
 - Advanced tab completion for commands and filesystem paths
 - Force regeneration of commands with '!' prefix
 - Support for a wide range of commands
 - Command history navigation
-- Simulated file system state with persistent changes
+- Live streaming of command input and output
+- Automatic extension of commands to handle unknown options
 - Error handling and appropriate error messages
 - Interactive environment for exploring AI-generated command responses
 - Kernel-shell architecture for improved stability and performance
@@ -35,12 +36,12 @@ Hamnix is an advanced AI-powered terminal simulator that uses a large language m
 
 1. Start the Hamnix kernel:
    ```
-   python ./bin/hamnix_kernel.py
+   python hamnix_kernel.py
    ```
 
 2. In a separate terminal, start the Hamnix shell:
    ```
-   python ./bin/hamsh.py
+   python hamsh.py
    ```
 
 Use the AI-powered terminal simulator by entering commands as you would in a regular terminal. Hamnix will generate responses based on its AI model.
@@ -48,6 +49,7 @@ Use the AI-powered terminal simulator by entering commands as you would in a reg
 Special features:
 - Use tab for command and path completion.
 - Start a command with '!' to force regeneration of that command.
+- Commands with unknown options will be automatically extended and retried.
 
 ## Project Structure
 
@@ -55,21 +57,23 @@ The project is organized as follows:
 
 ```
 hamnix/
-├── bin/
-│   ├── abin/             # Directory for generated command scripts
+├── abin/             # Directory for generated command scripts
 ├── hamnix_kernel.py  # Hamnix kernel script
 ├── hamsh.py          # Hamnix shell script
-
+├── hamnix_lib.py     # Common library functions
+├── hamnix_logger.py  # Logging configuration
+├── hamnix_prompts.py # Prompts for command generation and extension
 ```
 
 ## Current Status and Ongoing Work
 
 Hamnix is an ongoing project with active development. Current focus areas include:
 
-- Improving stability and error handling in kernel-shell communication
+- Refining the live streaming of command input and output
+- Improving the command extension mechanism
 - Enhancing the consistency of command execution and environment updates
 - Expanding the range of recognized and properly handled commands
-- Implementing more advanced features like piping and redirection
+- Implementing more advanced features like piping between commands
 - Developing a web interface for easier access
 
 ## Contributing

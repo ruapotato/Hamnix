@@ -9,7 +9,7 @@ import json
 import stat
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from hamnix_logger import setup_logger
-from hamnix_prompts import get_command_prompt
+from hamnix_prompts import get_command_prompt, get_extend_command_prompt
 
 logger = setup_logger(__name__)
 
@@ -45,6 +45,8 @@ class HamnixKernel:
         async with self.lock:
             if task['type'] == 'generate_command':
                 return await self.generate_command(task['command'], task['args'], task['context_id'], task.get('force_regenerate', False))
+            elif task['type'] == 'extend_command':
+                return await self.extend_command(task['command'], task['args'], task['context_id'])
             elif task['type'] == 'switch_context':
                 return self.switch_context(task['context_id'])
             elif task['type'] == 'get_prompt':
@@ -131,6 +133,66 @@ class HamnixKernel:
         except Exception as e:
             logger.error(f"Error generating command: {str(e)}")
             return json.dumps({"error": f"Error generating command: {str(e)}"})
+
+    async def extend_command(self, command, args, context_id):
+        logger.debug(f"Extending command: {command} with args: {args} for context: {context_id}")
+        command_path = os.path.join(self.abin_path, command)
+        
+        if not os.path.exists(command_path):
+            logger.error(f"Command file does not exist: {command_path}")
+            return json.dumps({"error": f"Command file does not exist: {command_path}"})
+
+        with open(command_path, 'r') as f:
+            existing_code = f.read()
+
+        prompt = get_extend_command_prompt(command, args, existing_code)
+        self.contexts[context_id].append(prompt)
+
+        messages = [{'role': 'user', 'content': prompt}]
+
+        try:
+            logger.debug("Generating response from model")
+            inputs = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(self.model.device)
+            attention_mask = torch.ones_like(inputs)
+            attention_mask[inputs == self.tokenizer.pad_token_id] = 0
+            
+            generated = inputs[0].tolist()
+            with torch.no_grad():
+                for i in range(0, 512, 20):
+                    outputs = self.model.generate(
+                        torch.tensor([generated]).to(self.model.device),
+                        max_new_tokens=20,
+                        do_sample=True,
+                        top_k=50,
+                        top_p=0.95,
+                        num_return_sequences=1,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                    new_tokens = outputs[0][len(generated):]
+                    generated.extend(new_tokens.tolist())
+                    
+                    if self.tokenizer.eos_token_id in new_tokens:
+                        break
+
+            generated_text = self.tokenizer.decode(generated[len(inputs[0]):], skip_special_tokens=True)
+            logger.debug("Response generated from model")
+            updated_code = self.extract_python_code(generated_text)
+            
+            if not updated_code:
+                raise ValueError("No valid Python code was generated.")
+            
+            logger.debug("Command extension complete")
+            
+            # Write the updated script to file
+            with open(command_path, 'w') as f:
+                f.write(updated_code)
+            logger.debug(f"Wrote updated script to file: {command_path}")
+            
+            return json.dumps({"result": command_path})
+        except Exception as e:
+            logger.error(f"Error extending command: {str(e)}")
+            return json.dumps({"error": f"Error extending command: {str(e)}"})
 
     @staticmethod
     def extract_python_code(text):
