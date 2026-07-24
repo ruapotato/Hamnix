@@ -1,7 +1,9 @@
 # user/hamwrite.ad — NATIVE scene-DE driver for HamWrite, the Hamnix office
-# word processor (/bin/hamwrite). The flagship of a would-be office suite: a
-# single-document rich-text editor with bold/italic/heading formatting,
-# word-wrap, selection + clipboard and a real save/load document file.
+# word processor (/bin/hamwrite). The flagship of the native office suite: a
+# single-document rich-text editor with a File/Edit/Format MENU BAR, a
+# formatting toolbar (bold / italic / underline / heading, four text sizes,
+# left-centre-right paragraph alignment), pixel word-wrap + scrolling,
+# selection + clipboard and a real save/load document file.
 #
 # This is the thin I/O + windowing shell around lib/hamwritecore.ad (which owns
 # the buffers, editing, formatting, hit-testing and the word-wrapped render).
@@ -9,16 +11,18 @@
 # driven by scripted keystrokes (user/hamwrite_host.ad + the host gate
 # scripts/test_hamwrite_host.sh). This driver does the on-box work the core
 # can't: create the wsys window, poll /keys + /event, and open/save the document
-# file on disk (Ctrl-S / Ctrl-O) + the /dev/snarf clipboard (Ctrl-C/V/X).
+# file on disk (Ctrl-S / Ctrl-O / New / Save As / Open by name) + the
+# /dev/snarf clipboard (Ctrl-C/V/X).
 #
-# FORMATTING NOTE: bold is a real double-strike (hamscene glyphs `b` flag);
-# italic + heading are rendered with distinct tints (+ a heading underline)
-# because the DE font has no oblique/large face yet. A true italic/large-face
-# render is a font-engine follow-up; the DOCUMENT MODEL already stores all three
-# per-character attributes and round-trips them, so the fidelity lands the day
-# the font engine grows the faces. A FULL office suite would add: a spreadsheet
-# (grid + formula core, a lib/hamcalccore already exists to seed it), slides,
-# and paragraph styles / find-replace / undo — see docs/hamui_dual_target.md.
+# DOCUMENTS live in the user's home: /home/live/Documents/<name>.hdoc. "New"
+# resets to untitled.hdoc; the File menu's "Save As..." / "Open..." raise the
+# core's modal filename prompt and hand this driver the chosen basename, which
+# is joined onto that directory.
+#
+# FORMATTING NOTE: see the render-fidelity section of lib/hamwritecore.ad — the
+# document model stores every attribute (bold/italic/underline/heading, four
+# sizes, three alignments) and round-trips them all; the on-screen face is as
+# faithful as the compositor's size-less `glyphs` verb allows.
 
 extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
@@ -39,7 +43,8 @@ from lib.hamwritecore import hamwrite_build_scene, hamwrite_key_line, \
     hamwrite_mark_saved, hamwrite_set_fname, hamwrite_hit, hamwrite_drag, \
     hamwrite_select_word, hamwrite_select_line, hamwrite_in_page, \
     hamwrite_sel_active, hamwrite_sel_ptr, hamwrite_sel_len, \
-    hamwrite_delete_selection, hamwrite_paste, hamwrite_len
+    hamwrite_delete_selection, hamwrite_paste, hamwrite_len, \
+    hamwrite_clear, hamwrite_fname_ptr, hamwrite_scroll
 
 
 def _slen(s: Ptr[uint8]) -> uint64:
@@ -119,6 +124,7 @@ doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
 ser_buf:  Array[8320, uint8]                            # magic+len + 2*CAP
 clip_buf: Array[4096, uint8]
+hw_quit:  int32 = 0
 
 
 def _set_docpath(s: Ptr[uint8]):
@@ -156,6 +162,26 @@ def _save_doc():
     hamwrite_mark_saved()
 
 
+# Rebuild doc_path as DOC_DIR + the core's current display filename. Used by
+# the File menu's "Save As..." / "Open..." once the modal prompt commits.
+def _docpath_from_fname():
+    p: uint64 = 0
+    d: Ptr[uint8] = cast[Ptr[uint8]]("/home/live/Documents/")
+    j: uint64 = 0
+    while d[j] != 0:
+        doc_path[p] = d[j]
+        p = p + 1
+        j = j + 1
+    nm: Ptr[uint8] = hamwrite_fname_ptr()
+    k: uint64 = 0
+    while nm[k] != 0 and p < DOC_PATH_CAP - 1:
+        doc_path[p] = nm[k]
+        p = p + 1
+        k = k + 1
+    doc_path[p] = 0
+    doc_path_len = p
+
+
 def _load_doc():
     fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]))
     if fd < 0:
@@ -190,18 +216,33 @@ def _do_cut():
     hamwrite_delete_selection()
 
 
-# Dispatch a pending action set by a keystroke (Ctrl-S/O/C/V/X).
+# Dispatch a pending action set by a keystroke or a menu/toolbar click.
+#   1 save   2 open(current path)   4 new   5 save-as(prompted name)
+#   6 quit   7 copy   8 paste   9 cut   10 open(prompted name)
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
     elif act == 2:
         _load_doc()
+    elif act == 4:
+        hamwrite_clear()
+        _set_docpath(cast[Ptr[uint8]]("/home/live/Documents/untitled.hdoc"))
+        _sync_fname()
+    elif act == 5:
+        _docpath_from_fname()
+        _save_doc()
+    elif act == 6:
+        hw_quit = 1
     elif act == 7:
         _do_copy()
     elif act == 8:
         _do_paste()
     elif act == 9:
         _do_cut()
+    elif act == 10:
+        _docpath_from_fname()
+        _load_doc()
+        _sync_fname()
 
 
 # ---- pointer input --------------------------------------------------------
@@ -210,16 +251,19 @@ hw_dragging: int32 = 0
 
 
 # Handle a window-local pointer event. Returns 1 if a redraw is needed.
-def _pointer(lx: int64, ly: int64, btn: int64) -> int32:
+def _pointer(lx: int64, ly: int64, btn: int64, dz: int64) -> int32:
     changed: int32 = 0
+    if dz != 0:
+        if hamwrite_scroll(dz) != 0:
+            changed = 1
     b1: int64 = btn & 1
     pb1: int64 = hw_prev_btn & 1
     if b1 != 0 and pb1 == 0:                            # button-1 PRESS
         act: int32 = hamwrite_hit(lx, ly)
-        if act == 1 or act == 2:
-            _dispatch(act)
+        if act == 3:                                   # menu/format handled
             changed = 1
-        elif act == 3:                                 # format toggle applied
+        elif act != 0:                                 # save/open/new/quit/clip
+            _dispatch(act)
             changed = 1
         else:
             # body click placed the caret; check multi-click over the page
@@ -283,7 +327,7 @@ def _poll_events(efd: int32) -> int32:
                     dz: int64 = 0
                     if htb_evt_parse_m(&ev_buf[ls], i - ls, &ex, &ey,
                                        &ebtn, &dz) != 0:
-                        if _pointer(ex, ey, ebtn) != 0:
+                        if _pointer(ex, ey, ebtn, dz) != 0:
                             changed = 1
                 ls = i + 1
             i = i + 1
@@ -349,7 +393,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     cfd: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd >= 0:
-        _writeall(cfd, cast[Ptr[uint8]]("geometry 140 90 560 384\n"))
+        _writeall(cfd, cast[Ptr[uint8]]("geometry 100 60 640 452\n"))
         sys_close(cfd)
     cfd2: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd2 >= 0:
@@ -410,6 +454,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 hamwrite_build_scene()
                 hamscene_commit(wid)
             did_work = 1
+        if hw_quit != 0:
+            _writeall(1, cast[Ptr[uint8]]("[hamwrite] quit\n"))
+            return 0
         if did_work == 0:
             wfds: Array[1, int32]
             wfds[0] = kfd

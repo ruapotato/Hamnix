@@ -28,7 +28,10 @@ from lib.hamwritecore import hamwrite_build_scene, hamwrite_key, \
     hamwrite_serialize, hamwrite_deserialize, hamwrite_word_count, \
     hamwrite_attr_count, hamwrite_clear, hamwrite_hit, hamwrite_select_word, \
     hamwrite_select_line, hamwrite_sel_len, hamwrite_toggle_bold, \
-    hamwrite_set_fname, hamwrite_drag
+    hamwrite_set_fname, hamwrite_drag, hamwrite_size_count, \
+    hamwrite_align_count, hamwrite_menu_open, hamwrite_prompt_active, \
+    hamwrite_prompt_ptr, hamwrite_fname_ptr, hamwrite_row_count, \
+    hamwrite_scroll_top, hamwrite_scroll
 
 
 obuf: Array[512, uint8]
@@ -164,11 +167,68 @@ def _file_len() -> int64:
     return total
 
 
+# Second document path: the SAME directory as doc_path, but the basename the
+# modal "Save As..." prompt committed. Mirrors user/hamwrite.ad's
+# _docpath_from_fname (which joins /home/live/Documents/ on the device).
+alt_path: Array[192, uint8]
+alt_path_len: uint64 = 0
+
+
+def _altpath_from_fname():
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    p: uint64 = 0
+    while p < cut:
+        alt_path[p] = doc_path[p]
+        p = p + 1
+    nm: Ptr[uint8] = hamwrite_fname_ptr()
+    j: uint64 = 0
+    while nm[j] != 0 and p < 191:
+        alt_path[p] = nm[j]
+        p = p + 1
+        j = j + 1
+    alt_path[p] = 0
+    alt_path_len = p
+
+
+def _save_alt():
+    _altpath_from_fname()
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 577, 420)
+    if fd < 0:
+        return
+    n: uint64 = hamwrite_serialize(&ser_buf[0])
+    sys_write(fd, &ser_buf[0], n)
+    sys_close(fd)
+    hamwrite_mark_saved()
+
+
+def _alt_len() -> int64:
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 0, 0)
+    if fd < 0:
+        return -1
+    total: int64 = 0
+    while total < 8320:
+        r: int64 = sys_read(fd, &raw_buf[total], 8320 - cast[uint64](total))
+        if r <= 0:
+            break
+        total = total + r
+    sys_close(fd)
+    return total
+
+
 def _dispatch(act: int32):
     if act == 1:                                       # Save
         _save_doc()
     elif act == 2:                                     # Open (reload docpath)
         _load_doc()
+    elif act == 4:                                     # New
+        hamwrite_clear()
+    elif act == 5:                                     # Save As <fname>
+        _save_alt()
 
 
 # Feed one keypress via the "d <code>" wire line (exercises the parser too),
@@ -200,18 +260,26 @@ def _press(code: int32) -> int32:
     return ch
 
 
+# Type a whole NUL-terminated string through the key-wire parser.
+def _type(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        _press(cast[int32](s[i]))
+        i = i + 1
+
+
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if argc < 4:
         _o_str(cast[Ptr[uint8]](
-            "usage: hamwrite_host DOCPATH BEFORE.ppm AFTER.ppm [TEXT]\n"))
+            "usage: hamwrite_host DOC BEFORE.ppm AFTER.ppm [TEXT] [SHOW.ppm]\n"))
         _o_flush()
         return 2
 
     _set_docpath(cast[Ptr[uint8]](argv[1]))
     hamwrite_set_fname(cast[Ptr[uint8]]("report.hdoc"))
 
-    W: int32 = 560
-    H: int32 = 384
+    W: int32 = 640
+    H: int32 = 452
 
     # ---- (1) empty page: title bar + toolbar + blank paper -------------
     prims: int32 = _render(W, H)
@@ -250,14 +318,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     # ---- (3) SELECT the first word ("Hello") + apply BOLD -------------
     # A click inside the page places the caret; a double-click selects the word.
-    # (TXT_X=20 is the paper's text left edge; x=32 lands inside "Hello".)
-    hamwrite_hit(32, 68)
+    # (TXT_X=26 is the paper's text left edge; x=40 lands inside "Hello", and
+    # the first laid-out row occupies y 90..110.)
+    hamwrite_hit(40, 98)
     hamwrite_select_word()
     _o_str(cast[Ptr[uint8]]("WORDSEL "))
     _o_dec(cast[int64](hamwrite_sel_len()))            # "Hello" = 5
     _o_ch(10)
     # Apply bold via the toolbar B button (the real hit-test path).
-    bhit: int32 = hamwrite_hit(16, 30)                 # click Bold button
+    bhit: int32 = hamwrite_hit(16, 58)                 # click Bold button
     _o_str(cast[Ptr[uint8]]("BOLD_HIT "))
     _o_dec(cast[int64](bhit))                           # 3 = redraw-only
     _o_ch(10)
@@ -274,6 +343,51 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_flush()
     sys_write(1, hamscene_bufptr(), hamscene_length())
     _o_str(cast[Ptr[uint8]]("SCENE-END\n"))
+    _o_flush()
+
+    # ---- (3b) UNDERLINE the whole body via Ctrl-A + the toolbar U -----
+    _press(1)                                          # Ctrl-A select all
+    uhit: int32 = hamwrite_hit(78, 58)                 # click Underline button
+    _o_str(cast[Ptr[uint8]]("UNDER_HIT "))
+    _o_dec(cast[int64](uhit))
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("UNDER1 "))
+    _o_dec(cast[int64](hamwrite_attr_count(8)))        # every char underlined
+    _o_ch(10)
+    _o_flush()
+
+    # ---- (3c) TEXT SIZE: select all -> the toolbar XL (title) button --
+    _press(1)
+    thit: int32 = hamwrite_hit(246, 58)
+    _o_str(cast[Ptr[uint8]]("SIZE_HIT "))
+    _o_dec(cast[int64](thit))
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SIZE_TITLE "))
+    _o_dec(cast[int64](hamwrite_size_count(3)))        # all chars title-sized
+    _o_ch(10)
+    _o_flush()
+
+    # ---- (3d) PARAGRAPH ALIGNMENT: select all -> the Center button ----
+    _press(1)
+    ahit: int32 = hamwrite_hit(350, 58)
+    _o_str(cast[Ptr[uint8]]("ALIGN_HIT "))
+    _o_dec(cast[int64](ahit))
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("ALIGN_CENTER "))
+    _o_dec(cast[int64](hamwrite_align_count(1)))       # whole paragraph centred
+    _o_ch(10)
+    _o_flush()
+
+    # Render + dump the FULLY FORMATTED scene: title-sized, underlined,
+    # centred text. Title runs are emitted PER CHARACTER at a scaled advance
+    # with a second strike a pixel lower, so the gate can prove the size class
+    # actually changed the drawing (not just the model).
+    _render(W, H)
+    _write_ppm(cast[Ptr[char]](argv[3]))
+    _o_str(cast[Ptr[uint8]]("FMT-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("FMT-END\n"))
     _o_flush()
 
     # ---- (4) SAVE (Ctrl-S): text + formatting persist -----------------
@@ -298,6 +412,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_str(cast[Ptr[uint8]]("BOLD_AFTER_OPEN "))
     _o_dec(cast[int64](hamwrite_attr_count(1)))        # 5 -> bold survived!
     _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("UNDER_AFTER_OPEN "))
+    _o_dec(cast[int64](hamwrite_attr_count(8)))        # underline survived
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SIZE_AFTER_OPEN "))
+    _o_dec(cast[int64](hamwrite_size_count(3)))        # title size survived
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("ALIGN_AFTER_OPEN "))
+    _o_dec(cast[int64](hamwrite_align_count(1)))       # centring survived
+    _o_ch(10)
     _o_flush()
 
     # dump the reloaded body so the gate can assert the exact text round-tripped
@@ -306,4 +429,107 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     sys_write(1, hamwrite_text_ptr(), hamwrite_len())
     _o_str(cast[Ptr[uint8]]("\nBODY-END\n"))
     _o_flush()
+
+    # ---- (6) MENU BAR: File -> "Save As..." -> the modal prompt -------
+    mhit: int32 = hamwrite_hit(20, 32)                 # click "File"
+    _o_str(cast[Ptr[uint8]]("MENU_HIT "))
+    _o_dec(cast[int64](mhit))                          # 3 = redraw
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("MENU_OPEN "))
+    _o_dec(cast[int64](hamwrite_menu_open()))          # 1 = File
+    _o_ch(10)
+    _render(W, H)
+    _o_str(cast[Ptr[uint8]]("MENU-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("MENU-END\n"))
+    _o_flush()
+    # item 3 of the File menu = "Save As..." (drop-down rows are 20px from y=48)
+    hamwrite_hit(30, 118)
+    _o_str(cast[Ptr[uint8]]("PROMPT "))
+    _o_dec(cast[int64](hamwrite_prompt_active()))      # 1 = Save As
+    _o_ch(10)
+    # clear the pre-filled name, type a new one, commit with Enter
+    bs: int32 = 0
+    while bs < 40:
+        _press(8)
+        bs = bs + 1
+    nm2: Ptr[uint8] = cast[Ptr[uint8]]("renamed.hdoc")
+    q: uint64 = 0
+    while nm2[q] != 0:
+        _press(cast[int32](nm2[q]))
+        q = q + 1
+    _o_str(cast[Ptr[uint8]]("PROMPT_TEXT "))
+    _o_str(hamwrite_prompt_ptr())
+    _o_ch(10)
+    _press(13)                                         # Enter -> action 5
+    _o_str(cast[Ptr[uint8]]("PROMPT_AFTER "))
+    _o_dec(cast[int64](hamwrite_prompt_active()))      # 0 = closed
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SAVEAS_NAME "))
+    _o_str(hamwrite_fname_ptr())
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SAVEAS_LEN "))
+    _o_dec(_alt_len())                                 # same 63-byte container
+    _o_ch(10)
+    _o_flush()
+
+    # ---- (7) SCROLLING: fill past one screenful of rows ---------------
+    hamwrite_clear()
+    ln: int32 = 0
+    while ln < 40:
+        _press(76)                                     # 'L'
+        _press(105)                                    # 'i'
+        _press(110)                                    # 'n'
+        _press(101)                                    # 'e'
+        _press(13)                                     # Enter
+        ln = ln + 1
+    _render(W, H)
+    _o_str(cast[Ptr[uint8]]("ROWS "))
+    _o_dec(cast[int64](hamwrite_row_count()))          # 41 (40 lines + tail)
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SCROLL_TOP "))
+    _o_dec(cast[int64](hamwrite_scroll_top()))         # > 0: caret stayed in view
+    _o_ch(10)
+    hamwrite_scroll(-100)                              # wheel back to the top
+    _o_str(cast[Ptr[uint8]]("SCROLL_HOME "))
+    _o_dec(cast[int64](hamwrite_scroll_top()))         # 0
+    _o_ch(10)
+    _o_flush()
+
+    # ---- (8) SHOWCASE render: a realistic mixed-format document -------
+    # Everything below goes through the SAME toolbar hit-tests a user clicks,
+    # so the PNG is exactly what the app draws on the device.
+    if argc >= 6:
+        hamwrite_clear()
+        hamwrite_set_fname(cast[Ptr[uint8]]("report.hdoc"))
+        hamwrite_hit(246, 58)                          # size XL
+        hamwrite_hit(350, 58)                          # align centre
+        _type(cast[Ptr[uint8]]("Quarterly Report"))
+        _press(13)
+        hamwrite_hit(186, 58)                          # size M (normal)
+        hamwrite_hit(300, 58)                          # align left
+        hamwrite_hit(16, 58)                           # bold ON
+        _type(cast[Ptr[uint8]]("Summary"))
+        hamwrite_hit(16, 58)                           # bold OFF
+        _press(13)
+        _type(cast[Ptr[uint8]]("Revenue grew across every region this "))
+        hamwrite_hit(78, 58)                           # underline ON
+        _type(cast[Ptr[uint8]]("quarter"))
+        hamwrite_hit(78, 58)                           # underline OFF
+        _type(cast[Ptr[uint8]](", and the native office suite shipped its "))
+        hamwrite_hit(48, 58)                           # italic ON
+        _type(cast[Ptr[uint8]]("first word processor"))
+        hamwrite_hit(48, 58)                           # italic OFF
+        _type(cast[Ptr[uint8]](" on schedule."))
+        _press(13)
+        hamwrite_hit(390, 58)                          # align right
+        hamwrite_hit(156, 58)                          # size S (small)
+        _type(cast[Ptr[uint8]]("-- HamWrite, the Hamnix word processor"))
+        _render(W, H)
+        _write_ppm(cast[Ptr[char]](argv[5]))
+        _o_str(cast[Ptr[uint8]]("SHOWCASE_LEN "))
+        _o_dec(cast[int64](hamwrite_len()))
+        _o_ch(10)
+        _o_flush()
     return 0

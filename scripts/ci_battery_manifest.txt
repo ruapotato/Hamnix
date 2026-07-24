@@ -61,6 +61,18 @@ bash scripts/test_sysmon_host.sh
 # plus skip +-30s clamps, command routing, and a rasterized scene (blue progress
 # fill + armed sleep button). Native x86_64-adder-user build still compiles.
 bash scripts/test_hamaudiobook_host.sh
+# QEMU-free host gate for HamWrite, the native office-suite WORD PROCESSOR
+# (lib/hamwritecore.ad). Drives the SHIPPING core through a full editing
+# session and asserts the MODEL and the RENDER agree at every step: typing +
+# live word count; bold/underline/text-size/alignment applied through the real
+# toolbar hit-tests, each PROVEN in the emitted display list (a double-struck
+# `glyphs ... b` run, a `line` rule under an underlined run, per-character
+# re-emission for a title-sized run, a centred row's left edge off the margin);
+# the File menu drop-down + its modal "Save As..." prompt; a HAMWRITE1 document
+# written to a real file, cleared, re-opened off disk with the text AND every
+# attribute byte-exact; and scrolling a 41-row document. Renders PNGs a human
+# can look at. Native x86_64-adder-user build still compiles.
+bash scripts/test_hamwrite_host.sh
 # QEMU-free host gate for hamSDL, the SDL2-flavored native game library
 # (lib/hamsdl.ad core + lib/hamsdl_dev.ad device + lib/hamsdl_host.ad host) and
 # its demo game (lib/sdlpong.ad, a one-paddle bounce). Compiles the demo's host

@@ -912,9 +912,11 @@ def _files_hamaudiobook() -> list[tuple[Path, str]]:
 
 
 # ---- hamnix-hamwrite — the office word-processor, ALSO repo-ONLY ----------
-# HamWrite is the flagship of a would-be office suite: a rich-text word
-# processor (bold/italic/heading, word-wrap, selection/clipboard, save/load a
-# HAMWRITE1 document container). Like the audiobook player it follows the
+# HamWrite is the flagship of the native office suite: a rich-text word
+# processor (File/Edit/Format menu bar, formatting toolbar, bold/italic/
+# underline/heading, four text sizes, paragraph alignment, word-wrap +
+# scrolling, selection/clipboard, New/Open/Save/Save As of a HAMWRITE1
+# document container). Like the audiobook player it follows the
 # repo-ONLY pattern — BUILT + published in the main channel (installable via hpm
 # / the Software app), but excluded from the hamnix-base closure so a fresh
 # install does NOT carry it. Its payload is the binary + its .desktop launcher
@@ -1339,11 +1341,13 @@ PACKAGE_SPECS.append({
     "name": HAMWRITE_PKG,
     "files_fn": _files_hamwrite,
     "depends": [f"hamnix-desktop-core>={PKG_VERSION}"],
-    "description": ("HamWrite — Hamnix office word processor: word-wrapped rich "
-                    "text (bold/italic/heading), selection + clipboard, and "
-                    "save/load of a HAMWRITE1 document that round-trips "
-                    "formatting. Repo-only: install from 255.one, not "
-                    "pre-installed."),
+    "description": ("HamWrite — Hamnix office word processor: File/Edit/Format "
+                    "menu bar + formatting toolbar, pixel word-wrap with "
+                    "scrolling, bold/italic/underline/heading, four text sizes, "
+                    "left/centre/right paragraph alignment, selection + "
+                    "clipboard, and New/Open/Save/Save As of a HAMWRITE1 "
+                    "document that round-trips every attribute. Repo-only: "
+                    "install from 255.one, not pre-installed."),
     "target": "#hamnix-system",
 })
 

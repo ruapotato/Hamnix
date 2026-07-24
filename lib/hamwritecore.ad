@@ -1,40 +1,82 @@
 # lib/hamwritecore.ad — PURE, extern-free core for HamWrite, the Hamnix office
-# word processor (/bin/hamwrite). This is the flagship of a would-be office
-# suite: a single-document rich-ish text editor with the things a word processor
-# needs —
-#   1. a multi-line, word-wrapped BODY with an editable caret + selection,
-#   2. CHARACTER FORMATTING (bold / italic / heading) toggled from a toolbar or
-#      via Ctrl-B, applied to the live selection or to subsequently-typed text,
-#   3. a real DOCUMENT FILE that round-trips the text AND its formatting, so a
-#      save->load preserves which spans were bold/italic/heading,
-#   4. a live word/character count.
+# word processor (/bin/hamwrite). The flagship of the native office suite: a
+# single-document rich-text editor with the things a word processor needs —
+#
+#   1. a multi-line, PIXEL word-wrapped BODY with an editable caret, selection
+#      and SCROLLING (the page scrolls, the caret is kept in view),
+#   2. CHARACTER FORMATTING — bold / italic / underline / heading + four TEXT
+#      SIZES — toggled from a toolbar, the Format menu or Ctrl-keys, applied to
+#      the live selection or to subsequently-typed text,
+#   3. PARAGRAPH ALIGNMENT — left / centre / right, applied to every paragraph
+#      the selection touches (Ctrl-L / Ctrl-E / Ctrl-R, as in Word),
+#   4. a real MENU BAR (File / Edit / Format) with working drop-downs, plus a
+#      modal filename PROMPT so "Save As…" / "Open…" work without a picker,
+#   5. a real DOCUMENT FILE that round-trips the text AND every attribute, so a
+#      save->load preserves which spans were bold/italic/underlined/sized and
+#      how each paragraph was aligned,
+#   6. a live word/character count.
 #
 # Like the other dual-target apps (docs/hamui_dual_target.md) this file imports
-# ONLY lib/hamscene (+ lib/hamtextbox for proportional caret/hit-testing) and
-# performs NO syscalls: it owns the buffers, the keyboard editing, the toolbar
-# hit-testing and the word-wrapped render, and it SERIALISES the document as a
-# pure byte string — but the DRIVERS (native user/hamwrite.ad + the host harness
-# user/hamwrite_host.ad) do the open/read/write. That lets the exact shipping
-# code path render to a PNG on the dev host and be driven by scripted keystrokes
-# deterministically (scripts/test_hamwrite_host.sh).
+# ONLY lib/hamscene (+ lib/hamtextbox for proportional measurement/hit-testing)
+# and performs NO syscalls: it owns the buffers, the keyboard editing, the menu
+# + toolbar hit-testing and the word-wrapped render, and it SERIALISES the
+# document as a pure byte string — but the DRIVERS (native user/hamwrite.ad +
+# the host harness user/hamwrite_host.ad) do the open/read/write. That lets the
+# exact shipping code path render to a PNG on the dev host and be driven by
+# scripted keystrokes deterministically (scripts/test_hamwrite_host.sh).
 #
-# FORMATTING MODEL: parallel to the text buffer we keep an `attr` byte per
-# character — a bitfield (bit0 bold, bit1 italic, bit2 heading). Newly typed
-# characters inherit `cur_attr` (the toolbar's live toggles); applying a format
-# to a selection toggles the bit across that span. The renderer groups runs of
-# equal attr and draws each run bold (double-struck) / tinted (italic) / heading
-# (bold + accent + underline) accordingly.
+# ---------------------------------------------------------------------------
+# FORMATTING MODEL — one attribute BYTE per character, parallel to the text
+# buffer. The byte is fully packed, so the on-disk container needs no change:
+#
+#     bit 0  (1)    BOLD
+#     bit 1  (2)    ITALIC
+#     bit 2  (4)    HEADING
+#     bit 3  (8)    UNDERLINE
+#     bits 4-5 (48) SIZE   0 = normal, 1 = small, 2 = large, 3 = title
+#     bits 6-7 (192) ALIGN 0 = left,   1 = centre, 2 = right   (paragraph-wide)
+#
+# Newly typed characters inherit `cur_attr` (the toolbar's live toggles).
+# Applying a character format to a selection toggles/sets the bits across that
+# span; applying an ALIGNMENT sets the align bits across every paragraph the
+# selection touches (alignment is a paragraph property stored per character so
+# it rides the same container).
+#
+# RENDER FIDELITY (and its honest limits). The DE scene protocol's `glyphs`
+# verb takes x, y, a string, a colour and an optional `b` (double-strike)
+# weight flag — it has NO pixel-size argument, and the rasterizer lives in the
+# kernel compositor (sys/src/9/port/devwsys.ad), which this userland app must
+# not change. So HamWrite renders the four sizes with the primitives that DO
+# exist: each size gets its own LINE BOX height, and large/title runs are drawn
+# per character at a scaled ADVANCE (1.5x / 2x) with an extra strike one pixel
+# down, which fattens the glyph and spaces the run out — a genuinely bigger,
+# heavier line, not a true 2x raster. Italic is a tint rather than an oblique
+# face for the same reason. The DOCUMENT MODEL stores the real sizes and every
+# attribute and round-trips them, so the fidelity lands unchanged the day the
+# compositor grows a `text x y "s" #col <px>` size argument and the font engine
+# grows an oblique face.
 
 from lib.hamscene import hamscene_begin, hamscene_fill, hamscene_stroke, \
     hamscene_glyphs, hamscene_glyphs_bold, hamscene_roundrect, hamscene_line
-from lib.hamtextbox import htb_text_width, htb_hit_test, \
-    htb_word_bounds, htb_line_bounds
+from lib.hamtextbox import htb_text_width, htb_word_bounds, htb_line_bounds
 
 
 # ---- formatting bits -------------------------------------------------------
 ATTR_BOLD:    uint8 = 1
 ATTR_ITALIC:  uint8 = 2
 ATTR_HEADING: uint8 = 4
+ATTR_UNDER:   uint8 = 8
+ATTR_SIZE_MASK:  uint8 = 48         # bits 4-5
+ATTR_ALIGN_MASK: uint8 = 192        # bits 6-7
+
+SIZE_NORMAL: int32 = 0
+SIZE_SMALL:  int32 = 1
+SIZE_LARGE:  int32 = 2
+SIZE_TITLE:  int32 = 3
+
+ALIGN_LEFT:   int32 = 0
+ALIGN_CENTER: int32 = 1
+ALIGN_RIGHT:  int32 = 2
 
 
 CAP: uint64 = 4096
@@ -51,7 +93,9 @@ sel_on: int32 = 0                       # 1 iff a live (possibly-empty) highligh
 cur_attr: uint8 = 0
 
 # Action requested by a keystroke or a click, drained by the driver:
-#   0 none  1 save  2 open  7 copy  8 paste  9 cut
+#   0 none  1 save  2 open(current path)  4 new  5 save-as(fname)  6 quit
+#   7 copy  8 paste  9 cut  10 open-named(fname)
+# (3 is reserved as the hit-test "redraw only" reply and is never pending.)
 pending_action: int32 = 0
 
 # CSI escape decode: 0 ground, 1 saw ESC, 2 saw ESC '['; par = numeric param.
@@ -65,6 +109,18 @@ fname_len: uint64 = 0
 
 # Brief "saved!" acknowledgement countdown (decremented each render).
 flash: int32 = 0
+
+# Open drop-down: 0 none, 1 File, 2 Edit, 3 Format.
+menu_open: int32 = 0
+
+# Index of the first VISIBLE laid-out row (the page's vertical scroll).
+scroll_top: uint64 = 0
+
+# Modal filename prompt: 0 none, 1 "Save As", 2 "Open".
+prompt_on: int32 = 0
+PROMPT_CAP: uint64 = 96
+prompt_buf: Array[96, uint8]
+prompt_len: uint64 = 0
 
 
 def _hw_slen(s: Ptr[uint8]) -> uint64:
@@ -102,6 +158,23 @@ def _append_cstr(out: Ptr[uint8], p: uint64, s: Ptr[uint8]) -> uint64:
     return p
 
 
+# ---- attribute field accessors --------------------------------------------
+def _size_of(a: uint8) -> int32:
+    return cast[int32]((a & ATTR_SIZE_MASK) / 16)
+
+
+def _align_of(a: uint8) -> int32:
+    return cast[int32]((a & ATTR_ALIGN_MASK) / 64)
+
+
+def _with_size(a: uint8, sz: int32) -> uint8:
+    return (a & (255 - ATTR_SIZE_MASK)) | cast[uint8](sz * 16)
+
+
+def _with_align(a: uint8, al: int32) -> uint8:
+    return (a & (255 - ATTR_ALIGN_MASK)) | cast[uint8](al * 64)
+
+
 # ---- accessors -------------------------------------------------------------
 def hamwrite_len() -> uint64:
     return tlen
@@ -134,6 +207,31 @@ def hamwrite_attr_at(i: uint64) -> uint8:
     return attr[i]
 
 
+def hamwrite_size_at(i: uint64) -> int32:
+    return _size_of(hamwrite_attr_at(i))
+
+
+def hamwrite_align_at(i: uint64) -> int32:
+    return _align_of(hamwrite_attr_at(i))
+
+
+def hamwrite_menu_open() -> int32:
+    return menu_open
+
+
+def hamwrite_prompt_active() -> int32:
+    return prompt_on
+
+
+def hamwrite_prompt_ptr() -> Ptr[uint8]:
+    prompt_buf[prompt_len] = 0
+    return &prompt_buf[0]
+
+
+def hamwrite_prompt_len() -> uint64:
+    return prompt_len
+
+
 # The formatting that WOULD apply to a character typed now: the char before the
 # caret's attr while a run is being extended, else cur_attr. Used for the
 # toolbar's active-state readout.
@@ -149,12 +247,33 @@ def hamwrite_active_attr() -> uint8:
 
 
 # Count characters carrying a given bit (used by the host gate to prove a
-# save->load preserved formatting). kind: 1 bold, 2 italic, 4 heading.
+# save->load preserved formatting). kind: 1 bold, 2 italic, 4 heading, 8 under.
 def hamwrite_attr_count(bit: uint8) -> uint64:
     n: uint64 = 0
     i: uint64 = 0
     while i < tlen:
         if (attr[i] & bit) != 0:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+# Count characters carrying a given SIZE class (0..3) / ALIGN class (0..2).
+def hamwrite_size_count(sz: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _size_of(attr[i]) == sz:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+def hamwrite_align_count(al: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _align_of(attr[i]) == al:
             n = n + 1
         i = i + 1
     return n
@@ -219,6 +338,9 @@ def hamwrite_clear():
     tlen = 0
     dirty = 0
     cur_attr = 0
+    menu_open = 0
+    prompt_on = 0
+    scroll_top = 0
     _reset_caret()
 
 
@@ -329,7 +451,7 @@ def hamwrite_set_text(s: Ptr[uint8], n: uint64):
 
 
 # ---- formatting toggles ----------------------------------------------------
-# Toggle a formatting bit. With a live selection: if every selected char already
+# Toggle a formatting BIT. With a live selection: if every selected char already
 # has the bit, CLEAR it across the span, else SET it across the span. With no
 # selection: flip the bit in cur_attr so subsequently-typed text carries it.
 def hamwrite_toggle(bit: uint8) -> int32:
@@ -371,6 +493,68 @@ def hamwrite_toggle_heading() -> int32:
     return hamwrite_toggle(ATTR_HEADING)
 
 
+def hamwrite_toggle_underline() -> int32:
+    return hamwrite_toggle(ATTR_UNDER)
+
+
+# SET the text size (0 normal / 1 small / 2 large / 3 title) across the live
+# selection, or on the typing attribute when nothing is selected.
+def hamwrite_set_size(sz: int32) -> int32:
+    if sz < 0 or sz > 3:
+        return 0
+    if _sel_has() != 0:
+        a: uint64 = _sel_lo()
+        b: uint64 = _sel_hi()
+        i: uint64 = a
+        while i < b:
+            attr[i] = _with_size(attr[i], sz)
+            i = i + 1
+        dirty = 1
+    cur_attr = _with_size(cur_attr, sz)
+    return 1
+
+
+# Paragraph bounds containing `pos`: [start, end) with end at the '\n' (or tlen).
+def _para_start(pos: uint64) -> uint64:
+    s: uint64 = pos
+    if s > tlen:
+        s = tlen
+    while s > 0 and text[s - 1] != 10:
+        s = s - 1
+    return s
+
+
+def _para_end(pos: uint64) -> uint64:
+    e: uint64 = pos
+    while e < tlen and text[e] != 10:
+        e = e + 1
+    return e
+
+
+# SET the paragraph alignment (0 left / 1 centre / 2 right) on EVERY paragraph
+# the selection (or the bare caret) touches. Alignment is stored per character
+# so it rides the same one-byte-per-char container; the renderer reads it off
+# the first character of each visual row.
+def hamwrite_set_align(al: int32) -> int32:
+    if al < 0 or al > 2:
+        return 0
+    lo: uint64 = caret
+    hi: uint64 = caret
+    if _sel_has() != 0:
+        lo = _sel_lo()
+        hi = _sel_hi()
+    s: uint64 = _para_start(lo)
+    e: uint64 = _para_end(hi)
+    i: uint64 = s
+    while i < e:
+        attr[i] = _with_align(attr[i], al)
+        i = i + 1
+    if e > s:
+        dirty = 1
+    cur_attr = _with_align(cur_attr, al)
+    return 1
+
+
 # ---- selection / clipboard glue -------------------------------------------
 def hamwrite_sel_active() -> int32:
     return _sel_has()
@@ -387,113 +571,446 @@ def hamwrite_sel_len() -> uint64:
 
 
 def hamwrite_delete_selection() -> int32:
-    r: int32 = _delete_selection()
-    if r != 0:
+    if _delete_selection() != 0:
         dirty = 1
-    return r
+        return 1
+    return 0
 
 
-# Paste n bytes at the caret (replacing any selection). Pasted text inherits the
-# current typing attribute. Newlines are kept.
 def hamwrite_paste(s: Ptr[uint8], n: uint64):
     _delete_selection()
     i: uint64 = 0
     while i < n:
         c: uint8 = s[i]
-        if (c >= 32 and c <= 126) or c == 10:
-            _insert_at(c, cur_attr)
+        if c == 13:
+            c = 10
+        if _insert_at(c, cur_attr) == 0:
+            break
         i = i + 1
-    dirty = 1
+    if n > 0:
+        dirty = 1
 
 
 def _select_all():
+    anchor = 0
+    caret = tlen
     if tlen > 0:
-        anchor = 0
-        caret = tlen
         sel_on = 1
     else:
         sel_on = 0
 
 
-# ---- physical-line caret navigation ---------------------------------------
-def _line_start(pos: uint64) -> uint64:
-    i: uint64 = pos
-    while i > 0 and text[i - 1] != 10:
-        i = i - 1
-    return i
+# ---- window geometry -------------------------------------------------------
+WIN_W: int32 = 640
+WIN_H: int32 = 452
+
+BAR_H:  int32 = 22          # title bar
+MENU_Y: int32 = 22          # menu bar (File / Edit / Format)
+MENU_H: int32 = 22
+TB_Y:   int32 = 44          # formatting toolbar
+TB_H:   int32 = 32
+BTN_Y:  int32 = 49
+BTN_H:  int32 = 22
+
+# menu-bar buttons
+MB_FILE_X: int32 = 8
+MB_FILE_W: int32 = 44
+MB_EDIT_X: int32 = 56
+MB_EDIT_W: int32 = 44
+MB_FMT_X:  int32 = 104
+MB_FMT_W:  int32 = 66
+
+# drop-down panels
+DD_Y:  int32 = 44
+DD_IH: int32 = 20           # item height
+
+# toolbar buttons
+B_X:  int32 = 8
+B_W:  int32 = 26
+I_X:  int32 = 38
+I_W:  int32 = 26
+U_X:  int32 = 68
+U_W:  int32 = 26
+H_X:  int32 = 98
+H_W:  int32 = 30
+SZ_S_X: int32 = 142
+SZ_S_W: int32 = 26
+SZ_M_X: int32 = 172
+SZ_M_W: int32 = 26
+SZ_L_X: int32 = 202
+SZ_L_W: int32 = 26
+SZ_T_X: int32 = 232
+SZ_T_W: int32 = 32
+AL_L_X: int32 = 278
+AL_L_W: int32 = 42
+AL_C_X: int32 = 324
+AL_C_W: int32 = 58
+AL_R_X: int32 = 386
+AL_R_W: int32 = 48
+OPEN_X: int32 = 448
+OPEN_W: int32 = 48
+SAVE_X: int32 = 500
+SAVE_W: int32 = 48
+
+# page (document) area + its text content box
+PAGE_X: int32 = 12
+PAGE_Y: int32 = 82
+PAGE_W: int32 = 616
+PAGE_H: int32 = 330
+TXT_X:  int32 = 26          # PAGE_X + 14
+TXT_Y:  int32 = 90          # PAGE_Y + 8
+CONTENT_W: int32 = 578      # PAGE_W - 2*14 - 10 (scrollbar gutter)
+VIEW_H:    int32 = 314      # PAGE_H - 16
+SBAR_X: int32 = 616         # PAGE_X + PAGE_W - 12
+SBAR_W: int32 = 8
+
+STATUS_Y: int32 = 420
 
 
-def _line_end(pos: uint64) -> uint64:
-    i: uint64 = pos
-    while i < tlen and text[i] != 10:
+# ---- laid-out row table ----------------------------------------------------
+# Rebuilt by _layout() from (text, attr): the SINGLE source of truth shared by
+# the renderer, the caret navigation and the pointer hit-test, so a click always
+# lands exactly where the glyph was drawn even with mixed sizes + alignment.
+ROWS_CAP: uint64 = 600
+ROW_CHARS_MAX: uint64 = 200        # hard cap per visual row (seg buffer bound)
+
+row_start: Array[600, uint32]
+row_len:   Array[600, uint32]
+row_y:     Array[600, int32]       # y of the row's top, relative to doc top
+row_h:     Array[600, int32]       # line-box height (max size class in the row)
+row_w:     Array[600, int32]       # pixel width of the row's glyphs
+row_al:    Array[600, int32]       # paragraph alignment for the row
+nrows:     uint64 = 0
+doc_h:     int32 = 0
+
+
+# Line-box height for a size class.
+def _size_h(sz: int32) -> int32:
+    if sz == SIZE_SMALL:
+        return 16
+    if sz == SIZE_LARGE:
+        return 28
+    if sz == SIZE_TITLE:
+        return 36
+    return 20
+
+
+# Pen advance for one character at a size class. The compositor has no size
+# argument (see the header note), so small/normal share the face's natural
+# advance and large/title are spaced 1.5x / 2x to match their fattened strike.
+one_buf: Array[2, uint8]
+
+
+def _adv(c: uint8, sz: int32) -> int32:
+    one_buf[0] = c
+    one_buf[1] = 0
+    w: int32 = htb_text_width(&one_buf[0], 1)
+    if sz == SIZE_LARGE:
+        return w + (w + 1) / 2
+    if sz == SIZE_TITLE:
+        return w * 2
+    return w
+
+
+# Rebuild the row table: PIXEL word-wrap (break at the last space that fits,
+# hard-break at '\n'), then per-row height / width / alignment.
+def _layout():
+    nrows = 0
+    i: uint64 = 0
+    y: int32 = 0
+    while nrows < ROWS_CAP:
+        start: uint64 = i
+        w: int32 = 0
+        j: uint64 = i
+        brk: uint64 = 0
+        has_brk: int32 = 0
+        while j < tlen:
+            c: uint8 = text[j]
+            if c == 10:
+                break
+            if j - start >= ROW_CHARS_MAX:
+                break
+            a: int32 = _adv(c, _size_of(attr[j]))
+            if w + a > CONTENT_W and j > start:
+                if has_brk != 0 and brk > start and brk <= j:
+                    j = brk
+                break
+            if c == 32:
+                brk = j + 1
+                has_brk = 1
+            w = w + a
+            j = j + 1
+        # measure the row we settled on
+        rw: int32 = 0
+        rh: int32 = 0
+        k: uint64 = start
+        while k < j:
+            szk: int32 = _size_of(attr[k])
+            rw = rw + _adv(text[k], szk)
+            hk: int32 = _size_h(szk)
+            if hk > rh:
+                rh = hk
+            k = k + 1
+        if rh == 0:
+            rh = _size_h(_size_of(cur_attr))
+        al: int32 = _align_of(cur_attr)
+        if j > start:
+            al = _align_of(attr[start])
+        elif start > 0:
+            al = _align_of(attr[start - 1])
+        row_start[nrows] = cast[uint32](start)
+        row_len[nrows] = cast[uint32](j - start)
+        row_y[nrows] = y
+        row_h[nrows] = rh
+        row_w[nrows] = rw
+        row_al[nrows] = al
+        y = y + rh
+        nrows = nrows + 1
+        if j >= tlen:
+            break
+        if text[j] == 10:
+            i = j + 1
+            continue
+        i = j
+    if nrows == 0:
+        row_start[0] = 0
+        row_len[0] = 0
+        row_y[0] = 0
+        row_h[0] = 20
+        row_w[0] = 0
+        row_al[0] = 0
+        nrows = 1
+        y = 20
+    doc_h = y
+
+
+# Left edge of a row's glyphs, honouring the paragraph alignment.
+def _row_x(r: uint64) -> int32:
+    al: int32 = row_al[r]
+    if al == ALIGN_CENTER:
+        return TXT_X + (CONTENT_W - row_w[r]) / 2
+    if al == ALIGN_RIGHT:
+        return TXT_X + CONTENT_W - row_w[r]
+    return TXT_X
+
+
+# Pixel offset of the caret gap BEFORE the row's k-th character.
+def _row_char_dx(r: uint64, k: uint64) -> int32:
+    s: uint64 = cast[uint64](row_start[r])
+    acc: int32 = 0
+    i: uint64 = 0
+    while i < k:
+        acc = acc + _adv(text[s + i], _size_of(attr[s + i]))
         i = i + 1
-    return i
+    return acc
 
 
-def _move_up():
-    ls: uint64 = _line_start(caret)
-    if ls == 0:
-        caret = 0
+# The row the caret sits on (first row whose span contains it).
+def _caret_row() -> uint64:
+    r: uint64 = 0
+    while r < nrows:
+        s: uint64 = cast[uint64](row_start[r])
+        e: uint64 = s + cast[uint64](row_len[r])
+        if caret >= s and caret <= e:
+            return r
+        r = r + 1
+    return nrows - 1
+
+
+# Scroll the page so the caret's row is fully inside the viewport.
+def _ensure_caret_visible():
+    if scroll_top >= nrows:
+        scroll_top = nrows - 1
+    cr: uint64 = _caret_row()
+    if cr < scroll_top:
+        scroll_top = cr
         return
-    col: uint64 = caret - ls
-    pls: uint64 = _line_start(ls - 1)
-    plen: uint64 = (ls - 1) - pls
-    if col > plen:
-        col = plen
-    caret = pls + col
+    while scroll_top + 1 < nrows:
+        if row_y[cr] + row_h[cr] - row_y[scroll_top] <= VIEW_H:
+            break
+        scroll_top = scroll_top + 1
 
 
-def _move_down():
-    le: uint64 = _line_end(caret)
-    if le >= tlen:
-        caret = tlen
-        return
-    ls: uint64 = _line_start(caret)
-    col: uint64 = caret - ls
-    nls: uint64 = le + 1
-    nle: uint64 = _line_end(nls)
-    nlen: uint64 = nle - nls
-    if col > nlen:
-        col = nlen
-    caret = nls + col
+# Wheel / PgUp / PgDn scroll by whole rows. dz > 0 scrolls DOWN.
+def hamwrite_scroll(dz: int64) -> int32:
+    _layout()
+    old: uint64 = scroll_top
+    if dz > 0:
+        k: int64 = 0
+        while k < dz * 3 and scroll_top + 1 < nrows:
+            scroll_top = scroll_top + 1
+            k = k + 1
+    elif dz < 0:
+        k2: int64 = 0
+        while k2 < (0 - dz) * 3 and scroll_top > 0:
+            scroll_top = scroll_top - 1
+            k2 = k2 + 1
+    if scroll_top == old:
+        return 0
+    return 1
 
 
-# Apply a decoded CSI final byte: caret navigation + forward Delete. Navigation
-# collapses any live selection. Returns 1 if state changed.
+def hamwrite_row_count() -> uint64:
+    _layout()
+    return nrows
+
+
+def hamwrite_scroll_top() -> uint64:
+    return scroll_top
+
+
+# ---- caret navigation (over the LAID-OUT rows) -----------------------------
+def _row_home(r: uint64) -> uint64:
+    return cast[uint64](row_start[r])
+
+
+def _row_end(r: uint64) -> uint64:
+    return cast[uint64](row_start[r]) + cast[uint64](row_len[r])
+
+
+# Move the caret one visual row up/down, keeping the pixel column.
+def _move_row(delta: int32):
+    _layout()
+    cr: uint64 = _caret_row()
+    if delta < 0:
+        if cr == 0:
+            caret = 0
+            anchor = caret
+            return
+        cr = cr - 1
+    else:
+        if cr + 1 >= nrows:
+            caret = tlen
+            anchor = caret
+            return
+        cr = cr + 1
+    want: int32 = _row_char_dx(_caret_row(), caret - _row_home(_caret_row()))
+    s: uint64 = _row_home(cr)
+    n: uint64 = cast[uint64](row_len[cr])
+    x: int32 = 0
+    k: uint64 = 0
+    while k < n:
+        a: int32 = _adv(text[s + k], _size_of(attr[s + k]))
+        if want < x + a / 2:
+            break
+        x = x + a
+        k = k + 1
+    caret = s + k
+    anchor = caret
+
+
+# Apply a CSI final byte (or a synthesised Home/End/Delete code). Returns 1 if
+# anything changed.
 def _hw_nav(fin: int32) -> int32:
-    sel_on = 0
+    _layout()
     if fin == 68:                                      # Left
         if caret > 0:
             caret = caret - 1
-    elif fin == 67:                                    # Right
+            anchor = caret
+            sel_on = 0
+            return 1
+        return 0
+    if fin == 67:                                      # Right
         if caret < tlen:
             caret = caret + 1
-    elif fin == 72:                                    # Home -> start of line
-        caret = _line_start(caret)
-    elif fin == 70:                                    # End -> end of line
-        caret = _line_end(caret)
-    elif fin == 65:                                    # Up
-        _move_up()
-    elif fin == 66:                                    # Down
-        _move_down()
-    elif fin == 51:                                    # Delete (CSI 3~)
+            anchor = caret
+            sel_on = 0
+            return 1
+        return 0
+    if fin == 65:                                      # Up
+        _move_row(-1)
+        sel_on = 0
+        return 1
+    if fin == 66:                                      # Down
+        _move_row(1)
+        sel_on = 0
+        return 1
+    if fin == 72:                                      # Home
+        caret = _row_home(_caret_row())
+        anchor = caret
+        sel_on = 0
+        return 1
+    if fin == 70:                                      # End
+        caret = _row_end(_caret_row())
+        anchor = caret
+        sel_on = 0
+        return 1
+    if fin == 51:                                      # Delete
+        if _delete_selection() != 0:
+            dirty = 1
+            return 1
         if _delete_fwd() != 0:
             dirty = 1
-            anchor = caret
             return 1
-        anchor = caret
         return 0
-    else:
+    if fin == 53:                                      # PgUp
+        return hamwrite_scroll(-4)
+    if fin == 54:                                      # PgDn
+        return hamwrite_scroll(4)
+    return 0
+
+
+# ---- modal filename prompt -------------------------------------------------
+def _prompt_open(mode: int32):
+    prompt_on = mode
+    menu_open = 0
+    prompt_len = 0
+    i: uint64 = 0
+    while i < fname_len and i < PROMPT_CAP - 1:
+        prompt_buf[i] = fname[i]
+        i = i + 1
+    prompt_len = i
+
+
+def hamwrite_prompt_open(mode: int32):
+    _prompt_open(mode)
+
+
+def hamwrite_prompt_cancel():
+    prompt_on = 0
+
+
+# Feed one key to the modal prompt. Returns 1 if a redraw is needed.
+def _prompt_key(code: int32) -> int32:
+    if code == 27:                                     # ESC -> cancel
+        prompt_on = 0
+        return 1
+    if code == 8 or code == 127:                       # Backspace
+        if prompt_len > 0:
+            prompt_len = prompt_len - 1
+            return 1
         return 0
-    anchor = caret
-    return 1
+    if code == 13 or code == 10:                       # Enter -> commit
+        if prompt_len == 0:
+            prompt_on = 0
+            return 1
+        prompt_buf[prompt_len] = 0
+        hamwrite_set_fname(&prompt_buf[0])
+        if prompt_on == 1:
+            pending_action = 5                         # save-as <fname>
+        else:
+            pending_action = 10                        # open <fname>
+        prompt_on = 0
+        return 1
+    if code >= 32 and code <= 126:
+        if prompt_len < PROMPT_CAP - 1:
+            prompt_buf[prompt_len] = cast[uint8](code)
+            prompt_len = prompt_len + 1
+            return 1
+        return 0
+    return 0
 
 
 # ---- keyboard --------------------------------------------------------------
 # Apply one key (ASCII/decoded code). Returns 1 if the buffer/caret/action
-# changed (redraw needed). Ctrl-C/V/X + Ctrl-S/O set a pending action the DRIVER
-# performs (keeps this core extern-free); Ctrl-B toggles bold in-core.
+# changed (redraw needed). Ctrl-C/V/X + Ctrl-S/O/N set a pending action the
+# DRIVER performs (keeps this core extern-free); the formatting Ctrl-keys are
+# applied in-core:
+#   Ctrl-B bold   Ctrl-I italic   Ctrl-U underline
+#   Ctrl-L left   Ctrl-E centre   Ctrl-R right      (Word's alignment keys)
 def hamwrite_key(code: int32) -> int32:
+    if prompt_on != 0:
+        return _prompt_key(code)
     if hw_esc == 1:                                    # after ESC
         if code == 91:                                 # '['
             hw_esc = 2
@@ -515,10 +1032,17 @@ def hamwrite_key(code: int32) -> int32:
                 fin = 72
             elif p == 52:                              # 4~ End
                 fin = 70
+            elif p == 53:                              # 5~ PgUp
+                fin = 53
+            elif p == 54:                              # 6~ PgDn
+                fin = 54
             else:
                 return 0
         return _hw_nav(fin)
     if code == 27:                                     # ESC -> begin sequence
+        if menu_open != 0:
+            menu_open = 0
+            return 1
         hw_esc = 1
         return 0
     if code == 19:                                     # Ctrl-S -> Save
@@ -527,8 +1051,21 @@ def hamwrite_key(code: int32) -> int32:
     if code == 15:                                     # Ctrl-O -> Open
         pending_action = 2
         return 1
-    if code == 2:                                      # Ctrl-B -> bold toggle
+    if code == 14:                                     # Ctrl-N -> New
+        pending_action = 4
+        return 1
+    if code == 2:                                      # Ctrl-B -> bold
         return hamwrite_toggle(ATTR_BOLD)
+    if code == 9:                                      # Ctrl-I -> italic
+        return hamwrite_toggle(ATTR_ITALIC)
+    if code == 21:                                     # Ctrl-U -> underline
+        return hamwrite_toggle(ATTR_UNDER)
+    if code == 12:                                     # Ctrl-L -> align left
+        return hamwrite_set_align(ALIGN_LEFT)
+    if code == 5:                                      # Ctrl-E -> align centre
+        return hamwrite_set_align(ALIGN_CENTER)
+    if code == 18:                                     # Ctrl-R -> align right
+        return hamwrite_set_align(ALIGN_RIGHT)
     if code == 1:                                      # Ctrl-A -> select all
         _select_all()
         return 1
@@ -588,14 +1125,20 @@ def hamwrite_key_line(s: Ptr[uint8], n: uint64) -> int32:
     return hamwrite_key(code)
 
 
-# ---- document serialisation (round-trips text AND formatting) -------------
+# ---- document serialisation (round-trips text AND ALL formatting) ----------
 # Format (a real, self-describing document container):
 #   "HAMWRITE1\n"          magic + version
 #   "<tlen>\n"             decimal character count
 #   <tlen text bytes>      raw body text (may contain newlines)
-#   <tlen attr bytes>      one formatting byte per character (bit0/1/2)
+#   <tlen attr bytes>      one packed formatting byte per character —
+#                          bit0 bold, bit1 italic, bit2 heading, bit3 underline,
+#                          bits4-5 size (0 normal/1 small/2 large/3 title),
+#                          bits6-7 paragraph alignment (0 left/1 centre/2 right)
 # Length-prefixed so the raw text+attr can hold ANY byte (newlines included) and
-# still parse deterministically. Returns the serialised byte count.
+# still parse deterministically. Because every attribute lives in that one byte,
+# the container did NOT change when sizes/alignment/underline were added: old
+# HAMWRITE1 files simply carry zeroes in the new bits, which decode to the
+# defaults (normal size, left aligned, not underlined). Returns the byte count.
 def hamwrite_serialize(out: Ptr[uint8]) -> uint64:
     p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMWRITE1"))
     out[p] = 10
@@ -628,6 +1171,7 @@ def hamwrite_deserialize(s: Ptr[uint8], n: uint64):
         if k >= n or s[k] != magic[k]:
             is_magic = 0
         k = k + 1
+    scroll_top = 0
     if is_magic == 0:
         # plain text import
         m: uint64 = n
@@ -677,81 +1221,278 @@ def hamwrite_flash_saved():
     flash = 8
 
 
-# ---- layout ----------------------------------------------------------------
-WIN_W: int32 = 560
-WIN_H: int32 = 384
-BAR_H: int32 = 22           # title bar (filename + status)
-TB_Y: int32 = 22
-TB_H: int32 = 30
-BTN_Y: int32 = 26
-BTN_H: int32 = 22
-
-B_X:  int32 = 8
-B_W:  int32 = 26
-I_X:  int32 = 38
-I_W:  int32 = 26
-H_X:  int32 = 68
-H_W:  int32 = 30
-OPEN_X: int32 = 108
-OPEN_W: int32 = 48
-SAVE_X: int32 = 160
-SAVE_W: int32 = 48
-
-# page (document) area
-PAGE_X: int32 = 12
-PAGE_Y: int32 = 60
-PAGE_W: int32 = 536
-PAGE_H: int32 = 304
-TXT_X:  int32 = 20          # PAGE_X + 8
-TXT_Y:  int32 = 66          # PAGE_Y + 6
-LINE_H: int32 = 18
-MAXCOLS: uint64 = 62        # (PAGE_W-16)/8 (advance-approx; renderer wraps)
-MAXROWS: uint64 = 16
+# ---- menu model ------------------------------------------------------------
+# Three drop-downs. No arrays-of-strings in this language, so the item table is
+# expressed as pure functions over (menu, index).
+def _menu_count(m: int32) -> uint64:
+    if m == 1:
+        return 5                                        # File
+    if m == 2:
+        return 4                                        # Edit
+    if m == 3:
+        return 11                                       # Format
+    return 0
 
 
-# Map a body-area click to a byte offset, replaying the SAME word-wrap the
-# renderer uses (break on '\n' and at MAXCOLS) then hit-testing the target
-# visual row's glyph run — the pixel-exact inverse of where the caret draws.
-rowhit_buf: Array[80, uint8]
+def _menu_x(m: int32) -> int32:
+    if m == 1:
+        return MB_FILE_X
+    if m == 2:
+        return MB_EDIT_X
+    return MB_FMT_X
 
 
+def _menu_bw(m: int32) -> int32:
+    if m == 1:
+        return MB_FILE_W
+    if m == 2:
+        return MB_EDIT_W
+    return MB_FMT_W
+
+
+def _menu_panel_w(m: int32) -> int32:
+    if m == 3:
+        return 168
+    return 136
+
+
+def _menu_title(m: int32) -> Ptr[uint8]:
+    if m == 1:
+        return cast[Ptr[uint8]]("File")
+    if m == 2:
+        return cast[Ptr[uint8]]("Edit")
+    return cast[Ptr[uint8]]("Format")
+
+
+def _menu_item(m: int32, i: uint64) -> Ptr[uint8]:
+    if m == 1:
+        if i == 0:
+            return cast[Ptr[uint8]]("New")
+        if i == 1:
+            return cast[Ptr[uint8]]("Open...")
+        if i == 2:
+            return cast[Ptr[uint8]]("Save")
+        if i == 3:
+            return cast[Ptr[uint8]]("Save As...")
+        return cast[Ptr[uint8]]("Quit")
+    if m == 2:
+        if i == 0:
+            return cast[Ptr[uint8]]("Cut")
+        if i == 1:
+            return cast[Ptr[uint8]]("Copy")
+        if i == 2:
+            return cast[Ptr[uint8]]("Paste")
+        return cast[Ptr[uint8]]("Select All")
+    if i == 0:
+        return cast[Ptr[uint8]]("Bold")
+    if i == 1:
+        return cast[Ptr[uint8]]("Italic")
+    if i == 2:
+        return cast[Ptr[uint8]]("Underline")
+    if i == 3:
+        return cast[Ptr[uint8]]("Heading")
+    if i == 4:
+        return cast[Ptr[uint8]]("Size Small")
+    if i == 5:
+        return cast[Ptr[uint8]]("Size Normal")
+    if i == 6:
+        return cast[Ptr[uint8]]("Size Large")
+    if i == 7:
+        return cast[Ptr[uint8]]("Size Title")
+    if i == 8:
+        return cast[Ptr[uint8]]("Align Left")
+    if i == 9:
+        return cast[Ptr[uint8]]("Align Center")
+    return cast[Ptr[uint8]]("Align Right")
+
+
+def _menu_accel(m: int32, i: uint64) -> Ptr[uint8]:
+    if m == 1:
+        if i == 0:
+            return cast[Ptr[uint8]]("^N")
+        if i == 2:
+            return cast[Ptr[uint8]]("^S")
+        if i == 1:
+            return cast[Ptr[uint8]]("^O")
+        return cast[Ptr[uint8]]("")
+    if m == 2:
+        if i == 0:
+            return cast[Ptr[uint8]]("^X")
+        if i == 1:
+            return cast[Ptr[uint8]]("^C")
+        if i == 2:
+            return cast[Ptr[uint8]]("^V")
+        return cast[Ptr[uint8]]("^A")
+    if i == 0:
+        return cast[Ptr[uint8]]("^B")
+    if i == 1:
+        return cast[Ptr[uint8]]("^I")
+    if i == 2:
+        return cast[Ptr[uint8]]("^U")
+    if i == 8:
+        return cast[Ptr[uint8]]("^L")
+    if i == 9:
+        return cast[Ptr[uint8]]("^E")
+    if i == 10:
+        return cast[Ptr[uint8]]("^R")
+    return cast[Ptr[uint8]]("")
+
+
+# Is the Format item currently ACTIVE for the caret/selection? (drawn as a dot)
+def _menu_item_active(m: int32, i: uint64) -> int32:
+    if m != 3:
+        return 0
+    a: uint8 = hamwrite_active_attr()
+    if i == 0 and (a & ATTR_BOLD) != 0:
+        return 1
+    if i == 1 and (a & ATTR_ITALIC) != 0:
+        return 1
+    if i == 2 and (a & ATTR_UNDER) != 0:
+        return 1
+    if i == 3 and (a & ATTR_HEADING) != 0:
+        return 1
+    if i >= 4 and i <= 7:
+        want: int32 = SIZE_NORMAL
+        if i == 4:
+            want = SIZE_SMALL
+        elif i == 6:
+            want = SIZE_LARGE
+        elif i == 7:
+            want = SIZE_TITLE
+        if _size_of(a) == want:
+            return 1
+        return 0
+    if i >= 8:
+        wa: int32 = cast[int32](i) - 8
+        if _align_of(a) == wa:
+            return 1
+    return 0
+
+
+# Run a drop-down item. Returns the ACTION the driver must perform (0 none,
+# 3 = redraw only because the core already handled it).
+def _menu_activate(m: int32, i: uint64) -> int32:
+    menu_open = 0
+    if m == 1:
+        if i == 0:
+            hamwrite_clear()
+            return 4                                    # New (driver: reset path)
+        if i == 1:
+            _prompt_open(2)                             # Open... (filename prompt)
+            return 3
+        if i == 2:
+            return 1                                    # Save
+        if i == 3:
+            _prompt_open(1)                             # Save As...
+            return 3
+        return 6                                        # Quit
+    if m == 2:
+        if i == 0:
+            return 9                                    # Cut
+        if i == 1:
+            return 7                                    # Copy
+        if i == 2:
+            return 8                                    # Paste
+        _select_all()
+        return 3
+    if i == 0:
+        hamwrite_toggle(ATTR_BOLD)
+    elif i == 1:
+        hamwrite_toggle(ATTR_ITALIC)
+    elif i == 2:
+        hamwrite_toggle(ATTR_UNDER)
+    elif i == 3:
+        hamwrite_toggle(ATTR_HEADING)
+    elif i == 4:
+        hamwrite_set_size(SIZE_SMALL)
+    elif i == 5:
+        hamwrite_set_size(SIZE_NORMAL)
+    elif i == 6:
+        hamwrite_set_size(SIZE_LARGE)
+    elif i == 7:
+        hamwrite_set_size(SIZE_TITLE)
+    elif i == 8:
+        hamwrite_set_align(ALIGN_LEFT)
+    elif i == 9:
+        hamwrite_set_align(ALIGN_CENTER)
+    else:
+        hamwrite_set_align(ALIGN_RIGHT)
+    return 3
+
+
+# Click an item by index without a pointer (menu keyboard/scripted driving).
+def hamwrite_menu_select(m: int32, i: uint64) -> int32:
+    if i >= _menu_count(m):
+        return 0
+    return _menu_activate(m, i)
+
+
+# ---- pointer hit-testing ---------------------------------------------------
+# Map a body-area click to a byte offset over the LAID-OUT rows (the exact
+# inverse of where the renderer drew each glyph, alignment + sizes included).
 def _hit_offset(x: int64, y: int64) -> uint64:
-    ry: int64 = y - cast[int64](TXT_Y)
-    if ry < 0:
-        ry = 0
-    target: uint64 = cast[uint64](ry / cast[int64](LINE_H))
+    _layout()
+    if scroll_top >= nrows:
+        scroll_top = nrows - 1
+    ydoc: int64 = y - cast[int64](TXT_Y) + cast[int64](row_y[scroll_top])
+    r: uint64 = scroll_top
+    while r + 1 < nrows:
+        if ydoc < cast[int64](row_y[r] + row_h[r]):
+            break
+        r = r + 1
+    if ydoc < cast[int64](row_y[scroll_top]):
+        r = scroll_top
+    s: uint64 = _row_home(r)
+    n: uint64 = cast[uint64](row_len[r])
+    px: int32 = _row_x(r)
     click_x: int32 = cast[int32](x)
-    x0: int32 = TXT_X
-    row: uint64 = 0
-    lb: uint64 = 0
-    row_start: uint64 = 0
-    i: uint64 = 0
-    while i < tlen:
-        ch: uint8 = text[i]
-        if ch == 10:
-            if row == target:
-                return row_start + htb_hit_test(x0, &rowhit_buf[0], lb, click_x)
-            row = row + 1
-            lb = 0
-            i = i + 1
-            row_start = i
-            continue
-        rowhit_buf[lb] = ch
-        lb = lb + 1
-        i = i + 1
-        if lb >= MAXCOLS:
-            if row == target:
-                return row_start + htb_hit_test(x0, &rowhit_buf[0], lb, click_x)
-            row = row + 1
-            lb = 0
-            row_start = i
-    return row_start + htb_hit_test(x0, &rowhit_buf[0], lb, click_x)
+    k: uint64 = 0
+    while k < n:
+        a: int32 = _adv(text[s + k], _size_of(attr[s + k]))
+        if click_x < px + a / 2:
+            return s + k
+        px = px + a
+        k = k + 1
+    return s + n
 
 
-# Hit-test a pointer PRESS. Toolbar buttons: 10 bold / 11 italic / 12 heading
-# (applied in-core, return 3 = redraw-only), 1 save, 2 open. A body click places
-# the caret at the clicked glyph (returns 0). Otherwise 0.
+# Hit-test a pointer PRESS. Returns an ACTION code for the driver:
+#   0 = nothing (or a body click that only moved the caret)
+#   1 save   2 open(current)   3 redraw-only   4 new   6 quit
+#   7 copy   8 paste   9 cut
 def hamwrite_hit(x: int64, y: int64) -> int32:
+    if prompt_on != 0:
+        return 0
+    # an open drop-down eats the next click
+    if menu_open != 0:
+        px0: int32 = _menu_x(menu_open)
+        pw: int32 = _menu_panel_w(menu_open)
+        cnt: uint64 = _menu_count(menu_open)
+        ph: int32 = cast[int32](cnt) * DD_IH + 8
+        if x >= cast[int64](px0) and x < cast[int64](px0 + pw) and \
+                y >= cast[int64](DD_Y) and y < cast[int64](DD_Y + ph):
+            idx: int64 = (y - cast[int64](DD_Y) - 4) / cast[int64](DD_IH)
+            if idx < 0:
+                idx = 0
+            if idx >= cast[int64](cnt):
+                return 3
+            return _menu_activate(menu_open, cast[uint64](idx))
+        menu_open = 0
+        return 3
+    # menu bar
+    if y >= cast[int64](MENU_Y) and y < cast[int64](MENU_Y + MENU_H):
+        m: int32 = 0
+        if x >= cast[int64](MB_FILE_X) and x < cast[int64](MB_FILE_X + MB_FILE_W):
+            m = 1
+        elif x >= cast[int64](MB_EDIT_X) and x < cast[int64](MB_EDIT_X + MB_EDIT_W):
+            m = 2
+        elif x >= cast[int64](MB_FMT_X) and x < cast[int64](MB_FMT_X + MB_FMT_W):
+            m = 3
+        if m != 0:
+            menu_open = m
+            return 3
+        return 0
+    # toolbar
     if y >= cast[int64](TB_Y) and y < cast[int64](TB_Y + TB_H):
         if x >= cast[int64](B_X) and x < cast[int64](B_X + B_W):
             hamwrite_toggle(ATTR_BOLD)
@@ -759,16 +1500,39 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
         if x >= cast[int64](I_X) and x < cast[int64](I_X + I_W):
             hamwrite_toggle(ATTR_ITALIC)
             return 3
+        if x >= cast[int64](U_X) and x < cast[int64](U_X + U_W):
+            hamwrite_toggle(ATTR_UNDER)
+            return 3
         if x >= cast[int64](H_X) and x < cast[int64](H_X + H_W):
             hamwrite_toggle(ATTR_HEADING)
+            return 3
+        if x >= cast[int64](SZ_S_X) and x < cast[int64](SZ_S_X + SZ_S_W):
+            hamwrite_set_size(SIZE_SMALL)
+            return 3
+        if x >= cast[int64](SZ_M_X) and x < cast[int64](SZ_M_X + SZ_M_W):
+            hamwrite_set_size(SIZE_NORMAL)
+            return 3
+        if x >= cast[int64](SZ_L_X) and x < cast[int64](SZ_L_X + SZ_L_W):
+            hamwrite_set_size(SIZE_LARGE)
+            return 3
+        if x >= cast[int64](SZ_T_X) and x < cast[int64](SZ_T_X + SZ_T_W):
+            hamwrite_set_size(SIZE_TITLE)
+            return 3
+        if x >= cast[int64](AL_L_X) and x < cast[int64](AL_L_X + AL_L_W):
+            hamwrite_set_align(ALIGN_LEFT)
+            return 3
+        if x >= cast[int64](AL_C_X) and x < cast[int64](AL_C_X + AL_C_W):
+            hamwrite_set_align(ALIGN_CENTER)
+            return 3
+        if x >= cast[int64](AL_R_X) and x < cast[int64](AL_R_X + AL_R_W):
+            hamwrite_set_align(ALIGN_RIGHT)
             return 3
         if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
             return 2
         if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
             return 1
         return 0
-    if x >= cast[int64](PAGE_X) and x < cast[int64](PAGE_X + PAGE_W) and \
-            y >= cast[int64](PAGE_Y) and y < cast[int64](PAGE_Y + PAGE_H):
+    if hamwrite_in_page(x, y) != 0:
         caret = _hit_offset(x, y)
         anchor = caret
         sel_on = 0
@@ -776,8 +1540,11 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
     return 0
 
 
-# Is (x,y) inside the editable page? 1 = yes. Gates double/triple-click.
+# Is (x,y) inside the editable page? 1 = yes. Gates double/triple-click. A live
+# drop-down or prompt covers the page, so it reports 0 while either is up.
 def hamwrite_in_page(x: int64, y: int64) -> int32:
+    if menu_open != 0 or prompt_on != 0:
+        return 0
     if x >= cast[int64](PAGE_X) and x < cast[int64](PAGE_X + PAGE_W) and \
             y >= cast[int64](PAGE_Y) and y < cast[int64](PAGE_Y + PAGE_H):
         return 1
@@ -787,6 +1554,8 @@ def hamwrite_in_page(x: int64, y: int64) -> int32:
 # Pointer DRAG (button-1 held): move caret to hit-test, KEEP anchor -> paint a
 # selection. Returns 1 if the caret moved.
 def hamwrite_drag(x: int64, y: int64) -> int32:
+    if menu_open != 0 or prompt_on != 0:
+        return 0
     idx: uint64 = _hit_offset(x, y)
     if idx == caret:
         return 0
@@ -826,81 +1595,145 @@ def hamwrite_select_line() -> int32:
 
 
 # ---- render ----------------------------------------------------------------
-line_buf: Array[80, uint8]
-seg_buf:  Array[80, uint8]
-wc_buf:   Array[48, uint8]
+SEG_CAP: uint64 = 256
+seg_buf: Array[256, uint8]
+chr_buf: Array[2, uint8]
+wc_buf:  Array[64, uint8]
 
-
-# Colours for a formatting run.  Bold/heading are double-struck; italic + heading
-# get a tint so the three weights read apart (a true oblique glyph is a future
-# font-engine job — see the roadmap in the driver header).
-def _run_color(a: uint8) -> Ptr[uint8]:
-    if (a & ATTR_HEADING) != 0:
-        return cast[Ptr[uint8]]("#1b3a6b")             # heading accent (navy)
-    if (a & ATTR_ITALIC) != 0:
-        return cast[Ptr[uint8]]("#2f6f4f")             # italic tint (green-slate)
+# Run/chrome colours. Adder has no Ptr[uint8] global string initializers, so
+# these are one-line accessors over the literals.
+def COL_INK() -> Ptr[uint8]:
     return cast[Ptr[uint8]]("#202020")
 
 
-# Draw one wrapped row: selection band UNDER the glyphs, then the glyphs grouped
-# into runs of equal attr (each run bold/tinted/heading-underlined), then the
-# caret if it falls on this row. row_start = buffer index of the row's 1st glyph.
-def _draw_row(row: uint64, lb: uint64, row_start: uint64,
-              caret_donep: Ptr[int32], lo: uint64, hi: uint64):
-    yy: int32 = TXT_Y + cast[int32](row) * LINE_H
-    x0: int32 = TXT_X
-    row_end: uint64 = row_start + lb
+def COL_HEADING() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#1b3a6b")
+
+
+def COL_ITALIC() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#2f6f4f")
+
+
+def COL_LARGE() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#101418")
+
+
+def COL_SMALL() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#4a5058")
+
+
+def COL_SEL() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#b4d0f8")
+
+
+# Colour for a formatting run. Heading/italic keep their established tints;
+# large/title darken and small lightens so the size classes read apart even
+# before their fattened strike is taken into account.
+def _run_color(a: uint8) -> Ptr[uint8]:
+    if (a & ATTR_HEADING) != 0:
+        return COL_HEADING()
+    if (a & ATTR_ITALIC) != 0:
+        return COL_ITALIC()
+    sz: int32 = _size_of(a)
+    if sz == SIZE_TITLE or sz == SIZE_LARGE:
+        return COL_LARGE()
+    if sz == SIZE_SMALL:
+        return COL_SMALL()
+    return COL_INK()
+
+
+# Emit the NUL-terminated seg_buf (n chars) at (x, gy). Normal/small runs go out
+# as ONE `glyphs` op (cheap, and what the compositor's cache likes); large/title
+# runs are emitted per character at the scaled advance with an extra strike a
+# pixel down, which is how this app renders a bigger face without a compositor
+# size argument. Returns the run's pixel width.
+def _emit_run(x: int32, gy: int32, a: uint8, n: uint64) -> int32:
+    col: Ptr[uint8] = _run_color(a)
+    sz: int32 = _size_of(a)
+    heavy: int32 = 0
+    if (a & ATTR_BOLD) != 0 or (a & ATTR_HEADING) != 0:
+        heavy = 1
+    if sz < SIZE_LARGE:
+        w: int32 = 0
+        i0: uint64 = 0
+        while i0 < n:
+            w = w + _adv(seg_buf[i0], sz)
+            i0 = i0 + 1
+        if heavy != 0:
+            hamscene_glyphs_bold(x, gy, &seg_buf[0], col)
+        else:
+            hamscene_glyphs(x, gy, &seg_buf[0], col)
+        return w
+    px: int32 = x
+    i: uint64 = 0
+    while i < n:
+        chr_buf[0] = seg_buf[i]
+        chr_buf[1] = 0
+        hamscene_glyphs_bold(px, gy, &chr_buf[0], col)
+        hamscene_glyphs_bold(px, gy + 1, &chr_buf[0], col)
+        if sz == SIZE_TITLE:
+            hamscene_glyphs_bold(px + 1, gy + 1, &chr_buf[0], col)
+        px = px + _adv(seg_buf[i], sz)
+        i = i + 1
+    return px - x
+
+
+# Draw one laid-out row at window y `yy`: selection band, then the glyph runs
+# grouped by equal attr, then the caret if it falls on this row.
+def _draw_row(r: uint64, yy: int32, lo: uint64, hi: uint64,
+              caret_donep: Ptr[int32]):
+    s: uint64 = _row_home(r)
+    n: uint64 = cast[uint64](row_len[r])
+    rh: int32 = row_h[r]
+    x0: int32 = _row_x(r)
+    gy: int32 = yy + (rh - 16) / 2
+    if gy < yy:
+        gy = yy
     # selection band
     if sel_on != 0 and hi > lo:
-        a: uint64 = lo
-        b: uint64 = hi
-        if a < row_start:
-            a = row_start
-        if b > row_end:
-            b = row_end
-        if b > a:
-            sx0: int32 = x0 + htb_text_width(&line_buf[0], a - row_start)
-            sx1: int32 = x0 + htb_text_width(&line_buf[0], b - row_start)
-            hamscene_fill(sx0, yy, sx1 - sx0, 16, cast[Ptr[uint8]]("#b4d0f8"))
+        a1: uint64 = lo
+        b1: uint64 = hi
+        if a1 < s:
+            a1 = s
+        if b1 > s + n:
+            b1 = s + n
+        if b1 > a1:
+            sx0: int32 = x0 + _row_char_dx(r, a1 - s)
+            sx1: int32 = x0 + _row_char_dx(r, b1 - s)
+            hamscene_fill(sx0, yy, sx1 - sx0, rh, COL_SEL())
     # glyph runs of equal attr
     c0: uint64 = 0
-    while c0 < lb:
-        a0: uint8 = attr[row_start + c0]
+    rx: int32 = x0
+    while c0 < n:
+        a0: uint8 = attr[s + c0]
         c1: uint64 = c0
-        while c1 < lb and attr[row_start + c1] == a0:
+        while c1 < n and attr[s + c1] == a0 and c1 - c0 < SEG_CAP - 1:
             c1 = c1 + 1
-        # copy the run into a NUL-terminated seg
         si: uint64 = 0
         while c0 + si < c1:
-            seg_buf[si] = line_buf[c0 + si]
+            seg_buf[si] = text[s + c0 + si]
             si = si + 1
         seg_buf[si] = 0
-        rx: int32 = x0 + htb_text_width(&line_buf[0], c0)
-        col: Ptr[uint8] = _run_color(a0)
-        if (a0 & ATTR_BOLD) != 0 or (a0 & ATTR_HEADING) != 0:
-            hamscene_glyphs_bold(rx, yy, &seg_buf[0], col)
-        else:
-            hamscene_glyphs(rx, yy, &seg_buf[0], col)
-        # heading underline under the run
-        if (a0 & ATTR_HEADING) != 0:
-            rx1: int32 = x0 + htb_text_width(&line_buf[0], c1)
-            hamscene_line(rx, yy + 15, rx1, yy + 15, 1,
-                          cast[Ptr[uint8]]("#1b3a6b"))
+        runw: int32 = _emit_run(rx, gy, a0, c1 - c0)
+        if (a0 & ATTR_UNDER) != 0 or (a0 & ATTR_HEADING) != 0:
+            uy: int32 = gy + 15
+            hamscene_line(rx, uy, rx + runw, uy, 1, _run_color(a0))
+        rx = rx + runw
         c0 = c1
     # caret
-    if caret_donep[0] == 0 and caret >= row_start and caret <= row_end:
-        cx: int32 = x0 + htb_text_width(&line_buf[0], caret - row_start)
-        hamscene_fill(cx, yy, 2, 16, cast[Ptr[uint8]]("#202020"))
+    if caret_donep[0] == 0 and caret >= s and caret <= s + n:
+        cx: int32 = x0 + _row_char_dx(r, caret - s)
+        hamscene_fill(cx, gy, 2, 16, COL_INK())
         caret_donep[0] = 1
 
 
 def _toolbtn(x: int32, w: int32, label: Ptr[uint8], active: int32):
     fillc: Ptr[uint8] = cast[Ptr[uint8]]("#e6e8ec")
     if active != 0:
-        fillc = cast[Ptr[uint8]]("#c3d7f5")            # depressed/active tint
+        fillc = cast[Ptr[uint8]]("#c3d7f5")                              # depressed/active tint
     hamscene_roundrect(x, BTN_Y, w, BTN_H, 4, fillc)
     hamscene_stroke(x, BTN_Y, w, BTN_H, 1, cast[Ptr[uint8]]("#a8b0ba"))
-    hamscene_glyphs_bold(x + 7, BTN_Y + 4, label, cast[Ptr[uint8]]("#202020"))
+    hamscene_glyphs_bold(x + 6, BTN_Y + 4, label, COL_INK())
 
 
 # Build "<n> word[s]  <m> char[s]" into wc_buf (NUL-term); returns length.
@@ -920,9 +1753,101 @@ def _wc_text() -> uint64:
     return p
 
 
+def _draw_menubar():
+    hamscene_fill(0, MENU_Y, WIN_W, MENU_H, cast[Ptr[uint8]]("#f3f4f6"))
+    hamscene_stroke(0, MENU_Y + MENU_H - 1, WIN_W, 1, 1,
+                    cast[Ptr[uint8]]("#c8ccd2"))
+    m: int32 = 1
+    while m <= 3:
+        mx: int32 = _menu_x(m)
+        mw: int32 = _menu_bw(m)
+        if menu_open == m:
+            hamscene_fill(mx, MENU_Y + 1, mw, MENU_H - 2,
+                          cast[Ptr[uint8]]("#3f6fb5"))
+            hamscene_glyphs(mx + 6, MENU_Y + 4, _menu_title(m),
+                            cast[Ptr[uint8]]("#ffffff"))
+        else:
+            hamscene_glyphs(mx + 6, MENU_Y + 4, _menu_title(m), COL_INK())
+        m = m + 1
+
+
+def _draw_dropdown():
+    if menu_open == 0:
+        return
+    m: int32 = menu_open
+    px: int32 = _menu_x(m)
+    pw: int32 = _menu_panel_w(m)
+    cnt: uint64 = _menu_count(m)
+    ph: int32 = cast[int32](cnt) * DD_IH + 8
+    hamscene_fill(px + 2, DD_Y + 2, pw, ph, cast[Ptr[uint8]]("#00000022"))
+    hamscene_fill(px, DD_Y, pw, ph, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_stroke(px, DD_Y, pw, ph, 1, cast[Ptr[uint8]]("#9aa0a8"))
+    i: uint64 = 0
+    while i < cnt:
+        iy: int32 = DD_Y + 4 + cast[int32](i) * DD_IH
+        if _menu_item_active(m, i) != 0:
+            hamscene_fill(px + 6, iy + 6, 5, 5, cast[Ptr[uint8]]("#3f6fb5"))
+        hamscene_glyphs(px + 16, iy + 2, _menu_item(m, i), COL_INK())
+        acc: Ptr[uint8] = _menu_accel(m, i)
+        if acc[0] != 0:
+            hamscene_glyphs(px + pw - 26, iy + 2, acc,
+                            cast[Ptr[uint8]]("#7b828c"))
+        i = i + 1
+
+
+def _draw_prompt():
+    if prompt_on == 0:
+        return
+    bx: int32 = 120
+    by: int32 = 160
+    bw: int32 = 400
+    bh: int32 = 96
+    hamscene_fill(bx + 3, by + 3, bw, bh, cast[Ptr[uint8]]("#00000033"))
+    hamscene_fill(bx, by, bw, bh, cast[Ptr[uint8]]("#f4f5f7"))
+    hamscene_stroke(bx, by, bw, bh, 1, cast[Ptr[uint8]]("#8b929b"))
+    hamscene_fill(bx, by, bw, 22, cast[Ptr[uint8]]("#3f6fb5"))
+    ttl: Ptr[uint8] = cast[Ptr[uint8]]("Save As")
+    if prompt_on == 2:
+        ttl = cast[Ptr[uint8]]("Open")
+    hamscene_glyphs_bold(bx + 8, by + 4, ttl, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_glyphs(bx + 12, by + 32,
+                    cast[Ptr[uint8]]("File name (in /home/live/Documents):"),
+                    cast[Ptr[uint8]]("#4a5058"))
+    hamscene_fill(bx + 12, by + 50, bw - 24, 22, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_stroke(bx + 12, by + 50, bw - 24, 22, 1,
+                    cast[Ptr[uint8]]("#8b929b"))
+    prompt_buf[prompt_len] = 0
+    hamscene_glyphs(bx + 16, by + 53, &prompt_buf[0], COL_INK())
+    cx: int32 = bx + 16 + htb_text_width(&prompt_buf[0], prompt_len)
+    hamscene_fill(cx, by + 53, 2, 16, COL_INK())
+    hamscene_glyphs(bx + 12, by + 76,
+                    cast[Ptr[uint8]]("Enter = OK    Esc = Cancel"),
+                    cast[Ptr[uint8]]("#7b828c"))
+
+
+def _draw_scrollbar():
+    if doc_h <= VIEW_H:
+        return
+    hamscene_fill(SBAR_X, PAGE_Y + 4, SBAR_W, PAGE_H - 8,
+                  cast[Ptr[uint8]]("#e4e7ea"))
+    track: int32 = PAGE_H - 8
+    th: int32 = track * VIEW_H / doc_h
+    if th < 16:
+        th = 16
+    off: int32 = row_y[scroll_top]
+    span: int32 = doc_h - VIEW_H
+    ty: int32 = 0
+    if span > 0:
+        ty = (track - th) * off / span
+    hamscene_roundrect(SBAR_X, PAGE_Y + 4 + ty, SBAR_W, th, 3,
+                       cast[Ptr[uint8]]("#a7b0bb"))
+
+
 def hamwrite_build_scene():
     if flash > 0:
         flash = flash - 1
+    _layout()
+    _ensure_caret_visible()
     hamscene_begin()
     hamscene_fill(0, 0, WIN_W, WIN_H, cast[Ptr[uint8]]("#dfe3e8"))
     # title bar
@@ -930,7 +1855,6 @@ def hamwrite_build_scene():
     hamscene_fill(0, BAR_H - 1, WIN_W, 1, cast[Ptr[uint8]]("#2c4f84"))
     hamscene_glyphs_bold(10, 5, cast[Ptr[uint8]]("HamWrite"),
                          cast[Ptr[uint8]]("#ffffff"))
-    # filename (or "(untitled)") centred-ish, then status at the right
     nm: Ptr[uint8] = cast[Ptr[uint8]]("(untitled)")
     if fname_len > 0:
         nm = &fname[0]
@@ -942,7 +1866,9 @@ def hamwrite_build_scene():
         stat = cast[Ptr[uint8]]("* modified")
     hamscene_glyphs(WIN_W - 92, 5, stat, cast[Ptr[uint8]]("#eef4ff"))
 
-    # toolbar strip + formatting buttons (active = the run at the caret / cur_attr)
+    _draw_menubar()
+
+    # toolbar strip + formatting buttons (active = the run at the caret)
     hamscene_fill(0, TB_Y, WIN_W, TB_H, cast[Ptr[uint8]]("#eef0f3"))
     hamscene_stroke(0, TB_Y + TB_H - 1, WIN_W, 1, 1, cast[Ptr[uint8]]("#b4b8bf"))
     act: uint8 = hamwrite_active_attr()
@@ -952,19 +1878,51 @@ def hamwrite_build_scene():
     it_on: int32 = 0
     if (act & ATTR_ITALIC) != 0:
         it_on = 1
+    un_on: int32 = 0
+    if (act & ATTR_UNDER) != 0:
+        un_on = 1
     hd_on: int32 = 0
     if (act & ATTR_HEADING) != 0:
         hd_on = 1
     _toolbtn(B_X, B_W, cast[Ptr[uint8]]("B"), bold_on)
     _toolbtn(I_X, I_W, cast[Ptr[uint8]]("I"), it_on)
+    _toolbtn(U_X, U_W, cast[Ptr[uint8]]("U"), un_on)
     _toolbtn(H_X, H_W, cast[Ptr[uint8]]("H1"), hd_on)
-    hamscene_stroke(102, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    hamscene_stroke(134, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    csz: int32 = _size_of(act)
+    s_on: int32 = 0
+    if csz == SIZE_SMALL:
+        s_on = 1
+    m_on: int32 = 0
+    if csz == SIZE_NORMAL:
+        m_on = 1
+    l_on: int32 = 0
+    if csz == SIZE_LARGE:
+        l_on = 1
+    t_on: int32 = 0
+    if csz == SIZE_TITLE:
+        t_on = 1
+    _toolbtn(SZ_S_X, SZ_S_W, cast[Ptr[uint8]]("S"), s_on)
+    _toolbtn(SZ_M_X, SZ_M_W, cast[Ptr[uint8]]("M"), m_on)
+    _toolbtn(SZ_L_X, SZ_L_W, cast[Ptr[uint8]]("L"), l_on)
+    _toolbtn(SZ_T_X, SZ_T_W, cast[Ptr[uint8]]("XL"), t_on)
+    hamscene_stroke(270, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    cal: int32 = _align_of(act)
+    al_on: int32 = 0
+    if cal == ALIGN_LEFT:
+        al_on = 1
+    ac_on: int32 = 0
+    if cal == ALIGN_CENTER:
+        ac_on = 1
+    ar_on: int32 = 0
+    if cal == ALIGN_RIGHT:
+        ar_on = 1
+    _toolbtn(AL_L_X, AL_L_W, cast[Ptr[uint8]]("Left"), al_on)
+    _toolbtn(AL_C_X, AL_C_W, cast[Ptr[uint8]]("Center"), ac_on)
+    _toolbtn(AL_R_X, AL_R_W, cast[Ptr[uint8]]("Right"), ar_on)
+    hamscene_stroke(440, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
     _toolbtn(OPEN_X, OPEN_W, cast[Ptr[uint8]]("Open"), 0)
     _toolbtn(SAVE_X, SAVE_W, cast[Ptr[uint8]]("Save"), 0)
-    # live word/char count, right-aligned in the toolbar
-    wcn: uint64 = _wc_text()
-    wcx: int32 = WIN_W - 8 - htb_text_width(&wc_buf[0], wcn)
-    hamscene_glyphs(wcx, BTN_Y + 4, &wc_buf[0], cast[Ptr[uint8]]("#5a5f66"))
 
     # ---- document page (white paper) ----------------------------------
     hamscene_fill(PAGE_X, PAGE_Y, PAGE_W, PAGE_H, cast[Ptr[uint8]]("#ffffff"))
@@ -976,36 +1934,26 @@ def hamwrite_build_scene():
     if sel_on != 0:
         lo = _sel_lo()
         hi = _sel_hi()
-    row: uint64 = 0
-    lb: uint64 = 0
-    row_start: uint64 = 0
     caret_done: int32 = 0
-    i: uint64 = 0
-    while i < tlen and row < MAXROWS:
-        ch: uint8 = text[i]
-        if ch == 10:
-            line_buf[lb] = 0
-            _draw_row(row, lb, row_start, &caret_done, lo, hi)
-            row = row + 1
-            lb = 0
-            i = i + 1
-            row_start = i
-            continue
-        line_buf[lb] = ch
-        lb = lb + 1
-        i = i + 1
-        if lb >= MAXCOLS:
-            line_buf[lb] = 0
-            _draw_row(row, lb, row_start, &caret_done, lo, hi)
-            row = row + 1
-            lb = 0
-            row_start = i
-    if row < MAXROWS:
-        line_buf[lb] = 0
-        _draw_row(row, lb, row_start, &caret_done, lo, hi)
+    base: int32 = row_y[scroll_top]
+    r: uint64 = scroll_top
+    while r < nrows:
+        yy: int32 = TXT_Y + row_y[r] - base
+        if row_y[r] + row_h[r] - base > VIEW_H:
+            break
+        _draw_row(r, yy, lo, hi, &caret_done)
+        r = r + 1
+    _draw_scrollbar()
 
-    # footer hint
-    hamscene_glyphs(PAGE_X, WIN_H - 16,
+    # ---- status footer -------------------------------------------------
+    hamscene_glyphs(PAGE_X, STATUS_Y,
                     cast[Ptr[uint8]](
-                        "Ctrl-B bold  toolbar I/H1  Ctrl-S save  Ctrl-O open"),
+                        "^B bold  ^I italic  ^U under  ^L/^E/^R align  ^S save"),
                     cast[Ptr[uint8]]("#606870"))
+    wcn: uint64 = _wc_text()
+    wcx: int32 = WIN_W - 12 - htb_text_width(&wc_buf[0], wcn)
+    hamscene_glyphs(wcx, STATUS_Y, &wc_buf[0], cast[Ptr[uint8]]("#5a5f66"))
+
+    # ---- overlays (drawn last, on top of the page) ---------------------
+    _draw_dropdown()
+    _draw_prompt()
