@@ -1781,7 +1781,18 @@ def llvm_emit_function(fn: uint32, entry: uint32):
         ll_puts(" %v")
         ll_put_u32(pv[i])
         i = i + 1
-    ll_puts(") {\n")
+    # Emit `noredzone` on every function definition. The kernel is compiled
+    # freestanding and takes hardware interrupts on the SAME stack a function
+    # is running on, so the 128-byte System-V red zone below %rsp is NOT safe:
+    # an interrupt frame pushed while a leaf function (e.g. ip_csum16's summing
+    # loop) is mid-execution overwrites the red-zone slots holding its locals,
+    # corrupting e.g. the `buf` pointer -> intermittent kernel #GP in the
+    # networking path. clang's `-mno-red-zone` COMMAND-LINE flag does NOT apply
+    # when it compiles a pre-existing textual .ll: per-function attributes in the
+    # IR govern, and our defines carried none, so every function red-zoned. The
+    # attribute must be emitted explicitly here. (Native backend is immune: it
+    # builds real frames and never uses the red zone.)
+    ll_puts(") noredzone {\n")
 
     llvm_tmp = 1
     ssa_build_domtree()                   # populates sb_rpo (entry first)
