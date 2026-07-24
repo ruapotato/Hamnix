@@ -1462,6 +1462,14 @@ bash scripts/test_hambrowse_ctrlwidth_host.sh
 # pixel invariant (the tall field paints a >=40px grey band). Controls WITHOUT
 # these declarations are byte-identical, so all form gates stay green.
 bash scripts/test_hambrowse_ctrlgeom_host.sh
+# test_hambrowse_ctrldefault: QEMU-free gate for the UA DEFAULT SIZING of unstyled
+# form controls — an <input> with no size/width renders at size=20 (20 cells) and a
+# <textarea> with no cols/rows renders 20 cols x 2 rows (Chrome/Firefox parity),
+# instead of the old content-hugging 8-cell / 1-row sliver the user could not click.
+# Explicit size/cols/rows still win (10 cells, 30 cols, 4 rows). This is the fix for
+# "can't click into the Google search box" (its <textarea name=q> now renders 182px
+# wide x 2 rows, matching chromium --headless's 182x36px).
+bash scripts/test_hambrowse_ctrldefault_host.sh
 # test_hambrowse_rangeprog: QEMU-free gate for <input type=range> + <progress>
 # accent-color painting (W3C round 11) — asserts accent-tinted track/value fills
 # (red/green/blue/orange) and that a full-range run paints wider than a half-range.

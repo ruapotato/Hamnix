@@ -66,7 +66,7 @@ seg_x() {     # text -> the x of the SEG carrying it
 # ---- (1) display:block on inline elements ----------------------------------
 lr1=$(seg_row "First name")
 lr2=$(seg_row "Second name")
-ir1=$(seg_row "\[________\]")
+ir1=$(seg_row "\[____________________\]")
 echo "[hb-dispflex] label rows: first=$lr1 second=$lr2 (first input row=$ir1)"
 if [ -n "$lr1" ] && [ -n "$lr2" ] && [ "$lr2" -gt "$lr1" ]; then
     echo "[hb-dispflex] PASS display:block labels each take their own row (stacked)"

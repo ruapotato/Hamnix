@@ -70,7 +70,7 @@ assert_nogrep 'does not support it'              "$D0" "noscript fallback body i
 # (b) Typing a query updates the box (oninput/DOM value flows to the render).
 D1="$OUT/g_type.txt"
 "$BIN" "$FIX" 880 setval q "plan 9 os" >"$D1" 2>&1
-assert_grep '\[plan 9 os\]'                      "$D1" "typed query appears in the box"
+assert_grep '\[plan 9 os_+\]'                    "$D1" "typed query appears in the (20-col UA default) box"
 
 # (c) THE FIX: submitting the search form navigates to the action's results
 # URL (/search?q=...), carrying the query — NOT a bare "?q=..." on the
@@ -102,7 +102,7 @@ assert_grep '^FIELDNAV NAV /search\?q=plan\+9\+os' \
 assert_grep 'hl=en'                              "$D3" "hidden field carried on the index path"
 # The field is now pointer-reachable: after the click-links re-layout its box
 # segment carries a link (l>=0), so the front-end's _hit_link resolves it.
-assert_grep '\[plan 9 os\] *\|' "$D3" "typed text renders in the field box (set_value_index)"
+assert_grep '\[plan 9 os_+\] *\|' "$D3" "typed text renders in the field box (set_value_index)"
 
 # (e) UA: the HTTP client must present a browser-like "Mozilla/5.0" User-Agent
 # so sites that sniff the UA (Google) serve the modern scripting variant rather

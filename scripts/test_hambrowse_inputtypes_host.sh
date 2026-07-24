@@ -41,8 +41,8 @@ echo "$FLOW"
 assert_has()  { if printf '%s' "$FLOW" | grep -Fq -- "$1"; then echo "[hb-it] PASS $2"; else echo "[hb-it] FAIL $2 (missing: $1)"; fail=1; fi; }
 assert_lacks(){ if printf '%s' "$FLOW" | grep -Fq -- "$1"; then echo "[hb-it] FAIL $2 (present: $1)"; fail=1; else echo "[hb-it] PASS $2"; fi; }
 
-assert_has  '[hello___]'      "text field still renders value padded to a field width"
-assert_has  '[******__]'      "password value masked to '*' (6 chars) and padded"
+assert_has  '[hello_______________]'  "text field renders value padded to the 20-cell UA default width"
+assert_has  '[******______________]'  "password value masked to '*' (6 chars) and padded to 20 cells"
 assert_lacks 'secret'         "password plaintext value NEVER appears in the render"
 assert_has  '[ Choose File ]' "type=file renders a Choose File button affordance"
 assert_has  '[--O--]'         "type=range renders a slider track+thumb glyph"

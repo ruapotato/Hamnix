@@ -7,7 +7,8 @@
 # spans `width` px at CELL_W=8 (target inner cells = width/8 - 2 bracket cells).
 #
 # The fixture (tests/fixtures/hambrowse_ctrlwidth.html) has four inputs:
-#   1. value="ab", no CSS width           -> [ab______]   (8 inner: UA min)
+#   1. value="ab", no CSS width           -> [ab_________________]  (20 inner: UA
+#                                             size=20 default, Chrome/Firefox parity)
 #   2. value="ab", class .wide{width:240} -> 240/8-2 = 28 inner cells (cascade)
 #   3. value="cd", style="width:120px"    -> 120/8-2 = 13 inner cells (inline)
 #   4. type=password value="pw" width:160 -> 160/8-2 = 18 inner cells (masked '*')
@@ -56,7 +57,7 @@ check() { # desc actual expected
     if [ "$2" -ne "$3" ]; then echo "[hb-ctrlwidth] FAIL: $1 — got $2 want $3"; fail=1;
     else echo "[hb-ctrlwidth] PASS: $1 ($2)"; fi
 }
-check "default UA min field = 8 cells"        "$n1" 8
+check "default UA field = 20 cells (size=20)"  "$n1" 20
 check "class width:240px -> 28 cells"         "$n2" 28
 check "inline width:120px -> 13 cells"        "$n3" 13
 check "password width:160px -> 18 cells"      "$n4" 18

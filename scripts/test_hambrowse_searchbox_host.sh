@@ -72,8 +72,13 @@ D2="$OUT/sb_flow.txt"
     || { echo "[hb-sb] FAIL: text render exited non-zero"; cat "$D2"; exit 1; }
 FLOW=$(grep -E '^FLOW' "$D2" | grep -F '[' | head -1)
 echo "[hb-sb] FLOW: $FLOW"
-for tok in '[hello world]' '[me@example.com]' '[******' ; do
-    if printf '%s' "$FLOW" | grep -Fq -- "$tok"; then
+# The value tokens are now padded to the 20-col UA default field width (size=20,
+# Chrome/Firefox parity) so a short value still renders a WIDE, clickable box:
+# 'hello world' -> [hello world_________], 'me@example.com' -> [me@example.com______].
+# The trailing '_' run is part of the reserved field width; match the value then
+# its underscore padding.
+for tok in '\[hello world_+\]' '\[me@example\.com_+\]' '\[\*\*\*\*\*\*_+\]' ; do
+    if printf '%s' "$FLOW" | grep -Eq -- "$tok"; then
         echo "[hb-sb] PASS input token present: $tok"
     else
         echo "[hb-sb] FAIL input token missing: $tok"; fail=1

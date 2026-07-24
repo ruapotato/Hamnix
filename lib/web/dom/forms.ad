@@ -233,6 +233,15 @@ def _input_type_is(ne: uint64, te: uint64, lit: Ptr[uint8]) -> int32:
 FORM_FIELD_BG: int32 = 0xf1f3f4
 FORM_BTN_BG:   int32 = 0xe0e3e7
 
+# UA default field WIDTH in average-character cells. A text-like <input> with no
+# `size` attribute and no CSS `width` renders at the HTML `size` default of 20 —
+# Chrome/Firefox reserve ~20 avg-char widths (~150-170px), NOT a content-hugging
+# box. This is what makes an EMPTY / short search field a wide, clickable target
+# rather than a tiny box the user can't hit. A <textarea> with no `cols`/`width`
+# shares the same 20-column default (per the UA stylesheet). Fields carrying a
+# `size`/`cols` attr or CSS `width` override this (see _control_width_cells).
+FORM_TEXT_COLS: int32 = 20
+
 # Resolve a form control's cascaded CSS `width` to a MONOSPACE CELL count for the
 # field run, or -1 when no width is set. `width` cascades on a void <input> via a
 # transient _img_cascade match (same pattern accent-color uses); inline style=""
@@ -496,7 +505,7 @@ def _emit_input(np: uint64, nlen: uint64, ne: uint64, te: uint64):
             pw_content = pwlen
         if pwlen < 0:
             pwlen = 0
-        pw_pad: int32 = 8                             # default min field width
+        pw_pad: int32 = FORM_TEXT_COLS                # UA default field width (size=20)
         if pw_cells >= 0:                             # CSS `width` sets the field width
             pw_pad = pw_cells
         while pwlen < pw_pad:
@@ -537,8 +546,8 @@ def _emit_input(np: uint64, nlen: uint64, ne: uint64, te: uint64):
             _wpush_cstr(&fbuf[0])
             ilen = pn
             content_n = pn
-    txt_pad: int32 = 8                                # default min field width
-    if txt_cells >= 0:                                # CSS `width` sets the field width
+    txt_pad: int32 = FORM_TEXT_COLS                   # UA default field width (size=20)
+    if txt_cells >= 0:                                # CSS `width`/`size` sets the field width
         txt_pad = txt_cells
     while ilen < txt_pad:
         _word_push(95)                                # '_'
@@ -2836,7 +2845,30 @@ def _handle_tag(ts: uint64, te: uint64):
             save_bg_ta: int32 = g_bg
             _close_seg()                              # isolate the field seg
             ta_appear: int32 = _control_appear()
+            # HEIGHT: a CSS `height` (via _control_height_rows) wins; else the HTML
+            # `rows` attribute; else the UA default of 2 rows. <textarea> is non-void
+            # so its cascade already ran — read m_ht/d_ht directly through the helper.
             ta_rows: int32 = _control_height_rows()
+            if ta_rows == 0:
+                ta_rows = _attr_int(ne, te, cast[Ptr[uint8]]("rows"), 2)
+            if ta_rows < 1:
+                ta_rows = 1
+            # WIDTH (cols): a CSS `width` wins; else the HTML `cols` attribute; else
+            # the UA default of 20 columns. The cascade winner m_wd (inline d_wd
+            # overrides) is already px-resolved; convert to inner cells minus the two
+            # bracket cells, mirroring _control_width_cells for a void <input>.
+            ta_wpx: int32 = -1
+            if m_wd >= 0:
+                ta_wpx = m_wd
+            if d_wd >= 0:
+                ta_wpx = d_wd
+            ta_cols: int32 = 0
+            if ta_wpx >= 0:
+                ta_cols = ta_wpx / CELL_W - 2
+                if ta_cols < 2:
+                    ta_cols = 2
+            else:
+                ta_cols = _attr_int(ne, te, cast[Ptr[uint8]]("cols"), FORM_TEXT_COLS)
             if g_bg < 0 and ta_appear == 0:
                 g_bg = FORM_FIELD_BG
             _word_push(91)                            # '['
@@ -2858,7 +2890,7 @@ def _handle_tag(ts: uint64, te: uint64):
                 ilen = ilen + 1
                 p = p + 1
             ta_content: int32 = ilen                  # real chars before padding
-            while ilen < 8:
+            while ilen < ta_cols:                     # pad to the cols/width run
                 _word_push(95)                        # '_'
                 ilen = ilen + 1
             _word_push(93)                            # ']'

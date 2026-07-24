@@ -699,15 +699,15 @@ assert_grepF() {
         echo "[hb-host] FAIL $msg (missing: $pat)"; fail=1
     fi
 }
-assert_grepF '^FLOW  Name field: \[hi______\]$' "text input renders [value] padded box"
+assert_grepF '^FLOW  Name field: \[hi__________________\]$' "text input renders [value] padded to the 20-cell UA default width"
 assert_grepF '^FLOW  Subscribe: \[x\]$'         "checked checkbox renders [x]"
 assert_grepF '^FLOW  Colour: \(\*\) red$'       "checked radio renders (*)"
-assert_grepF '^FLOW  Notes: \[note text\]$'     "textarea renders its content in a box"
+assert_grepF '^FLOW  Notes: \[note text___________\]$' "textarea renders content padded to the 20-col UA default width"
 assert_grepF '^FLOW  Pick: \[ beta v\]$'        "select renders the selected option (beta)"
 assert_grepF '^FLOW  \[ Save \]$'               "<button> renders a [ label ] box"
 assert_grepF 'Search'                            "input type=submit renders a button"
 # the hidden input renders nothing (no box) on the second form's line.
-assert_grepF '^FLOW  \[dogs____\] \[ Go \]$'    "hidden input renders nothing (only visible fields box)"
+assert_grepF '^FLOW  \[dogs________________\] \[ Go \]$'    "hidden input renders nothing (only visible fields box)"
 # form DOM surface: input.type/name, select.value/selectedIndex, collections.
 assert_grepF '^JSLOG name\.type=text$'  "input.type defaults to text"
 assert_grepF '^JSLOG name\.name=who$'   "element.name reads the name attribute"
@@ -721,7 +721,7 @@ DUMPF1="$OUT/dump_forms_setval.txt"
 run_forms setval name Fluffy >"$DUMPF1" 2>&1
 cat "$DUMPF1"
 awk '/^SETVAL/{c=1} c' "$DUMPF1" > "$OUT/forms_after_setval.txt"
-assert_grepF '^FLOW  Name field: \[Fluffy__\]$' \
+assert_grepF '^FLOW  Name field: \[Fluffy______________\]$' \
     "he_dom_set_value updates the text input box" "$OUT/forms_after_setval.txt"
 assert_grepF '^FLOW  echo: Fluffy$' \
     "oninput handler read input.value and updated another element" \
