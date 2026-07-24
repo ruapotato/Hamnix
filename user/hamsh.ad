@@ -571,6 +571,15 @@ def _emit_tok(kind: int32, sref: uint64, ival: int64):
         # closing `}` / TK_EOF of a large sourced script and abort it
         # with a spurious "empty command"). lex_line surfaces this.
         lex_error = 1
+        # IDLE-CPU HANG FIX: force the LAST token slot to TK_EOF so the
+        # parser always sees a terminator. Otherwise the dropped trailing
+        # TK_EOF leaves tok_kind[TOK_MAX-1] as a non-EOF token; pk_advance()
+        # clamps ps_pos at that boundary, so `while pk_kind() != TK_EOF` in
+        # parse_program / parse_statement spins FOREVER. That was the VT
+        # login shells' idle hang (a >4096-token line pegged a core in
+        # v_render_str_only under an endless re-parse). With a TK_EOF here
+        # the parse terminates cleanly and lex_error aborts the line.
+        tok_kind[TOK_MAX - 1] = TK_EOF
         return
     tok_kind[tok_count] = kind
     tok_str[tok_count]  = sref
@@ -2431,10 +2440,16 @@ def parse_block() -> int32:
     while pk_is_op(OP_RBRACE) == 0 and pk_kind() != TK_EOF:
         if ps_error != 0:
             return n
+        _pb_pos: uint64 = ps_pos
         st: int32 = parse_statement()
         if st != 0:
             nd_kid_push(n, st)
         _skip_seps()
+        # FORWARD-PROGRESS GUARD (see parse_program): never re-parse a
+        # non-consumable token forever inside a `{ }` block.
+        if ps_pos == _pb_pos and ps_error == 0 \
+                and pk_is_op(OP_RBRACE) == 0 and pk_kind() != TK_EOF:
+            pk_advance()
     pk_expect_op(OP_RBRACE, "expected } to close block")
     return n
 
@@ -3468,10 +3483,22 @@ def parse_program() -> int32:
     while pk_kind() != TK_EOF:
         if ps_error != 0:
             break
+        _pp_pos: uint64 = ps_pos
         st: int32 = parse_statement()
         if st != 0:
             nd_kid_push(n, st)
         _skip_seps()
+        # FORWARD-PROGRESS GUARD (idle-CPU hang fix): if a full
+        # parse_statement + separator skip consumed NO token and set no
+        # error, the dispatch hit a token it can neither consume nor
+        # diagnose. Without this, `while pk_kind() != TK_EOF` re-parses the
+        # SAME token forever — a core pegged at 100% (the VT login shells'
+        # idle hang, observed spinning in v_render_str_only under an endless
+        # re-parse). Force one token of progress so the loop always
+        # terminates; the stray token is skipped exactly as an unknown token
+        # should be.
+        if ps_pos == _pp_pos and ps_error == 0 and pk_kind() != TK_EOF:
+            pk_advance()
     return n
 
 
@@ -7813,6 +7840,15 @@ def _argv_push_value(v: int32):
         i: uint64 = 0
         n: uint64 = val_ec[cast[uint64](v)]
         while i < n:
+            # IDLE-CPU HANG FIX: _argv_push_cstr silently no-ops once argv
+            # is full (argv_n+1 >= ARGV_MAX), but this loop kept rendering
+            # every remaining element regardless. A value whose element
+            # count `val_ec` is corrupt/huge (a malformed/uninitialised
+            # VT_LIST handle) therefore spun here forever inside
+            # v_render_str_only, pegging a core — the VT login shells' idle
+            # hang. Nothing more can be pushed once argv is full, so stop.
+            if argv_n + 1 >= ARGV_MAX:
+                return
             elem: int32 = v_list_get(v, i)
             _argv_push_cstr(v_render_str_only(elem))
             i = i + 1
@@ -7825,6 +7861,8 @@ def _argv_push_value(v: int32):
         bi: uint64 = 0
         bn: uint64 = val_ec[cast[uint64](bl)]
         while bi < bn:
+            if argv_n + 1 >= ARGV_MAX:      # see VT_LIST arm above
+                return
             _argv_push_cstr(v_render_str_only(v_list_get(bl, bi)))
             bi = bi + 1
         return
@@ -7849,6 +7887,14 @@ def _argv_build(cmdnode: int32) -> int32:
     nu: uint64 = cast[uint64](cmdnode)
     i: uint64 = 0
     while i < nd_kn[nu]:
+        # IDLE-CPU HANG FIX: argv can never hold more than ARGV_MAX
+        # entries (_argv_push_* no-op past it), so a command node whose
+        # kid-count nd_kn is corrupt/huge (a malformed AST) must not spin
+        # this loop — each pass eval_expr()+_argv_push_value() renders a
+        # value, so an unbounded nd_kn pegged a core inside v_render_str_only
+        # (the VT login shells' idle hang). Stop once argv is full.
+        if argv_n + 1 >= ARGV_MAX:
+            break
         kid: int32 = nd_kid_at(cmdnode, i)
         kk: int32 = nd_kind[cast[uint64](kid)]
         if kk == ND_WORD:
@@ -11305,6 +11351,13 @@ def exec_block(node: int32) -> int32:
     nu: uint64 = cast[uint64](node)
     i: uint64 = 0
     while i < nd_kn[node]:
+        # IDLE-CPU HANG FIX: a block's statement count can never exceed the
+        # kid-list pool (32768). A `nd_kn` above that is a corrupt AST node
+        # (observed: a malformed value pegged a core re-executing garbage
+        # statements — the VT login shells' idle hang). Stop rather than
+        # iterate a corrupt/huge count off into uninitialised kid slots.
+        if i >= 32768:
+            break
         st: int32 = nd_kid_at(node, i)
         ex: int32 = exec_statement(st)
         if ex != EX_NORMAL:

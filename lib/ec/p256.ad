@@ -455,7 +455,31 @@ def _mod_inv(r: Ptr[uint64], a: Ptr[uint64], exp: Ptr[uint64],
     p256_set_zero(&_sc_inv_one[0])
     _sc_inv_one[0] = 1
 
+    # TERMINATION GUARD (idle-CPU hang fix): the binary extended GCD
+    # provably terminates in <= ~2*bitlen (<= ~520) outer iterations for a
+    # value a COPRIME to the modulus m. A DEGENERATE input — a == 0, or a
+    # sharing a factor with m (gcd > 1) — never drives u or v to 1, so the
+    # loop below spins FOREVER. Worse, a == 0 makes u == 0, and _p256_is_even(0)
+    # is true with _p256_shr1(0) == 0, so the "strip 2s from u" inner loop
+    # ALSO never terminates. Such an inverse of a non-invertible element is a
+    # programming error upstream (e.g. inverting a zero Z-coordinate / point at
+    # infinity), but it must NOT wedge the CPU: sshd's host-key build reached
+    # exactly this state at boot and spun a core at ~100% forever, starving the
+    # desktop. Bound the outer loop and short-circuit a zero operand; for every
+    # VALID coprime input the cap is never approached, so this changes no
+    # correct result — it only converts an infinite hang into a bounded return.
+    _mi_guard: uint64 = 0
     while True:
+        _mi_guard = _mi_guard + 1
+        if _mi_guard > 4096:
+            # Non-invertible / degenerate input — give up rather than hang.
+            p256_copy(r, &_sc_inv_x1[0])
+            return
+        if p256_is_zero(&_sc_inv_u[0]) != 0 or p256_is_zero(&_sc_inv_v[0]) != 0:
+            # gcd(a, m) is not a unit: no inverse exists. Return best-effort
+            # instead of spinning the "strip 2s from 0" inner loop forever.
+            p256_copy(r, &_sc_inv_x1[0])
+            return
         if p256_eq(&_sc_inv_u[0], &_sc_inv_one[0]) != 0:
             p256_copy(r, &_sc_inv_x1[0])
             return
