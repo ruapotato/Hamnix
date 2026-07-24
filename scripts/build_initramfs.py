@@ -163,6 +163,29 @@ _mp3_src = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "soun
 if _mp3_src.is_file():
     FILES.append(("/usr/share/sounds/test.mp3", _mp3_src.read_bytes()))
 
+# The DE login/loading jingle (48 kHz WAV) that user/hamdesktop.ad streams to
+# the HDA sink (detached `aplay /usr/share/sounds/boot-jingle.wav`) when the
+# desktop comes up, plus the longer "Hamnix Music Demo" (MPEG-1 Layer III,
+# 128k / 48 kHz) that hamaudioscene DEFAULTS to on a bare launch
+# (/usr/share/music/hamnix-music-demo.mp3, track 0 of the bare playlist).
+# On the LIVE/installer medium native userland rides in THIS cpio (there is no
+# ext4 sysroot yet, and DE apps resolve /usr/share against this boot file
+# server), so BOTH assets MUST be planted here — the installed-disk path gets
+# them via the hamnix-hamaudio package (scripts/build_packages.py). Without
+# them the live desktop had no boot chime (aplay: `cannot open input`, exit 1)
+# AND the audio player's default track failed to open ("(unreadable audio)").
+_jingle_src = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "sounds" / "boot-jingle.wav"
+if _jingle_src.is_file():
+    FILES.append(("/usr/share/sounds/boot-jingle.wav", _jingle_src.read_bytes()))
+else:
+    print(f"[build_initramfs] WARN: jingle {_jingle_src} absent — no boot chime")
+_music_src = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "sounds" / "hamnix-music-demo.mp3"
+if _music_src.is_file():
+    FILES.append(("/usr/share/music/hamnix-music-demo.mp3", _music_src.read_bytes()))
+else:
+    print(f"[build_initramfs] WARN: music demo {_music_src} absent — "
+          f"hamaudioscene default track will not open")
+
 # Royalty-free (CC0) Motion-JPEG test clip for the hamvideo player — same
 # rationale as the .wav above: the live/installer cpio must carry the clip
 # `hamvideoscene` (and scripts/test_hamvideo_playback.sh) default to at

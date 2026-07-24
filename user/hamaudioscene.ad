@@ -69,6 +69,16 @@ au_filelen: uint64 = 0
 
 HDA_CAP: uint64 = 262144                    # HDA stream DMA buffer capacity
 
+# Currently-staged HDA window: byte range [stage_from, stage_from+stage_span)
+# into the PCM payload. The HDA DMA buffer is CYCLIC (drivers/audio/hda.ad
+# programs CBL = staged bytes, LVI = 0), so once a window drains it LOOPS
+# forever unless we stage the NEXT window. A track longer than HDA_CAP
+# (~1.36 s at 48 kHz stereo) therefore played only its first ~1.36 s on
+# repeat — the "won't play / stuck at ~1 sec" bug — until the transport loop
+# re-stages the next window as the play cursor crosses the boundary (main()).
+stage_from: uint64 = 0
+stage_span: uint64 = 0
+
 # Playback timing anchors (jiffies clock, HZ=100 => 10 ms/tick).
 play_start_j: uint64 = 0
 play_base_ms: uint64 = 0
@@ -265,6 +275,13 @@ def _stage_and_start(from_byte: uint64):
     fb: uint64 = _src_frame_bytes()
     if fb > 0:
         span = (span / fb) * fb
+    if span == 0:
+        sys_close(audfd)
+        return
+    # Record the staged window so the transport loop knows when the cyclic
+    # DMA buffer has drained and the NEXT window must be staged.
+    stage_from = from_byte
+    stage_span = span
     base: uint64 = cast[uint64](_src_base()) + _src_off() + from_byte
     written: uint64 = 0
     while written < span:
@@ -682,6 +699,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             else:
                 hamaudio_set_position_ms(now_ms)
                 cur_byte = _ms_to_bytes(now_ms)
+                # Re-stage the NEXT HDA window once the play cursor crosses the
+                # end of the currently-staged (cyclic) window, so a track longer
+                # than HDA_CAP streams all the way through instead of looping its
+                # first ~1.36 s. The position clock is wall-time driven, so
+                # re-staging from cur_byte resumes the audio at the right spot.
+                if stage_span > 0 and cur_byte >= stage_from + stage_span \
+                        and cur_byte < _src_len():
+                    _stage_and_start(cur_byte)
                 hamaudio_set_level(_level_at(cur_byte))
                 changed = 1
 

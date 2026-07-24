@@ -57,10 +57,20 @@ def _slen(s: Ptr[uint8]) -> uint64:
 
 # #329: hamfm used to open at "/". It should open in the user's HOME (the
 # live user's /home/live). Resolve the start dir at launch:
-#   1) $HOME from /env/HOME, if set + absolute + an existing directory;
+#   1) $HOME from /env/HOME, if set + absolute + LONGER THAN "/" + an
+#      existing directory;
 #   2) else /home/live (baked into the live rootfs), if it exists;
 #   3) else "/" (last resort — keeps navigation sane on odd namespaces).
 # Existence is confirmed by opening the path (sys_open succeeds on a dir).
+#
+# WHY reject a bare "/" HOME: the DE apps are spawned by the compositor
+# (hamUId -> hamdesktop), NOT by hamsh, so they inherit the compositor's
+# ambient env — where HOME is the "/" placeholder (hamsh seeds HOME="/" and
+# only OVERWRITES it from /etc/passwd for its OWN interactive session; a
+# non-hamsh child never gets that fix-up). A literal "/" satisfied the old
+# "absolute + exists" test, so the file manager opened at the filesystem
+# ROOT instead of the user's home. Treat "/" as "no real home" and fall
+# through to /home/live, the live user's actual home.
 def _fm_dir_exists(path: Ptr[uint8]) -> int32:
     fd: int32 = sys_open(cast[Ptr[char]](path))
     if fd < 0:
@@ -89,7 +99,7 @@ def _fm_read_home(out: Ptr[uint8], cap: uint64) -> uint64:
 def _fm_apply_start_dir():
     hbuf: Array[520, uint8]
     hl: uint64 = _fm_read_home(&hbuf[0], 520)
-    if hl > 0 and hbuf[0] == 47 and _fm_dir_exists(&hbuf[0]) != 0:
+    if hl > 1 and hbuf[0] == 47 and _fm_dir_exists(&hbuf[0]) != 0:
         fmc_set_cur_path(&hbuf[0])
         return
     if _fm_dir_exists(cast[Ptr[uint8]]("/home/live")) != 0:
