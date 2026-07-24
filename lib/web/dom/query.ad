@@ -226,9 +226,17 @@ def _cx_is_empty(slot: int32) -> int32:
 # [attr]/[attr=v]) against created element at cx `slot`. Attributes/id/class are
 # read from the node's live JS props (className for `class`).
 def _cre_sel_match(slot: int32, sel: Ptr[uint8], seln: int32) -> int32:
-    if seln == 0:
+    return _cid_sel_match(cx_cid[slot], sel, seln)
+
+
+# cid-based version of _cre_sel_match: match the single compound base
+# sel[0..seln) against a CREATED element by its cre id (tag from cre_tag_*,
+# class/id/attrs from the node's live JS props). Usable for a node with no cx
+# slot (e.g. a createElement'd element that was never appended) — the basis for
+# element.matches()/closest() on created nodes.
+def _cid_sel_match(cid: int32, sel: Ptr[uint8], seln: int32) -> int32:
+    if seln == 0 or cid < 0:
         return 0
-    cid: int32 = cx_cid[slot]
     i: int32 = 0
     if sel[0] == 42:                                      # '*'
         i = 1
@@ -847,6 +855,10 @@ def _attach_el_methods(o: int32):
                 js_new_native_fn(js_hbase + NID_REPLCHILD))
     js_set_prop(o, cast[Ptr[uint8]]("remove"), 6, \
                 js_new_native_fn(js_hbase + NID_REMOVE))
+    js_set_prop(o, cast[Ptr[uint8]]("click"), 5, \
+                js_new_native_fn(js_hbase + NID_CLICK))
+    js_set_prop(o, cast[Ptr[uint8]]("append"), 6, \
+                js_new_native_fn(js_hbase + NID_APPEND_M))
     # canvas.getContext('2d') — meaningful only on a <canvas>; the dispatcher
     # returns null for any other tag, so attaching it universally is harmless.
     js_set_prop(o, cast[Ptr[uint8]]("getContext"), 10, \

@@ -258,6 +258,44 @@ reactive re-render all sit on top of these primitives, so a modern SPA renders i
 
 ## Recommended phased roadmap
 
+### Phase-0 STATUS — LANDED 2026-07-24 (this pass)
+
+Phase-0 quick wins are largely DONE. Probe-suite deltas (oracle = node/V8 for JS,
+`chromium --headless --dump-dom` for DOM), all on `build/host/hambrowse_host`:
+
+- **JS-hard (`scripts/probe_js_hard.sh`): 57/70 → 63/70.**
+- **DOM/Web-API (`scripts/probe_dom_api.sh`): 37/61 → 53/61.**
+- **JS-core (`scripts/probe_js_coverage.sh`): 86/86 (unchanged — no regression).**
+- Render gates (host, google, realsite, realarticle) + DOM/event gates
+  (domapi/domcore/dommut/events/evtcapture/matches/contains/classlistr2/innerhtml/
+  qsel_created/domtree/insadj/observers/evttypes) all still PASS — no paint regression.
+- New gate `scripts/test_hambrowse_phase0_host.sh` (+ `tests/fixtures/hambrowse_phase0.html`)
+  pins every fix below to its V8/Chrome-verified output; registered in `ci_battery_manifest.txt`.
+
+**DONE (each verified base-FAIL → after-PASS vs the oracle):**
+- ✅ `for(let …)` per-iteration binding — closure-in-loop was `1,2,3`, now `0,1,2` (V8). *(gap 4)*
+- ✅ `element.click()` + `dispatchEvent(new Event/CustomEvent)` drive handlers on
+  created/innerHTML nodes: target phase + bubbling over the live `parentNode` chain,
+  `e.target`, `detail`, `preventDefault`/`defaultPrevented`, `stopPropagation`,
+  `removeEventListener`. *(gap 3)* — via a JS-object-keyed listener store + `_obj_dispatch`
+  (distinct from the coordinate-driven source-tree `_dispatch_event`, which is untouched).
+- ✅ `closest`/`matches` on created + innerHTML nodes; `append`/`remove`/`insertBefore`/
+  `replaceChild` keep `firstChild`/`lastChild`/`nextElementSibling` in sync;
+  `nextElementSibling`/`parentNode` now wired for innerHTML children; **variadic**
+  `classList.add`/`remove`; `getAttribute` round-trips a runtime `setAttribute`;
+  `input.checked` reflects the innerHTML boolean attr. *(gap 5)*
+- ✅ JS long tail *(gap 7)*: `Promise.any`, `new.target` (was SyntaxError), engine-thrown
+  errors are `instanceof TypeError`/`Error`, `Map.prototype.entries()/keys()/values()`
+  return real iterators (`.next()`), `"length" in []`.
+
+**REMAINING (deferred — bigger or lower-ROI, NOT the Phase-0 keystone):**
+- `new FormData(formEl)` scraping named controls (cross-layer JS↔DOM form walk).
+- `classList` object on *created* elements (keyed by source index today).
+- `document.cookie` write round-trip; `Headers`/`Request`/`Response`/`URLSearchParams` fetch model *(gap 6, needs on-device)*.
+- JS: generator `.next(v)` value injection (engine runs generators EAGERLY — needs the lazy-generator rework, not a Phase-0 patch), `DataView`, `TypedArray.map/set/subarray`, `Intl.Collator`, `String.prototype.normalize`.
+- canvas-2D-in-JS, Web Components (`customElements`/`attachShadow`/`<template>.content`) — Phase-4.
+- The **live-DOM interaction keystone (Phase 1)** and **CSSOM read-back (Phase 2)** are unchanged and remain the multi-month heart of the effort. The Phase-0 event work above is the *programmatic* target+bubble path over the JS object tree; it does NOT replace the Phase-1 shared live-tree/hit-test rework.
+
 **Phase 0 — quick, high-ROI wins (days–2 weeks), while Phase 1 is scoped:**
 - `element.click()` / `dispatchEvent` → existing dispatch core (gap 3).
 - `closest`, `matches`, variadic `classList.add`, `append`/`remove`, `nextElementSibling`,

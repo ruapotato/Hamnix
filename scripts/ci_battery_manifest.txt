@@ -1553,6 +1553,17 @@ bash scripts/test_hambrowse_cssom_host.sh
 # coexists with a nested-node mutation (recursive rewrite); element scrollTop/
 # scrollLeft (writable static offsets) + document.body.scrollHeight.
 bash scripts/test_hambrowse_domcore_host.sh
+# PHASE-0 FUNCTIONAL FIXES (docs/browser_gap_analysis_2026-07-24.md): the
+# correctness bugs + missing-but-simple APIs that block RUNNING (not just
+# painting) the live web. for(let) fresh per-iteration binding (closure-in-loop:
+# was 1,2,3 -> V8 0,1,2); programmatic events (element.click() / dispatchEvent(new
+# Event|CustomEvent) drive handlers with target + bubbling + preventDefault on
+# created/innerHTML nodes); matches()/closest() over the live parentNode chain;
+# append()/remove()/nextElementSibling; variadic classList.add; input.checked from
+# a boolean attr; JS long tail (new.target, error instanceof, 'length' in [],
+# Map.entries() iterator, Promise.any). Every line oracle-checked vs node (V8) /
+# chromium --headless (probe_js_hard.sh / probe_dom_api.sh). NO QEMU (JSLOG oracle).
+bash scripts/test_hambrowse_phase0_host.sh
 # DOM GEOMETRY + TRAVERSAL INTEGRATION (W3C dom / CSSOM-view): one fixture that
 # ties Element.matches()/closest() (class/compound/id/negative + event-delegation
 # ancestor walk), document.body/documentElement/head roots, and getBoundingClient

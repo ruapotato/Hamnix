@@ -1808,6 +1808,7 @@ def install_builtins():
     obj_add_native(g_promise, cast[Ptr[uint8]]("all"), NAT_PROMISE_ALL)
     obj_add_native(g_promise, cast[Ptr[uint8]]("race"), NAT_PROMISE_RACE)
     obj_add_native(g_promise, cast[Ptr[uint8]]("allSettled"), NAT_PROMISE_ALLSETTLED)
+    obj_add_native(g_promise, cast[Ptr[uint8]]("any"), NAT_PROMISE_ANY)
     obj_set(objid_of(g_promise), str_from_cstr(cast[Ptr[uint8]]("prototype")), g_promise_proto)
     obj_set(objid_of(g_promise_proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), g_promise)
     env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("Promise")), g_promise, 0)

@@ -961,6 +961,16 @@ def throw_error(name: Ptr[uint8], msg: Ptr[uint8]):
     o: int32 = objid_of(ev)
     obj_set(o, str_from_cstr(name_key()), v_string_cstr(name))
     obj_set(o, str_from_cstr(msg_key()), v_string_cstr(msg))
+    # Link the error to its constructor's prototype so `e instanceof TypeError`
+    # (and `instanceof Error`) hold for engine-thrown errors, not just
+    # user-`throw new TypeError()`. Looks up the constructor by name in globals.
+    ctorb: int32 = env_lookup_bind(g_env, str_from_cstr(name))
+    if ctorb >= 0:
+        ctorv: int32 = b_val[ctorb]
+        if tag_of(ctorv) == TAG_OBJ:
+            ep: int32 = obj_get(objid_of(ctorv), str_from_cstr(cast[Ptr[uint8]]("prototype")))
+            if tag_of(ep) == TAG_OBJ:
+                obj_proto[o] = objid_of(ep)
     throw_val = ev
     ctl = CTL_THROW
 

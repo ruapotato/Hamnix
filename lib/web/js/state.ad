@@ -432,6 +432,8 @@ MAX_THIS: int32 = 20000
 this_stack: Array[20000, int32]
 home_stack: Array[20000, int32]   # home prototype (for `super`) per active frame
 curfn_stack: Array[20000, int32]  # object id of the function currently executing
+newtarget_stack: Array[20000, int32]  # per-frame `new.target` value (0/v_undef when not a construct call)
+pending_newtarget: int32 = 0      # new.target to hand the NEXT ordinary-function frame (set by eval_new)
 # Per-frame snapshot of the caller's evaluated-arg window (call_args base + count),
 # so a body's bare `arguments` can be materialized LAZILY (only when referenced —
 # no per-call allocation). argc = -1 marks a frame with no `arguments` (arrows,

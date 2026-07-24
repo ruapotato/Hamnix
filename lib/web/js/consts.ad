@@ -203,6 +203,7 @@ ND_PRIVNAME: int32 = 62        # bare class private name `#x` (only valid as LHS
 ND_BIGINT: int32 = 63          # BigInt literal `123n` (n_str = source digits sid, sans the `n`)
 ND_HOLE:   int32 = 64          # array-literal elision (a `,,` hole); reads as undefined, skipped as an assignment target
 ND_SEQ:    int32 = 65          # comma sequence expression `a, b, c`: eval n_a (for side effects), then n_b; value is n_b. Left-associative.
+ND_NEWTARGET: int32 = 66       # `new.target` meta-property — the constructor of the active construct call, else undefined.
 
 # Binary operator codes (also used for compound-assign).
 OP_ADD: int32 = 0
@@ -334,6 +335,7 @@ NAT_PROMISE_REJECT:   int32 = 95    # Promise.reject(r)
 NAT_PROMISE_ALL:      int32 = 96    # Promise.all([...])
 NAT_PROMISE_RACE:     int32 = 97    # Promise.race([...])
 NAT_PROMISE_ALLSETTLED: int32 = 98  # Promise.allSettled([...])
+NAT_PROMISE_ANY:      int32 = 324   # Promise.any([...])
 NAT_PROMISE_THEN:     int32 = 99    # Promise.prototype.then
 NAT_PROMISE_CATCH:    int32 = 100   # Promise.prototype.catch
 NAT_PROMISE_FINALLY:  int32 = 101   # Promise.prototype.finally

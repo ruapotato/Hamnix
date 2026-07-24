@@ -691,6 +691,12 @@ def parse_args() -> int32:
 def parse_new() -> int32:
     if pk() == TK_NEW:
         tk_pos = tk_pos + 1
+        # `new.target` meta-property: NEW '.' target
+        if pk() == TK_DOT:
+            tk_pos = tk_pos + 1
+            tk_pos = tk_pos + 1                # consume the `target` identifier
+            ntn: int32 = nd_new(ND_NEWTARGET)
+            return parse_call_member(ntn)
         callee: int32 = parse_member_only(parse_primary())
         nd: int32 = nd_new(ND_NEW)
         n_a[nd] = callee

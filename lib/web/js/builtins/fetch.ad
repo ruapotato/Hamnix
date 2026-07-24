@@ -552,15 +552,18 @@ def promise_combinator(iterable: int32, kind: int32) -> int32:
     ao: int32 = objid_of(iterable)
     n: int32 = arr_len[ao]
     results: int32 = v_new_array()
-    if kind != 1:                     # all / allSettled prefill result slots
+    if kind == 0 or kind == 2:        # all / allSettled prefill result slots
         i0: int32 = 0
         while i0 < n:
             arr_set(objid_of(results), i0, v_undef())
             i0 = i0 + 1
     if n == 0:
-        # all([]) / allSettled([]) fulfill immediately; race([]) stays pending.
-        if kind != 1:
+        # all([]) / allSettled([]) fulfill immediately; race([]) stays pending;
+        # any([]) rejects immediately (no promise ever fulfilled).
+        if kind == 0 or kind == 2:
             promise_fulfill(objid_of(result), results)
+        elif kind == 3:
+            promise_reject(objid_of(result), make_type_error(cast[Ptr[uint8]]("All promises were rejected")))
         return result
     if comb_n >= COMB_CAP:
         return result
@@ -582,7 +585,7 @@ def comb_on_fulfilled(fo: int32, value: int32):
     idx: int32 = obj_p_b[fo]
     kind: int32 = cast[int32](comb_kind[comb])
     result: int32 = comb_result[comb]
-    if kind == 1:                     # race: first settle wins
+    if kind == 1 or kind == 3:        # race/any: first fulfilment wins
         resolve_promise(objid_of(result), value)
         return
     if kind == 0:                     # all: collect, resolve when none remain
@@ -610,6 +613,11 @@ def comb_on_rejected(fo: int32, reason: int32):
         comb_remaining[comb] = comb_remaining[comb] - 1
         if comb_remaining[comb] == 0:
             promise_fulfill(objid_of(result), comb_results[comb])
+        return
+    if kind == 3:                     # any: reject only when ALL have rejected
+        comb_remaining[comb] = comb_remaining[comb] - 1
+        if comb_remaining[comb] == 0:
+            promise_reject(objid_of(result), make_type_error(cast[Ptr[uint8]]("All promises were rejected")))
         return
     # all / race: first rejection rejects the result (guarded, so once)
     promise_reject(objid_of(result), reason)

@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head><title>phase0</title></head>
+<body>
+<div id="host"></div>
+<div id="work"></div>
+<div id="cls"></div>
+<script>
+// ---- for(let) per-iteration binding (closure-in-loop) ----
+var fns = [];
+for (let i = 0; i < 3; i++) fns.push(function () { return i; });
+console.log("FORLET " + fns.map(function (f) { return f(); }).join(","));
+
+// ---- element.click() drives a registered handler (created node) ----
+var btn = document.createElement("button");
+btn.id = "b";
+document.getElementById("host").appendChild(btn);
+btn.addEventListener("click", function () { console.log("CLICK fired"); });
+btn.click();
+
+// ---- dispatchEvent(new Event) fires listeners; bubbling + target ----
+document.getElementById("work").innerHTML =
+  "<div id=p class=box><button id=c>x</button></div>";
+var got = "";
+document.getElementById("p").addEventListener("click", function (e) {
+  got = e.target.id;
+});
+document.getElementById("c").click();
+console.log("BUBBLE " + got);
+
+// ---- custom event via dispatchEvent(new Event) + CustomEvent detail ----
+var cd = document.createElement("div");
+var ctype = "";
+cd.addEventListener("foo", function (ev) { ctype = ev.type; });
+cd.dispatchEvent(new Event("foo"));
+console.log("CUSTOM " + ctype);
+var dv = 0;
+cd.addEventListener("x", function (ev) { dv = ev.detail.v; });
+cd.dispatchEvent(new CustomEvent("x", { detail: { v: 42 } }));
+console.log("DETAIL " + dv);
+
+// ---- preventDefault + stopPropagation ----
+var av = document.createElement("a");
+var evc = new Event("click", { cancelable: true });
+av.addEventListener("click", function (x) { x.preventDefault(); });
+av.dispatchEvent(evc);
+console.log("PREVENT " + evc.defaultPrevented);
+
+// ---- closest()/matches() on created + innerHTML nodes ----
+console.log("MATCHES " + document.getElementById("p").matches(".box"));
+console.log("CLOSEST " + (document.getElementById("c").closest(".box") ? "Y" : "N"));
+
+// ---- append / remove / insertBefore / nextElementSibling ----
+var w2 = document.getElementById("host");
+w2.append("txt");
+console.log("APPEND " + (w2.textContent.indexOf("txt") >= 0 ? "Y" : "N"));
+var rc = document.createElement("section");
+document.getElementById("work").innerHTML = "";
+document.getElementById("work").appendChild(rc);
+var ic = document.createElement("i");
+rc.appendChild(ic);
+ic.remove();
+console.log("REMOVE " + rc.children.length);
+document.getElementById("work").innerHTML = "<i>1</i><b>2</b>";
+console.log("NEXTSIB " +
+  document.getElementById("work").firstElementChild.nextElementSibling.tagName);
+
+// ---- variadic classList.add ----
+var cl = document.getElementById("cls");
+cl.classList.add("a", "b", "c");
+console.log("CLSADD " + cl.className);
+
+// ---- input.checked reflected from innerHTML boolean attr ----
+document.getElementById("work").innerHTML =
+  "<input type=checkbox id=chk checked>";
+console.log("CHECKED " + document.getElementById("chk").checked);
+
+// ---- JS: new.target, error instanceof, "length" in [], Map.entries().next() ----
+var ntseen = "";
+function F() { ntseen = new.target ? "new" : "call"; }
+new F();
+console.log("NEWTARGET " + ntseen);
+F();
+console.log("NEWTARGETC " + ntseen);
+try { null.x; } catch (e) { console.log("ERRINSTOF " + (e instanceof TypeError)); }
+console.log("INOP " + ("length" in []));
+var m = new Map([["k", 7]]);
+var it = m.entries();
+var en = it.next().value;
+console.log("MAPENT " + en[0] + en[1]);
+
+// ---- Promise.any resolves with first fulfilment ----
+Promise.any([Promise.reject(1), Promise.resolve("ok")]).then(function (v) {
+  console.log("PROMISEANY " + v);
+});
+</script>
+</body>
+</html>

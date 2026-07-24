@@ -615,6 +615,10 @@ def op_in(keyv: int32, objv: int32) -> int32:
         idx: int32 = str_as_index(ks)
         if idx >= 0 and idx < arr_len[o]:
             return 1
+        # `length` is an intrinsic own property of every array (not stored as a
+        # real prop), so `"length" in arr` must be true.
+        if str_eq_cstr(ks, cast[Ptr[uint8]]("length")) != 0:
+            return 1
     # `in` tests own AND inherited properties (walk the [[Prototype]] chain)
     cur: int32 = o
     while cur >= 0:
@@ -991,6 +995,10 @@ def eval_expr(node: int32, env: int32) -> int32:
         return rig
     if k == ND_CALL:
         return eval_call(node, env)
+    if k == ND_NEWTARGET:
+        if this_top > 0:
+            return newtarget_stack[this_top - 1]
+        return v_undef()
     if k == ND_NEW:
         return eval_new(node, env)
     if k == ND_TMPL:
@@ -1740,6 +1748,10 @@ def invoke(fnv: int32, thisv: int32, argbase: int32, argc: int32) -> int32:
     this_stack[this_top] = use_this
     home_stack[this_top] = use_home
     curfn_stack[this_top] = o
+    # `new.target`: this frame sees the constructor only if eval_new armed
+    # pending_newtarget for it; any nested ordinary call resets to undefined.
+    newtarget_stack[this_top] = pending_newtarget
+    pending_newtarget = 0
     # Record this frame's evaluated-arg window for a lazy `arguments` object.
     # Arrows have no own `arguments` (they see the enclosing function's, which we
     # approximate by leaving them out): mark -1 so a reference falls through.
@@ -2176,7 +2188,10 @@ def eval_new(node: int32, env: int32) -> int32:
         call_top = base
         gc_popto(gsn)
         return v_undef()
+    save_nt: int32 = pending_newtarget
+    pending_newtarget = fnv                # arm new.target for the constructor frame
     r: int32 = run_constructor(fnv, self_obj, base, argc)
+    pending_newtarget = save_nt
     call_top = base
     gc_popto(gsn)
     if ctl == CTL_THROW:
@@ -2557,9 +2572,18 @@ def exec_for(node: int32, env: int32):
             else:
                 break
         if n_c[node] >= 0:
-            eval_expr(n_c[node], curenv)
-        if is_let != 0:
-            env_copy_locals(curenv, loopenv)
+            if is_let != 0:
+                # Per spec (ForBodyEvaluation / CreatePerIterationEnvironment):
+                # the increment runs in a FRESH per-iteration environment copied
+                # from the current one, so a closure captured in the body keeps
+                # its body-time value instead of seeing the incremented value.
+                incenv: int32 = env_new(env, 0)
+                env_push(incenv)
+                env_copy_locals(curenv, incenv)
+                eval_expr(n_c[node], incenv)
+                env_copy_locals(incenv, loopenv)
+            else:
+                eval_expr(n_c[node], curenv)
         env_popto(body_save)               # release this iteration's curenv
     env_popto(esave_for)                   # release loopenv (+ any curenv left by a break)
 

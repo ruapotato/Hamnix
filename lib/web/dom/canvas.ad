@@ -6,6 +6,7 @@
 from lib.web.dom.forms import _has_word
 from lib.htmlengine import he_media_match
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
+from lib.htmlengine import _cid_sel_match
 from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
@@ -587,12 +588,58 @@ def _frag_set_attrs(co: int32, sp: Ptr[uint8], a: int32, b: int32):
             js_set_prop(co, cast[Ptr[uint8]]("className"), 9, av)
         elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("id"), 2) != 0:
             js_set_prop(co, cast[Ptr[uint8]]("id"), 2, av)
+        elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("checked"), 7) != 0:
+            js_set_prop(co, cast[Ptr[uint8]]("checked"), 7, js_bool(1))
+        elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("disabled"), 8) != 0:
+            js_set_prop(co, cast[Ptr[uint8]]("disabled"), 8, js_bool(1))
+        elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("selected"), 8) != 0:
+            js_set_prop(co, cast[Ptr[uint8]]("selected"), 8, js_bool(1))
         else:
             js_set_prop(co, &sp[ns], cast[uint64](ne - ns), av)
 
 
 # Close the top open element on the fragment stack: finalize its textContent
 # (the shared linear cursor spans its descendants too) and its child arrays.
+# Wire next/previousElementSibling (+ nextSibling/previousSibling aliases) across
+# the ELEMENT children of a live .children array, skipping text nodes. Also set
+# the parent's first/lastElementChild. Gives fragment/innerHTML children the
+# sibling traversal + delegation surface real code walks. `parentv` is the JS
+# object owning these children (for first/last) or js_null() to skip that.
+def _wire_sibling_links(arr: int32, parentv: int32):
+    if js_is_array(arr) == 0:
+        return
+    n: int32 = js_array_len(arr)
+    prev_el: int32 = js_null()
+    firsto: int32 = js_null()
+    lasto: int32 = js_null()
+    i: int32 = 0
+    while i < n:
+        ev: int32 = js_array_get(arr, i)
+        ecid: int32 = _find_cre_by_obj(ev)
+        is_el: int32 = 1
+        if ecid >= 0 and cre_is_text[ecid] != 0:
+            is_el = 0
+        if is_el != 0:
+            js_set_prop(ev, cast[Ptr[uint8]]("previousElementSibling"), 22, prev_el)
+            js_set_prop(ev, cast[Ptr[uint8]]("previousSibling"), 15, prev_el)
+            js_set_prop(ev, cast[Ptr[uint8]]("nextElementSibling"), 18, js_null())
+            js_set_prop(ev, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+            if prev_el != js_null():
+                js_set_prop(prev_el, cast[Ptr[uint8]]("nextElementSibling"), 18, ev)
+                js_set_prop(prev_el, cast[Ptr[uint8]]("nextSibling"), 11, ev)
+            prev_el = ev
+            if firsto == js_null():
+                firsto = ev
+            lasto = ev
+        i = i + 1
+    if parentv != js_null():
+        js_set_prop(parentv, cast[Ptr[uint8]]("firstElementChild"), 17, firsto)
+        js_set_prop(parentv, cast[Ptr[uint8]]("lastElementChild"), 16, lasto)
+        # element-only child model: firstChild/lastChild alias the element ones.
+        js_set_prop(parentv, cast[Ptr[uint8]]("firstChild"), 10, firsto)
+        js_set_prop(parentv, cast[Ptr[uint8]]("lastChild"), 9, lasto)
+
+
 def _frag_close_top(depth: int32):
     cid: int32 = frag_st_cid[depth]
     if cid < 0:
@@ -604,6 +651,7 @@ def _frag_close_top(depth: int32):
     arr: int32 = frag_st_arr[depth]
     js_set_prop(co, cast[Ptr[uint8]]("children"), 8, arr)
     js_set_prop(co, cast[Ptr[uint8]]("childNodes"), 10, arr)
+    _wire_sibling_links(arr, co)
 
 
 # Parse HTML fragment sp[0..sl) into created nodes; append the TOP-LEVEL child
@@ -654,7 +702,13 @@ def _parse_fragment(sp: Ptr[uint8], sl: int32, root: int32):
                 attr_end = te - 1
             _frag_set_attrs(co, sp, j2, attr_end)
             js_array_push(frag_st_arr[depth], co)
-            js_set_prop(co, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+            # link to the enclosing fragment element (depth 0 = the innerHTML host,
+            # patched by the caller since _parse_fragment doesn't know it).
+            fp: int32 = js_null()
+            if depth > 0 and frag_st_cid[depth] >= 0:
+                fp = cre_obj[frag_st_cid[depth]]
+            js_set_prop(co, cast[Ptr[uint8]]("parentNode"), 10, fp)
+            js_set_prop(co, cast[Ptr[uint8]]("parentElement"), 13, fp)
             if _frag_is_void(&sp[ns], nlen) == 0 and selfclose == 0:
                 if depth + 1 < FRAG_STACK_MAX:
                     depth = depth + 1
@@ -830,6 +884,16 @@ def _apply_inner_html(thisv: int32, vp: Ptr[uint8], vn: int32):
     _parse_fragment(vp, vn, root)
     js_set_prop(thisv, cast[Ptr[uint8]]("children"), 8, root)
     js_set_prop(thisv, cast[Ptr[uint8]]("childNodes"), 10, root)
+    # top-level fragment children parent to the innerHTML host; wire their
+    # sibling links (and refresh host first/lastElementChild below).
+    rti: int32 = 0
+    rtn: int32 = js_array_len(root)
+    while rti < rtn:
+        rtc: int32 = js_array_get(root, rti)
+        js_set_prop(rtc, cast[Ptr[uint8]]("parentNode"), 10, thisv)
+        js_set_prop(rtc, cast[Ptr[uint8]]("parentElement"), 13, thisv)
+        rti = rti + 1
+    _wire_sibling_links(root, js_null())
     # keep .textContent consistent with the new subtree (innerHTML raw-override
     # still wins in render, so this only affects a subsequent JS read).
     js_set_prop(thisv, cast[Ptr[uint8]]("textContent"), 11, \
@@ -849,6 +913,36 @@ def _apply_inner_html(thisv: int32, vp: Ptr[uint8], vn: int32):
 # Does source element `el`'s start tag match single/rightmost-compound selector
 # selp[0..seln)? A descendant selector degrades to its rightmost compound (the
 # documented round-1 approximation, shared with querySelector).
+# Does a CREATED element (by cre id) match selector-list selp[0..seln)? Splits
+# the comma list, and for each sub-selector matches the RIGHTMOST compound
+# against the node's JS props (tag/class/id/[attr]) — a descendant/child
+# combinator degrades to its rightmost compound, the same round-1 approximation
+# _el_matches_sel uses for source nodes. Basis for matches()/closest() on
+# created nodes (which have no source tree index).
+def _creobj_matches_any(cid: int32, selp: Ptr[uint8], seln: int32) -> int32:
+    if cid < 0 or seln <= 0:
+        return 0
+    _sel_split(selp, seln)
+    k: int32 = 0
+    while k < g_sellist_n:
+        so: int32 = g_sellist_off[k]
+        sl: int32 = g_sellist_len[k]
+        # rightmost compound: scan back to the last combinator/space
+        rs: int32 = so
+        j: int32 = so + sl - 1
+        while j >= so:
+            cbj: uint8 = selp[j]
+            if cbj == 32 or cbj == 62 or cbj == 43 or cbj == 126:
+                rs = j + 1
+                j = -1
+            else:
+                j = j - 1
+        if _cid_sel_match(cid, &selp[rs], (so + sl) - rs) != 0:
+            return 1
+        k = k + 1
+    return 0
+
+
 def _el_matches_sel(el: int32, selp: Ptr[uint8], seln: int32) -> int32:
     if el < 0 or seln <= 0:
         return 0
@@ -1737,6 +1831,9 @@ def _js_host_dispatch(id: int32) -> int32:
         if js_arg_count() >= 2:
             rvn: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
             rvel: int32 = _find_el_by_obj(js_this())
+            # created/dynamic node: drop from the object-stored listener array.
+            if rvel < 0 and _find_cre_by_obj(js_this()) >= 0:
+                _obj_remove_listener(js_this(), &dom_idtmp[0], rvn, js_arg(1))
             # document/window removeEventListener targets the DOC_EL sentinel
             # (only GEN_KIND listeners live there — no attribute slots).
             if rvel < 0 and (js_this() == js_doc or js_this() == js_win):
@@ -1770,10 +1867,55 @@ def _js_host_dispatch(id: int32) -> int32:
                             evl_dead[ri] = 1
                     ri = ri + 1
         return js_undefined()
+    if rel == NID_CLICK:
+        # element.click() — synthesize a bubbling, cancelable click and dispatch
+        # it. Source elements route through the tx-tree bubbling core; created
+        # nodes through the live-parentNode object-dispatch path.
+        clkel: int32 = _find_el_by_obj(js_this())
+        if clkel >= 0:
+            clkev: int32 = _new_event_obj()
+            js_set_prop(clkev, cast[Ptr[uint8]]("type"), 4, \
+                        js_new_string(cast[Ptr[uint8]]("click"), 5))
+            _dispatch_event(clkel, 0, clkev)
+            return js_undefined()
+        clkcid: int32 = _find_cre_by_obj(js_this())
+        if clkcid >= 0:
+            clkev2: int32 = _new_event_obj()
+            js_set_prop(clkev2, cast[Ptr[uint8]]("type"), 4, \
+                        js_new_string(cast[Ptr[uint8]]("click"), 5))
+            js_set_prop(clkev2, cast[Ptr[uint8]]("bubbles"), 7, js_bool(1))
+            js_set_prop(clkev2, cast[Ptr[uint8]]("cancelable"), 10, js_bool(1))
+            _obj_dispatch(js_this(), cast[Ptr[uint8]]("click"), 5, clkev2, 1)
+        return js_undefined()
     if rel == NID_DISPATCH:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
         # returning !defaultPrevented. Reads ev.type to pick the handler.
         dspel: int32 = _find_el_by_obj(js_this())
+        if dspel < 0 and js_arg_count() >= 1:
+            # created/dynamic node: object-dispatch along the live parentNode
+            # chain (the source-tree path below can't reach it).
+            dcid: int32 = _find_cre_by_obj(js_this())
+            if dcid >= 0:
+                devo: int32 = js_arg(0)
+                js_set_prop(devo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                            js_new_native_fn(js_hbase + NID_PREVENT))
+                js_set_prop(devo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                            js_new_native_fn(js_hbase + NID_STOPPROP))
+                js_set_prop(devo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
+                            js_new_native_fn(js_hbase + NID_STOPIMMED))
+                dtp: int32 = js_get_prop(devo, cast[Ptr[uint8]]("type"), 4)
+                dtpp: Ptr[uint8] = js_str_ptr(dtp)
+                dtbuf: Array[128, uint8]
+                dtn: int32 = 0
+                while dtpp[dtn] != 0 and dtn < 127:
+                    dtbuf[dtn] = dtpp[dtn]
+                    dtn = dtn + 1
+                dtbuf[dtn] = 0
+                dbub: int32 = js_to_bool(js_get_prop(devo, cast[Ptr[uint8]]("bubbles"), 7))
+                _obj_dispatch(js_this(), &dtbuf[0], dtn, devo, dbub)
+                if g_prevent_default != 0:
+                    return js_bool(0)
+                return js_bool(1)
         if dspel >= 0 and js_arg_count() >= 1:
             evo: int32 = js_arg(0)
             tp: int32 = js_get_prop(evo, cast[Ptr[uint8]]("type"), 4)
@@ -1889,6 +2031,10 @@ def _js_host_dispatch(id: int32) -> int32:
             mel: int32 = _find_el_by_obj(js_this())
             if mel >= 0:
                 return js_bool(_el_matches_sel(mel, &dom_idtmp[0], msn))
+            # created node: match against its live JS props (no source index).
+            mcid: int32 = _find_cre_by_obj(js_this())
+            if mcid >= 0:
+                return js_bool(_creobj_matches_any(mcid, &dom_idtmp[0], msn))
         return js_bool(0)
     if rel == NID_CLOSEST:
         # element.closest(selector) -> the nearest self-or-ancestor matching the
@@ -1907,6 +2053,27 @@ def _js_host_dispatch(id: int32) -> int32:
                             _scan_start_tag(cast[uint64](tx_anchor[ct]))
                             return _dom_register_el()
                         ct = tx_parent[ct]
+                return js_null()
+            # created node (or a node reached via innerHTML): walk the live JS
+            # parentNode chain, matching each self-or-ancestor. Handles both
+            # created ancestors (cid props) and source-element ancestors.
+            curo: int32 = js_this()
+            depth: int32 = 0
+            while depth < 256:
+                ccid: int32 = _find_cre_by_obj(curo)
+                if ccid >= 0:
+                    if _creobj_matches_any(ccid, &dom_idtmp[0], csn) != 0:
+                        return curo
+                else:
+                    sanc: int32 = _find_el_by_obj(curo)
+                    if sanc >= 0 and _el_matches_sel(sanc, &dom_idtmp[0], csn) != 0:
+                        return curo
+                pv: int32 = js_get_prop(curo, cast[Ptr[uint8]]("parentNode"), 10)
+                if js_type_of(pv) != 5:
+                    depth = 256
+                else:
+                    curo = pv
+                    depth = depth + 1
         return js_null()
     if rel == NID_STOPPROP:
         # event.stopPropagation() — halt bubbling after the current element's
@@ -2100,6 +2267,12 @@ def _js_host_dispatch(id: int32) -> int32:
             # window `load` listener is the dominant real-page init hook.
             if el < 0 and (js_this() == js_doc or js_this() == js_win):
                 el = DOC_EL
+            # Created/dynamic node (createElement/innerHTML): not in the source
+            # tree, so store the listener ON the object for the click()/
+            # dispatchEvent object-dispatch path (Phase-0 programmatic events).
+            if el < 0 and _find_cre_by_obj(js_this()) >= 0 and \
+               js_is_callable(js_arg(1)) != 0:
+                _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1))
             if (el >= 0 or el == DOC_EL) and js_is_callable(js_arg(1)) != 0:
                 ek: int32 = _evt_std_kind(&dom_idtmp[0], evn)
                 # A non-standard type (keydown/mouseover/focus/custom) becomes a
@@ -2169,14 +2342,30 @@ def _js_host_dispatch(id: int32) -> int32:
         if rel == NID_CLSHAS:
             return js_bool(present)
         if rel == NID_CLSADD:
-            if present == 0 and tn > 0:
-                nw: int32 = _cls_build_with(cur, cn, &tk[0], tn)
-                _cls_write(ce, &g_cls_scr[0], nw)
+            # classList.add(a, b, c, ...) is variadic — add every token arg.
+            ai_ca: int32 = 0
+            while ai_ca < js_arg_count():
+                catk: Array[128, uint8]
+                catn: int32 = _arg_bytes(ai_ca, &catk[0], 128)
+                ccur: Ptr[uint8] = _cls_read(ce)
+                ccn: int32 = g_cls_len
+                if catn > 0 and _clstr_has(ccur, ccn, &catk[0], catn) == 0:
+                    cnw: int32 = _cls_build_with(ccur, ccn, &catk[0], catn)
+                    _cls_write(ce, &g_cls_scr[0], cnw)
+                ai_ca = ai_ca + 1
             return js_undefined()
         if rel == NID_CLSREM:
-            if present != 0:
-                nw2: int32 = _cls_build_without(cur, cn, &tk[0], tn)
-                _cls_write(ce, &g_cls_scr[0], nw2)
+            # classList.remove(a, b, c, ...) is variadic — remove every token arg.
+            ai_cr: int32 = 0
+            while ai_cr < js_arg_count():
+                crtk: Array[128, uint8]
+                crtn: int32 = _arg_bytes(ai_cr, &crtk[0], 128)
+                rcur: Ptr[uint8] = _cls_read(ce)
+                rcn: int32 = g_cls_len
+                if crtn > 0 and _clstr_has(rcur, rcn, &crtk[0], crtn) != 0:
+                    rnw: int32 = _cls_build_without(rcur, rcn, &crtk[0], crtn)
+                    _cls_write(ce, &g_cls_scr[0], rnw)
+                ai_cr = ai_cr + 1
             return js_undefined()
         # NID_CLSTOG: flip membership, OR honour an optional force arg.
         # toggle(name, true) forces add, toggle(name, false) forces remove;
@@ -2258,6 +2447,7 @@ def _js_host_dispatch(id: int32) -> int32:
                                              cast[Ptr[uint8]]("children"), 8)
                     if js_is_array(pch) != 0:
                         js_array_push(pch, js_arg(0))
+                        _wire_sibling_links(pch, dom_obj[par])
                     js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
                                 dom_obj[par])
                     js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentElement"), 13, \
@@ -2273,6 +2463,7 @@ def _js_host_dispatch(id: int32) -> int32:
                                                    cast[Ptr[uint8]]("children"), 8)
                         if js_is_array(ccpch) != 0:
                             js_array_push(ccpch, js_arg(0))
+                            _wire_sibling_links(ccpch, js_this())
                         js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
                                     js_this())
                         js_set_prop(js_arg(0), \
@@ -2280,6 +2471,67 @@ def _js_host_dispatch(id: int32) -> int32:
         if js_arg_count() >= 1:
             _mo_record_childlist(js_this(), js_arg(0), -1)
         return js_arg(0)
+    if rel == NID_APPEND_M:
+        # element.append(...nodes|strings) — created nodes are mounted; string
+        # (or coerced-primitive) args become text nodes. Parent may be a source
+        # element or another created node. textContent is extended for readback.
+        apar: int32 = _find_el_by_obj(js_this())
+        apcid: int32 = -1
+        if apar < 0:
+            apcid = _find_cre_by_obj(js_this())
+        apchildren: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("children"), 8)
+        # seed the textContent buffer with the existing content
+        apbuf: Array[8192, uint8]
+        apw: int32 = 0
+        apex: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("textContent"), 11)
+        apexp: Ptr[uint8] = js_str_ptr(apex)
+        apexn: int32 = _cstr_len(apexp)
+        if _is_undef_str(apexp, apexn) != 0:
+            apexn = 0
+        apk: int32 = 0
+        while apk < apexn and apw < 8191:
+            apbuf[apw] = apexp[apk]
+            apw = apw + 1
+            apk = apk + 1
+        apai: int32 = 0
+        while apai < js_arg_count():
+            apav: int32 = js_arg(apai)
+            apnode: int32 = _find_cre_by_obj(apav)
+            apobj: int32 = apav
+            if apnode < 0:
+                # a primitive/string: materialize a text node from its string form
+                aptv: int32 = apav
+                if js_type_of(apav) != 4:
+                    aptv = js_new_string(js_str_ptr(apav), \
+                                         cast[uint64](_cstr_len(js_str_ptr(apav))))
+                apobj = _cre_make_text(aptv)
+                apnode = cre_n - 1
+            # extend the textContent buffer with this arg's text
+            aptp: Ptr[uint8] = js_str_ptr(js_get_prop(apobj, \
+                              cast[Ptr[uint8]]("textContent"), 11))
+            aptn: int32 = _cstr_len(aptp)
+            if _is_undef_str(aptp, aptn) == 0:
+                apj: int32 = 0
+                while apj < aptn and apw < 8191:
+                    apbuf[apw] = aptp[apj]
+                    apw = apw + 1
+                    apj = apj + 1
+            if apnode >= 0:
+                cre_gone[apnode] = 0
+                if apar >= 0:
+                    _ap_add(apar, apnode, -1)
+                elif apcid >= 0:
+                    _cc_add(apcid, apnode, -1)
+                if js_is_array(apchildren) != 0:
+                    js_array_push(apchildren, apobj)
+                js_set_prop(apobj, cast[Ptr[uint8]]("parentNode"), 10, js_this())
+                js_set_prop(apobj, cast[Ptr[uint8]]("parentElement"), 13, js_this())
+                _mo_record_childlist(js_this(), apobj, -1)
+            apai = apai + 1
+        js_set_prop(js_this(), cast[Ptr[uint8]]("textContent"), 11, \
+                    js_new_string(&apbuf[0], cast[uint64](apw)))
+        _wire_sibling_links(apchildren, js_this())
+        return js_undefined()
     if rel == NID_INSBEF:
         # parent.insertBefore(newNode, refNode) — refNode null => append.
         if js_arg_count() >= 1:
@@ -2316,6 +2568,8 @@ def _js_host_dispatch(id: int32) -> int32:
                                     cast[Ptr[uint8]]("parentElement"), 13, js_this())
                         _dom_children_insert(js_this(), js_arg(0), refv)
         if js_arg_count() >= 1:
+            _wire_sibling_links(js_get_prop(js_this(), \
+                                cast[Ptr[uint8]]("children"), 8), js_this())
             _mo_record_childlist(js_this(), js_arg(0), -1)
         return js_arg(0)
     if rel == NID_REMCHILD:
@@ -2327,6 +2581,8 @@ def _js_host_dispatch(id: int32) -> int32:
                 # keep the parent's live JS .children/.childNodes in sync so a
                 # subsequent read no longer sees the detached node.
                 _dom_children_drop(js_this(), js_arg(0))
+                _wire_sibling_links(js_get_prop(js_this(), \
+                                    cast[Ptr[uint8]]("children"), 8), js_this())
                 _mo_record_childlist(js_this(), -1, js_arg(0))
         return js_arg(0)
     if rel == NID_REPLCHILD:
@@ -2358,6 +2614,8 @@ def _js_host_dispatch(id: int32) -> int32:
                                     cast[Ptr[uint8]]("parentElement"), 13, js_this())
                         _dom_children_replace(js_this(), js_arg(1), js_arg(0))
                 cre_gone[rold] = 1
+                _wire_sibling_links(js_get_prop(js_this(), \
+                                    cast[Ptr[uint8]]("children"), 8), js_this())
                 _mo_record_childlist(js_this(), js_arg(0), js_arg(1))
         return js_arg(1)
     if rel == NID_REMOVE:
@@ -2368,6 +2626,12 @@ def _js_host_dispatch(id: int32) -> int32:
             # a removed created node is a childList mutation on its parent.
             rmpar: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10)
             if js_type_of(rmpar) == 5:
+                # drop from the parent's live .children + refresh first/last/siblings.
+                _dom_children_drop(rmpar, js_this())
+                _wire_sibling_links(js_get_prop(rmpar, \
+                                    cast[Ptr[uint8]]("children"), 8), rmpar)
+                js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), 13, js_null())
                 _mo_record_childlist(rmpar, -1, js_this())
         else:
             sel: int32 = _find_el_by_obj(js_this())
@@ -2391,6 +2655,20 @@ def _js_host_dispatch(id: int32) -> int32:
                 if _hx_find_attr(cast[uint64](dom_ns[el2]), te2, &nm[0]) != 0:
                     vlen: int32 = cast[int32](g_attr_end - g_attr_start)
                     return js_new_string(&src_ptr[g_attr_start], cast[uint64](vlen))
+                # Not in the source tag: a prior setAttribute() stored the value as
+                # a property on the element's JS object — honour that round-trip
+                # (e.g. data-*/aria-* attributes added at runtime).
+                if _bytes_eq(&nm[0], an, cast[Ptr[uint8]]("class"), 5) != 0:
+                    gcv: int32 = js_get_prop(dom_obj[el2], \
+                                             cast[Ptr[uint8]]("className"), 9)
+                    gcp: Ptr[uint8] = js_str_ptr(gcv)
+                    if _is_undef_str(gcp, _cstr_len(gcp)) == 0:
+                        return gcv
+                    return js_null()
+                gpv: int32 = js_get_prop(dom_obj[el2], &nm[0], cast[uint64](an))
+                gpp: Ptr[uint8] = js_str_ptr(gpv)
+                if _is_undef_str(gpp, _cstr_len(gpp)) == 0:
+                    return gpv
                 return js_null()
             # created node: read the property we stashed (class -> className).
             gcid: int32 = _find_cre_by_obj(js_this())
@@ -4604,6 +4882,131 @@ def _dispatch_generic(target_el: int32, typp: Ptr[uint8], typn: int32, \
     _set_ephase(evtobj, EPHASE_NONE)
     if evtobj >= 0:
         js_set_prop(evtobj, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+    g_cur_event = -1
+    return ran
+
+
+# ---- object-keyed event listeners (created / dynamic nodes) -----------------
+# The evl_ table + _dispatch_event walk the SOURCE tree (tx index), so they
+# cannot reach nodes built by createElement/innerHTML. For those, listeners are
+# stored directly on the node's JS object under a per-type hidden array prop
+# ("@L:<type>"), and click()/dispatchEvent fire them + bubble along the live JS
+# parentNode chain. This is the Phase-0 programmatic-event path (target + bubble
+# over the live tree) — distinct from the coordinate-driven he_dom_click path.
+g_lp_buf: Array[288, uint8]
+
+
+def _obj_lp_name(typep: Ptr[uint8], typen: int32) -> int32:
+    g_lp_buf[0] = 64                                       # '@'
+    g_lp_buf[1] = 76                                       # 'L'
+    g_lp_buf[2] = 58                                       # ':'
+    i: int32 = 0
+    while i < typen and i < 250:
+        g_lp_buf[3 + i] = typep[i]
+        i = i + 1
+    g_lp_buf[3 + i] = 0
+    return 3 + i
+
+
+def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        arr = js_new_array_v()
+        js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), arr)
+    i: int32 = 0
+    n: int32 = js_array_len(arr)
+    while i < n:
+        if js_array_get(arr, i) == fn:
+            return                                        # de-dupe (spec)
+        i = i + 1
+    js_array_push(arr, fn)
+
+
+def _obj_remove_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        return
+    nw: int32 = js_new_array_v()
+    i: int32 = 0
+    n: int32 = js_array_len(arr)
+    while i < n:
+        ev: int32 = js_array_get(arr, i)
+        if ev != fn:
+            js_array_push(nw, ev)
+        i = i + 1
+    js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), nw)
+
+
+# Fire object-stored listeners of `type` on `obj` (+ its inline on<type> prop).
+def _obj_fire_type(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> int32:
+    ran: int32 = 0
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) != 0:
+        i: int32 = 0
+        n: int32 = js_array_len(arr)
+        while i < n and g_stop_immediate == 0:
+            fn: int32 = js_array_get(arr, i)
+            if js_is_callable(fn) != 0:
+                g_argv1[0] = evo
+                js_call_fn(fn, obj, &g_argv1[0], 1)
+                ran = 1
+            i = i + 1
+    # inline on<type> handler property (el.onclick = fn)
+    onm: Array[64, uint8]
+    onm[0] = 111                                           # 'o'
+    onm[1] = 110                                           # 'n'
+    j: int32 = 0
+    while j < typen and j < 60:
+        onm[2 + j] = typep[j]
+        j = j + 1
+    onm[2 + j] = 0
+    ofn: int32 = js_get_prop(obj, &onm[0], cast[uint64](2 + j))
+    if js_is_callable(ofn) != 0 and g_stop_immediate == 0:
+        g_argv1[0] = evo
+        js_call_fn(ofn, obj, &g_argv1[0], 1)
+        ran = 1
+    return ran
+
+
+# Dispatch event `evo` of `type` at created node `targetobj`: target phase then
+# (if bubbles) bubble up the live JS parentNode chain, firing object listeners at
+# each hop. Honours stopPropagation / stopImmediatePropagation. preventDefault
+# flips g_prevent_default (and evo.defaultPrevented via NID_PREVENT).
+def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
+                  evo: int32, bubbles: int32) -> int32:
+    g_prevent_default = 0
+    g_stop_prop = 0
+    g_stop_immediate = 0
+    g_cur_event = evo
+    if evo >= 0:
+        js_set_prop(evo, cast[Ptr[uint8]]("target"), 6, targetobj)
+        js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
+    ran: int32 = 0
+    # target phase
+    if evo >= 0:
+        js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, targetobj)
+    if _obj_fire_type(targetobj, typep, typen, evo) != 0:
+        ran = 1
+    # bubble phase
+    cur: int32 = targetobj
+    depth: int32 = 0
+    while bubbles != 0 and g_stop_prop == 0 and depth < 256:
+        pv: int32 = js_get_prop(cur, cast[Ptr[uint8]]("parentNode"), 10)
+        if js_type_of(pv) != 5:
+            depth = 256
+        else:
+            cur = pv
+            g_stop_immediate = 0
+            if evo >= 0:
+                js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, cur)
+            if _obj_fire_type(cur, typep, typen, evo) != 0:
+                ran = 1
+            depth = depth + 1
+    if evo >= 0:
+        js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
     g_cur_event = -1
     return ran
 

@@ -429,6 +429,8 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return promise_combinator(arg_or(base, argc, 0), 1)
     if id == NAT_PROMISE_ALLSETTLED:
         return promise_combinator(arg_or(base, argc, 0), 2)
+    if id == NAT_PROMISE_ANY:
+        return promise_combinator(arg_or(base, argc, 0), 3)
     if id == NAT_PROMISE_THEN:
         return promise_then(thisv, arg_or(base, argc, 0), arg_or(base, argc, 1))
     if id == NAT_PROMISE_CATCH:
@@ -559,11 +561,11 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
             ms_foreach(objid_of(thisv), cbv, arg_or(base, argc, 1), thisv)
         return v_undef()
     if id == NAT_MAP_KEYS:
-        return ms_snapshot(objid_of(thisv), 0)
+        return make_arr_iterator(ms_snapshot(objid_of(thisv), 0), 0)
     if id == NAT_MAP_VALUES or id == NAT_SET_VALUES:
-        return ms_snapshot(objid_of(thisv), 1)
+        return make_arr_iterator(ms_snapshot(objid_of(thisv), 1), 0)
     if id == NAT_MAP_ENTRIES:
-        return ms_snapshot(objid_of(thisv), 2)
+        return make_arr_iterator(ms_snapshot(objid_of(thisv), 2), 0)
     if id == NAT_OBJECT_CREATE:
         proto_arg: int32 = arg_or(base, argc, 0)
         newov: int32 = v_new_object()
