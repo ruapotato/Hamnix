@@ -128,6 +128,32 @@ at_el1:
     bl      uart_puts
     bl      gic_timer_init
 
+    /* Let the A6 timer proof finish BEFORE dropping to EL0: wait (wfi) until the
+     * emitted-Adder handler has taken its full tick quota (arm64_llvm_tick_count
+     * reaches ARM64_LLVM_TICK_LIMIT == 5), at which point gic.S leaves the timer
+     * disabled so no further IRQs arrive. Without this, the immediate EL0 eret
+     * (IRQs masked in SPSR) would starve the ~10ms tick and regress A6. */
+1:  ldr     x0, =arm64_llvm_tick_count
+    ldr     x0, [x0]
+    cmp     x0, #5
+    b.ge    2f
+    wfi
+    b       1b
+2:
+
+    /* A7 (docs/arm64_llvm_scoping.md): drop to EL0 and service a user `svc #0`.
+     * arm64_el0_launch erets into a tiny EL0 program that does write(1,...) +
+     * exit(0); each svc traps to the vectors.S Lower-EL sync slot (0x400) ->
+     * arm64_llvm_lower_sync_entry -> the emitted-Adder dispatcher
+     * arm64_svc_dispatch_arm64(). On exit() the sync stub restores this kernel
+     * context and returns here — a full EL0<->EL1 round-trip. The "RUNS
+     * USERSPACE" milestone. A fault dumps ESR/ELR via vectors.S. */
+    ldr     x0, =msg_a7
+    bl      uart_puts
+    bl      arm64_el0_launch
+    ldr     x0, =msg_a7_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -143,7 +169,15 @@ mmu_enable:
     ldr     x0, =l1_pgtable
     mov     x1, #0x401              /* device block: VALID|AF|AttrIndx0 */
     str     x1, [x0, #0]
-    movz    x1, #0x0705             /* RAM block: VALID|AF|SH_inner|AttrIndx1 */
+    movz    x1, #0x0705             /* RAM block: VALID|AF|SH_inner|AttrIndx1, AP=00
+                                     * (EL1 RW, EL0 no DATA access). A7 runs the EL0
+                                     * user task from this identity-mapped block: EL0
+                                     * instruction fetch is allowed (UXN=0), and the
+                                     * register-only demo does no EL0 load/store, so
+                                     * AP=00 suffices AND keeps kernel RAM unreadable
+                                     * from EL0. A real task needing an EL0 data stack
+                                     * needs a per-task EL0-RW (AP=01) L2/L3 mapping —
+                                     * that is A8 (see docs/arm64_llvm_scoping.md). */
     movk    x1, #0x4000, lsl #16    /* | PA 0x4000_0000 */
     str     x1, [x0, #8]
 
@@ -271,6 +305,10 @@ msg_a6_ret:
     .asciz  "A6: start_kernel_post_mm_arm64 returned\n"
 msg_tmr:
     .asciz  "A6: gic_timer_init (GICv2 + generic timer, unmasking IRQs)\n"
+msg_a7:
+    .asciz  "A7: dropping to EL0 (arm64_el0_launch -> first user task)\n"
+msg_a7_ret:
+    .asciz  "A7: EL0 task exited, returned to kernel (svc round-trip complete)\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

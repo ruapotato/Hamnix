@@ -81,6 +81,24 @@ grep_a6 "A6: start_kernel_post_mm_arm64 returned" || { sed 's/^/[ARM64-LLVM]   |
 grep_a6 "\[arm64-llvm\] scheduler timer tick 1"  || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: FIRST timer tick never fired/handled"; }
 grep_a6 "\[arm64-llvm\] timer IRQ OK"            || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: periodic timer tick did not reach the handler completion marker"; }
 
+# A7 assertions: EL0 (user-mode) drop + `svc #0` syscall dispatch — the "RUNS
+# USERSPACE" milestone (docs/arm64_llvm_scoping.md A7). head.S erets to EL0 and a
+# tiny user program issues write(1,...) then exit(0) via `svc #0`; each svc traps
+# to the vectors.S Lower-EL AArch64 synchronous slot (0x400) ->
+# arm64_llvm_lower_sync_entry -> the emitted-Adder dispatcher
+# arm64_svc_dispatch_arm64(), which services the syscall and returns. The svc
+# reaching the LOWER-EL vector (not the Current-EL halt handler) proves the code
+# genuinely executed at EL0. A fault dumps ESR_EL1/ELR_EL1 via vectors.S.
+grep_a7() { grep -qa "$1" "$SERIAL"; }
+grep_a7 "A7: dropping to EL0"                          || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 launch marker not seen"; }
+grep_a7 "EL0 svc #0: write syscall entered"           || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 write svc did not reach the Adder dispatcher"; }
+grep_a7 "HELLO-FROM-EL0-USERSPACE via svc #0"         || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 user write buffer was not emitted by the kernel"; }
+grep_a7 "EL0 write syscall serviced"                  || fail "A7: write syscall not serviced"
+grep_a7 "EL0 exit syscall serviced (status=0)"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 exit svc not serviced"; }
+grep_a7 "A7: EL0 task exited, returned to kernel"     || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 svc round-trip did not return cleanly to the kernel"; }
+# No EL0 access should have faulted into the diagnostic vector.
+grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: an exception hit the diagnostic vector (unexpected fault)"; }
+
 echo "[ARM64-LLVM] serial (furthest point):"
 grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[ARM64-LLVM]   | /'
 echo "[ARM64-LLVM] PASS"

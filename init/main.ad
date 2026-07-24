@@ -20,7 +20,7 @@
 # busy-loop without any cooperative yield; the timer alone shuffles
 # control between them.
 
-from drivers.tty.serial.early_8250 import setup_early_printk
+from drivers.tty.serial.early_8250 import setup_early_printk, early_putc
 from kernel.printk.printk import (
     printk0, printk1, printk2,
     pr_info, pr_warn, pr_err, pr_emerg,
@@ -4504,6 +4504,61 @@ def start_kernel_post_mm_arm64():
     workqueue_init()
     printk0("A6: workqueue_init done\n")
     printk0("A6: start_kernel_post_mm_arm64 complete\n")
+
+
+# ---------------------------------------------------------------------------
+# A7 (docs/arm64_llvm_scoping.md): EL0 user-mode + `svc #0` syscall dispatch.
+#
+# This is the aarch64-LLVM-lane syscall dispatcher — the kernel-visible half of
+# the EL0 round-trip. The boot layer (arch/arm64/llvm/el0.S) drops to EL0, runs a
+# tiny user program that issues write(1,...) then exit(0) via `svc #0`, and the
+# vectors.S "Lower EL AArch64 / Synchronous" slot (0x400) routes each svc into
+# arm64_llvm_lower_sync_entry, which saves the full x0..x30 register frame and
+# calls THIS function with the frame base. We decode the aarch64 Linux syscall
+# ABI (number in x8, args x0..x5, return written back into the x0 slot) and
+# service it as emitted LLVM Adder code — so the user syscall is genuinely
+# handled by the kernel's OWN compiled code, not a hand-written stub.
+#
+# Frame layout (Ptr[uint64] indices == register numbers): frame_ptr[n] == xN.
+# Returns 0 to resume EL0 (the stub reloads the frame + erets), 1 to signal the
+# task exited (the stub restores the saved kernel context + returns to head.S).
+#
+# ADDITIVE + aarch64-only: called ONLY from arch/arm64/llvm/el0.S; the x86
+# start_kernel() never references it, so the x86 kernel is byte-identical.
+# ---------------------------------------------------------------------------
+ARM64_LLVM_SYS_WRITE: uint64 = 64      # aarch64 Linux __NR_write
+ARM64_LLVM_SYS_EXIT: uint64 = 93       # aarch64 Linux __NR_exit
+arm64_llvm_el0_exit_code: int64 = 0
+
+
+def arm64_svc_dispatch_arm64(frame_ptr: Ptr[uint64]) -> int64:
+    nr: uint64 = frame_ptr[8]          # x8 = syscall number (aarch64 ABI)
+    a0: uint64 = frame_ptr[0]          # x0
+    a1: uint64 = frame_ptr[1]          # x1
+    a2: uint64 = frame_ptr[2]          # x2
+    if nr == ARM64_LLVM_SYS_WRITE:
+        # write(fd, buf, len): emit the user buffer to the PL011-routed console
+        # (early_putc -> _emit_raw -> outb, the same A4 kernel print path), then
+        # return the byte count in x0. fd is ignored (the demo uses fd 1).
+        printk0("[arm64-llvm] EL0 svc #0: write syscall entered (x8=64)\n")
+        buf: Ptr[uint8] = cast[Ptr[uint8]](a1)
+        n: uint64 = cast[uint64](0)
+        while n < a2:
+            early_putc(cast[int32](buf[n]))
+            n = n + cast[uint64](1)
+        frame_ptr[0] = a2
+        printk0("[arm64-llvm] EL0 write syscall serviced (returning byte count)\n")
+        return 0
+    elif nr == ARM64_LLVM_SYS_EXIT:
+        # exit(code): record the status and tell the stub to leave EL0 for good.
+        arm64_llvm_el0_exit_code = cast[int64](a0)
+        frame_ptr[0] = cast[uint64](0)
+        printk1("[arm64-llvm] EL0 exit syscall serviced (status=%d)\n", a0)
+        return 1
+    # Unknown syscall: report + return -1 in x0, resume EL0.
+    printk1("[arm64-llvm] EL0 unknown syscall x8=%d (ignored)\n", nr)
+    frame_ptr[0] = cast[uint64](0) - cast[uint64](1)
+    return 0
 
 
 def start_kernel():

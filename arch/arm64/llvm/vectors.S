@@ -35,9 +35,9 @@ arm64_llvm_vectors:
     .balign 0x80
     b       arm64_llvm_exc          /* SError */
 
-    /* ---- Lower EL using AArch64 ---- */
+    /* ---- Lower EL using AArch64 (EL0 userspace traps here) ---- */
     .balign 0x80
-    b       arm64_llvm_exc          /* Synchronous */
+    b       arm64_llvm_lower_sync_entry /* Synchronous (0x400): EL0 `svc #0` (el0.S) */
     .balign 0x80
     b       arm64_llvm_exc          /* IRQ */
     .balign 0x80

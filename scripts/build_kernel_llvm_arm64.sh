@@ -36,7 +36,7 @@ command -v "$CLANG"   >/dev/null || { echo "[kllvm-arm64] ERROR: $CLANG not foun
 command -v "$AS_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $AS_CMD not found (apt install binutils-aarch64-linux-gnu)" >&2; exit 1; }
 command -v "$LD_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $LD_CMD not found" >&2; exit 1; }
 [ -x "$HOST_AC" ] || { echo "[kllvm-arm64] ERROR: no host_ac.elf at $HOST_AC (source scripts/_adder_cc.sh; adder_cc_bootstrap)" >&2; exit 1; }
-for f in head.S vectors.S gic.S intrinsics.S stubs.c kernel.lds; do
+for f in head.S vectors.S gic.S el0.S intrinsics.S stubs.c kernel.lds; do
     [ -f "$ARM/$f" ] || { echo "[kllvm-arm64] ERROR: missing $ARM/$f" >&2; exit 1; }
 done
 
@@ -71,6 +71,7 @@ echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile s
 "$AS_CMD" -o "$WORK/head.o"       "$ARM/head.S"       || { echo "[kllvm-arm64] ERROR: as head.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/vectors.o"    "$ARM/vectors.S"    || { echo "[kllvm-arm64] ERROR: as vectors.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/gic.o"        "$ARM/gic.S"        || { echo "[kllvm-arm64] ERROR: as gic.S" >&2; exit 1; }
+"$AS_CMD" -o "$WORK/el0.o"        "$ARM/el0.S"        || { echo "[kllvm-arm64] ERROR: as el0.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/intrinsics.o" "$ARM/intrinsics.S" || { echo "[kllvm-arm64] ERROR: as intrinsics.S" >&2; exit 1; }
 "$CLANG" -O0 -c -ffreestanding -fno-pic --target=aarch64-none-elf -mcmodel=small \
     "$ARM/stubs.c" -o "$WORK/stubs.o" || { echo "[kllvm-arm64] ERROR: clang stubs.c" >&2; exit 1; }
@@ -78,7 +79,7 @@ echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile s
 echo "[kllvm-arm64] 4) link bootable aarch64 kernel ELF (kernel.lds, -nostdlib -static)"
 "$LD_CMD" -nostdlib -static -z noexecstack -z max-page-size=4096 \
     -T "$ARM/kernel.lds" -o "$OUT_ELF" \
-    "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/kernel_arm64.o" \
+    "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/el0.o" "$WORK/kernel_arm64.o" \
     "$WORK/intrinsics.o" "$WORK/stubs.o" \
     || { echo "[kllvm-arm64] ERROR: ld link failed" >&2; exit 1; }
 
