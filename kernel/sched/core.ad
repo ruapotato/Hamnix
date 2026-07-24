@@ -8347,6 +8347,49 @@ def yield_to_others():
     # loops forever. We do sti / hlt / cli around an idle wait,
     # then check pending signals so a SIGINT delivered during the
     # nap terminates us promptly instead of looping.
+    #
+    # COOPERATIVE-YIELD FAIRNESS (launch-queue / detached-client dispatch
+    # fix). Hamnix multitasks COOPERATIVELY: a busy-poll loop yields here
+    # while STILL STATE_READY (the interactive shell's ed_readline
+    # sys_read_nb+sys_yield loop, do_wait4's reap loop, the CLONE_VFORK
+    # parent wait, pipe/stdin readers). _pick_next() then dispatches the
+    # SMALLEST-vruntime runnable task — so a yielder holding a LOW vruntime
+    # is re-selected over READY peers that sched_fork_vruntime() DELIBERATELY
+    # placed one slice AHEAD (floor + a full-quantum penalty, the D3
+    # fork-storm-fairness placement). Timer preemption barely accrues
+    # vruntime on this syscall-heavy path (SYSCALL masks IF, so preempt_tick
+    # rarely runs — see the "no working timer preemption" note in the
+    # SYS_YIELD arm), so the yielder's vruntime never climbs past those peers
+    # and they STARVE INDEFINITELY: the DE's detached rl5 scene clients
+    # (hamdesktop / hampanelscene / hamfmscene / hameditscene and every app
+    # the panel's /dev/wsys/run/launch queue spawns) rfork READY but are
+    # never dispatched to execve, so ZERO windows map and the desktop stays a
+    # blank backdrop. It also silently hangs any CLONE_VFORK parent whose
+    # child is placed ahead of it.
+    #
+    # Fix — mirror Linux sched_yield() / yield_task_fair(): before yielding,
+    # rotate the caller BEHIND every other runnable peer by advancing its
+    # vruntime to just past the backmost runnable vruntime. _pick_next() then
+    # selects a genuine peer (letting a freshly-forked child actually reach
+    # execve); when no other task is runnable we do not move and simply fall
+    # through to the idle hlt below. This can never make a case that worked
+    # before worse: if a peer already had the lower vruntime it was picked
+    # anyway; the rotate only stops the yielder from re-winning against a
+    # peer it placed ahead of itself.
+    _y_cur: uint64 = current_idx_pcpu
+    _y_max: uint64 = task_table[_y_cur].vruntime
+    _y_peer: uint64 = 0
+    _y_i: uint64 = 0
+    while _y_i < NTASKS:
+        if _y_i != _y_cur:
+            _y_st: uint64 = task_table[_y_i].state
+            if _y_st == STATE_READY or _y_st == STATE_RUNNING:
+                _y_peer = 1
+                if task_table[_y_i].vruntime > _y_max:
+                    _y_max = task_table[_y_i].vruntime
+        _y_i = _y_i + 1
+    if _y_peer != 0:
+        task_table[_y_cur].vruntime = _y_max + 1
     schedule()
     # PURE-INSTRUMENTATION idle marker: this is a genuine "nothing to do,
     # halt until the next IRQ" idle wait (IF=1), so the timer ISR that
