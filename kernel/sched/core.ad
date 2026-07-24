@@ -5405,6 +5405,23 @@ def preempt_tick(from_user: uint64) -> uint64:
     cap_factor: uint64 = nscap_cpu_factor_current()
     task_table[cur].vruntime = task_table[cur].vruntime + \
         (((NICE0_WEIGHT * VRUNTIME_SCALE) / cw) * cap_factor)
+    # QUANTUM RANGE INVARIANT (launch-queue / CPU-bound-starvation fix).
+    # sched_quantum_for() provably arms quantum_left into [1, SCHED_QUANTUM_MAX]
+    # on EVERY dispatch, so a running task's slice can never legitimately exceed
+    # SCHED_QUANTUM_MAX. A value above that ceiling is a corrupt / stale
+    # per-CPU count (observed: quantum_left wedged at ~2^32 and merely
+    # decrementing, which made `quantum_left != 0` true forever — timer
+    # preemption was silently DISABLED, so a genuinely CPU-bound task that never
+    # blocks or yields, e.g. sshd's boot-time P-256 host-key scalar-mult,
+    # monopolized cpu0 and starved every STATE_READY peer: the detached rl5 DE
+    # scene clients sat READY on rq_head[0] but were never dispatched, so ZERO
+    # windows mapped and the desktop stayed a blank backdrop). Clamp the corrupt
+    # value to 0 = "slice spent": this tick then re-arms a fresh weight-scaled
+    # slice below and preempts on the spot when a runnable peer exists, exactly
+    # as an honestly-drained quantum would. A legal in-range slice is untouched,
+    # so no task that was preempted correctly before is affected.
+    if quantum_left > SCHED_QUANTUM_MAX:
+        quantum_left = 0
     if quantum_left > 0:
         quantum_left = quantum_left - 1
     if quantum_left != 0:
