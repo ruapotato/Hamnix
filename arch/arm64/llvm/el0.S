@@ -54,7 +54,11 @@ arm64_el0_launch:
     /* Program the EL0 return state. */
     ldr     x0, =arm64_el0_user_entry
     msr     elr_el1, x0                 /* EL0 entry PC */
-    ldr     x0, =arm64_el0_stack_top
+    /* A8: SP_EL0 points into the fine EL0-RW user window (0x4800_0000-0x481F_FFFF,
+     * AP=01), so the EL0 program can actually push/pop — the A7 register-only demo
+     * used a kernel-.bss stack the EL0 task could never touch (AP=00). Top at
+     * 0x481F_0000 (16-byte aligned, well above the SRC/DST buffers). */
+    movz    x0, #0x481f, lsl #16        /* SP_EL0 = 0x481F_0000 (in the EL0-RW window) */
     msr     sp_el0, x0                  /* EL0 stack pointer (16-byte aligned) */
     mov     x0, #SPSR_EL0T_DAIF
     msr     spsr_el1, x0                /* target PSTATE: EL0t, IRQ/FIQ masked */
@@ -63,28 +67,54 @@ arm64_el0_launch:
     .size arm64_el0_launch, .-arm64_el0_launch
 
 /* ------------------------------------------------------------------------ *
- * arm64_el0_user_entry — the tiny EL0 user program. Mirrors the Linux aarch64
- * ABI: syscall number in x8, args x0..x5, return in x0. It writes a fixed
- * message to fd 1 then exits(0). Runs at EL0 from the identity-mapped RAM image
- * (EL0-executable via the head.S AP=01 RAM block).
+ * arm64_el0_user_entry — the A8 EL0 user program. Mirrors the Linux aarch64 ABI:
+ * syscall number in x8, args x0..x5, return in x0. Unlike the A7 register-only
+ * demo, this program ACCESSES ITS OWN MEMORY through the fine EL0-RW TTBR0 window
+ * (0x4800_0000-0x481F_FFFF, AP=01):
+ *   1. getpid() via the REAL kernel syscall table (proves real syscall routing).
+ *   2. push/pop through SP_EL0 (proves the EL0 stack is writable/readable).
+ *   3. memcpy SRC(0x4800_0000) -> DST(0x4800_1000) byte-by-byte until NUL, using
+ *      EL0 loads (ldrb) AND stores (strb) — proves EL0 read+write of its memory.
+ *      The kernel pre-filled SRC (arm64_el0_prepare_user_mem_arm64); the message
+ *      only reaches the console if the EL0 copy actually worked.
+ *   4. write(1, DST, len) via the real kernel console syscall, then exit(0).
  * ------------------------------------------------------------------------ */
+    .equ USER_SRC, 0x48000000
     .globl arm64_el0_user_entry
     .type arm64_el0_user_entry, %function
 arm64_el0_user_entry:
+    /* 1) getpid() — routed into the kernel's real current_task_pid(). */
+    mov     x8, #172                    /* __NR_getpid (aarch64) */
+    svc     #0                          /* x0 <- real boot-task pid */
+
+    /* 2) EL0 stack round-trip via SP_EL0 (in the EL0-RW window). A fault here
+     *    would hit the vectors.S diagnostic; success is implicit. */
+    movz    x0, #0x55aa
+    str     x0, [sp, #-16]!             /* push (EL0 store to SP_EL0 page) */
+    ldr     x3, [sp], #16               /* pop  (EL0 load from SP_EL0 page)  */
+
+    /* 3) memcpy SRC -> DST until NUL, using EL0 ldrb/strb; count length in x11. */
+    movz    x9,  #0x4800, lsl #16       /* SRC = 0x4800_0000 (EL0-RW) */
+    add     x10, x9, #0x1000            /* DST = 0x4800_1000 (EL0-RW) */
+    mov     x11, #0                     /* len */
+1:  ldrb    w12, [x9, x11]             /* EL0 LOAD from user src */
+    strb    w12, [x10, x11]            /* EL0 STORE to user dst */
+    cbz     w12, 2f                     /* stop at (and after copying) the NUL */
+    add     x11, x11, #1
+    b       1b
+2:
+    /* 4) write(1, DST, len) via the real kernel console syscall. */
     mov     x8, #64                     /* __NR_write (aarch64) */
     mov     x0, #1                      /* fd = 1 */
-    adr     x1, arm64_el0_msg           /* buf */
-    mov     x2, #(arm64_el0_msg_end - arm64_el0_msg)  /* len */
+    mov     x1, x10                     /* buf = DST (bytes came via EL0 copy) */
+    mov     x2, x11                     /* len */
     svc     #0
+    /* 5) exit(0). */
     mov     x8, #93                     /* __NR_exit (aarch64) */
     mov     x0, #0                      /* status = 0 */
     svc     #0
-1:  b       1b                          /* safety: exit never resumes EL0 */
+3:  b       3b                          /* safety: exit never resumes EL0 */
     .size arm64_el0_user_entry, .-arm64_el0_user_entry
-
-arm64_el0_msg:
-    .ascii  "HELLO-FROM-EL0-USERSPACE via svc #0\n"
-arm64_el0_msg_end:
 
 /* ------------------------------------------------------------------------ *
  * arm64_llvm_lower_sync_entry — the "Lower EL using AArch64 / Synchronous" vector

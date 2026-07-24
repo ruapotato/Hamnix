@@ -141,17 +141,22 @@ at_el1:
     b       1b
 2:
 
-    /* A7 (docs/arm64_llvm_scoping.md): drop to EL0 and service a user `svc #0`.
-     * arm64_el0_launch erets into a tiny EL0 program that does write(1,...) +
-     * exit(0); each svc traps to the vectors.S Lower-EL sync slot (0x400) ->
-     * arm64_llvm_lower_sync_entry -> the emitted-Adder dispatcher
-     * arm64_svc_dispatch_arm64(). On exit() the sync stub restores this kernel
-     * context and returns here — a full EL0<->EL1 round-trip. The "RUNS
-     * USERSPACE" milestone. A fault dumps ESR/ELR via vectors.S. */
-    ldr     x0, =msg_a7
+    /* A8 (docs/arm64_llvm_scoping.md): REAL userland foundation. First the kernel
+     * (EL1) writes a source string into the fine EL0-RW user window at 0x4800_0000
+     * (proving the AP=01 L3 leaves are live), then drops to EL0. The EL0 program
+     * (el0.S) getpid()s, exercises its SP_EL0 stack, memcpy's SRC->DST with its OWN
+     * EL0 loads/stores, then write(1, DST, len) + exit(0). Each svc traps to the
+     * vectors.S Lower-EL sync slot (0x400) -> arm64_llvm_lower_sync_entry -> the
+     * emitted-Adder dispatcher arm64_svc_dispatch_arm64() -> arm64_do_syscall_arm64,
+     * which routes into the kernel's REAL syscall handlers (current_task_pid,
+     * early_putc_user, ...). On exit() the sync stub restores this kernel context
+     * and returns here. Proves EL0 accesses its OWN mapped memory AND real kernel
+     * syscalls are serviced from EL0. A fault dumps ESR/ELR via vectors.S. */
+    ldr     x0, =msg_a8
     bl      uart_puts
+    bl      arm64_el0_prepare_user_mem_arm64
     bl      arm64_el0_launch
-    ldr     x0, =msg_a7_ret
+    ldr     x0, =msg_a8_ret
     bl      uart_puts
 
 park:
@@ -160,32 +165,74 @@ park:
     .size _start, .-_start
 
 /* ------------------------------------------------------------------------ *
- * MMU: identity map, 1 GiB L1 blocks. entry0 = device (0-1GiB: PL011/GIC),
- * entry1 = RAM (0x4000_0000-0x7FFF_FFFF) Normal-WB, EL1-only. MAIR/TCR/SCTLR
- * constants match the proven standalone kernel (arch/arm64/kmain.ad).
+ * MMU: identity map with a FINE per-page EL0-RW user window (A8).
+ *
+ * L1[0] = device block (0-1GiB: PL011/GIC), Device-nGnRE, EL1-only.
+ * L1[1] = TABLE -> l2_pgtable, covering RAM 0x4000_0000-0x7FFF_FFFF as 512 x 2MiB
+ *         Normal-WB blocks, AP=00 (EL1 RW, EL0 no access) — the kernel image +
+ *         buddy/slab RAM stay EL1-only exactly as before.
+ * ONE L2 slot (index 64 => VA 0x4800_0000) is overridden to a TABLE ->
+ *         l3_user_pgtable, whose 512 x 4KiB leaves map 0x4800_0000-0x481F_FFFF
+ *         AP=01 (EL0-RW, EL1-RW) + UXN=0 (EL0 exec ok) — the A8 user window.
+ *
+ * This is the fine L2/L3 EL0-RW mapping the A7 doc called for. It is NOT a
+ * block-descriptor AP flip of the whole RAM block: that experiment HUNG MMU-
+ * enable on -cpu cortex-a72 (see docs/arm64_llvm_scoping.md). Kernel RAM stays
+ * AP=00 (unreadable from EL0); only the carved 2MiB window is EL0-RW.
+ * MAIR/TCR/SCTLR constants match the proven standalone kernel (kmain.ad).
  * ------------------------------------------------------------------------ */
+    .equ USER_L2_IDX, 64            /* (0x4800_0000 - 0x4000_0000) / 2MiB = 64 */
     .type mmu_enable, %function
 mmu_enable:
     ldr     x0, =l1_pgtable
     mov     x1, #0x401              /* device block: VALID|AF|AttrIndx0 */
     str     x1, [x0, #0]
-    movz    x1, #0x0705             /* RAM block: VALID|AF|SH_inner|AttrIndx1, AP=00
-                                     * (EL1 RW, EL0 no DATA access). A7 runs the EL0
-                                     * user task from this identity-mapped block: EL0
-                                     * instruction fetch is allowed (UXN=0), and the
-                                     * register-only demo does no EL0 load/store, so
-                                     * AP=00 suffices AND keeps kernel RAM unreadable
-                                     * from EL0. A real task needing an EL0 data stack
-                                     * needs a per-task EL0-RW (AP=01) L2/L3 mapping —
-                                     * that is A8 (see docs/arm64_llvm_scoping.md). */
-    movk    x1, #0x4000, lsl #16    /* | PA 0x4000_0000 */
+    /* L1[1] = table descriptor -> l2_pgtable (VALID|TABLE). */
+    ldr     x2, =l2_pgtable
+    orr     x1, x2, #0x3
     str     x1, [x0, #8]
+
+    /* Fill l2_pgtable: 512 identity 2MiB blocks, Normal-WB, AP=00 (EL1-only). */
+    ldr     x0, =l2_pgtable
+    movz    x3, #0x4000, lsl #16    /* PA base 0x4000_0000 */
+    mov     x5, #0                  /* index */
+1:  movz    x1, #0x0705             /* block: VALID|AF|SH_inner|AttrIndx1, AP=00 */
+    orr     x1, x1, x3              /* | PA */
+    str     x1, [x0, x5, lsl #3]
+    add     x3, x3, #0x200000       /* +2MiB */
+    add     x5, x5, #1
+    cmp     x5, #512
+    b.lt    1b
+
+    /* Override L2[USER_L2_IDX] with a TABLE descriptor -> l3_user_pgtable. */
+    ldr     x0, =l2_pgtable
+    ldr     x2, =l3_user_pgtable
+    orr     x1, x2, #0x3
+    mov     x5, #USER_L2_IDX
+    str     x1, [x0, x5, lsl #3]
+
+    /* Fill l3_user_pgtable: 512 identity 4KiB pages over 0x4800_0000-0x481F_FFFF,
+     * AP=01 (EL0-RW + EL1-RW), Normal-WB, UXN=0 (EL0 exec allowed) — the A8
+     * EL0-RW user window. Page descriptor low bits 0x747 = VALID(11)|AttrIndx1|
+     * AP01(bit6)|SH_inner(bits9:8)|AF(bit10). */
+    ldr     x0, =l3_user_pgtable
+    movz    x3, #0x4800, lsl #16    /* PA base 0x4800_0000 */
+    mov     x5, #0
+2:  movz    x1, #0x0747             /* page: VALID|AF|SH_inner|AttrIndx1|AP=01 */
+    orr     x1, x1, x3
+    str     x1, [x0, x5, lsl #3]
+    add     x3, x3, #0x1000         /* +4KiB */
+    add     x5, x5, #1
+    cmp     x5, #512
+    b.lt    2b
 
     movz    x2, #0xff04             /* MAIR: attr0=Device-nGnRE, attr1=Normal-WB */
     msr     mair_el1, x2
     movz    x2, #0x3519             /* TCR: T0SZ=25, WB/WA, inner-shareable, 4K */
     movk    x2, #0x0001, lsl #32    /*      | IPS=1 (bit32) => 0x1_0000_3519 */
     msr     tcr_el1, x2
+    ldr     x0, =l1_pgtable         /* TTBR0 = the L1 (top-level) table, NOT the
+                                     * L3 that x0 was left holding by the fill loop */
     msr     ttbr0_el1, x0
     msr     ttbr1_el1, xzr
 
@@ -305,10 +352,10 @@ msg_a6_ret:
     .asciz  "A6: start_kernel_post_mm_arm64 returned\n"
 msg_tmr:
     .asciz  "A6: gic_timer_init (GICv2 + generic timer, unmasking IRQs)\n"
-msg_a7:
-    .asciz  "A7: dropping to EL0 (arm64_el0_launch -> first user task)\n"
-msg_a7_ret:
-    .asciz  "A7: EL0 task exited, returned to kernel (svc round-trip complete)\n"
+msg_a8:
+    .asciz  "A8: EL0-RW user window + real syscall dispatch (dropping to EL0)\n"
+msg_a8_ret:
+    .asciz  "A8: EL0 task exited, returned to kernel (real syscall round-trip complete)\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 
@@ -319,6 +366,14 @@ test_chars:
     .balign 4096
     .globl l1_pgtable
 l1_pgtable:
+    .space  4096
+    .balign 4096
+    .globl l2_pgtable               /* A8: L2 for the RAM 1GiB region (512 x 2MiB) */
+l2_pgtable:
+    .space  4096
+    .balign 4096
+    .globl l3_user_pgtable          /* A8: L3 for the 2MiB EL0-RW user window */
+l3_user_pgtable:
     .space  4096
     .balign 4096
     .globl __percpu_scratch

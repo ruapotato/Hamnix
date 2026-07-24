@@ -1,6 +1,6 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch)**
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch)**
 (whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
@@ -11,6 +11,107 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-24) — A8 REAL USERLAND FOUNDATION (EL0-RW fine TTBR0 map + REAL syscall dispatch)
+
+**A8 — the aarch64 LLVM kernel gives an EL0 task a FINE per-page EL0-RW address
+space (so it can READ/WRITE its own memory, not just registers) AND routes its
+`svc` into the kernel's REAL syscall handlers: DONE.** This is the "real userland
+foundation" milestone. Gate `scripts/test_arm64_llvm_kernel.sh` (extended with A8
+assertions, A7 register-only demo superseded): **PASS**. Verified furthest-point
+PL011 serial from the actual `qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G`
+run (grep-a'd):
+```
+[000087] [arm64-llvm] timer IRQ OK (first scheduler tick(s) taken + handled)
+A8: EL0-RW user window + real syscall dispatch (dropping to EL0)
+[000088] A8: prepared EL0-RW user window (SRC=0x48000000, 56 src bytes)
+[000089] [arm64-llvm] EL0 svc: getpid -> current_task_pid() = 0
+[000090] [arm64-llvm] EL0 svc: write(fd=1, buf, len) -> console
+EL0-RW-DATA-OK: EL0 load/store via fine TTBR0 L2/L3 map
+[000092] [arm64-llvm] EL0 write serviced (56 bytes to console)
+[000093] [arm64-llvm] EL0 svc: exit(status=0) serviced
+A8: EL0 task exited, returned to kernel (real syscall round-trip complete)
+```
+
+**1) EL0-RW fine mapping (EL0 accesses its OWN memory) — FINE L2/L3, not a block
+flip.** `mmu_enable` (arch/arm64/llvm/head.S) now builds a real page-table
+hierarchy: L1[1] is a TABLE descriptor → `l2_pgtable` (512 × 2 MiB Normal-WB
+blocks, AP=00 — the kernel image + buddy/slab RAM stay EL1-only exactly as
+before), and ONE L2 slot (index 64 ⇒ VA `0x4800_0000`) is overridden to a TABLE →
+`l3_user_pgtable`, whose 512 × 4 KiB leaves map `0x4800_0000-0x481F_FFFF` **AP=01
+(EL0-RW + EL1-RW), UXN=0** — a 2 MiB EL0-RW user window. This is deliberately the
+**fine L2/L3 per-page mapping the A7 doc mandated, NOT a block-descriptor AP flip
+of the whole RAM block** (that experiment hung MMU-enable on `-cpu cortex-a72`).
+Kernel RAM keeps AP=00 (unreadable from EL0); only the carved window is EL0-RW.
+The EL0 program (`arch/arm64/llvm/el0.S`) now: (a) push/pops through **SP_EL0**
+(retargeted into the window at `0x481F_0000`), (b) **memcpy's SRC(`0x4800_0000`)
+→ DST(`0x4800_1000`) byte-by-byte with its OWN EL0 `ldrb`/`strb`**, then (c)
+`write(1, DST, len)`. The kernel pre-fills SRC via the new additive
+`arm64_el0_prepare_user_mem_arm64()` (EL1 writing the AP=01 page). The copied
+`EL0-RW-DATA-OK…` string reaching the console is the DEFINITIVE proof the EL0
+load+store round-trip worked — a missing/incorrect EL0-RW leaf would fault into
+the `vectors.S` diagnostic or emit an empty buffer. (Regression hazard fixed
+in-flight: the fill loop leaves `x0` holding the L3 table, so `msr ttbr0_el1, x0`
+must reload `l1_pgtable` first — a stale `x0` there points TTBR0 at the L3 and
+hangs MMU-enable, the same symptom class as the block-flip hazard.)
+
+**2) `svc` routed into the kernel's REAL syscall dispatch.** The monolithic
+`do_syscall()` is an LLVM bail (its ~7.6 k-line CFG blows the compiler's per-fn
+arena caps — the same reason `start_kernel` is factored; it links as a return-0
+stub and cannot service EL0). A8 therefore adds `arm64_do_syscall_arm64(nr,
+a0..a5)` (additive public fn in `init/main.ad`) that **translates the aarch64
+Linux syscall number → the kernel's native `SYS_*` space and calls the SAME real
+handler functions `do_syscall` dispatches to** — `current_task_pid()` (getpid),
+`get_jiffies()`, the `early_putc_user()` console-write path (write, reading the
+EL0 buffer), and the exit-status record. `arm64_svc_dispatch_arm64` (the emitted
+dispatcher the `el0.S` sync stub calls) now decodes the frame and routes through
+it, replacing the A7 inline write/exit demo. The EL0 program round-trips **getpid
+(→ real boot-task pid 0), write, and exit** — real kernel syscall handlers, not a
+stub, servicing EL0. The `svc` still traps to the `vectors.S` Lower-EL sync slot
+(0x400), the proof it executed at EL0.
+
+**How x86 stayed byte-identical — additive `*_arm64` slice.** `init/main.ad`
+change is PURELY ADDITIVE: one import (`early_putc_user`, already in the closure
+via the console path) + the new arm64-only functions (`arm64_do_syscall_arm64`,
+`arm64_el0_prepare_user_mem_arm64`, rewritten `arm64_svc_dispatch_arm64`, syscall
+constants). The x86 `start_kernel()` never references any of them; its body is
+untouched (`git diff` shows no change to any existing x86-reachable line). All
+boot-layer edits are in `arch/arm64/llvm/` (head.S MMU + el0.S). No
+`ssa*.ad`/`codegen.ad` edit. `scripts/test_native_vs_seed_kobjdiff.sh`: **PASS**
+(native codegen == seed, byte-identical by construction).
+
+**A9 plan — from the real-userland foundation to a real `hamsh` shell (ranked,
+honest scope).** What remains to run an actual on-disk shell:
+1. **Per-TASK TTBR0 + demand paging + the Data-Abort fault path.** A8 gives ONE
+   fixed EL0-RW window shared by the (single) EL0 task and identity-mapped. A real
+   userland needs a per-task TTBR0 that is SWITCHED on context-switch (so tasks
+   are isolated), an allocator that hands out user frames, and a **Lower-EL Data
+   Abort (0x400 sync, EC=0b100100) handler** that demand-pages a faulting EL0
+   access — the prerequisite for `brk`/`mmap` growing a real heap/stack.
+2. **Preemptive EL0 scheduling.** Wire the `gic.S` timer IRQ, when it fires from
+   EL0, to the **Lower-EL IRQ vector (0x480)** with full EL0-context save/restore
+   + `arm64_sched_pick` (mirroring the standalone `arm64_lower_irq_entry`), so the
+   timer preempts a running EL0 task and switches to another — a real EL0↔EL0
+   switch. Needs per-task kernel stacks + `__switch_to` on this lane (today
+   `sched_init` builds task structs but never context-switches).
+3. **Broaden the real syscall surface.** `arm64_do_syscall_arm64` services
+   getpid/write/read/exit today. Route the rest of the native `SYS_*` ladder
+   (open/close/read via vfs, brk/mmap once demand paging is up, clone/execve) —
+   ideally by getting `do_syscall` itself to emit (auto-split / a gated cfg-cap
+   raise for the LLVM lane) so the FULL ABI is shared with x86 rather than
+   re-listed.
+4. **virtio-mmio + virtio-console + virtio-blk + initramfs → on-disk `hamsh`.**
+   `-M virt` is all-virtio: bring up the `virtio-mmio` transport (DT in `x0` or
+   the fixed `0x0a00_0000` window), a virtio-console for real bidirectional tty
+   I/O, virtio-blk for a root device, mount the initramfs, and make a real on-disk
+   `hamsh` (not an embedded stub) the first user task — mirroring the standalone
+   track's Phase 30+. This is the largest remaining item and gates a true shell.
+5. **Higher-half TTBR1 kernel VA + compiler follow-ups.** Move the kernel into the
+   TTBR1 upper half (`0xffff_…`) with demand paging (robust per-task memory
+   model), and the gated `ssa_llvm.ad` follow-ups (`align 8` on the rdrand/mul128
+   scratch globals to drop the build-lane `sed`; `FEAT_RNG` gate).
 
 ---
 

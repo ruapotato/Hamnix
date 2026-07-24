@@ -81,23 +81,33 @@ grep_a6 "A6: start_kernel_post_mm_arm64 returned" || { sed 's/^/[ARM64-LLVM]   |
 grep_a6 "\[arm64-llvm\] scheduler timer tick 1"  || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: FIRST timer tick never fired/handled"; }
 grep_a6 "\[arm64-llvm\] timer IRQ OK"            || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: periodic timer tick did not reach the handler completion marker"; }
 
-# A7 assertions: EL0 (user-mode) drop + `svc #0` syscall dispatch — the "RUNS
-# USERSPACE" milestone (docs/arm64_llvm_scoping.md A7). head.S erets to EL0 and a
-# tiny user program issues write(1,...) then exit(0) via `svc #0`; each svc traps
-# to the vectors.S Lower-EL AArch64 synchronous slot (0x400) ->
-# arm64_llvm_lower_sync_entry -> the emitted-Adder dispatcher
-# arm64_svc_dispatch_arm64(), which services the syscall and returns. The svc
-# reaching the LOWER-EL vector (not the Current-EL halt handler) proves the code
-# genuinely executed at EL0. A fault dumps ESR_EL1/ELR_EL1 via vectors.S.
-grep_a7() { grep -qa "$1" "$SERIAL"; }
-grep_a7 "A7: dropping to EL0"                          || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 launch marker not seen"; }
-grep_a7 "EL0 svc #0: write syscall entered"           || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 write svc did not reach the Adder dispatcher"; }
-grep_a7 "HELLO-FROM-EL0-USERSPACE via svc #0"         || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 user write buffer was not emitted by the kernel"; }
-grep_a7 "EL0 write syscall serviced"                  || fail "A7: write syscall not serviced"
-grep_a7 "EL0 exit syscall serviced (status=0)"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 exit svc not serviced"; }
-grep_a7 "A7: EL0 task exited, returned to kernel"     || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: EL0 svc round-trip did not return cleanly to the kernel"; }
+# A8 assertions: the "real userland foundation" milestone
+# (docs/arm64_llvm_scoping.md A8). Supersedes the A7 register-only EL0 demo. Two
+# proofs:
+#   (1) EL0 accesses its OWN mapped memory via a FINE per-page EL0-RW TTBR0 window
+#       (L2/L3, AP=01 — NOT a block-descriptor flip). The kernel pre-fills a SRC
+#       buffer; the EL0 program memcpy's SRC->DST with its own EL0 ldrb/strb (and
+#       push/pops SP_EL0, also in the window), then write(1, DST, len). The copied
+#       "EL0-RW-DATA-OK" string reaching the console proves the EL0 load+store
+#       round-trip actually worked (a failed/absent EL0-RW map would fault into the
+#       diagnostic vector or emit an empty/zero buffer).
+#   (2) Real syscalls are serviced from EL0: each `svc #0` traps to the vectors.S
+#       Lower-EL sync slot (0x400) -> arm64_llvm_lower_sync_entry ->
+#       arm64_svc_dispatch_arm64() -> arm64_do_syscall_arm64, which routes into the
+#       kernel's REAL handler functions (current_task_pid(), early_putc_user(), the
+#       exit-status record) keyed by the aarch64 Linux syscall numbers — not the A7
+#       inline demo. getpid + write + exit all round-trip.
+grep_a8() { grep -qa "$1" "$SERIAL"; }
+grep_a8 "A8: EL0-RW user window + real syscall dispatch" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 launch marker not seen"; }
+grep_a8 "A8: prepared EL0-RW user window"                || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: kernel did not prepare the EL0-RW user window"; }
+grep_a8 "EL0 svc: getpid -> current_task_pid()"          || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: getpid did not route into the real kernel syscall handler"; }
+grep_a8 "EL0 svc: write(fd=1, buf, len) -> console"      || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 write did not reach the real dispatcher"; }
+grep_a8 "EL0-RW-DATA-OK: EL0 load/store via fine TTBR0"  || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 could not read/write its own mapped memory (copied buffer never emitted)"; }
+grep_a8 "EL0 write serviced"                             || fail "A8: write syscall not serviced by the real handler"
+grep_a8 "EL0 svc: exit(status=0) serviced"               || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 exit svc not serviced"; }
+grep_a8 "A8: EL0 task exited, returned to kernel"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 syscall round-trip did not return cleanly to the kernel"; }
 # No EL0 access should have faulted into the diagnostic vector.
-grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A7: an exception hit the diagnostic vector (unexpected fault)"; }
+grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: an exception hit the diagnostic vector (unexpected fault)"; }
 
 echo "[ARM64-LLVM] serial (furthest point):"
 grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[ARM64-LLVM]   | /'
