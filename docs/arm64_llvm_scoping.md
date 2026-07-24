@@ -1,12 +1,106 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots** (whole-kernel `.ll` compiles CLEAN,
-LINKS to a bootable aarch64 ELF with **0 undefined symbols**, and BOOTS on
-`qemu-system-aarch64 -M virt`: PL011 early console + MMU/caches on + **emitted
-Adder LLVM code proven executing on aarch64**). The original scoping spike
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init** (whole-kernel
+`.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
+symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
+MMU/caches on, and now **runs the kernel's OWN `start_kernel` early-init
+sequence** — real Adder `printk0` over the PL011-routed console, through
+`trap_init` + CPU-mitigation/KASLR/sched setup, up to the `mem_init` (x86-paging)
+A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-24) — A4 real kernel early-init
+
+**A4 — the aarch64 LLVM kernel REACHES REAL KERNEL INIT and runs it over PL011:
+DONE for the early-init (pre-`mem_init`) milestone.** Gate
+`scripts/test_arm64_llvm_kernel.sh` (extended with A4 assertions): **PASS**.
+
+The A3 layer only proved a *pure leaf* (`fmt_is_flag`) executes. A4 gets the
+kernel's OWN `start_kernel` early-init sequence running as emitted LLVM Adder
+code, printing over the console. Verified PL011 serial from the actual
+`qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G` run (grep-a'd, furthest
+point; kernel then returns to head.S and parks in `wfi`):
+```
+HAMNIX aarch64 LLVM-kernel: EL1 entry OK (PL011 early console)
+MMU: identity map enabled (device 0-1G, RAM 1-2G Normal-WB, caches on)
+LLVM-ADDER fmt_is_flag[+,A,0,#,sp,z]=101110
+LLVM-ADDER-OK: emitted Adder code executed on aarch64
+A4: entering start_kernel_early (real kernel init over PL011)
+[000000] gop: no GOP capture (BIOS boot or LocateProtocol failed)
+[000001] mb_fb: no framebuffer info (flag bit 12 clear)
+[000002] fb: no framebuffer info (BIOS without VBE? QEMU -kernel?)
+[000003] Hamnix kernel booting...
+[000004] Hamnix: hello from start_kernel
+[000005] Hamnix: trap_init done
+[000006] [mitig] CR4 SMEP=0 (SMAP deferred to setup_smap_late)
+[000007] [kaslr] offset=0x0000000009800000 (module-window slide=... 2MiB-slots)
+[000008] Hamnix: early cpu/sched init done
+A4: start_kernel_early returned
+```
+Everything from `[000000]` on is the kernel's REAL Adder `printk0` path
+(`setup_early_printk`→`early_putc`→`_emit_raw`→`inb`/`outb`), including the live
+`[NNNNNN]` printk line-sequence counter — not a hand-written banner. It walks
+`setup_early_printk`, `__stack_chk_init`, `fb_init_early` (correctly detects no
+framebuffer on `-kernel` boot), `trap_init`, `setup_smep_smap`, `setup_kaslr`,
+and `sched_mark_boot_task_running`, all emitted by the LLVM backend, and returns
+cleanly to `head.S`.
+
+**How the 5-bails/`start_kernel` problem was solved — OPTION (b), source+boot,
+NO compiler change.** `start_kernel` is a ~7.6 k-line function whose CFG blows
+the compiler's per-function arena caps (`NM_MAX=256` distinct names, `CI_MAX`,
+`BB_MAX`), so the LLVM backend bails on it (`reason=0` == `cfg_build_function`
+overflow, NOT an SBR_* subset bail). Raising `NM_MAX` (option a) is a
+non-starter for a function this large: the caps are fixed-size arrays woven
+through `cfg.ad`/`regalloc.ad` and the per-block SSA rows are sized
+`BB_MAX*NM_MAX`, so a cap big enough for `start_kernel` would be hundreds of MB
+of static host arrays AND perturb the native `ADDER_OPT2` regalloc — heavy,
+risky, and it would demand the full native-safety battery. Instead A4 **factors
+the early-init prefix of `start_kernel` into a new small PUBLIC function
+`start_kernel_early()`** (`init/main.ad`). It is small enough to EMIT via LLVM
+(few names, mostly calls + string literals), and because public names are not
+mangled it links as the bare symbol `@start_kernel_early`. On x86 `start_kernel`
+simply calls `start_kernel_early()` at its top — a behaviour-preserving
+extract-method refactor, identical statement ordering. This is a
+`init/main.ad` + boot-layer change only; **no `ssa_llvm.ad`/`ssa.ad`/
+`codegen.ad`/`cfg.ad`/`regalloc.ad` edit**, so the compiler native path is
+byte-identical by construction and the compiler native-safety gates
+(kobjdiff/fuzz/OPT2/bench) do not gate this change (kobjdiff was still run as a
+self-host sanity check on the refactored `init/main.ad`: 0 divergences).
+
+**Console routing (A4 item 2), boot-layer only.** The kernel's own early console
+drives an 8250 at port `0x3F8` via `inb`/`outb`, which on aarch64 are supplied by
+`arch/arm64/llvm/intrinsics.S`. Those were no-op stubs; A4 routes them at the
+intrinsic boundary: `inb(0x3FD)` (LSR) returns `0x60` (THRE|TEMT, so the
+`_emit_raw` transmit-ready poll exits) and `outb(_, 0x3F8)` (THR) stores the byte
+to the PL011 Data Register (`0x0900_0000`); all other ports keep the old
+`0`/no-op. No kernel-source or compiler change — the kernel's `printk0` now
+emits over the aarch64 PL011 unmodified. (`setup_early_printk`'s DLL write also
+lands on `0x3F8` → one stray `0x01` byte before the banner; a harmless control
+char.) `arch/arm64/llvm/head.S` calls `start_kernel_early` after the A3 proof.
+
+**A5+ next phases (ranked):**
+1. **`mem_init` — the memory-init port (the A4→A5 boundary).** `mem_init()` is
+   the first statement left in `start_kernel` (not reached on aarch64): it does
+   real x86 page-table / e820 work (CR3, PDPT US bits, `pgtable_extend_from_e820`)
+   that faults on aarch64. Port it to the aarch64 MMU/TTBR model (the head.S
+   identity map + a real page allocator over the RAM block) so early init walks
+   past it. This is the largest remaining early-init item.
+2. **Emit the rest of `start_kernel`.** With `mem_init` ported, keep peeling
+   contiguous slices of `start_kernel` into further small emittable functions
+   (or, longer-term, teach the compiler to auto-split / raise the arena caps
+   behind a gate for the LLVM lane only) until the whole init path emits.
+3. **Real exception handling + GICv2 + generic-timer tick** (port the proven
+   standalone `kmain.ad` GICv2/`CNTV_*` bringup into this lane) → preemptive
+   scheduling; needed before anything that waits on an interrupt.
+4. **virtio-mmio console/blk + initramfs** (`-M virt` is all-virtio) → boot to a
+   shell, mirroring the standalone track's Phase 30+.
+5. **Compiler follow-ups (gated, `ssa_llvm.ad`):** `align 8` on the
+   rdrand/mul128 scratch globals (removes the build-lane sed); `FEAT_RNG` gate +
+   software fallback for `arch_get_random_u64`; higher-half TTBR1 kernel VA.
 
 ---
 

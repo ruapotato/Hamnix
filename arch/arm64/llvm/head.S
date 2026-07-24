@@ -86,6 +86,18 @@ at_el1:
     ldr     x0, =msg_ok
     bl      uart_puts
 
+    /* A4 (docs/arm64_llvm_scoping.md): enter REAL kernel early-init. Unlike the
+     * A3 leaf proof, start_kernel_early() is a genuine slice of start_kernel
+     * (setup_early_printk, __stack_chk_init, fb_init_early, trap_init + its
+     * printk0 banners), emitted by the LLVM backend and run over the PL011-
+     * routed 8250 console (see intrinsics.S). Its "Hamnix ..." lines are the
+     * furthest-point checkpoints; a fault dumps ESR_EL1/ELR_EL1 via vectors.S. */
+    ldr     x0, =msg_a4
+    bl      uart_puts
+    bl      start_kernel_early
+    ldr     x0, =msg_a4_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -215,6 +227,10 @@ msg_fmt:
     .asciz  "LLVM-ADDER fmt_is_flag[+,A,0,#,sp,z]="
 msg_ok:
     .asciz  "LLVM-ADDER-OK: emitted Adder code executed on aarch64\n"
+msg_a4:
+    .asciz  "A4: entering start_kernel_early (real kernel init over PL011)\n"
+msg_a4_ret:
+    .asciz  "A4: start_kernel_early returned\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

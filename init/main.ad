@@ -4310,7 +4310,18 @@ def fb_init_early():
     printk1("fb: %s framebuffer console ready\n", cast[uint64](src))
 
 
-def start_kernel():
+# start_kernel_early — the early-init PREFIX of start_kernel, factored into its
+# own small PUBLIC function (docs/arm64_llvm_scoping.md A4). start_kernel itself
+# is a ~7.6k-line function whose CFG exceeds the compiler's per-function NM_MAX /
+# CI_MAX arena caps, so the LLVM backend BAILS on it — it is not present in the
+# aarch64 LLVM kernel object. This prefix is small enough to EMIT via LLVM. On
+# x86 it is called at the top of start_kernel (identical statement ordering => no
+# behaviour change); on aarch64 the arch/arm64/llvm/head.S boot layer calls it
+# directly (after the A3 execution proof) so the kernel's OWN Adder printk path
+# runs over the PL011-routed console. Each printk here doubles as a boot
+# checkpoint: the furthest "Hamnix: ..." line on the aarch64 serial marks how far
+# real kernel init reached before any fault (vectors.S dumps ESR_EL1/ELR_EL1).
+def start_kernel_early():
     setup_early_printk()
 
     # Stir __stack_chk_guard with a jiffies-derived seed before any
@@ -4347,6 +4358,11 @@ def start_kernel():
     # when the cr4_smap_enabled flag setup_smep_smap() flips is on).
     # Also wires the KASLR v1 scaffold (build-time stamp; runtime
     # relocation lives in cpu_kaslr.ad's v2 next-step block).
+    # (On aarch64 the CR4/MSR writes are stubbed nops — see stubs.c — so
+    # these run harmlessly; they are inside start_kernel_early so the A4
+    # boot walks past trap_init. mem_init() below does real x86 page-table
+    # work and is left in start_kernel, i.e. NOT reached on the aarch64 lane
+    # yet — that is the A5 memory-init port.)
     setup_smep_smap()
     setup_kaslr()
 
@@ -4356,6 +4372,11 @@ def start_kernel():
     # (usleep_range_state -> kernel_cond_resched). Without a RUNNING
     # current task, schedule() would halt the box on the first yield.
     sched_mark_boot_task_running()
+    printk0("Hamnix: early cpu/sched init done\n")
+
+
+def start_kernel():
+    start_kernel_early()
 
     mem_init()
     # SMAP CR4 flip + low/high-identity US=0 restamp MUST run AFTER

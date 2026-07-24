@@ -221,17 +221,56 @@ read_rbp:
     ret
     .size read_rbp, .-read_rbp
 
-/* ---------------- port I/O: no MMIO-less port space on ARM -> nop ------- */
+/* ---------------- port I/O -> PL011 console routing (A4) ----------------
+ * ARM has no port-I/O space, but the kernel's OWN early console
+ * (drivers/tty/serial/early_8250.ad) drives an 8250 UART at port 0x3F8 via
+ * these inb/outb intrinsics. To make start_kernel_early()'s printk0 reach the
+ * aarch64 serial we route that one port at the intrinsic boundary — no kernel-
+ * source or compiler change (docs/arm64_llvm_scoping.md A4, item 2):
+ *
+ *   inb(port x0):  LSR (0x3FD) -> 0x60 (THRE|TEMT, "transmitter ready" so the
+ *                  `while (inb(LSR)&0x20)==0` poll in _emit_raw exits at once);
+ *                  every other port -> 0 (as before).
+ *   outb(val x0, port x1):  THR (0x3F8, DLAB=0) -> store the byte to the PL011
+ *                  Data Register (0x0900_0000); every other port -> nop. The
+ *                  PL011 is already init'd + its FIFO drained by head.S, so a
+ *                  bare DR store transmits. (setup_early_printk's DLL write also
+ *                  lands on 0x3F8 => one stray 0x01 byte before the banner;
+ *                  harmless control char.)
+ * inw/inl/outw/outl keep the old no-port-space behaviour.
+ */
+    .equ A4_UART_THR,   0x3F8           /* 8250 THR / COM1 base */
+    .equ A4_UART_LSR,   0x3FD           /* 8250 Line Status Register */
+    .equ A4_PL011_DR,   0x09000000      /* qemu virt PL011 Data Register */
+
     .globl inb
+    .type inb, %function
 inb:
+    cmp     x0, #A4_UART_LSR
+    b.ne    1f
+    mov     x0, #0x60                   /* THRE|TEMT: transmitter ready */
+    ret
+1:  mov     x0, #0
+    ret
+    .size inb, .-inb
+
     .globl inw
 inw:
     .globl inl
 inl:
     mov     x0, #0
     ret
+
     .globl outb
-outb:
+    .type outb, %function
+outb:                                   /* x0=value, x1=port */
+    cmp     x1, #A4_UART_THR
+    b.ne    2f
+    movz    x9, #0x0900, lsl #16        /* PL011_BASE = 0x0900_0000 */
+    strb    w0, [x9, #0]               /* PL011 DR (offset 0) */
+2:  ret
+    .size outb, .-outb
+
     .globl outw
 outw:
     .globl outl
