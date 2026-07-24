@@ -737,6 +737,193 @@ def _stage_phase0b_hostac(distro: Path) -> bool:
     return True
 
 
+def _stage_clang_toolchain(distro: Path) -> bool:
+    """Phase-1: stage the FULL on-device Adder→native compile toolchain.
+
+    Gated behind HAMNIX_STAGE_CLANG=1 (default OFF; normal images are
+    byte-unaffected). When set, this stages EVERYTHING an on-device
+    `enter linux { adderc /hello.ad -o /hello }` needs to compile+link an
+    Adder program to a runnable native ELF, entirely inside the Debian /
+    Linux-ABI namespace (next to apt/dpkg/busybox):
+
+      /usr/bin/host_ac        self-hosted Adder compiler (emits .ll)
+      /usr/bin/clang-19       LLVM driver (from the HOST llvm-19 install)
+      /usr/lib/.../lib*.so    clang + GNU ld transitive DT_NEEDED closure
+                              (libLLVM ~130M, libclang-cpp ~71M, libz3 ...)
+      /usr/bin/ld             GNU ld (clang invokes it by absolute path)
+      crt1/crti/crtn/crtbeginT/crtend.o + libc.a/libgcc*.a  (-static link)
+      /usr/lib/adder/adder_llvm_runtime.o   prelude helpers (print_u64 ...)
+      /usr/bin/adderc         the user-facing driver script
+      /hello.ad               a trivial program to compile on-device
+
+    The output binary is linked -static, so the PRODUCED binary needs no
+    glibc closure to run; only clang/ld themselves need theirs (staged).
+    We compile the runtime to a .o on the build host so the on-device link
+    (a .ll + .o) needs NO C-header sysroot.
+
+    Sourced from the BUILD HOST's toolchain (there is no debian-minbase
+    fixture on most build hosts). Returns False (no-op) if host_ac or the
+    host clang install is absent. ~250 MiB — a deliberately heavy image;
+    this is the on-device self-compiling story, so it is opt-in.
+    """
+    import glob
+    if os.environ.get("HAMNIX_STAGE_CLANG", "0") not in ("1", "on", "yes"):
+        return False
+
+    hostac_src = HERE / "build" / "cutover" / "host_ac.elf"
+    if not hostac_src.is_file():
+        print(f"[build_rootfs_img] WARN: HAMNIX_STAGE_CLANG=1 but "
+              f"{hostac_src.relative_to(HERE)} absent — run "
+              f"scripts/_adder_cc.sh adder_cc_bootstrap first; NOT staged",
+              flush=True)
+        return False
+
+    # Resolve the host clang (real binary behind the clang-19 symlink).
+    clang_bin = None
+    for c in ("/usr/lib/llvm-19/bin/clang", "/usr/bin/clang-19",
+              "/usr/bin/clang"):
+        if os.path.isfile(os.path.realpath(c)):
+            clang_bin = os.path.realpath(c)
+            break
+    if clang_bin is None:
+        print("[build_rootfs_img] WARN: HAMNIX_STAGE_CLANG=1 but no host "
+              "clang found (apt install clang-19); NOT staging", flush=True)
+        return False
+    ld_bin = "/usr/bin/ld"
+
+    LIBDIRS = ["/usr/lib/llvm-19/lib", "/usr/lib/x86_64-linux-gnu",
+               "/lib/x86_64-linux-gnu", "/usr/lib", "/lib",
+               "/usr/lib64", "/lib64"]
+
+    def _needed(p):
+        try:
+            out = subprocess.check_output(
+                ["readelf", "-d", p], stderr=subprocess.DEVNULL).decode()
+        except Exception:
+            return []
+        return [l.split("[")[1].split("]")[0] for l in out.splitlines()
+                if "(NEEDED)" in l and "[" in l]
+
+    def _find(so):
+        for d in LIBDIRS:
+            c = os.path.join(d, so)
+            if os.path.exists(c):
+                return c
+        return None
+
+    copied = [0]
+    nbytes = [0]
+
+    def _copy_to(src, rel):
+        dst = distro / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        real = os.path.realpath(src)
+        shutil.copy2(real, dst)
+        try:
+            copied[0] += 1
+            nbytes[0] += dst.stat().st_size
+        except Exception:
+            pass
+        return dst
+
+    # --- transitive DT_NEEDED closure of clang + ld -------------------
+    # Flatten every resolved .so into BOTH standard lib dirs so ld.so's
+    # default search path resolves them (same belt+suspenders as weston).
+    seen = set()
+    work = _needed(clang_bin) + _needed(ld_bin)
+    while work:
+        so = work.pop()
+        if so in seen:
+            continue
+        seen.add(so)
+        rp = _find(so)
+        if rp is None:
+            continue
+        real = os.path.realpath(rp)
+        _copy_to(real, "usr/lib/x86_64-linux-gnu/" + so)
+        d2 = distro / "lib/x86_64-linux-gnu" / so
+        d2.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(real, d2)
+        work += _needed(real)
+
+    # --- the driver binaries ------------------------------------------
+    cd = _copy_to(clang_bin, "usr/bin/clang-19")
+    os.chmod(cd, 0o755)
+    # clang resolves its own name for the triple; a `clang` alias too.
+    shutil.copy2(os.path.realpath(clang_bin), distro / "usr/bin/clang")
+    os.chmod(distro / "usr/bin/clang", 0o755)
+    ldd = _copy_to(ld_bin, "usr/bin/ld")
+    os.chmod(ldd, 0o755)
+    # ld.so PT_INTERP for clang/ld themselves.
+    for ld in ("usr/lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2"):
+        src = "/" + ld.replace("usr/lib64", "usr/lib64").replace(
+            "lib64/ld", "lib64/ld")
+        cand = "/" + ld
+        if os.path.exists(cand):
+            _copy_to(cand, ld)
+
+    # --- static-link support objects (crt* + libc.a/libgcc*.a) --------
+    # Paths taken straight from `clang -### -static` on the host.
+    for o in ("crt1.o", "crti.o", "crtn.o"):
+        for d in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"):
+            src = os.path.join(d, o)
+            if os.path.exists(src):
+                _copy_to(src, "usr/lib/x86_64-linux-gnu/" + o)
+                d2 = distro / "lib/x86_64-linux-gnu" / o
+                d2.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, d2)
+                break
+    if os.path.exists("/usr/lib/x86_64-linux-gnu/libc.a"):
+        _copy_to("/usr/lib/x86_64-linux-gnu/libc.a",
+                 "usr/lib/x86_64-linux-gnu/libc.a")
+    # gcc lib dir (version detected, not hardcoded) for crtbeginT/end +
+    # libgcc*.a — clang's default -L is /usr/lib/gcc/<triple>/<ver>.
+    gccdirs = sorted(glob.glob("/usr/lib/gcc/x86_64-linux-gnu/*"))
+    for gd in gccdirs:
+        ver = os.path.basename(gd)
+        rel = "usr/lib/gcc/x86_64-linux-gnu/" + ver + "/"
+        for f in ("crtbeginT.o", "crtend.o", "crtbegin.o", "crtendS.o",
+                  "libgcc.a", "libgcc_eh.a"):
+            src = os.path.join(gd, f)
+            if os.path.exists(src):
+                _copy_to(src, rel + f)
+
+    # --- the Adder pieces --------------------------------------------
+    hd = _copy_to(str(hostac_src), "usr/bin/host_ac")
+    os.chmod(hd, 0o755)
+    runtime_c = HERE / "scripts" / "adder_llvm_runtime.c"
+    runtime_o = HERE / "build" / "cutover" / "adder_llvm_runtime.o"
+    # Pre-compile the runtime to a .o so the on-device link needs no headers.
+    if runtime_c.is_file():
+        try:
+            runtime_o.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.check_call([clang_bin, "-O2", "-c", str(runtime_c),
+                                   "-o", str(runtime_o)],
+                                  stderr=subprocess.DEVNULL)
+            _copy_to(str(runtime_o), "usr/lib/adder/adder_llvm_runtime.o")
+        except Exception as e:
+            print(f"[build_rootfs_img] WARN: could not pre-build "
+                  f"adder_llvm_runtime.o ({e}); staging the .c fallback "
+                  f"(on-device compile of the .c would need C headers)",
+                  flush=True)
+        _copy_to(str(runtime_c), "usr/lib/adder/adder_llvm_runtime.c")
+    adderc = HERE / "scripts" / "adderc"
+    if adderc.is_file():
+        ad = _copy_to(str(adderc), "usr/bin/adderc")
+        os.chmod(ad, 0o755)
+    hello = HERE / "tests" / "phase0b_hello.ad"
+    if hello.is_file():
+        shutil.copy2(hello, distro / "hello.ad")
+
+    print(f"[build_rootfs_img] Phase-1: staged on-device clang toolchain "
+          f"into distro/: {copied[0]} files ({nbytes[0]/(1<<20):.1f} MiB) "
+          f"(host_ac + clang-19 + libLLVM/libclang-cpp/ld closure + crt/"
+          f"static-libs + adderc + runtime.o; HAMNIX_STAGE_CLANG=1). "
+          f"On-device: `enter linux {{ adderc /hello.ad -o /hello }}`",
+          flush=True)
+    return True
+
+
 def _stage_linux_demo_bin(distro: Path) -> bool:
     """Build + plant the tiny static-PIE Linux demo ELF at distro/bin.
 
@@ -1097,6 +1284,12 @@ def _stage_distro(distro: Path, live: bool = False) -> None:
     # self-hosted compiler + a trivial .ad so an on-device `enter linux`
     # can prove host_ac runs under the shim and emits .ll. Default OFF.
     _stage_phase0b_hostac(distro)
+    # Phase-1 (on-device self-compiling): optionally stage the FULL Adder
+    # → native compile toolchain (host_ac + clang + libLLVM/ld closure +
+    # crt/static-libs + the `adderc` driver) so an on-device
+    # `enter linux { adderc /hello.ad -o /hello }` compiles+links+runs.
+    # Default OFF (heavy ~250 MiB image). See test_ondevice_adderc_llvm.sh.
+    _stage_clang_toolchain(distro)
     # Plant a demonstrable freedesktop .desktop so the DE menu's "Linux"
     # section (scanned from /n/linux/usr/share/applications by
     # hampanelscene) is populated on EVERY build, even a busybox-only one

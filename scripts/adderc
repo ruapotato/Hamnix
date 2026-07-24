@@ -1,0 +1,106 @@
+#!/bin/sh
+# adderc — ON-DEVICE Adder compiler driver (runs INSIDE the Linux/Debian
+# namespace, i.e. under `enter linux { ... }` on a booted HamnixOS).
+#
+# This is the user-facing "compile an Adder program on-device" command. It
+# is a plain POSIX shell script (busybox /bin/sh is enough) that chains the
+# two halves of the on-device self-compiling toolchain, BOTH of which live
+# in the Linux-ABI namespace next to apt/dpkg/clang:
+#
+#   1. host_ac  — the self-hosted Adder compiler (an x86_64-linux static
+#                 ELF, EI_OSABI=Linux). It EMITS textual LLVM IR (.ll);
+#                 it is a no-libc static binary and does NOT invoke clang.
+#   2. clang    — LLVM's C/LLVM-IR compiler+driver (from the Debian
+#                 namespace: `apt-get install clang-19`, or pre-staged by
+#                 scripts/build_rootfs_img.py::_stage_clang_toolchain with
+#                 HAMNIX_STAGE_CLANG=1). It runs LLVM opt+codegen on the
+#                 .ll and LINKS it (with the tiny Adder C runtime supplying
+#                 print_u64 etc.) into a runnable native ELF.
+#
+# So on a booted HamnixOS a user runs, in a hamsh shell:
+#     enter linux { adderc /hello.ad -o /hello }
+#     enter linux { /hello }              # runs the freshly-built binary
+#
+# Mirrors scripts/adder_cc_llvm.sh (the host-side wrapper) but resolves its
+# tools from the namespace $PATH / staged locations, and defaults to a
+# STATIC link so the produced binary needs no glibc closure to run.
+#
+# Usage:  adderc <in.ad> [-o <out>] [extra clang args...]
+# Env:
+#   ADDERC_HOST_AC   host_ac path      (default: search PATH, /usr/bin, /)
+#   ADDERC_CLANG     clang binary      (default: clang-19, then clang)
+#   ADDERC_RUNTIME   Adder C runtime   (default: /usr/lib/adder/adder_llvm_runtime.c)
+#   ADDERC_OPT       clang -O level    (default: -O2)
+#   ADDERC_LINK      link mode         (default: -static; set empty for dynamic)
+set -u
+
+die() { echo "adderc: $*" >&2; exit 1; }
+
+IN=""
+OUT=""
+EXTRA=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) shift; [ $# -gt 0 ] || die "-o needs an argument"; OUT="$1" ;;
+        -o*) OUT="${1#-o}" ;;
+        *.ad) IN="$1" ;;
+        *) EXTRA="$EXTRA $1" ;;
+    esac
+    shift
+done
+[ -n "$IN" ] || die "usage: adderc <in.ad> [-o out] [clang args...]"
+[ -f "$IN" ] || die "input '$IN' not found"
+[ -n "$OUT" ] || OUT="${IN%.ad}"
+[ "$OUT" = "$IN" ] && OUT="$IN.out"
+
+# --- resolve host_ac ---------------------------------------------------
+HOST_AC="${ADDERC_HOST_AC:-}"
+if [ -z "$HOST_AC" ]; then
+    for c in host_ac /usr/bin/host_ac /usr/local/bin/host_ac /host_ac; do
+        if command -v "$c" >/dev/null 2>&1; then HOST_AC="$c"; break; fi
+        [ -x "$c" ] && { HOST_AC="$c"; break; }
+    done
+fi
+[ -n "$HOST_AC" ] || die "host_ac (self-hosted Adder compiler) not found — stage it (HAMNIX_STAGE_CLANG=1) or add to PATH"
+
+# --- resolve clang -----------------------------------------------------
+CLANG="${ADDERC_CLANG:-}"
+if [ -z "$CLANG" ]; then
+    for c in clang-19 clang; do
+        if command -v "$c" >/dev/null 2>&1; then CLANG="$c"; break; fi
+    done
+fi
+[ -n "$CLANG" ] || die "clang not found in the namespace — 'apt-get install clang-19' or stage it (HAMNIX_STAGE_CLANG=1)"
+
+# The Adder C runtime supplies the prelude helpers (print_u64, ...) that
+# fall outside the SSA integer subset. A PRE-BUILT .o is preferred: linking
+# a .ll + .o needs NO C headers on-device (a .c would drag in /usr/include).
+RUNTIME="${ADDERC_RUNTIME:-}"
+if [ -z "$RUNTIME" ]; then
+    for r in /usr/lib/adder/adder_llvm_runtime.o \
+             /usr/lib/adder/adder_llvm_runtime.c; do
+        [ -f "$r" ] && { RUNTIME="$r"; break; }
+    done
+fi
+[ -n "$RUNTIME" ] && [ -f "$RUNTIME" ] \
+    || die "Adder C runtime missing (looked for /usr/lib/adder/adder_llvm_runtime.{o,c}; set ADDERC_RUNTIME)"
+OPT="${ADDERC_OPT:--O2}"
+LINK="${ADDERC_LINK--static}"
+
+LL="${OUT}.ll"
+
+# 1) host_ac emits the whole module as textual LLVM IR.
+echo "adderc: [1/2] $HOST_AC --backend=llvm $IN -> $LL" >&2
+"$HOST_AC" --backend=llvm "$IN" "$LL" || die "host_ac --backend=llvm failed on $IN"
+grep -E "^; ADDER_STAT" "$LL" >&2 2>/dev/null || true
+grep -q "^define i64 @main(" "$LL" || grep -q "@main(" "$LL" \
+    || die "no @main emitted (its body bailed the SSA subset); .ll=$LL"
+
+# 2) clang runs LLVM opt+codegen on the .ll and links the C runtime.
+echo "adderc: [2/2] $CLANG $OPT $LINK $LL $RUNTIME -o $OUT" >&2
+# shellcheck disable=SC2086
+"$CLANG" $OPT $LINK "$LL" "$RUNTIME" $EXTRA -o "$OUT" \
+    || die "clang link failed for $LL"
+
+echo "adderc: built $OUT (via $HOST_AC + $CLANG $OPT)" >&2
+exit 0
