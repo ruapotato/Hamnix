@@ -1,6 +1,6 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch)**
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch) + A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ)**
 (whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
@@ -11,6 +11,127 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-24) — A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ)
+
+**A9 — the aarch64 LLVM kernel time-slices TWO EL0 tasks under the ARM
+generic-timer IRQ: each timer tick from EL0 preempts the running task and
+context-switches (full EL0 state save/restore + `eret`) to the other, the switch
+DECISION made by emitted-Adder code: DONE.** This is the "real preemptive
+multitasking" milestone (A8 ran a single EL0 task to exit; A9 runs two, forever,
+until the demo's bounded switch quota). Gate `scripts/test_arm64_llvm_kernel.sh`
+(extended with A9 assertions): **PASS**. Verified furthest-point PL011 serial from
+the actual `qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G` run (grep-a'd):
+```
+A9: preemptive EL0 scheduling (2 tasks, timer-preempted EL0<->EL0)
+[000094] A9: prepared EL0 task A/B message buffers in the EL0-RW window
+[000095] A9: registered 2 EL0 task contexts (round-robin, timer-preempted)
+[EL0-A] task A running (timer-sliced)
+[000099] [arm64-llvm] preempt tick 1: timer-driven EL0<->EL0 switch
+[EL0-B] task B running (timer-sliced)
+[000103] [arm64-llvm] preempt tick 2: timer-driven EL0<->EL0 switch
+[EL0-A] task A running (timer-sliced)
+   ... (alternating; task A ran 4x, task B ran 4x) ...
+[000139] [arm64-llvm] preempt tick 8: timer-driven EL0<->EL0 switch
+[000140] A9: preemptive EL0 scheduling proven (8 timer-driven EL0<->EL0 switches)
+A9: scheduler returned to kernel (bounded preemption demo complete)
+```
+Both EL0 tasks demonstrably RUN (the `[EL0-A]`/`[EL0-B]` lines are each task's
+`write(1, buf, len)` of a distinct kernel-filled EL0 buffer — reaching the console
+only via a real EL0 load of its own memory + the real write syscall), the timer
+PREEMPTS the running task 8 times (`preempt tick N`) alternating A↔B, and after the
+bounded quota the scheduler cleanly returns to the kernel. **0 exceptions hit the
+diagnostic vector.**
+
+**1) Lower-EL IRQ vector (0x480) + full EL0-context switch — boot layer.** The
+tasks run at EL0 with **IRQs UNMASKED** (`SPSR_EL1 = 0x340`: EL0t, D/A/F masked but
+**I=0**), so each ~10 ms virtual-timer PPI fires *at EL0* and traps to the "Lower
+EL using AArch64 / IRQ" slot (offset **0x480**, newly wired in `vectors.S` — was
+the halt diagnostic). The new boot-layer file **`arch/arm64/llvm/sched.S`**
+(`arm64_llvm_lower_irq_entry`) saves the **FULL interrupted EL0 context** — x0..x30
++ `SP_EL0` + `ELR_EL1` + `SPSR_EL1` (a 34-slot context block) — into the running
+task's block (published in `arm64_current_ctx`), acks the GIC (`GICC_IAR`),
+quiesces the timer, calls the emitted-Adder scheduler, re-arms (`CNTV_TVAL`) + EOIs
+(`GICC_EOIR`), then restores the *next* task's full context and `eret`s into it — a
+genuine EL0↔EL0 context switch driven by the EL1 timer IRQ. The privileged
+mechanics (register frame, `SP_EL0`/`ELR`/`SPSR` sysregs, GIC/timer MMIO, `eret`)
+cannot be expressed from Adder, so they live in the boot layer, faithfully porting
+the proven standalone `arch/arm64/vectors.S` `arm64_lower_irq_entry` flow but kept
+ISOLATED (separate file/build). The launcher `arm64_el0_sched_launch` builds both
+task context blocks (entry PC / `SP_EL0` / `SPSR`), re-arms the timer with **EL1
+IRQs masked** (`daifset,#2` — so the first tick is taken at EL0 via the task SPSR,
+not at EL1 by the A6 0x280 handler), and `eret`s into task A; on the stop signal
+the IRQ stub restores the kernel SP/LR stashed at launch and returns to `head.S`.
+
+**2) The scheduling decision is emitted-Adder code.** `arm64_sched_pick_arm64(cur)`
+(new additive public fn in `init/main.ad`) does the kernel-visible half: bump the
+switch counter, round-robin-toggle the current-task index, print the per-switch
+line, and return the NEXT task's context-block address (which the boot stub
+restores + `eret`s into). At the bounded quota (`ARM64_SCHED_SWITCH_LIMIT = 8`) it
+raises `arm64_sched_should_stop` (an asm-visible global the IRQ stub reads) so the
+demo terminates deterministically instead of a preempt storm filling the serial
+log. `arm64_sched_register_arm64(c0,c1)` publishes the two block addresses + resets
+the round-robin state, and `arm64_sched_prepare_arm64()` fills each task's message
+buffer in the EL0-RW window (EL0 cannot read the kernel's AP=00 `.rodata`, so the
+kernel writes the tag strings the tasks then `write`). The two EL0 tasks
+(`arch/arm64/llvm/sched.S`) each `strlen`+`write(1, buf, len)` via `svc` then spin
+in a bounded delay so the timer preempts them mid-slice; they share the A8 fine
+EL0-RW window (0x4800_0000-0x481F_FFFF, AP=01) with distinct SP_EL0 stacks +
+buffers.
+
+**Regression fixed in-flight (load-bearing).** A8's EL0 task called `exit()`, which
+latches `arm64_llvm_el0_exit_pending = 1`. A9's tasks reuse the SAME real svc
+dispatcher (`arm64_svc_dispatch_arm64`) for their `write()`s, so a stale latch made
+every A9 write be misread as an exit — the sync handler returned to EL1/`head.S`
+(where the timer is masked), starving the preempt and looping the A9 setup forever
+(51 705 restarts, 0 preempts). `arm64_sched_register_arm64` now clears
+`arm64_llvm_el0_exit_pending`/`_code`, and the preempt fires correctly. (This is a
+reminder that the EL0-exit latch is global state; per-task exit tracking is future
+work.)
+
+**How x86 stayed byte-identical — additive `*_arm64` slice.** `init/main.ad` change
+is **purely additive** (0 deletions; `git diff` = 90 insertions): the new
+`arm64_sched_*` functions + globals, all called ONLY from `arch/arm64/llvm/sched.S`
+(+ head.S). The x86 `start_kernel()` never references any of them; its body is
+untouched. **Seed-compat gotcha:** the two context-block-pointer globals are held
+as `uint64` (not `Ptr`) because the x86 seed compiler requires an *integer* global
+initializer (a `cast[Ptr](0)` init is native/LLVM-only) — cast to `Ptr` at the use
+site, which both compilers accept. `scripts/test_native_vs_seed_kobjdiff.sh`:
+**PASS — zero semantic kernel divergences across 11075 matched functions** (native
+codegen == seed). No `ssa*.ad`/`codegen.ad` edit. Boot-layer edits
+(`sched.S` new, `vectors.S` 0x480 slot, `gic.S` one `.globl`, `head.S` A9 call) +
+the build/gate scripts touch nothing on the x86 lane.
+
+**A10 plan — from preemptive scheduling to a real `hamsh` shell (ranked, honest
+scope).** A9's two tasks share one address space (distinguished by PC/stack/buffer)
+and are embedded; a real userland still needs:
+1. **Per-task TTBR0 SWITCHING + demand paging + the Data-Abort fault path.** Give
+   each task its OWN TTBR0 (switched on context-switch, so tasks are memory-
+   ISOLATED, not sharing the A8 window), an allocator handing out user frames, and
+   a **Lower-EL Data Abort handler** (0x400 sync, EC=0b100100) that demand-pages a
+   faulting EL0 access — the prerequisite for `brk`/`mmap` growing a real
+   heap/stack. The standalone lane's Phase 14/16/41 demand-paging is the reference;
+   watch the cortex-a72 MMU-edit hazard (install fine L3 leaves + `TLBI`, never a
+   block flip). A voluntary-yield syscall (`sched_yield`) would also let tasks
+   cooperate, not only be preempted.
+2. **`__switch_to` on real per-task KERNEL stacks + blocking.** A9 switches EL0
+   register context but every task shares the one kernel exception stack; a task
+   that BLOCKS in a syscall (read from a real device, wait on a wq) needs its own
+   kernel stack saved/restored. Wire `sched_init`'s task structs (built since A6,
+   inert) to an actual `__switch_to` on this lane.
+3. **Broaden the real syscall surface** (open/close/read via vfs, brk/mmap once
+   demand paging is up, clone/execve) — ideally by getting `do_syscall` itself to
+   emit (auto-split / a gated cfg-cap raise for the LLVM lane) so the FULL ABI is
+   shared with x86 rather than re-listed in `arm64_do_syscall_arm64`.
+4. **virtio-mmio + virtio-console + virtio-blk + initramfs → on-disk `hamsh`.**
+   `-M virt` is all-virtio: the `virtio-mmio` transport, a virtio-console for real
+   bidirectional tty I/O, virtio-blk for a root device, mount the initramfs, and
+   make a real on-disk `hamsh` the first user task (mirroring the standalone track's
+   Phase 30+). Largest remaining item; gates a true interactive shell.
+5. **Higher-half TTBR1 kernel VA + compiler follow-ups** (`align 8` on the
+   rdrand/mul128 scratch globals to drop the build-lane `sed`; `FEAT_RNG` gate).
 
 ---
 

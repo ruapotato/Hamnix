@@ -4631,6 +4631,99 @@ def arm64_svc_dispatch_arm64(frame_ptr: Ptr[uint64]) -> int64:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# A9 (docs/arm64_llvm_scoping.md): PREEMPTIVE EL0 scheduling — two EL0 tasks
+# time-slice-scheduled by the ARM generic-timer IRQ.
+#
+# A8 dropped to ONE EL0 task that ran to exit(). A9 builds TWO EL0 tasks that run
+# with IRQs unmasked; each timer IRQ from EL0 traps to the Lower-EL IRQ vector
+# (0x480), whose boot stub (arch/arm64/llvm/sched.S arm64_llvm_lower_irq_entry)
+# saves the running task's full EL0 context and calls THIS emitted-Adder
+# scheduler, which does the tick bookkeeping and round-robin-picks the NEXT task.
+# The kernel-visible scheduling DECISION is emitted Adder code; the register
+# save/restore + `eret` + GIC/timer HW poking are the boot stub's (they cannot be
+# expressed from Adder). After a fixed number of switches the scheduler raises
+# arm64_sched_should_stop and the stub returns to head.S — a bounded proof.
+#
+# ADDITIVE + aarch64-only: called ONLY from arch/arm64/llvm/sched.S; the x86
+# start_kernel() never references any of it, so the x86 kernel is byte-identical.
+# ---------------------------------------------------------------------------
+# Task A/B context-block addresses. Held as plain uint64 (not Ptr) because the
+# x86 seed compiler requires an INTEGER global initializer — a cast[Ptr] init is
+# native/LLVM-only. Cast to Ptr at the use site (both compilers accept that).
+arm64_sched_ctx0: uint64 = 0           # task A context block address
+arm64_sched_ctx1: uint64 = 0           # task B context block address
+arm64_sched_cur_idx: int64 = 0        # which task is currently running (0/1)
+arm64_sched_switches: uint64 = 0      # timer-driven EL0<->EL0 context switches
+arm64_sched_should_stop: int64 = 0    # boot stub reads this (asm global) to stop
+ARM64_SCHED_SWITCH_LIMIT: uint64 = 8  # stop the demo after this many switches
+
+
+def arm64_sched_register_arm64(c0: Ptr[uint64], c1: Ptr[uint64]):
+    # Called once from sched.S's launcher after it has built both task context
+    # blocks. Publishes the block pointers to the scheduler and resets the
+    # round-robin state (task A == index 0 runs first).
+    arm64_sched_ctx0 = cast[uint64](c0)
+    arm64_sched_ctx1 = cast[uint64](c1)
+    arm64_sched_cur_idx = 0
+    arm64_sched_switches = 0
+    arm64_sched_should_stop = 0
+    # A8's EL0 task called exit(), latching arm64_llvm_el0_exit_pending=1. The A9
+    # tasks reuse the SAME real svc dispatcher (arm64_svc_dispatch_arm64) for their
+    # write() calls, so that latch MUST be cleared or every A9 write would be
+    # misread as an exit (returning to head.S at EL1, starving the timer preempt).
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    printk0("A9: registered 2 EL0 task contexts (round-robin, timer-preempted)\n")
+
+
+def arm64_sched_pick_arm64(cur_ctx: Ptr[uint64]) -> Ptr[uint64]:
+    # Called from the Lower-EL IRQ stub after it has saved cur_ctx (the running
+    # task's full EL0 frame) and acked the GIC. Do the tick bookkeeping, toggle
+    # the round-robin index, and return the NEXT task's context block base (which
+    # the stub restores + erets into). On the Nth switch raise the stop flag so
+    # the stub leaves EL0 and returns to head.S. cur_ctx is unused for the pick
+    # itself (the stub already saved into it) but is the ABI the standalone
+    # arm64_sched_pick(cur) uses, kept for symmetry.
+    arm64_sched_switches = arm64_sched_switches + cast[uint64](1)
+    nxt: Ptr[uint64]
+    if arm64_sched_cur_idx == 0:
+        arm64_sched_cur_idx = 1
+        nxt = cast[Ptr[uint64]](arm64_sched_ctx1)
+    else:
+        arm64_sched_cur_idx = 0
+        nxt = cast[Ptr[uint64]](arm64_sched_ctx0)
+    printk1("[arm64-llvm] preempt tick %d: timer-driven EL0<->EL0 switch\n",
+            arm64_sched_switches)
+    if arm64_sched_switches >= ARM64_SCHED_SWITCH_LIMIT:
+        arm64_sched_should_stop = 1
+        printk1("A9: preemptive EL0 scheduling proven (%d timer-driven EL0<->EL0 switches)\n",
+                arm64_sched_switches)
+    return nxt
+
+
+def arm64_sched_prepare_arm64():
+    # Fill the two EL0 tasks' message buffers in the fine EL0-RW window (AP=01) —
+    # EL0 cannot read the kernel's .rodata (AP=00), so the kernel (EL1) writes the
+    # tag strings the tasks will write(1, buf, len). Called ONLY from head.S
+    # before arm64_el0_sched_launch. Buffer VAs match sched.S TASK_A/B_BUF.
+    a: Ptr[uint8] = cast[Ptr[uint8]](cast[uint64](0x48004000))
+    b: Ptr[uint8] = cast[Ptr[uint8]](cast[uint64](0x48005000))
+    ma: Ptr[uint8] = "[EL0-A] task A running (timer-sliced)\n"
+    mb: Ptr[uint8] = "[EL0-B] task B running (timer-sliced)\n"
+    i: uint64 = cast[uint64](0)
+    while ma[i] != cast[uint8](0):
+        a[i] = ma[i]
+        i = i + cast[uint64](1)
+    a[i] = cast[uint8](0)
+    j: uint64 = cast[uint64](0)
+    while mb[j] != cast[uint8](0):
+        b[j] = mb[j]
+        j = j + cast[uint64](1)
+    b[j] = cast[uint8](0)
+    printk0("A9: prepared EL0 task A/B message buffers in the EL0-RW window\n")
+
+
 def start_kernel():
     start_kernel_early()
 

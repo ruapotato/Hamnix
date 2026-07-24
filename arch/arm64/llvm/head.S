@@ -159,6 +159,23 @@ at_el1:
     ldr     x0, =msg_a8_ret
     bl      uart_puts
 
+    /* A9 (docs/arm64_llvm_scoping.md): PREEMPTIVE EL0 scheduling. Build TWO EL0
+     * tasks and time-slice them under the ARM generic-timer IRQ. The kernel first
+     * fills each task's message buffer in the EL0-RW window, then sched.S's
+     * launcher re-arms the timer (EL1 IRQs masked), erets into task A (SPSR.I=0,
+     * IRQs on at EL0), and each timer IRQ traps to the Lower-EL IRQ vector (0x480)
+     * -> arm64_llvm_lower_irq_entry, which saves the running task's full EL0
+     * context and calls the emitted-Adder scheduler arm64_sched_pick_arm64() to
+     * round-robin to the other task — a real timer-driven EL0<->EL0 switch. After
+     * a fixed switch quota the scheduler stops and the stub returns here. A fault
+     * dumps ESR/ELR via vectors.S. */
+    ldr     x0, =msg_a9
+    bl      uart_puts
+    bl      arm64_sched_prepare_arm64
+    bl      arm64_el0_sched_launch
+    ldr     x0, =msg_a9_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -356,6 +373,10 @@ msg_a8:
     .asciz  "A8: EL0-RW user window + real syscall dispatch (dropping to EL0)\n"
 msg_a8_ret:
     .asciz  "A8: EL0 task exited, returned to kernel (real syscall round-trip complete)\n"
+msg_a9:
+    .asciz  "A9: preemptive EL0 scheduling (2 tasks, timer-preempted EL0<->EL0)\n"
+msg_a9_ret:
+    .asciz  "A9: scheduler returned to kernel (bounded preemption demo complete)\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

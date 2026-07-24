@@ -106,8 +106,28 @@ grep_a8 "EL0-RW-DATA-OK: EL0 load/store via fine TTBR0"  || { sed 's/^/[ARM64-LL
 grep_a8 "EL0 write serviced"                             || fail "A8: write syscall not serviced by the real handler"
 grep_a8 "EL0 svc: exit(status=0) serviced"               || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 exit svc not serviced"; }
 grep_a8 "A8: EL0 task exited, returned to kernel"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: EL0 syscall round-trip did not return cleanly to the kernel"; }
-# No EL0 access should have faulted into the diagnostic vector.
-grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8: an exception hit the diagnostic vector (unexpected fault)"; }
+# A9 assertions: PREEMPTIVE EL0 scheduling (docs/arm64_llvm_scoping.md A9). Two
+# EL0 tasks run with IRQs unmasked; each ARM generic-timer IRQ from EL0 traps to
+# the Lower-EL IRQ vector (0x480) -> arm64_llvm_lower_irq_entry, which saves the
+# running task's FULL EL0 context (x0..x30 + SP_EL0 + ELR_EL1 + SPSR_EL1) and
+# calls the emitted-Adder scheduler arm64_sched_pick_arm64() to round-robin to the
+# OTHER task — a real timer-driven EL0<->EL0 context switch. Proofs:
+#   (1) both tasks A and B actually run at EL0 (their kernel-filled buffers, which
+#       only EL0 loads can read+write to the console via the real write syscall,
+#       reach the console — proving both distinct EL0 contexts execute);
+#   (2) the timer PREEMPTS a running EL0 task and switches (preempt tick lines);
+#   (3) after the bounded quota the scheduler stops and cleanly returns to head.S.
+grep_a9() { grep -qa "$1" "$SERIAL"; }
+grep_a9 "A9: registered 2 EL0 task contexts"          || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: scheduler did not register the 2 task contexts"; }
+grep_a9 "\[EL0-A\] task A running"                     || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: EL0 task A never ran"; }
+grep_a9 "\[EL0-B\] task B running"                     || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: EL0 task B never ran (no context switch to the second task)"; }
+grep_a9 "preempt tick 1: timer-driven EL0<->EL0 switch" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: timer never preempted an EL0 task"; }
+grep_a9 "preempt tick 2: timer-driven EL0<->EL0 switch" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: only one preemption — not time-slicing between both tasks"; }
+grep_a9 "A9: preemptive EL0 scheduling proven"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: scheduler did not reach the bounded switch quota"; }
+grep_a9 "A9: scheduler returned to kernel"            || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: scheduler did not cleanly return to the kernel"; }
+
+# No EL0 access or context switch should have faulted into the diagnostic vector.
+grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8/A9: an exception hit the diagnostic vector (unexpected fault)"; }
 
 echo "[ARM64-LLVM] serial (furthest point):"
 grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[ARM64-LLVM]   | /'

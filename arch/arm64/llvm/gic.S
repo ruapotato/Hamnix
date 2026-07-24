@@ -153,6 +153,7 @@ arm64_llvm_irq_entry:
 
     .section .bss
     .balign 8
+    .globl gic_timer_period            /* A9 sched.S re-arms the timer using this */
 gic_timer_period:
     .space  8
 

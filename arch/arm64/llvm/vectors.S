@@ -39,7 +39,7 @@ arm64_llvm_vectors:
     .balign 0x80
     b       arm64_llvm_lower_sync_entry /* Synchronous (0x400): EL0 `svc #0` (el0.S) */
     .balign 0x80
-    b       arm64_llvm_exc          /* IRQ */
+    b       arm64_llvm_lower_irq_entry  /* IRQ (0x480): preempt running EL0 task (sched.S) */
     .balign 0x80
     b       arm64_llvm_exc          /* FIQ */
     .balign 0x80
