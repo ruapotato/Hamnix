@@ -3102,6 +3102,37 @@ def vm_map_user_page(pml4_phys: uint64, vaddr: uint64, phys: uint64,
     return 0
 
 
+def _cow_probe_leaf(pml4_phys: uint64, vaddr: uint64) -> uint64:
+    # READ-ONLY (never allocates, never cracks) page-table walk: return the
+    # effective leaf entry mapping `vaddr` in `pml4_phys`, or 0 when the VA
+    # is not mapped at any level. A huge (PS=1) entry is returned as-is —
+    # callers only test PT_FLAG_P / PT_FLAG_US on it. Used by the fork
+    # COW-share path to decide whether the CHILD has an inherited mapping
+    # worth clearing WITHOUT paying a table crack for every sparse page.
+    #
+    # Caller must already hold the boot CR3 (every caller here does: the
+    # fork-share helpers are bracketed by vm_cow_share_range /
+    # vm_cow_share_all).
+    pml4: Ptr[uint64] = cast[Ptr[uint64]](pml4_phys)
+    e: uint64 = pml4[(vaddr >> 39) & 0x1FF]
+    if (e & PT_FLAG_P) == 0:
+        return 0
+    pdpt: Ptr[uint64] = cast[Ptr[uint64]](e & PT_ADDR_MASK)
+    e = pdpt[(vaddr >> 30) & 0x1FF]
+    if (e & PT_FLAG_P) == 0:
+        return 0
+    if (e & PT_FLAG_PS) != 0:
+        return e
+    pd: Ptr[uint64] = cast[Ptr[uint64]](e & PT_ADDR_MASK)
+    e = pd[(vaddr >> 21) & 0x1FF]
+    if (e & PT_FLAG_P) == 0:
+        return 0
+    if (e & PT_FLAG_PS) != 0:
+        return e
+    pt: Ptr[uint64] = cast[Ptr[uint64]](e & PT_ADDR_MASK)
+    return pt[(vaddr >> 12) & 0x1FF]
+
+
 def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
                         vaddr: uint64) -> int32:
     # COW-share the single page at `vaddr`. Returns 0 on success,
@@ -3110,8 +3141,47 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
     if pslot == 0:
         return -1
     parent_pte: uint64 = cast[Ptr[uint64]](pslot)[0]
-    # Not present -> nothing mapped here; skip silently.
+    # Not present -> nothing mapped here in the PARENT.
+    #
+    # DEMAND-VMA FORK FIX (idle-CPU hang: the VT login shells pegged a core
+    # each, forever). "Nothing mapped in the parent" is NOT the same as
+    # "nothing mapped in the child". The child's PML4 is cloned from the
+    # PRISTINE BOOT tables, so over any LOW user VA it still carries the
+    # boot IDENTITY mapping (phys == vaddr, P=1 RW=1 **US=0**), and
+    # _cow_resolve_pte_slot's crack of a covering 2 MiB/1 GiB identity huge
+    # page REPRODUCES those identity leaves into the child's fresh PT
+    # (_build_pt_from_pd_entry). A page the parent had NOT yet faulted in —
+    # every untouched page of a demand-zero BSS VMA, which for a big static
+    # binary is megabytes — was therefore left PRESENT-but-supervisor in the
+    # child. Consequences, both observed on the shipped desktop image:
+    #
+    #   * a CPL=3 WRITE takes #PF err=0x07 (P=1 W=1 U=1). It is not a COW
+    #     leaf (cow_handle_write_fault returns 0) and it is not stale-RO
+    #     (RW is already 1), so nothing resolves it and the faulting
+    #     instruction re-runs forever — an unkillable 100 %-CPU fault loop
+    #     (hamsh spinning at v_render_str_only's render_sub store).
+    #   * a KERNEL-side access (uaccess / a read(2) into that buffer) is
+    #     CPL=0 and does NOT fault: it silently reads/writes IDENTITY RAM
+    #     at phys == vaddr — arbitrary physical memory — which is where the
+    #     shell's "garbage console input" (bytes lifted out of an unrelated
+    #     in-RAM copy of its own binary) came from.
+    #
+    # So an unmapped-in-the-parent page must be made UNMAPPED IN THE CHILD
+    # too; only then does the child's first touch take the ordinary
+    # not-present demand fault its VMA is registered for. Probe first
+    # (_cow_probe_leaf never allocates) so a sparse high-VA range still
+    # costs nothing; crack + clear only where an inherited mapping is
+    # genuinely present.
     if (parent_pte & PT_FLAG_P) == 0:
+        cprobe: uint64 = _cow_probe_leaf(child_pml4, vaddr)
+        if (cprobe & PT_FLAG_P) == 0:
+            return 0
+        cslot0: uint64 = _cow_resolve_pte_slot(child_pml4, vaddr)
+        if cslot0 == 0:
+            return -1
+        if (cast[Ptr[uint64]](cslot0)[0] & PT_FLAG_P) != 0:
+            cast[Ptr[uint64]](cslot0)[0] = 0
+            invlpg_one(vaddr)
         return 0
     phys: uint64 = parent_pte & PT_ADDR_MASK
     cslot: uint64 = _cow_resolve_pte_slot(child_pml4, vaddr)

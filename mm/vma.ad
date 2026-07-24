@@ -318,6 +318,7 @@ VMA_CHUNK_SIZE:   uint64 = 16
 VMA_FD_TMPFS_MARK: uint32 = 0xFFFFFFFA           # mirror of FD_TMPFS_MARK
 VMA_PT_FLAG_P:    uint64 = 0x1                   # Present
 VMA_PT_FLAG_PS:   uint64 = 0x80                  # Page-Size (huge leaf)
+VMA_PT_FLAG_US:   uint64 = 0x4                   # User/Supervisor (1 = CPL=3 ok)
 VMA_PT_ADDR_MASK: uint64 = 0x000FFFFFFFFFF000    # bits [51:12]: phys base
 
 # Virtual-address window for multi-chunk VMAs.
@@ -5693,6 +5694,18 @@ def vma_resolve_write_perm_fault(slot: uint64, pml4_phys: uint64,
         # A COW leaf: never force-writable here; the copy goes through
         # cow_handle_write_fault (already tried by do_page_fault).
         return 0
+    if (pte & VMA_PT_FLAG_US) == 0:
+        # SUPERVISOR-ONLY leaf under a USER VMA. Only a CPL=3 access can
+        # fault on a present US=0 page (CPL=0 may write it freely), so this
+        # is a stray KERNEL mapping — historically the boot identity map
+        # re-inherited by a fork child over a demand-VMA hole (see
+        # fs/elf.ad::_cow_share_one_page). Re-stamping RW would NOT clear
+        # the fault, so claiming "resolved" below would re-run the faulting
+        # instruction unchanged: an unkillable 100 %-CPU #PF loop (the VT
+        # login shells' idle hang). Refuse it here — do_page_fault then
+        # SIGSEGVs the task loudly instead of spinning forever. Never
+        # force US=1: that would hand userspace the kernel's identity map.
+        return 0
     if (pte & PT_FLAG_RW) != 0:
         # Already writable — the fault was transient (another CPU restamped
         # it, or a TLB shootdown lag). Re-running the instruction succeeds.
@@ -6646,6 +6659,10 @@ def _vma_fork_copy_locked(child_slot: uint64, parent_slot: uint64,
                 _vma_node_set(node, p_start, p_end, p_prot, p_flags,
                               p_fd, p_off, 0, 0)
                 cast[Ptr[VmaNode]](node)[0].is_shared = 1
+                # DEMAND-VMA RE-FORK FIX: is_demand is orthogonal to
+                # is_shared/is_cow — carry it (see the COW arm below).
+                cast[Ptr[VmaNode]](node)[0].is_demand = \
+                    cast[Ptr[VmaNode]](cur)[0].is_demand
                 if vm_share_range(parent_pml4, child_pml4,
                                   p_start, p_end) < 0:
                     printk1("vma_fork: share OOM for VMA @ 0x%x\n",
@@ -6668,6 +6685,20 @@ def _vma_fork_copy_locked(child_slot: uint64, parent_slot: uint64,
                 _vma_node_set(node, p_start, p_end, p_prot, p_flags,
                               p_fd, p_off, 0, 0)
                 cast[Ptr[VmaNode]](node)[0].is_cow = 1
+                # DEMAND-VMA RE-FORK FIX (idle-CPU hang / VT-shell SIGSEGV).
+                # is_demand is ORTHOGONAL to is_cow: a demand-zero VMA (the
+                # BSS tail, a lazy anon reservation) that has been forked
+                # ONCE comes back through here on the NEXT fork, because the
+                # first fork stamped is_cow on the PARENT node and the
+                # owns_pages heuristic above then routes it to this COW arm
+                # instead of the demand arm below. Without carrying the flag
+                # the second and later children got a node with is_demand=0,
+                # so vma_demand_fault refused their untouched BSS pages
+                # ("VMA exists but is not demand-paged") and the first touch
+                # SIGSEGV'd. rc.boot forks the shell many times before the VT
+                # gettys, so every VT login shell landed in exactly this arm.
+                cast[Ptr[VmaNode]](node)[0].is_demand = \
+                    cast[Ptr[VmaNode]](cur)[0].is_demand
                 if vm_cow_share_range(parent_pml4, child_pml4,
                                       p_start, p_end) < 0:
                     printk1("vma_fork: COW share OOM for VMA @ 0x%x\n",
