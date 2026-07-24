@@ -738,6 +738,20 @@ DESKTOP_APP_PACKAGES: list[dict] = [
      "summary": "graphical package manager / Software app (hpm front-end)"},
     {"name": "hamnix-hamlog", "bins": ("hamlogscene",),
      "summary": "kernel log viewer"},
+    # ---- the OFFICE SUITE (pre-installed, first-class DE apps) -------------
+    # HamWrite / HamSheet / HamSlides were repo-ONLY leaves (built + published
+    # but excluded from the hamnix-base closure, .desktop parked in
+    # etc/hamde/apps-optional/) so the panel never listed them and a fresh
+    # install never carried them. They are now ordinary DE app packages: pulled
+    # in by hamnix-desktop-apps -> hamnix-desktop -> hamnix-base, with their
+    # .desktop launchers moved into etc/hamde/apps/ (globbed wholesale by
+    # hamnix-desktop-config) so the Applications menu shows them out of the box.
+    {"name": "hamnix-hamwrite", "bins": ("hamwrite",),
+     "summary": "word processor (HamWrite — rich text, headings, save/load)"},
+    {"name": "hamnix-hamsheet", "bins": ("hamsheet",),
+     "summary": "spreadsheet (HamSheet — recalculating formula engine)"},
+    {"name": "hamnix-hamslides", "bins": ("hamslides",),
+     "summary": "presentation editor (HamSlides — edit + present a deck)"},
     {"name": "hamnix-hamaudio", "bins": ("hamaudioscene",),
      "summary": "audio player (.wav playback through the HDA sink)",
      "sounds": True},
@@ -911,60 +925,11 @@ def _files_hamaudiobook() -> list[tuple[Path, str]]:
     return f
 
 
-# ---- hamnix-hamwrite — the office word-processor, ALSO repo-ONLY ----------
-# HamWrite is the flagship of the native office suite: a rich-text word
-# processor (File/Edit/Format menu bar, formatting toolbar, bold/italic/
-# underline/heading, four text sizes, paragraph alignment, word-wrap +
-# scrolling, selection/clipboard, New/Open/Save/Save As of a HAMWRITE1
-# document container). Like the audiobook player it follows the
-# repo-ONLY pattern — BUILT + published in the main channel (installable via hpm
-# / the Software app), but excluded from the hamnix-base closure so a fresh
-# install does NOT carry it. Its payload is the binary + its .desktop launcher
-# (staged into /etc/hamde/apps ONLY when the package is installed).
-
-HAMWRITE_PKG = "hamnix-hamwrite"
-
-
-def _files_hamwrite() -> list[tuple[Path, str]]:
-    f: list[tuple[Path, str]] = []
-    _add_user_bin(f, "hamwrite")
-    # Launcher lives in etc/hamde/apps-optional/ (NOT etc/hamde/apps/, which the
-    # base hamnix-desktop-config package globs wholesale) and is staged into the
-    # live /etc/hamde/apps ONLY when this package is installed.
-    f.append((ETC_DIR / "hamde" / "apps-optional" / "hamwrite.desktop",
-              "etc/hamde/apps/hamwrite.desktop"))
-    return f
-
-
-# ---- hamnix-hamsheet — the office SPREADSHEET, ALSO repo-ONLY -------------
-# HamSheet is the office suite's second app alongside HamWrite: a spreadsheet
-# with a scrollable grid, a recalculating formula engine (cell refs, arithmetic,
-# SUM/AVG/MIN/MAX/COUNT) and a HAMSHEET1 document container that round-trips
-# formulas. Same repo-ONLY pattern as HamWrite — BUILT + published in the main
-# channel (installable via hpm / the Software app), but excluded from the
-# hamnix-base closure so a fresh install does NOT carry it. Its payload is the
-# binary + its .desktop launcher (staged into /etc/hamde/apps ONLY when the
-# package is installed).
-
-HAMSHEET_PKG = "hamnix-hamsheet"
-
-
-def _files_hamsheet() -> list[tuple[Path, str]]:
-    f: list[tuple[Path, str]] = []
-    _add_user_bin(f, "hamsheet")
-    # Launcher lives in etc/hamde/apps-optional/ (NOT etc/hamde/apps/, which the
-    # base hamnix-desktop-config package globs wholesale) and is staged into the
-    # live /etc/hamde/apps ONLY when this package is installed.
-    f.append((ETC_DIR / "hamde" / "apps-optional" / "hamsheet.desktop",
-              "etc/hamde/apps/hamsheet.desktop"))
-    return f
-
-
 # ---- hamnix-hampaint — the raster drawing app, ALSO repo-ONLY -------------
 # HamPaint is the MS-Paint / Tux-Paint equivalent: a native raster editor with a
 # canvas, tools (pencil/eraser/line/rect/filled-rect/ellipse/flood-fill), a
 # brush-size control, a colour palette, Clear (new) and save-as-PNG. Same
-# repo-ONLY pattern as HamWrite/HamSheet — BUILT + published in the main channel
+# repo-ONLY pattern as the audiobook app — BUILT + published in the main channel
 # (installable via hpm / the Software app), but excluded from the hamnix-base
 # closure below so a fresh install does NOT carry it. Its payload is the binary +
 # its .desktop launcher (staged into /etc/hamde/apps ONLY when installed).
@@ -983,31 +948,6 @@ def _files_hampaint() -> list[tuple[Path, str]]:
     return f
 
 
-# ---- hamnix-hamslides — the office presentation app, ALSO repo-ONLY --------
-# HamSlides is the PowerPoint / LibreOffice-Impress equivalent and the office
-# suite's third app (after HamWrite + HamSheet): a deck of slides (each a title +
-# bullet list), an EDIT view (thumbnail rail + large current slide) and a
-# full-window PRESENT view, saved/loaded as a HAMSLIDES1 document container that
-# round-trips the deck. Same repo-ONLY pattern as HamWrite/HamSheet/HamPaint —
-# BUILT + published in the main channel (installable via hpm / the Software app),
-# but excluded from the hamnix-base closure below so a fresh install does NOT
-# carry it. Its payload is the binary + its .desktop launcher (staged into
-# /etc/hamde/apps ONLY when installed).
-
-HAMSLIDES_PKG = "hamnix-hamslides"
-
-
-def _files_hamslides() -> list[tuple[Path, str]]:
-    f: list[tuple[Path, str]] = []
-    _add_user_bin(f, "hamslides")
-    # Launcher lives in etc/hamde/apps-optional/ (NOT etc/hamde/apps/, which the
-    # base hamnix-desktop-config package globs wholesale) and is staged into the
-    # live /etc/hamde/apps ONLY when this package is installed.
-    f.append((ETC_DIR / "hamde" / "apps-optional" / "hamslides.desktop",
-              "etc/hamde/apps/hamslides.desktop"))
-    return f
-
-
 # ---- hamnix-hamangrybirds — repo-ONLY, NOT-preinstalled game --------------
 # Follows the hamnix-hamaudiobook pattern exactly: BUILT + published in the main
 # channel (installable via `hpm install hamnix-hamangrybirds` or the Software
@@ -1023,7 +963,7 @@ def _files_hamslides() -> list[tuple[Path, str]]:
 # read-out plus an analog clock face (clock view), a real month calendar with
 # today highlighted and prev/next month paging (calendar view), and a start /
 # stop / reset stopwatch (timer view). Same repo-ONLY pattern as
-# HamWrite/HamSheet/HamPaint/HamSlides — BUILT + published in the main channel
+# the audiobook app / HamPaint — BUILT + published in the main channel
 # (installable via hpm / the Software app), but excluded from the hamnix-base
 # closure below so a fresh install does NOT carry it. Its payload is the binary +
 # its .desktop launcher (staged into /etc/hamde/apps ONLY when installed).
@@ -1333,44 +1273,7 @@ PACKAGE_SPECS.append({
 })
 
 
-# The repo-ONLY office word processor. Same pattern as the audiobook app: built
-# + published in the main channel but kept out of the hamnix-base closure below,
-# so `hpm install hamnix-hamwrite` / the Software app is the only way to get it.
-# Depends only on the compositor (scene-file DE) — no extra hardware stack.
-PACKAGE_SPECS.append({
-    "name": HAMWRITE_PKG,
-    "files_fn": _files_hamwrite,
-    "depends": [f"hamnix-desktop-core>={PKG_VERSION}"],
-    "description": ("HamWrite — Hamnix office word processor: File/Edit/Format "
-                    "menu bar + formatting toolbar, pixel word-wrap with "
-                    "scrolling, bold/italic/underline/heading, four text sizes, "
-                    "left/centre/right paragraph alignment, selection + "
-                    "clipboard, and New/Open/Save/Save As of a HAMWRITE1 "
-                    "document that round-trips every attribute. Repo-only: "
-                    "install from 255.one, not pre-installed."),
-    "target": "#hamnix-system",
-})
-
-
-# The repo-ONLY office spreadsheet. Same pattern as HamWrite: built + published
-# in the main channel but kept out of the hamnix-base closure below, so
-# `hpm install hamnix-hamsheet` / the Software app is the only way to get it.
-# Depends only on the compositor (scene-file DE) — no extra hardware stack.
-PACKAGE_SPECS.append({
-    "name": HAMSHEET_PKG,
-    "files_fn": _files_hamsheet,
-    "depends": [f"hamnix-desktop-core>={PKG_VERSION}"],
-    "description": ("HamSheet — Hamnix office spreadsheet: a scrollable cell "
-                    "grid holding numbers, text or =formulas with a "
-                    "recalculating engine (cell refs, + - * /, parens, "
-                    "SUM/AVG/MIN/MAX/COUNT over an A1:A5 range), and save/load "
-                    "of a HAMSHEET1 document that round-trips formulas. "
-                    "Repo-only: install from 255.one, not pre-installed."),
-    "target": "#hamnix-system",
-})
-
-
-# The repo-ONLY raster drawing app. Same pattern as HamWrite/HamSheet: built +
+# The repo-ONLY raster drawing app. Same pattern as the audiobook app: built +
 # published in the main channel but kept out of the hamnix-base closure below, so
 # `hpm install hamnix-hampaint` / the Software app is the only way to get it.
 # Depends only on the compositor (scene-file DE) — no extra hardware stack.
@@ -1384,25 +1287,6 @@ PACKAGE_SPECS.append({
                     "flood-fill tools, a small/medium/large brush, a colour "
                     "palette, Clear/new, and save-as-PNG. Repo-only: install "
                     "from 255.one, not pre-installed."),
-    "target": "#hamnix-system",
-})
-
-
-# The repo-ONLY office presentation app. Same pattern as HamWrite/HamSheet: built
-# + published in the main channel but kept out of the hamnix-base closure below,
-# so `hpm install hamnix-hamslides` / the Software app is the only way to get it.
-# Depends only on the compositor (scene-file DE) — no extra hardware stack.
-PACKAGE_SPECS.append({
-    "name": HAMSLIDES_PKG,
-    "files_fn": _files_hamslides,
-    "depends": [f"hamnix-desktop-core>={PKG_VERSION}"],
-    "description": ("HamSlides — Hamnix office presentation app (PowerPoint / "
-                    "Impress style): build a deck of slides, each a title + "
-                    "bullet list, with an edit view (thumbnail rail + large "
-                    "current slide) and a full-window present view "
-                    "(Space/arrows to advance, Esc to exit), saved/loaded as a "
-                    "HAMSLIDES1 document that round-trips the deck. Repo-only: "
-                    "install from 255.one, not pre-installed."),
     "target": "#hamnix-system",
 })
 
@@ -1597,16 +1481,14 @@ def build_hamnix_base() -> dict:
     # The repo-only audiobook app must NOT be pre-installed: keep it out of the
     # base closure so it ships ONLY via 255.one / `hpm install`.
     leaf_names.add(HAMAUDIOBOOK_PKG)
-    # The repo-only office word processor is likewise NOT pre-installed.
-    leaf_names.add(HAMWRITE_PKG)
-    # The repo-only office spreadsheet is likewise NOT pre-installed.
-    leaf_names.add(HAMSHEET_PKG)
     # Likewise the repo-only Angry Birds game — 255.one / `hpm install` only.
     leaf_names.add(HAMANGRYBIRDS_PKG)
     # The repo-only raster drawing app is likewise NOT pre-installed.
     leaf_names.add(HAMPAINT_PKG)
-    # The repo-only office presentation app is likewise NOT pre-installed.
-    leaf_names.add(HAMSLIDES_PKG)
+    # NOTE: the OFFICE SUITE (hamnix-hamwrite / -hamsheet / -hamslides) is NOT
+    # excluded here any more — it is now part of DESKTOP_APP_PKG_NAMES above, so
+    # it is reached (and PRE-INSTALLED) through hamnix-desktop-apps.
+    # The repo-only clock / calendar / timer utility is NOT pre-installed.
     leaf_names.add(HAMCLOCK_PKG)
     # The repo-only Markdown viewer is likewise NOT pre-installed.
     leaf_names.add(HAMMARK_PKG)

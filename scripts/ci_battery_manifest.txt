@@ -2282,6 +2282,22 @@ bash scripts/ci_run_gate.sh scripts/test_curl_https_redirect.sh
 # build + OVMF boot runs in the installer CI job / locally).
 HAMNIX_SKIP_BUILD=1 bash scripts/test_de_visual_gate.sh
 
+# OFFICE SUITE host gates: HamWrite (word processor), HamSheet (spreadsheet)
+# and HamSlides (presentation) are PRE-INSTALLED first-class DE apps. These
+# three are fast, QEMU-free harnesses that drive each app's core through the
+# real key path and assert the rendered scene + document round-trip.
+bash scripts/test_hamwrite_host.sh
+bash scripts/test_hamsheet_host.sh
+bash scripts/test_hamslides_host.sh
+
+# test_de_office_suite: the office suite actually SHIPS on the desktop. Boots
+# the live image under OVMF/KVM and asserts /etc/hamde/apps + ~/Desktop carry
+# all three launchers, the Applications menu (hamappmenu) renders the Office
+# category, and each app launched through /dev/wsys/run/launch maps a window,
+# paints it, and reacts to real PS/2 keystrokes. HOST-GUARDED: SKIPs cleanly
+# without KVM/OVMF/socat or a prebuilt build/hamnix-installer.img.
+bash scripts/test_de_office_suite.sh
+
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +
 # presents the full window set (presented>=5) + paints a non-blank frame.

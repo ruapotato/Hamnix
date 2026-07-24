@@ -192,6 +192,12 @@ EXPECTED_APP_PKGS = {
     "hamnix-haminbox": "haminbox",
     "hamnix-hamsettings": "hamsettings",
     "hamnix-haminstallui": "haminstallui",
+    # The OFFICE SUITE — pre-installed first-class DE apps (promoted out
+    # of the repo-only apps-optional set): word processor / spreadsheet /
+    # presentation. Each is its own package under hamnix-desktop-apps.
+    "hamnix-hamwrite": "hamwrite",
+    "hamnix-hamsheet": "hamsheet",
+    "hamnix-hamslides": "hamslides",
 }
 
 # 4a: hamnix-desktop-core is a real, separate package with the compositor.
