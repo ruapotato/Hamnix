@@ -121,6 +121,67 @@ export HAMNIX_KERNEL_OPT="${HAMNIX_KERNEL_OPT:-0}"
 export HAMNIX_USER_OPT="${HAMNIX_USER_OPT:-0}"
 export HAMNIX_USER_OPT_EXCLUDE="${HAMNIX_USER_OPT_EXCLUDE:-}"
 
+# ============================================================================
+# SHIPPED-KERNEL BACKEND (user directive 2026-07-24: LLVM is the MAIN/DEFAULT
+# build path; native stays as bootstrap + oracle + fallback).
+#
+#   HAMNIX_KERNEL_BACKEND=llvm    (DEFAULT) — the shipped INSTALLED + INSTALLER
+#       kernels are compiled through the Adder LLVM backend (Adder SSA IR ->
+#       textual LLVM IR -> clang-19 -> ELF64) and linked as the NATIVE-HYBRID
+#       kernel (scripts/build_kernel_llvm.sh): the LLVM object supplies the vast
+#       majority of the 11k functions; a small set that the LLVM backend still
+#       bails (start_kernel/do_syscall/... + the layout-sensitive memblock_alloc
+#       route) fall through to a native-compiled main.o via
+#       `ld --allow-multiple-definition`. Requires clang-19 in PATH.
+#
+#   HAMNIX_KERNEL_BACKEND=native  (FALLBACK) — the shipped kernels are compiled
+#       by the native Adder SSA backend (adder_cc_compile -> adder_cc_link_kernel
+#       in scripts/_adder_cc.sh), exactly the historical default. Use this when
+#       clang-19 is unavailable, to A/B a suspected LLVM-codegen bug, or to
+#       reproduce the byte-identical native reference image.
+#
+# WHAT STAYS NATIVE REGARDLESS OF THIS FLAG (do NOT confuse with the ship path):
+#   * the BOOTSTRAP — the Python seed compiles host_ac via the native backend
+#     (adder_cc_bootstrap); the LLVM backend lives INSIDE that same host_ac.
+#   * the kobjdiff ORACLE — scripts/test_native_vs_seed_kobjdiff.sh (native ==
+#     seed byte-identity) is unaffected; it never runs the LLVM lane.
+# See docs/llvm_default_build.md.
+export HAMNIX_KERNEL_BACKEND="${HAMNIX_KERNEL_BACKEND:-llvm}"
+
+# _build_ship_kernel <out-elf>
+# Build ONE shipped kernel ELF (init/main.ad closure) with the currently-selected
+# backend, consuming whatever initramfs blob build_initramfs.py last emitted into
+# $OUTDIR/initramfs_blob.S (empty cpio for the installed kernel; the squashfs
+# payload for the installer kernel). Both backends link the SAME hand-written
+# boot .S under arch/x86/kernel/kernel.lds, so the resulting ELF boots the
+# identical firmware path either way.
+_build_ship_kernel() {
+    local out="$1"
+    rm -f "$out"
+    if [ "$HAMNIX_KERNEL_BACKEND" = "native" ]; then
+        echo "[build_installer_img]   backend=native (adder_cc_link_kernel)"
+        adder_cc_compile compile --target=x86_64-bare-metal init/main.ad -o "$out"
+        return $?
+    fi
+    if [ "$HAMNIX_KERNEL_BACKEND" = "llvm" ]; then
+        echo "[build_installer_img]   backend=llvm (build_kernel_llvm.sh native-hybrid)"
+        command -v "${CLANG:-clang-19}" >/dev/null 2>&1 || {
+            echo "[build_installer_img] ERROR: HAMNIX_KERNEL_BACKEND=llvm needs '${CLANG:-clang-19}' in PATH." >&2
+            echo "[build_installer_img]   Install clang-19, or rebuild with HAMNIX_KERNEL_BACKEND=native." >&2
+            return 1
+        }
+        # host_ac (with its LLVM backend) is the SAME compiler the native lane
+        # bootstraps; ensure it exists (build_user.sh in Stage 1 already did this,
+        # but the LLVM lane invokes host_ac directly, so make it explicit).
+        adder_cc_bootstrap || return 1
+        HAMNIX_INITRAMFS_BLOB="$OUTDIR/initramfs_blob.S" \
+            bash "$PROJ_ROOT/scripts/build_kernel_llvm.sh" "$out"
+        return $?
+    fi
+    echo "[build_installer_img] ERROR: unknown HAMNIX_KERNEL_BACKEND='$HAMNIX_KERNEL_BACKEND' (want llvm|native)" >&2
+    return 2
+}
+
 OUT="${HAMNIX_INSTALLER_IMG_OUT:-$OUTDIR/hamnix-installer.img}"
 INSTALLED_KERNEL="$OUTDIR/hamnix-installed-kernel.elf"
 INSTALLER_KERNEL="$OUTDIR/hamnix-installer-kernel.elf"
@@ -225,9 +286,7 @@ PY
 # NUC that is NVMe, not USB).
 echo "[build_installer_img] Stage 3: compile INSTALLED kernel (empty cpio)."
 env HAMNIX_CPIO_EMPTY=1 INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null
-rm -f "$INSTALLED_KERNEL"
-adder_cc_compile compile --target=x86_64-bare-metal \
-    init/main.ad -o "$INSTALLED_KERNEL"
+_build_ship_kernel "$INSTALLED_KERNEL"
 [ -f "$INSTALLED_KERNEL" ] || { echo "[build_installer_img] ERROR: installed kernel not built" >&2; exit 1; }
 echo "[build_installer_img]   installed kernel: $(file -b "$INSTALLED_KERNEL")"
 # #410 Item 1 — HARD CPIO-INTENT ASSERT (installed kernel). The compiled
@@ -346,9 +405,7 @@ env HAMNIX_INSTALLER_BLOB=1 HAMNIX_INSTALLER_SQFS="$SQFS_IMG" \
 if [ "${ENABLE_LOG_SLOW:-0}" = "1" ]; then
     echo "[build_installer_img]   page-pause log capture ENABLED (/etc/log-slow planted)."
 fi
-rm -f "$INSTALLER_KERNEL"
-adder_cc_compile compile --target=x86_64-bare-metal \
-    init/main.ad -o "$INSTALLER_KERNEL"
+_build_ship_kernel "$INSTALLER_KERNEL"
 [ -f "$INSTALLER_KERNEL" ] || { echo "[build_installer_img] ERROR: installer kernel not built" >&2; exit 1; }
 echo "[build_installer_img]   installer kernel: $(file -b "$INSTALLER_KERNEL")"
 # #410 Item 1 — HARD CPIO-INTENT ASSERT (installer kernel). The compiled

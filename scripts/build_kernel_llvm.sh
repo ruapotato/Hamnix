@@ -50,7 +50,10 @@ CLANG="${CLANG:-clang-19}"
 LLVM_CLANG_OPT="${LLVM_CLANG_OPT:--O0}"
 AS_CMD="${AS:-as}"
 LD_CMD="${LD:-ld}"
-WORK="build/kllvm"
+# Honor HAMNIX_BUILD_DIR (opt-in per-invocation build isolation, set by
+# build_installer_img.sh) so two builds in ONE checkout don't clobber each
+# other's intermediates. Default (unset) is the historical build/kllvm.
+WORK="${HAMNIX_BUILD_DIR:-build}/kllvm"
 mkdir -p "$WORK"
 
 command -v "$CLANG" >/dev/null || { echo "[kllvm] ERROR: $CLANG not found" >&2; exit 1; }
