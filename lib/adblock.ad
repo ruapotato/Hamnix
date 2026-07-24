@@ -1,0 +1,140 @@
+# lib/adblock.ad — built-in AD / TRACKER blocker.
+#
+# A small, pure (no extern/IO) filter the browser applies to every resource URL
+# (page navigations, <img>, fetch()): if the URL's host or path contains a known
+# ad/tracker pattern it is blocked. This is a compact substring blocklist (the
+# shape of an EasyList "hosts" rule set, trimmed to the highest-traffic ad and
+# analytics domains) — enough to visibly cut ads on real pages without a full
+# rule-engine. A menu toggle enables/disables it and a counter feeds the chrome
+# shield badge ("N blocked").
+#
+# PURE: links into both the native browser and the x86_64-linux host harness.
+
+# enabled by default (Chrome-with-uBlock feel); the menu toggles it.
+_ab_on: int32 = 1
+# blocked-request counter for the current page (reset on navigation).
+_ab_blocked: int32 = 0
+
+AB_N: int32 = 22
+
+
+def adblock_enabled() -> int32:
+    return _ab_on
+
+
+def adblock_set_enabled(on: int32):
+    if on != 0:
+        _ab_on = 1
+    else:
+        _ab_on = 0
+
+
+def adblock_toggle() -> int32:
+    if _ab_on != 0:
+        _ab_on = 0
+    else:
+        _ab_on = 1
+    return _ab_on
+
+
+def adblock_blocked_count() -> int32:
+    return _ab_blocked
+
+
+def adblock_reset_count():
+    _ab_blocked = 0
+
+
+# One blocklist entry (a host/path substring). Kept as a switch so the module
+# needs no global string table (Adder string literals return a fresh Ptr each).
+def _ab_pat(i: int32) -> Ptr[uint8]:
+    if i == 0:
+        return cast[Ptr[uint8]]("doubleclick.net")
+    if i == 1:
+        return cast[Ptr[uint8]]("googlesyndication.com")
+    if i == 2:
+        return cast[Ptr[uint8]]("googleadservices.com")
+    if i == 3:
+        return cast[Ptr[uint8]]("google-analytics.com")
+    if i == 4:
+        return cast[Ptr[uint8]]("googletagmanager.com")
+    if i == 5:
+        return cast[Ptr[uint8]]("googletagservices.com")
+    if i == 6:
+        return cast[Ptr[uint8]]("adservice.google.com")
+    if i == 7:
+        return cast[Ptr[uint8]]("/pagead/")
+    if i == 8:
+        return cast[Ptr[uint8]]("/adsbygoogle")
+    if i == 9:
+        return cast[Ptr[uint8]]("amazon-adsystem.com")
+    if i == 10:
+        return cast[Ptr[uint8]]("adnxs.com")
+    if i == 11:
+        return cast[Ptr[uint8]]("scorecardresearch.com")
+    if i == 12:
+        return cast[Ptr[uint8]]("quantserve.com")
+    if i == 13:
+        return cast[Ptr[uint8]]("criteo.com")
+    if i == 14:
+        return cast[Ptr[uint8]]("taboola.com")
+    if i == 15:
+        return cast[Ptr[uint8]]("outbrain.com")
+    if i == 16:
+        return cast[Ptr[uint8]]("moatads.com")
+    if i == 17:
+        return cast[Ptr[uint8]]("adform.net")
+    if i == 18:
+        return cast[Ptr[uint8]]("rubiconproject.com")
+    if i == 19:
+        return cast[Ptr[uint8]]("pubmatic.com")
+    if i == 20:
+        return cast[Ptr[uint8]]("facebook.com/tr")
+    if i == 21:
+        return cast[Ptr[uint8]]("/ads/")
+    return cast[Ptr[uint8]]("")
+
+
+def _ab_plen(i: int32) -> int32:
+    p: Ptr[uint8] = _ab_pat(i)
+    n: int32 = 0
+    while p[n] != 0:
+        n = n + 1
+    return n
+
+
+# Does `hay` (length hl) contain `need` (length nl)? Plain byte substring search.
+def _ab_contains(hay: Ptr[uint8], hl: int32, need: Ptr[uint8], nl: int32) -> int32:
+    if nl == 0 or nl > hl:
+        return 0
+    i: int32 = 0
+    while i <= hl - nl:
+        j: int32 = 0
+        while j < nl and hay[i + j] == need[j]:
+            j = j + 1
+        if j == nl:
+            return 1
+        i = i + 1
+    return 0
+
+
+# Would this URL be blocked (independent of the counter/enabled state)? Used for
+# pre-flight tests and the shield tooltip.
+def adblock_matches(url: Ptr[uint8], url_len: int32) -> int32:
+    k: int32 = 0
+    while k < AB_N:
+        if _ab_contains(url, url_len, _ab_pat(k), _ab_plen(k)) != 0:
+            return 1
+        k = k + 1
+    return 0
+
+
+# The live gate the fetch path calls: returns 1 (block this request) when the
+# filter is ON and the URL matches, bumping the page's blocked counter; else 0.
+def adblock_should_block(url: Ptr[uint8], url_len: int32) -> int32:
+    if _ab_on == 0:
+        return 0
+    if adblock_matches(url, url_len) != 0:
+        _ab_blocked = _ab_blocked + 1
+        return 1
+    return 0

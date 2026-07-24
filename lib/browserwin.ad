@@ -1,49 +1,145 @@
-# lib/browserwin.ad — the SHARED browser-window compositor.
+# lib/browserwin.ad — the SHARED browser-window compositor (Chrome-style shell).
 #
 # Given a rasterised pixel DOCUMENT canvas (already rendered into htmlpaint's
 # internal framebuffer by htmlpage_render) plus the browser's chrome state, this
-# paints one complete window frame — white page, a scrolled viewport of the
-# document, the chrome (title bar, editable address bar, Go button, status bar,
-# scrollbar) and anti-aliased chrome text — into a caller-supplied RGBA8888
-# buffer. It is the SINGLE source of truth for what the browser window looks
-# like: the native front end (user/hambrowse.ad) hands it the compositor v2
-# blit backbuffer, and the host harness (user/hambrowse_gfx_window.ad) hands it
-# a plain BSS buffer it dumps to a PNG — so the on-device pixels and the host
-# parity PNG are produced by identical code.
+# paints one complete window frame in the visual language of Google Chrome:
+#
+#   * a TAB STRIP (grey, rounded top-corner tabs, active tab lifted to white, a
+#     "+" new-tab button),
+#   * a white TOOLBAR with round Back / Forward / Reload / Home icon buttons, a
+#     rounded pill OMNIBOX (site icon + URL) and a secondary SEARCH pill carrying
+#     the selected search-engine chip, then an ad-block SHIELD badge and a ⋮ MENU
+#     button on the right,
+#   * the scrolled page VIEWPORT,
+#   * optional overlay panels — the application MENU dropdown and a docked
+#     DEV-TOOLS panel (Elements tree + Console) — and a slim status strip.
+#
+# It is the SINGLE source of truth for what the window looks like AND where its
+# controls are: the native front end (user/hambrowse.ad) hands it the compositor
+# v2 backbuffer, and the host harness (user/hambrowse_gfx_window.ad) hands it a
+# BSS buffer it dumps to a PNG — so on-device pixels and the host parity PNG come
+# from identical code. Extra chrome STATE (tabs, menu/devtools open, search
+# engine, ad-block, zoom, devtools text) is supplied through the browserwin_set_*
+# setters so browserwin_paint's core signature stays stable for both callers.
 #
 # PURE: no extern/syscall/I/O. Draws entirely through htmlpaint's target-aware
 # primitives, so it links into both the native and the x86_64-linux host target.
 
 from lib.htmlpaint import htmlpaint_fill_rect, htmlpaint_target_rgba, \
     htmlpaint_target_internal, htmlpaint_text_ttf, htmlpaint_measure_ttf, \
-    htmlpaint_blit_internal_to_rgba
-from lib.font_ttf import FACE_TT_SANS, FACE_TT_SANS_BOLD
-# Chrome band geometry mirrors lib/htmlengine.ad so the content viewport lines
-# up with what the engine laid out (CONTENT_Y is where the page body begins).
+    htmlpaint_blit_internal_to_rgba, htmlpaint_fill_round_rect_a, \
+    htmlpaint_stroke_round_rect_a, htmlpaint_fill_poly
+from lib.font_ttf import FACE_TT_SANS, FACE_TT_SANS_BOLD, FACE_TT_MONO
+# Chrome band geometry mirrors lib/web/state.ad so the content viewport lines up
+# with what the engine laid out (CONTENT_Y is where the page body begins).
 from lib.htmlengine import TITLE_H, ADDR_Y, ADDR_H, GO_W, CONTENT_Y, STATUS_H, \
     NAV_BTN_W, NAV_BAR_W
+from lib.searchengines import se_current, se_letter, se_col_r, se_col_g, \
+    se_col_b, se_name_ptr, se_name_len, se_count
+from lib.adblock import adblock_enabled, adblock_blocked_count
 
 
 _bw_addr: Array[1056, uint8]         # scratch for the clipped address string
 
 # Address-bar text sizing: rendered at 13px in FACE_TT_SANS, text left edge at
-# box_x + BW_ADDR_PAD. Shared by the drawer AND the click hit-test so the caret
-# math is the pixel-exact inverse of the layout (#315).
-BW_ADDR_PX: int32 = 13
-BW_ADDR_PAD: int32 = 5
+# box_x + BW_ADDR_PAD (leaves room for the omnibox site icon). Shared by the
+# drawer AND the click hit-test so the caret math is the pixel-exact inverse of
+# the layout (#315).
+BW_ADDR_PX:  int32 = 13
+BW_ADDR_PAD: int32 = 24          # URL text starts here (clears the site icon)
+BW_SRCH_PAD: int32 = 8           # search text inset (magnifier drawn separately)
 
-# ---- URL / search split of the address band -------------------------
-# Firefox/Chrome-style: the right portion of the address band is a dedicated
-# Google SEARCH box next to the editable URL bar. On narrow windows the URL bar
-# keeps the whole band and there is no search box (browserwin_search_x0 = -1).
-# These helpers are the single source of truth for the split geometry, shared by
-# the painter AND the front-end's click hit-test so the two never drift.
-BW_SEARCH_MINW: int32 = 96             # min search-box px before it appears
+# ---- CHROME STATE (set by the front-end before browserwin_paint) -----
+BW_MAXTABS: int32 = 8
+BW_TABTITLE: int32 = 48
+_bw_tab_titles: Array[384, uint8]    # BW_MAXTABS * BW_TABTITLE
+_bw_tab_tlen:   Array[8, int32]
+_bw_ntabs:  int32 = 1
+_bw_active: int32 = 0
+_bw_menu_open: int32 = 0
+_bw_dt_open:   int32 = 0
+_bw_zoom:      int32 = 100
+_bw_dom_ptr: Ptr[uint8]
+_bw_dom_len: int32 = 0
+_bw_con_ptr: Ptr[uint8]
+_bw_con_len: int32 = 0
+
+
+def browserwin_set_tabs(n: int32, active: int32):
+    if n < 1:
+        n = 1
+    if n > BW_MAXTABS:
+        n = BW_MAXTABS
+    _bw_ntabs = n
+    if active < 0:
+        active = 0
+    if active >= n:
+        active = n - 1
+    _bw_active = active
+
+
+def browserwin_set_tab_title(i: int32, s: Ptr[uint8], n: int32):
+    if i < 0 or i >= BW_MAXTABS:
+        return
+    if n > BW_TABTITLE - 1:
+        n = BW_TABTITLE - 1
+    base: int32 = i * BW_TABTITLE
+    k: int32 = 0
+    while k < n:
+        _bw_tab_titles[base + k] = s[k]
+        k = k + 1
+    _bw_tab_tlen[i] = n
+
+
+def browserwin_set_menu_open(v: int32):
+    _bw_menu_open = v
+
+
+def browserwin_menu_open() -> int32:
+    return _bw_menu_open
+
+
+def browserwin_set_zoom(pct: int32):
+    _bw_zoom = pct
+
+
+def browserwin_set_devtools(open: int32, dom: Ptr[uint8], dom_len: int32,
+                            con: Ptr[uint8], con_len: int32):
+    _bw_dt_open = open
+    _bw_dom_ptr = dom
+    _bw_dom_len = dom_len
+    _bw_con_ptr = con
+    _bw_con_len = con_len
+
+
+def browserwin_devtools_open() -> int32:
+    return _bw_dt_open
+
+
+# Height (px) of the docked dev-tools panel for a window of height h (0 = closed).
+def browserwin_devtools_h(win_h: int32) -> int32:
+    if _bw_dt_open == 0:
+        return 0
+    dh: int32 = win_h / 5 * 2                # ~40 % of the window
+    if dh > 300:
+        dh = 300
+    if dh < 120:
+        dh = 120
+    return dh
+
+
+# ---- URL / search split of the toolbar band -------------------------
+# The omnibox (editable URL) takes the left of the band; a secondary search pill
+# takes the right (with the engine chip). On narrow windows the omnibox keeps the
+# whole band and there is no search pill (browserwin_search_x0 = -1). These
+# helpers are the single source of truth for the split geometry, shared by the
+# painter AND the front-end's click hit-test so the two never drift.
+BW_SEARCH_MINW: int32 = 120            # min search-pill px before it appears
 
 def _bw_band1(win_w: int32) -> int32:  # right edge of the URL/search band
-    return win_w - GO_W - 8
+    return win_w - GO_W
 
-# Width (px) of the editable URL box (shrunk to leave room for the search box
+# Width (px) of the editable omnibox (shrunk to leave room for the search pill
 # when the band is wide enough; otherwise it spans the whole band).
 def browserwin_url_box_w(win_w: int32) -> int32:
     avail: int32 = _bw_band1(win_w) - NAV_BAR_W
@@ -51,19 +147,19 @@ def browserwin_url_box_w(win_w: int32) -> int32:
         if avail < 8:
             return 8
         return avail
-    sw: int32 = avail * 38 / 100
+    sw: int32 = avail * 34 / 100
     if sw < BW_SEARCH_MINW:
         sw = BW_SEARCH_MINW
     return avail - sw - 8
 
-# Left px of the search box, or -1 when the window is too narrow for one.
+# Left px of the search pill, or -1 when the window is too narrow for one.
 def browserwin_search_x0(win_w: int32) -> int32:
     avail: int32 = _bw_band1(win_w) - NAV_BAR_W
     if avail < BW_SEARCH_MINW * 2:
         return 0 - 1
     return NAV_BAR_W + browserwin_url_box_w(win_w) + 8
 
-# Width px of the search box (0 when there is none).
+# Width px of the search pill (0 when there is none).
 def browserwin_search_w(win_w: int32) -> int32:
     sx: int32 = browserwin_search_x0(win_w)
     if sx < 0:
@@ -71,18 +167,37 @@ def browserwin_search_w(win_w: int32) -> int32:
     return _bw_band1(win_w) - sx
 
 
+# ---- right-hand icon cluster geometry (single source of truth) ------
+def browserwin_menu_x(win_w: int32) -> int32:      # ⋮ menu button left edge
+    return win_w - 36
+def browserwin_adblock_x(win_w: int32) -> int32:   # shield badge left edge
+    return win_w - 72
+
+
+# ---- nav-button geometry (back/fwd/reload/home) ---------------------
+# Slot i (0..3) left edge; each slot is NAV_BTN_W wide starting at x=4.
+def browserwin_navbtn_x(i: int32) -> int32:
+    return 4 + i * NAV_BTN_W
+
+# Which nav button does (x,y) hit? 0=back 1=fwd 2=reload 3=home, else -1.
+def browserwin_navbtn_hit(x: int32, y: int32) -> int32:
+    if y < ADDR_Y or y >= ADDR_Y + ADDR_H:
+        return 0 - 1
+    if x < 4 or x >= NAV_BAR_W:
+        return 0 - 1
+    return (x - 4) / NAV_BTN_W
+
+
 # Widest text width (px) that fits inside an address box of width box_w.
-def _bw_addr_amax(box_w: int32) -> int32:
-    a: int32 = box_w - 10
+def _bw_addr_amax(box_w: int32, pad: int32) -> int32:
+    a: int32 = box_w - pad - 6
     if a < 8:
         a = 8
     return a
 
 
 # Caret-anchored horizontal scroll: the smallest start index such that the run
-# addr[start..caret) fits in amax px. So the caret is always visible — arrowing
-# left past the window scrolls the view (was a fixed tail-clip that hid the
-# caret whenever it left the end). Walks the SAME 13px advances the text draws.
+# addr[start..caret) fits in amax px, so the caret is always visible.
 def _bw_addr_start(addr: Ptr[uint8], caret: uint64, amax: int32) -> uint64:
     start: uint64 = 0
     while start < caret and \
@@ -93,21 +208,20 @@ def _bw_addr_start(addr: Ptr[uint8], caret: uint64, amax: int32) -> uint64:
 
 
 # Draw the editable address string scrolled to keep the caret visible, a
-# #b4d0f8 selection band behind the glyphs, and a 1px caret bar at the caret
-# index (#315). htmlpaint target must already be the dst buffer.
-def _bw_draw_addr(box_x: int32, box_w: int32, baseline: int32,
+# selection band behind the glyphs, and a 1px caret bar at the caret index.
+# `pad` = text inset inside the pill; field_y/field_h bound the highlight/caret.
+def _bw_draw_addr(box_x: int32, box_w: int32, pad: int32, baseline: int32,
+                  field_y: int32, field_h: int32,
                   addr: Ptr[uint8], addr_len: uint64, focus: int32,
                   caret: uint64, sel_on: int32, sel_lo: uint64, sel_hi: uint64):
-    amax: int32 = _bw_addr_amax(box_w)
-    tx: int32 = box_x + BW_ADDR_PAD
+    amax: int32 = _bw_addr_amax(box_w, pad)
+    tx: int32 = box_x + pad
     start: uint64 = _bw_addr_start(addr, caret, amax)
-    # Largest visible end index whose run from start still fits in amax px.
     endv: uint64 = start
     while endv < addr_len and \
           htmlpaint_measure_ttf(FACE_TT_SANS, BW_ADDR_PX, &addr[start],
                                 cast[int32]((endv + 1) - start)) <= amax:
         endv = endv + 1
-    # selection highlight band (behind the text), clipped to the visible window.
     if focus != 0 and sel_on != 0 and sel_hi > sel_lo:
         a: uint64 = sel_lo
         b0: uint64 = sel_hi
@@ -122,8 +236,7 @@ def _bw_draw_addr(box_x: int32, box_w: int32, baseline: int32,
             sx1: int32 = tx + htmlpaint_measure_ttf(FACE_TT_SANS, BW_ADDR_PX,
                                                     &addr[start],
                                                     cast[int32](b0 - start))
-            htmlpaint_fill_rect(sx0, ADDR_Y + 4, sx1 - sx0, ADDR_H - 8,
-                                180, 208, 248)
+            htmlpaint_fill_rect(sx0, field_y, sx1 - sx0, field_h, 180, 208, 248)
     ap: uint64 = 0
     bb: uint64 = start
     while bb < endv and ap < 1054:
@@ -131,26 +244,24 @@ def _bw_draw_addr(box_x: int32, box_w: int32, baseline: int32,
         ap = ap + 1
         bb = bb + 1
     htmlpaint_text_ttf(tx, baseline, FACE_TT_SANS, BW_ADDR_PX,
-                       &_bw_addr[0], cast[int32](ap), 16, 16, 16)
+                       &_bw_addr[0], cast[int32](ap), 32, 33, 36)
     if focus != 0:
         cx: int32 = tx + htmlpaint_measure_ttf(FACE_TT_SANS, BW_ADDR_PX,
                                                &addr[start],
                                                cast[int32](caret - start))
-        htmlpaint_fill_rect(cx, ADDR_Y + 4, 1, ADDR_H - 8, 16, 16, 16)
+        htmlpaint_fill_rect(cx, field_y, 1, field_h, 32, 33, 36)
 
 
-# Map an address-box click to a caret index (#315 click-to-position for the URL
-# bar). Recomputes the box geometry + the caret-anchored scroll `start` that the
-# drawer used (from the PRE-click caret `cur`), then walks the visible 13px
-# glyph advances and returns the caret nearest click_x (left half of a glyph ->
-# before it, right half -> after). The pixel-exact inverse of _bw_draw_addr.
+# Map an omnibox click to a caret index (click-to-position, #315). Recomputes the
+# same geometry + caret-anchored scroll the drawer used, then returns the caret
+# nearest click_x. Pixel-exact inverse of _bw_draw_addr for the URL box.
 def browserwin_addr_caret_at(win_w: int32, addr: Ptr[uint8], addr_len: uint64,
                              cur: uint64, click_x: int32) -> uint64:
     box_x: int32 = NAV_BAR_W
     box_w: int32 = browserwin_url_box_w(win_w)
     if box_w < 8:
         box_w = 8
-    amax: int32 = _bw_addr_amax(box_w)
+    amax: int32 = _bw_addr_amax(box_w, BW_ADDR_PAD)
     tx: int32 = box_x + BW_ADDR_PAD
     start: uint64 = _bw_addr_start(addr, cur, amax)
     if click_x <= tx:
@@ -160,7 +271,7 @@ def browserwin_addr_caret_at(win_w: int32, addr: Ptr[uint8], addr_len: uint64,
         wnext: int32 = htmlpaint_measure_ttf(FACE_TT_SANS, BW_ADDR_PX,
                                              &addr[start],
                                              cast[int32]((k + 1) - start))
-        if wnext > amax:                    # glyph k spills past the window edge
+        if wnext > amax:
             return k
         wcur: int32 = htmlpaint_measure_ttf(FACE_TT_SANS, BW_ADDR_PX,
                                             &addr[start],
@@ -172,23 +283,368 @@ def browserwin_addr_caret_at(win_w: int32, addr: Ptr[uint8], addr_len: uint64,
     return k
 
 
-# Composite one window frame into the RGBA8888 buffer dst (dst_w x dst_h). The
-# window occupies win_w x win_h of it (top-left). scroll_px is the doc-space y
-# of the viewport top; doc_h_px is the document canvas height (for the
-# scrollbar). addr/status are NUL-agnostic (explicit lengths).
-# Draw one Back/Forward nav button: a rounded chrome key with a '<' or '>'
-# glyph, tinted live (dark) when enabled and greyed when there is nowhere to go.
-def _bw_nav_btn(x: int32, glyph: Ptr[uint8], enabled: int32):
+# ---- small drawing helpers ------------------------------------------
+# Chrome idle nav icons: a plain glyph, no hover disc; dimmed when disabled.
+def _bw_icon_btn(cx: int32, cy: int32, glyph: Ptr[uint8], gw: int32,
+                 enabled: int32):
     if enabled != 0:
-        htmlpaint_fill_rect(x, ADDR_Y + 3, NAV_BTN_W - 2, ADDR_H - 6, 58, 110, 165)
-        htmlpaint_text_ttf(x + 7, ADDR_Y + 15, FACE_TT_SANS_BOLD, 13,
-                           glyph, 1, 255, 255, 255)
+        htmlpaint_text_ttf(cx - gw, cy + 6, FACE_TT_SANS_BOLD, 17,
+                           glyph, 1, 60, 64, 67, 255)
     else:
-        htmlpaint_fill_rect(x, ADDR_Y + 3, NAV_BTN_W - 2, ADDR_H - 6, 205, 210, 217)
-        htmlpaint_text_ttf(x + 7, ADDR_Y + 15, FACE_TT_SANS_BOLD, 13,
-                           glyph, 1, 150, 156, 164)
+        htmlpaint_text_ttf(cx - gw, cy + 6, FACE_TT_SANS_BOLD, 17,
+                           glyph, 1, 189, 193, 198, 255)
 
 
+# Reload icon: a two-thirds ring with an arrowhead, drawn from primitives.
+def _bw_reload_icon(cx: int32, cy: int32):
+    htmlpaint_stroke_round_rect_a(cx - 7, cy - 7, 14, 14, 7, 95, 99, 104, 255)
+    htmlpaint_stroke_round_rect_a(cx - 6, cy - 6, 12, 12, 6, 95, 99, 104, 255)
+    # erase a wedge at the top-right and draw the arrowhead there.
+    htmlpaint_fill_rect(cx + 2, cy - 9, 9, 9, 255, 255, 255)
+    xs: Array[3, int32]
+    ys: Array[3, int32]
+    xs[0] = cx + 2
+    ys[0] = cy - 9
+    xs[1] = cx + 9
+    ys[1] = cy - 6
+    xs[2] = cx + 2
+    ys[2] = cy - 2
+    htmlpaint_fill_poly(&xs[0], &ys[0], 3, 95, 99, 104)
+
+
+# Home icon: a roof triangle over a small square body.
+def _bw_home_icon(cx: int32, cy: int32):
+    xs: Array[3, int32]
+    ys: Array[3, int32]
+    xs[0] = cx
+    ys[0] = cy - 8
+    xs[1] = cx - 8
+    ys[1] = cy
+    xs[2] = cx + 8
+    ys[2] = cy
+    htmlpaint_fill_poly(&xs[0], &ys[0], 3, 95, 99, 104)
+    htmlpaint_fill_rect(cx - 5, cy, 10, 7, 95, 99, 104)
+
+
+# Draw a Chrome-style search-engine chip: a small rounded brand square with the
+# engine's initial. Returns its right edge x.
+def _bw_engine_chip(x: int32, cy: int32) -> int32:
+    e: int32 = se_current()
+    htmlpaint_fill_round_rect_a(x, cy - 8, 16, 16, 4,
+                                se_col_r(e), se_col_g(e), se_col_b(e), 255)
+    htmlpaint_text_ttf(x + 4, cy + 5, FACE_TT_SANS_BOLD, 12,
+                       se_letter(e), 1, 255, 255, 255, 255)
+    return x + 16
+
+
+# Draw a multi-line text blob (newline separated) clipped to a box, one line per
+# row, in a mono face. Used by the dev-tools Elements/Console panes.
+def _bw_text_lines(x: int32, y: int32, bw: int32, bh: int32,
+                   txt: Ptr[uint8], tlen: int32, px: int32,
+                   r: uint8, g: uint8, b: uint8):
+    if tlen <= 0:
+        return
+    lh: int32 = px + 4
+    cy: int32 = y + px
+    i: int32 = 0
+    line_start: int32 = 0
+    scratch: Array[256, uint8]
+    while i <= tlen and cy < y + bh:
+        if i == tlen or txt[i] == 10:
+            n: int32 = i - line_start
+            if n > 255:
+                n = 255
+            k: int32 = 0
+            while k < n:
+                scratch[k] = txt[line_start + k]
+                k = k + 1
+            # clip to width by measuring; drop trailing chars until it fits
+            while n > 0 and htmlpaint_measure_ttf(FACE_TT_MONO, px,
+                                                  &scratch[0], n) > bw - 8:
+                n = n - 1
+            if n > 0:
+                htmlpaint_text_ttf(x + 4, cy, FACE_TT_MONO, px,
+                                   &scratch[0], n, r, g, b, 255)
+            cy = cy + lh
+            line_start = i + 1
+        i = i + 1
+
+
+# ---- TAB STRIP ------------------------------------------------------
+# One tab: rounded TOP corners lifted to `fill`, its title clipped. The active
+# tab reads white (merging into the toolbar), inactive tabs read light grey.
+def _bw_tab(x: int32, tw: int32, title: Ptr[uint8], tlen: int32,
+            active: int32):
+    fr: uint8 = 222
+    fg: uint8 = 225
+    fb: uint8 = 230
+    if active != 0:
+        fr = 255
+        fg = 255
+        fb = 255
+    # rounded body then a square-off strip so only the TOP corners are rounded.
+    htmlpaint_fill_round_rect_a(x, 6, tw, TITLE_H - 6, 9, fr, fg, fb, 255)
+    htmlpaint_fill_rect(x, TITLE_H - 10, tw, 10, fr, fg, fb)
+    # favicon dot
+    htmlpaint_fill_round_rect_a(x + 9, 15, 10, 10, 5, 120, 160, 245, 255)
+    # title text (clipped)
+    n: int32 = tlen
+    while n > 0 and htmlpaint_measure_ttf(FACE_TT_SANS, 12, title, n) > tw - 46:
+        n = n - 1
+    if n > 0:
+        htmlpaint_text_ttf(x + 26, 22, FACE_TT_SANS, 12, title, n,
+                           60, 64, 67, 255)
+    # close (×) glyph on the right of the tab
+    htmlpaint_text_ttf(x + tw - 16, 22, FACE_TT_SANS, 12,
+                       cast[Ptr[uint8]]("x"), 1, 120, 124, 128, 255)
+
+
+# Per-tab width for the strip in a window of width win_w.
+def browserwin_tab_w(win_w: int32) -> int32:
+    avail: int32 = win_w - 8 - 34            # left pad + "+" button
+    tw: int32 = avail / _bw_ntabs
+    if tw > 200:
+        tw = 200
+    if tw < 60:
+        tw = 60
+    return tw
+
+# Which tab does (x,y) hit in the tab strip? 0..n-1, -1 = none, -2 = new-tab (+).
+def browserwin_tab_hit(win_w: int32, x: int32, y: int32) -> int32:
+    if y < 0 or y >= TITLE_H:
+        return 0 - 1
+    tw: int32 = browserwin_tab_w(win_w)
+    i: int32 = 0
+    while i < _bw_ntabs:
+        tx: int32 = 8 + i * tw
+        if x >= tx and x < tx + tw:
+            return i
+        i = i + 1
+    nx: int32 = 8 + _bw_ntabs * tw + 4
+    if x >= nx and x < nx + 26:
+        return 0 - 2
+    return 0 - 1
+
+
+# ---- APPLICATION MENU (⋮) -------------------------------------------
+# Fixed Chrome-like item list. Geometry is a single source of truth shared with
+# the hit-test. Row ids returned by browserwin_menu_item_at:
+#   1 New tab   2 New window   3 History   4 Downloads   5 Bookmarks
+#   6 Zoom-     7 Zoom-reset   8 Zoom+     9 Print       10 Find
+#   20+e Search engine e       30 Ad block toggle        31 Dev tools
+#   40 Settings
+BW_MENU_W:  int32 = 268
+BW_MENU_RH: int32 = 30               # row height
+
+def _bw_menu_x(win_w: int32) -> int32:
+    x: int32 = win_w - BW_MENU_W - 6
+    if x < 6:
+        x = 6
+    return x
+def _bw_menu_y() -> int32:
+    return ADDR_Y + ADDR_H - 2
+
+# Total rows the menu paints (used for panel height + hit-test).
+def _bw_menu_rows() -> int32:
+    return 10 + se_count() + 3          # actions + engines + adblock+devtools+settings
+
+
+# Map a click to a menu item id (or -1). Rows: 5 actions, zoom row, print, find,
+# separator, engine header + engines, adblock, devtools, settings.
+def browserwin_menu_item_at(win_w: int32, x: int32, y: int32) -> int32:
+    if _bw_menu_open == 0:
+        return 0 - 1
+    mx: int32 = _bw_menu_x(win_w)
+    my: int32 = _bw_menu_y()
+    if x < mx or x >= mx + BW_MENU_W:
+        return 0 - 1
+    row: int32 = (y - my - 6) / BW_MENU_RH
+    if row < 0:
+        return 0 - 1
+    # 0 New tab,1 New window,2 History,3 Downloads,4 Bookmarks,5 Zoom row,
+    # 6 Print,7 Find, 8 = engine header (dead), 9.. engines, then adblock,dt,settings
+    if row <= 4:
+        return row + 1
+    if row == 5:
+        # zoom row: split thirds -> zoom- / reset / zoom+
+        third: int32 = BW_MENU_W / 3
+        rel: int32 = x - mx
+        if rel < third:
+            return 6
+        if rel < third * 2:
+            return 7
+        return 8
+    if row == 6:
+        return 9
+    if row == 7:
+        return 10
+    # row 8 = "Search engine" header (non-clickable)
+    e: int32 = row - 9
+    if e >= 0 and e < se_count():
+        return 20 + e
+    after: int32 = row - 9 - se_count()
+    if after == 0:
+        return 30                       # ad block toggle
+    if after == 1:
+        return 31                       # dev tools
+    if after == 2:
+        return 40                       # settings
+    return 0 - 1
+
+
+def _bw_menu_row(mx: int32, my: int32, row: int32, icon: Ptr[uint8],
+                 label: Ptr[uint8], llen: int32):
+    ry: int32 = my + 6 + row * BW_MENU_RH
+    htmlpaint_text_ttf(mx + 14, ry + 20, FACE_TT_SANS, 13, icon, 1,
+                       95, 99, 104, 255)
+    htmlpaint_text_ttf(mx + 40, ry + 20, FACE_TT_SANS, 13, label, llen,
+                       32, 33, 36, 255)
+
+
+def _bw_paint_menu(win_w: int32):
+    mx: int32 = _bw_menu_x(win_w)
+    my: int32 = _bw_menu_y()
+    rows: int32 = _bw_menu_rows()
+    ph: int32 = rows * BW_MENU_RH + 12
+    # soft drop shadow then the white rounded panel + hairline border.
+    htmlpaint_fill_round_rect_a(mx + 2, my + 4, BW_MENU_W, ph, 10, 0, 0, 0, 40)
+    htmlpaint_fill_round_rect_a(mx, my, BW_MENU_W, ph, 10, 255, 255, 255, 255)
+    htmlpaint_stroke_round_rect_a(mx, my, BW_MENU_W, ph, 10, 218, 220, 224, 255)
+    _bw_menu_row(mx, my, 0, cast[Ptr[uint8]]("+"),
+                 cast[Ptr[uint8]]("New tab"), 7)
+    _bw_menu_row(mx, my, 1, cast[Ptr[uint8]]("W"),
+                 cast[Ptr[uint8]]("New window"), 10)
+    _bw_menu_row(mx, my, 2, cast[Ptr[uint8]]("H"),
+                 cast[Ptr[uint8]]("History"), 7)
+    _bw_menu_row(mx, my, 3, cast[Ptr[uint8]]("v"),
+                 cast[Ptr[uint8]]("Downloads"), 9)
+    _bw_menu_row(mx, my, 4, cast[Ptr[uint8]]("*"),
+                 cast[Ptr[uint8]]("Bookmarks"), 9)
+    # zoom row (— <pct%> +)
+    zy: int32 = my + 6 + 5 * BW_MENU_RH
+    htmlpaint_fill_rect(mx + 8, zy + 4, BW_MENU_W - 16, 1, 235, 236, 238)
+    htmlpaint_text_ttf(mx + 14, zy + 21, FACE_TT_SANS, 13,
+                       cast[Ptr[uint8]]("Zoom"), 4, 32, 33, 36, 255)
+    htmlpaint_text_ttf(mx + BW_MENU_W - 96, zy + 21, FACE_TT_SANS_BOLD, 15,
+                       cast[Ptr[uint8]]("-"), 1, 95, 99, 104, 255)
+    zb: Array[8, uint8]
+    zn: int32 = _bw_itoa(_bw_zoom, &zb[0])
+    zb[zn] = 37                          # '%'
+    htmlpaint_text_ttf(mx + BW_MENU_W - 78, zy + 21, FACE_TT_SANS, 13,
+                       &zb[0], zn + 1, 32, 33, 36, 255)
+    htmlpaint_text_ttf(mx + BW_MENU_W - 26, zy + 21, FACE_TT_SANS_BOLD, 15,
+                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104, 255)
+    _bw_menu_row(mx, my, 6, cast[Ptr[uint8]]("P"),
+                 cast[Ptr[uint8]]("Print"), 5)
+    _bw_menu_row(mx, my, 7, cast[Ptr[uint8]]("F"),
+                 cast[Ptr[uint8]]("Find"), 4)
+    # search-engine section
+    hy: int32 = my + 6 + 8 * BW_MENU_RH
+    htmlpaint_fill_rect(mx + 8, hy + 3, BW_MENU_W - 16, 1, 235, 236, 238)
+    htmlpaint_text_ttf(mx + 14, hy + 21, FACE_TT_SANS_BOLD, 11,
+                       cast[Ptr[uint8]]("Search engine"), 13, 95, 99, 104, 255)
+    e: int32 = 0
+    cur: int32 = se_current()
+    while e < se_count():
+        ry: int32 = my + 6 + (9 + e) * BW_MENU_RH
+        htmlpaint_fill_round_rect_a(mx + 14, ry + 8, 14, 14, 4,
+                                    se_col_r(e), se_col_g(e), se_col_b(e), 255)
+        htmlpaint_text_ttf(mx + 18, ry + 19, FACE_TT_SANS_BOLD, 10,
+                           se_letter(e), 1, 255, 255, 255, 255)
+        htmlpaint_text_ttf(mx + 40, ry + 20, FACE_TT_SANS, 13,
+                           se_name_ptr(e), se_name_len(e), 32, 33, 36, 255)
+        if e == cur:
+            htmlpaint_text_ttf(mx + BW_MENU_W - 26, ry + 20, FACE_TT_SANS_BOLD,
+                               13, cast[Ptr[uint8]]("v"), 1, 26, 115, 232, 255)
+        e = e + 1
+    # ad-block toggle
+    ay: int32 = my + 6 + (9 + se_count()) * BW_MENU_RH
+    htmlpaint_fill_rect(mx + 8, ay + 3, BW_MENU_W - 16, 1, 235, 236, 238)
+    htmlpaint_text_ttf(mx + 14, ay + 20, FACE_TT_SANS, 13,
+                       cast[Ptr[uint8]]("O"), 1, 95, 99, 104, 255)
+    htmlpaint_text_ttf(mx + 40, ay + 20, FACE_TT_SANS, 13,
+                       cast[Ptr[uint8]]("Ad block"), 8, 32, 33, 36, 255)
+    _bw_toggle(mx + BW_MENU_W - 52, ay + 8, adblock_enabled())
+    # dev tools
+    dy: int32 = my + 6 + (10 + se_count()) * BW_MENU_RH
+    htmlpaint_text_ttf(mx + 14, dy + 20, FACE_TT_SANS, 13,
+                       cast[Ptr[uint8]]("<"), 1, 95, 99, 104, 255)
+    htmlpaint_text_ttf(mx + 40, dy + 20, FACE_TT_SANS, 13,
+                       cast[Ptr[uint8]]("Dev tools"), 9, 32, 33, 36, 255)
+    _bw_toggle(mx + BW_MENU_W - 52, dy + 8, _bw_dt_open)
+    # settings
+    _bw_menu_row(mx, my, 11 + se_count(), cast[Ptr[uint8]]("S"),
+                 cast[Ptr[uint8]]("Settings"), 8)
+
+
+# A small pill toggle switch (green when on, grey when off).
+def _bw_toggle(x: int32, y: int32, on: int32):
+    if on != 0:
+        htmlpaint_fill_round_rect_a(x, y, 34, 16, 8, 26, 115, 232, 255)
+        htmlpaint_fill_round_rect_a(x + 20, y + 2, 12, 12, 6, 255, 255, 255, 255)
+    else:
+        htmlpaint_fill_round_rect_a(x, y, 34, 16, 8, 189, 193, 198, 255)
+        htmlpaint_fill_round_rect_a(x + 2, y + 2, 12, 12, 6, 255, 255, 255, 255)
+
+
+def _bw_itoa(v: int32, out: Ptr[uint8]) -> int32:
+    if v == 0:
+        out[0] = 48
+        return 1
+    tmp: Array[16, uint8]
+    n: int32 = 0
+    x: int32 = v
+    if x < 0:
+        x = 0 - x
+    while x > 0:
+        tmp[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    w: int32 = 0
+    if v < 0:
+        out[0] = 45
+        w = 1
+    j: int32 = n
+    while j > 0:
+        j = j - 1
+        out[w] = tmp[j]
+        w = w + 1
+    return w
+
+
+# ---- DEV TOOLS panel (docked bottom: Elements | Console) ------------
+def _bw_paint_devtools(win_w: int32, win_h: int32):
+    dh: int32 = browserwin_devtools_h(win_h)
+    if dh <= 0:
+        return
+    dy: int32 = win_h - STATUS_H - dh
+    # panel + top border
+    htmlpaint_fill_rect(0, dy, win_w, dh, 255, 255, 255)
+    htmlpaint_fill_rect(0, dy, win_w, 1, 202, 205, 209)
+    # header tab row
+    htmlpaint_fill_rect(0, dy, win_w, 26, 241, 243, 244)
+    htmlpaint_fill_rect(0, dy + 26, win_w, 1, 218, 220, 224)
+    htmlpaint_text_ttf(14, dy + 18, FACE_TT_SANS_BOLD, 12,
+                       cast[Ptr[uint8]]("Elements"), 8, 26, 115, 232, 255)
+    htmlpaint_fill_rect(12, dy + 25, 66, 2, 26, 115, 232)
+    htmlpaint_text_ttf(96, dy + 18, FACE_TT_SANS, 12,
+                       cast[Ptr[uint8]]("Console"), 7, 95, 99, 104, 255)
+    htmlpaint_text_ttf(win_w - 24, dy + 18, FACE_TT_SANS_BOLD, 13,
+                       cast[Ptr[uint8]]("x"), 1, 95, 99, 104, 255)
+    # split: Elements (left) / Console (right)
+    split: int32 = win_w * 58 / 100
+    htmlpaint_fill_rect(split, dy + 27, 1, dh - 27, 218, 220, 224)
+    htmlpaint_text_ttf(14, dy + 44, FACE_TT_SANS_BOLD, 11,
+                       cast[Ptr[uint8]]("DOM"), 3, 128, 132, 136, 255)
+    _bw_text_lines(10, dy + 50, split - 10, dh - 54,
+                   _bw_dom_ptr, _bw_dom_len, 12, 32, 33, 36)
+    htmlpaint_text_ttf(split + 14, dy + 44, FACE_TT_SANS_BOLD, 11,
+                       cast[Ptr[uint8]]("Console"), 7, 128, 132, 136, 255)
+    _bw_text_lines(split + 8, dy + 50, win_w - split - 8, dh - 54,
+                   _bw_con_ptr, _bw_con_len, 12, 40, 90, 60)
+
+
+# ---- MAIN COMPOSITE -------------------------------------------------
 def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
                      win_w: int32, win_h: int32,
                      scroll_px: int32, doc_h_px: int32,
@@ -206,91 +662,156 @@ def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
     # 1. white page background.
     htmlpaint_fill_rect(0, 0, w, h, 255, 255, 255)
 
-    # 2. scrolled document viewport into the content band.
-    ch: int32 = h - CONTENT_Y - STATUS_H
+    # 2. scrolled document viewport into the content band (shrunk when the
+    #    dev-tools panel is docked at the bottom).
+    dth: int32 = browserwin_devtools_h(h)
+    ch: int32 = h - CONTENT_Y - STATUS_H - dth
     if ch > 0:
         htmlpaint_blit_internal_to_rgba(dst, dst_w, dst_h, 0, CONTENT_Y,
                                         0, scroll_px, w, ch)
 
-    # 3. chrome backgrounds.
-    htmlpaint_fill_rect(0, 0, w, TITLE_H, 47, 91, 134)            # title
-    htmlpaint_fill_rect(0, TITLE_H - 1, w, 1, 31, 63, 94)        # separator
-    htmlpaint_fill_rect(0, ADDR_Y, w, ADDR_H, 231, 235, 240)     # addr bg
-    # Back / Forward buttons in the left of the address band.
-    _bw_nav_btn(4, cast[Ptr[uint8]]("<"), can_back)
-    _bw_nav_btn(4 + NAV_BTN_W, cast[Ptr[uint8]](">"), can_fwd)
-    go_x: int32 = w - GO_W
+    # 3. TAB STRIP.
+    htmlpaint_fill_rect(0, 0, w, TITLE_H, 222, 225, 230)
+    tw: int32 = browserwin_tab_w(w)
+    ti: int32 = 0
+    while ti < _bw_ntabs:
+        tx: int32 = 8 + ti * tw
+        _bw_tab(tx, tw - 2, &_bw_tab_titles[ti * BW_TABTITLE],
+                _bw_tab_tlen[ti], _cmp_i(ti, _bw_active))
+        ti = ti + 1
+    # "+" new-tab button
+    ntx: int32 = 8 + _bw_ntabs * tw + 4
+    htmlpaint_text_ttf(ntx + 6, 22, FACE_TT_SANS_BOLD, 16,
+                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104, 255)
+
+    # 4. TOOLBAR background + thin bottom separator.
+    htmlpaint_fill_rect(0, ADDR_Y, w, ADDR_H, 255, 255, 255)
+    htmlpaint_fill_rect(0, CONTENT_Y - 1, w, 1, 218, 220, 224)
+
+    tcy: int32 = ADDR_Y + ADDR_H / 2               # toolbar vertical centre
+
+    # 4a. round nav buttons: Back, Forward, Reload, Home.
+    _bw_icon_btn(browserwin_navbtn_x(0) + NAV_BTN_W / 2, tcy,
+                 cast[Ptr[uint8]]("<"), 4, can_back)
+    _bw_icon_btn(browserwin_navbtn_x(1) + NAV_BTN_W / 2, tcy,
+                 cast[Ptr[uint8]](">"), 4, can_fwd)
+    _bw_reload_icon(browserwin_navbtn_x(2) + NAV_BTN_W / 2, tcy)
+    _bw_home_icon(browserwin_navbtn_x(3) + NAV_BTN_W / 2, tcy)
+
+    # 4b. OMNIBOX pill.
     box_x: int32 = NAV_BAR_W
     box_w: int32 = browserwin_url_box_w(w)
     if box_w < 8:
         box_w = 8
+    pill_y: int32 = ADDR_Y + 8
+    pill_h: int32 = ADDR_H - 16
+    prad: int32 = pill_h / 2
     if focus != 0:
-        htmlpaint_fill_rect(box_x, ADDR_Y + 3, box_w, ADDR_H - 6, 26, 79, 208)
+        htmlpaint_fill_round_rect_a(box_x, pill_y, box_w, pill_h, prad,
+                                    255, 255, 255, 255)
+        htmlpaint_stroke_round_rect_a(box_x, pill_y, box_w, pill_h, prad,
+                                      26, 115, 232, 255)
     else:
-        htmlpaint_fill_rect(box_x, ADDR_Y + 3, box_w, ADDR_H - 6, 154, 165, 177)
-    htmlpaint_fill_rect(box_x + 1, ADDR_Y + 4, box_w - 2, ADDR_H - 8,
-                        255, 255, 255)
-    htmlpaint_fill_rect(go_x, ADDR_Y + 3, GO_W, ADDR_H - 6, 58, 110, 165)
+        htmlpaint_fill_round_rect_a(box_x, pill_y, box_w, pill_h, prad,
+                                    241, 243, 244, 255)
+        htmlpaint_stroke_round_rect_a(box_x, pill_y, box_w, pill_h, prad,
+                                      223, 225, 229, 255)
+    # site (lock) icon: a tiny padlock from two rects.
+    lx: int32 = box_x + 12
+    htmlpaint_fill_round_rect_a(lx, tcy - 3, 9, 8, 2, 95, 99, 104, 255)
+    htmlpaint_stroke_round_rect_a(lx + 1, tcy - 8, 7, 8, 3, 95, 99, 104, 255)
+    _bw_draw_addr(box_x, box_w, BW_ADDR_PAD, tcy + 5, pill_y + 3, pill_h - 6,
+                  addr, addr_len, focus, addr_caret, addr_sel,
+                  addr_sel_lo, addr_sel_hi)
 
-    # 4. scrollbar when the document overflows the viewport.
-    ms: int32 = doc_h_px - ch
-    if ms > 0 and ch > 0 and doc_h_px > 0:
-        track_x: int32 = w - 6
-        htmlpaint_fill_rect(track_x, CONTENT_Y, 5, ch, 228, 231, 236)
-        thumb_h: int32 = ch * ch / doc_h_px
-        if thumb_h < 12:
-            thumb_h = 12
-        if thumb_h > ch:
-            thumb_h = ch
-        thumb_y: int32 = CONTENT_Y + (ch - thumb_h) * scroll_px / ms
-        htmlpaint_fill_rect(track_x, thumb_y, 5, thumb_h, 154, 165, 177)
-
-    # 5. status bar background + separator.
-    htmlpaint_fill_rect(0, h - STATUS_H - 1, w, 1, 212, 218, 225)
-    htmlpaint_fill_rect(0, h - STATUS_H, w, STATUS_H, 238, 241, 244)
-
-    # 6. AA chrome text.
-    htmlpaint_text_ttf(6, TITLE_H - 5, FACE_TT_SANS_BOLD, 12,
-                       cast[Ptr[uint8]]("hambrowse"), 9, 255, 255, 255)
-    _bw_draw_addr(box_x, box_w, ADDR_Y + 15, addr, addr_len, focus,
-                  addr_caret, addr_sel, addr_sel_lo, addr_sel_hi)
-    htmlpaint_text_ttf(go_x + 8, ADDR_Y + 15, FACE_TT_SANS, 12,
-                       cast[Ptr[uint8]]("Go"), 2, 255, 255, 255)
-
-    # 6b. SEARCH BOX (Google) — a second field to the right of the URL bar.
+    # 4c. SEARCH pill (secondary) with the engine chip.
     sx0: int32 = browserwin_search_x0(w)
     if sx0 >= 0:
         sw2: int32 = browserwin_search_w(w)
         if search_focus != 0:
-            htmlpaint_fill_rect(sx0, ADDR_Y + 3, sw2, ADDR_H - 6, 26, 79, 208)
+            htmlpaint_fill_round_rect_a(sx0, pill_y, sw2, pill_h, prad,
+                                        255, 255, 255, 255)
+            htmlpaint_stroke_round_rect_a(sx0, pill_y, sw2, pill_h, prad,
+                                          26, 115, 232, 255)
         else:
-            htmlpaint_fill_rect(sx0, ADDR_Y + 3, sw2, ADDR_H - 6, 154, 165, 177)
-        htmlpaint_fill_rect(sx0 + 1, ADDR_Y + 4, sw2 - 2, ADDR_H - 8,
-                            255, 255, 255)
-        # A small magnifier hint drawn from primitives: a 5px ring + handle.
-        mgx: int32 = sx0 + 5
-        mgy: int32 = ADDR_Y + 7
-        htmlpaint_fill_rect(mgx + 1, mgy, 4, 1, 90, 96, 104)         # ring top
-        htmlpaint_fill_rect(mgx + 1, mgy + 5, 4, 1, 90, 96, 104)     # ring bot
-        htmlpaint_fill_rect(mgx, mgy + 1, 1, 4, 90, 96, 104)         # ring left
-        htmlpaint_fill_rect(mgx + 5, mgy + 1, 1, 4, 90, 96, 104)     # ring right
-        htmlpaint_fill_rect(mgx + 6, mgy + 6, 3, 2, 90, 96, 104)     # handle
-        tx0: int32 = sx0 + 14                                        # text after icon
+            htmlpaint_fill_round_rect_a(sx0, pill_y, sw2, pill_h, prad,
+                                        241, 243, 244, 255)
+            htmlpaint_stroke_round_rect_a(sx0, pill_y, sw2, pill_h, prad,
+                                          223, 225, 229, 255)
+        chip_r: int32 = _bw_engine_chip(sx0 + 8, tcy)
+        tx0: int32 = chip_r + 8
         if search_len == 0:
-            # placeholder in grey; a caret when focused-but-empty.
-            htmlpaint_text_ttf(tx0, ADDR_Y + 15, FACE_TT_SANS, BW_ADDR_PX,
-                               cast[Ptr[uint8]]("Search Google"), 13,
-                               150, 150, 150)
+            htmlpaint_text_ttf(tx0, tcy + 5, FACE_TT_SANS, BW_ADDR_PX,
+                               cast[Ptr[uint8]]("Search"), 6, 150, 150, 150, 255)
             if search_focus != 0:
-                htmlpaint_fill_rect(tx0, ADDR_Y + 5, 1, ADDR_H - 10, 16, 16, 16)
+                htmlpaint_fill_rect(tx0, pill_y + 3, 1, pill_h - 6, 32, 33, 36)
         else:
-            # reuse the URL-bar drawer (caret-scroll + caret) for the query,
-            # from an inset that clears the magnifier icon.
-            _bw_draw_addr(sx0 + 9, sw2 - 9, ADDR_Y + 15, search, search_len,
-                          search_focus, search_caret, 0, 0, 0)
+            _bw_draw_addr(chip_r, sx0 + sw2 - chip_r, BW_SRCH_PAD,
+                          tcy + 5, pill_y + 3, pill_h - 6,
+                          search, search_len, search_focus, search_caret,
+                          0, 0, 0)
 
+    # 4d. right icon cluster: ad-block SHIELD badge + ⋮ MENU button.
+    abx: int32 = browserwin_adblock_x(w)
+    _bw_shield(abx + 12, tcy, adblock_enabled(), adblock_blocked_count())
+    mnx: int32 = browserwin_menu_x(w)
+    htmlpaint_text_ttf(mnx + 12, tcy + 6, FACE_TT_SANS_BOLD, 18,
+                       cast[Ptr[uint8]](":"), 1, 60, 64, 67, 255)
+    htmlpaint_text_ttf(mnx + 12, tcy - 2, FACE_TT_SANS_BOLD, 18,
+                       cast[Ptr[uint8]](":"), 1, 60, 64, 67, 255)
+
+    # 5. scrollbar when the document overflows the viewport.
+    ms: int32 = doc_h_px - ch
+    if ms > 0 and ch > 0 and doc_h_px > 0:
+        track_x: int32 = w - 6
+        htmlpaint_fill_rect(track_x, CONTENT_Y, 5, ch, 241, 243, 244)
+        thumb_h: int32 = ch * ch / doc_h_px
+        if thumb_h < 24:
+            thumb_h = 24
+        if thumb_h > ch:
+            thumb_h = ch
+        thumb_y: int32 = CONTENT_Y + (ch - thumb_h) * scroll_px / ms
+        htmlpaint_fill_round_rect_a(track_x, thumb_y, 5, thumb_h, 2,
+                                    189, 193, 198, 255)
+
+    # 6. dev-tools panel (docked, above the status strip).
+    _bw_paint_devtools(w, h)
+
+    # 7. slim status strip.
+    htmlpaint_fill_rect(0, h - STATUS_H - 1, w, 1, 218, 220, 224)
+    htmlpaint_fill_rect(0, h - STATUS_H, w, STATUS_H, 248, 249, 250)
     if status_len > 0:
-        htmlpaint_text_ttf(6, h - 5, FACE_TT_SANS, 12, status,
-                           cast[int32](status_len), 58, 70, 84)
+        htmlpaint_text_ttf(8, h - 5, FACE_TT_SANS, 11, status,
+                           cast[int32](status_len), 95, 99, 104, 255)
+
+    # 8. application menu overlay (drawn last so it floats above everything).
+    if _bw_menu_open != 0:
+        _bw_paint_menu(w)
 
     htmlpaint_target_internal()
+
+
+# Draw the ad-block shield badge: a filled shield when ON (with a blocked count
+# bubble), a hollow grey shield when OFF.
+def _bw_shield(cx: int32, cy: int32, on: int32, blocked: int32):
+    if on != 0:
+        htmlpaint_fill_round_rect_a(cx - 8, cy - 9, 16, 14, 4, 26, 115, 232, 255)
+        htmlpaint_fill_round_rect_a(cx - 4, cy + 3, 8, 6, 3, 26, 115, 232, 255)
+        htmlpaint_text_ttf(cx - 4, cy + 4, FACE_TT_SANS_BOLD, 11,
+                           cast[Ptr[uint8]]("v"), 1, 255, 255, 255, 255)
+        if blocked > 0:
+            b: Array[8, uint8]
+            n: int32 = _bw_itoa(blocked, &b[0])
+            htmlpaint_fill_round_rect_a(cx + 4, cy - 12, 14, 12, 6,
+                                        234, 67, 53, 255)
+            htmlpaint_text_ttf(cx + 8, cy - 3, FACE_TT_SANS_BOLD, 9,
+                               &b[0], n, 255, 255, 255, 255)
+    else:
+        htmlpaint_stroke_round_rect_a(cx - 8, cy - 9, 16, 14, 4,
+                                      154, 160, 166, 255)
+
+
+def _cmp_i(a: int32, b: int32) -> int32:
+    if a == b:
+        return 1
+    return 0

@@ -71,13 +71,22 @@ from lib.htmlengine import he_layout, \
     he_dom_is_textfield, he_dom_is_submit, he_dom_field_form, \
     he_dom_set_value_index, he_dom_submit_index, he_dom_get_value, \
     he_nav_ptr, he_nav_len, he_nav_present, he_nav_clear, \
-    he_nav_method, he_nav_body_ptr, he_nav_body_len
+    he_nav_method, he_nav_body_ptr, he_nav_body_len, \
+    he_n_segs, he_seg_off, he_seg_len, he_seg_text_ptr
 # The PIXEL engine: proportional AA-text + PNG-image page renderer (the SAME
 # modules the host gfx driver drives), now presented on device.
 from lib.htmlpage import htmlpage_render, htmlpage_doc_width, \
     htmlpage_doc_height, htmlpage_hit_link, htmlpage_install_reflow
 from lib.browserwin import browserwin_paint, browserwin_addr_caret_at, \
-    browserwin_search_x0, browserwin_search_w, browserwin_url_box_w
+    browserwin_search_x0, browserwin_search_w, browserwin_url_box_w, \
+    browserwin_navbtn_hit, browserwin_menu_x, browserwin_adblock_x, \
+    browserwin_set_menu_open, browserwin_menu_open, browserwin_menu_item_at, \
+    browserwin_set_tabs, browserwin_set_tab_title, browserwin_set_devtools, \
+    browserwin_set_zoom, browserwin_tab_hit
+from lib.searchengines import se_current, se_set_current, se_cycle, \
+    se_prefix_ptr, se_prefix_len
+from lib.adblock import adblock_enabled, adblock_toggle, adblock_should_block, \
+    adblock_reset_count
 # #315: file-backed clipboard for Ctrl+C/V/X on the URL (/dev/snarf) — same
 # helpers the editor + Notes use; no new syscall.
 from lib.hamtextbox import htb_clip_put, htb_clip_get, htb_mid_edge
@@ -228,6 +237,16 @@ scroll_px: int32 = 0
 doc_w_px:  int32 = 0
 doc_h_px:  int32 = 0
 SCROLL_LINE: int32 = 40          # px per line-scroll (arrow / j / k / wheel)
+
+# ---- Chrome-shell UI state (application menu / zoom / dev-tools) ------
+menu_open:  int32 = 0            # ⋮ application menu overlay visible
+zoom_pct:   int32 = 100         # page zoom (menu Zoom row)
+devtools_open: int32 = 0        # docked Elements/Console panel visible
+# Dev-tools text buffers (Elements tree + Console log), rebuilt on demand.
+dt_dom_buf: Array[4096, uint8]
+dt_dom_len: int32 = 0
+dt_con_buf: Array[2048, uint8]
+dt_con_len: int32 = 0
 
 
 def _content_h() -> int32:
@@ -609,6 +628,66 @@ def _present_buffer(wid: int32, w: int32, h: int32):
         sys_close(cfd)
 
 
+# Rebuild the dev-tools Elements (content outline from the display list) and
+# Console (the JS console log) text blobs the docked panel renders. Cheap; only
+# called while the panel is open.
+def _build_devtools_text():
+    # Elements: URL header then each text run as an indented node line.
+    p: int32 = 0
+    hdr: Ptr[uint8] = cast[Ptr[uint8]]("URL: ")
+    k: int32 = 0
+    while hdr[k] != 0 and p < 4090:
+        dt_dom_buf[p] = hdr[k]
+        p = p + 1
+        k = k + 1
+    i: uint64 = 0
+    while i < addr_len and p < 4090:
+        dt_dom_buf[p] = addr_buf[i]
+        p = p + 1
+        i = i + 1
+    dt_dom_buf[p] = 10
+    p = p + 1
+    ns: uint64 = he_n_segs()
+    tp: Ptr[uint8] = he_seg_text_ptr()
+    si: uint64 = 0
+    while si < ns and p < 4000:
+        so: int32 = he_seg_off(si)
+        sl: int32 = he_seg_len(si)
+        if sl > 0:
+            dt_dom_buf[p] = 32                        # two-space indent
+            dt_dom_buf[p + 1] = 32
+            p = p + 2
+            j: int32 = 0
+            while j < sl and j < 80 and p < 4090:
+                c: uint8 = tp[so + j]
+                if c < 32:
+                    c = 32
+                dt_dom_buf[p] = c
+                p = p + 1
+                j = j + 1
+            dt_dom_buf[p] = 10
+            p = p + 1
+        si = si + 1
+    dt_dom_len = p
+
+    # Console: copy the engine's JS console log (or a placeholder).
+    cp: Ptr[uint8] = he_js_console_ptr()
+    cl: uint64 = he_js_console_len()
+    q: int32 = 0
+    if cl == 0:
+        ph: Ptr[uint8] = cast[Ptr[uint8]]("(console is empty)")
+        while ph[q] != 0 and q < 2040:
+            dt_con_buf[q] = ph[q]
+            q = q + 1
+    else:
+        ci: uint64 = 0
+        while ci < cl and q < 2040:
+            dt_con_buf[q] = cp[ci]
+            q = q + 1
+            ci = ci + 1
+    dt_con_len = q
+
+
 # Present one frame: paint the SHARED window compositor (lib/browserwin.ad —
 # identical code to the host parity render) into our v2 backbuffer, blit it to
 # the kernel backbuffer, then emit the `buffer` scene verb so the scene-file
@@ -627,6 +706,19 @@ def emit(wid: int32):
         w = bbw
     if h > bbh:
         h = bbh
+    # Feed the Chrome-shell state into the shared compositor: a single tab
+    # titled from the address, zoom %, the menu overlay and (when open) the
+    # dev-tools Elements/Console text.
+    browserwin_set_tabs(1, 0)
+    browserwin_set_tab_title(0, &addr_buf[0], cast[int32](addr_len))
+    browserwin_set_zoom(zoom_pct)
+    browserwin_set_menu_open(menu_open)
+    if devtools_open != 0:
+        _build_devtools_text()
+        browserwin_set_devtools(1, &dt_dom_buf[0], dt_dom_len,
+                                &dt_con_buf[0], dt_con_len)
+    else:
+        browserwin_set_devtools(0, &dt_dom_buf[0], 0, &dt_con_buf[0], 0)
     browserwin_paint(bb, bbw, bbh, w, h, scroll_px, doc_h_px,
                      &addr_buf[0], addr_len, addr_focus,
                      &status_buf[0], status_len,
@@ -655,6 +747,13 @@ def _js_fetch_transport(url: Ptr[uint8], url_len: int32,
                         body: Ptr[uint8], body_len: int32,
                         content_type: Ptr[uint8], content_type_len: int32,
                         out_status: Ptr[int64], out_len: Ptr[int32]) -> Ptr[uint8]:
+    # Ad-block: drop a fetch() to a known ad/tracker endpoint (the common way
+    # trackers exfiltrate) — reject the Promise by returning NULL, and count it.
+    if adblock_should_block(url, url_len) != 0:
+        out_status[0] = 0
+        out_len[0] = 0
+        return cast[Ptr[uint8]](0)
+
     # Copy the (ptr,len) URL into a NUL-terminated buffer for http_get/http_post.
     i: int32 = 0
     while i < url_len and i < 2047:
@@ -1148,11 +1247,29 @@ def _navigate_url(url: Ptr[uint8]) -> int32:
     if url[0] == 0:
         return 0
     _apply_scheme(url)
+    # Ad-block: a navigation to a known ad/tracker host is dropped when the
+    # filter is on (resets the per-page blocked counter for the new page first).
+    adblock_reset_count()
+    if adblock_should_block(&nav_buf[0], cast[int32](_slen(&nav_buf[0]))) != 0:
+        return 0
     _set_cur_url(&nav_buf[0])
     _fetch(&nav_buf[0])
     _reload_layout()
     _hist_record()
     return 1
+
+
+# Reload the current page (refetch + relayout) — the toolbar Reload button.
+def _reload_page() -> int32:
+    addr_buf[addr_len] = 0
+    if addr_len == 0:
+        return 0
+    return _navigate_url(&addr_buf[0])
+
+
+# Navigate to the home page — the toolbar Home button.
+def _go_home() -> int32:
+    return _navigate_url(cast[Ptr[uint8]]("https://www.google.com/"))
 
 
 # Consume a pending form-submit navigation the engine set (he_dom_submit_index
@@ -1593,9 +1710,13 @@ def _searchenc_byte(c: uint8, p: uint64) -> uint64:
 # Compose https://www.google.com/search?q=<url-encoded query> and navigate to it.
 # Returns whatever _navigate_url returns (non-zero = navigation happened).
 def _search_navigate() -> int32:
-    pre: Ptr[uint8] = cast[Ptr[uint8]]("https://www.google.com/search?q=")
+    # Prefix comes from the currently selected search engine (Google / Bing /
+    # DuckDuckGo / Brave) so the omnibox search routes to the user's choice.
+    e: int32 = se_current()
+    pre: Ptr[uint8] = se_prefix_ptr(e)
+    plen: int32 = se_prefix_len(e)
     p: uint64 = 0
-    while pre[p] != 0 and p < 64:
+    while cast[int32](p) < plen and p < 96:
         search_url[p] = pre[p]
         p = p + 1
     i: uint64 = 0
@@ -1728,6 +1849,18 @@ def _handle_code(code: int32) -> int32:
     if code == 27:
         esc_st = 1
         return 0
+    if code == 68:                                  # 'D' -> toggle dev tools
+        if devtools_open != 0:
+            devtools_open = 0
+        else:
+            devtools_open = 1
+        return 1
+    if code == 77:                                  # 'M' -> toggle ⋮ menu
+        if menu_open != 0:
+            menu_open = 0
+        else:
+            menu_open = 1
+        return 1
     if code == 106:                                 # 'j'
         scroll_px = scroll_px + SCROLL_LINE
         _clamp_scroll()
@@ -1907,25 +2040,75 @@ def _poll_events(efd: int32, vp: Ptr[int32]) -> int32:
                     elif nf >= 3 and (f2[2] & 1) != 0:   # button-1 click
                         cx: int32 = cast[int32](f2[0])
                         cy: int32 = cast[int32](f2[1])
-                        if cy >= ADDR_Y and cy < ADDR_Y + ADDR_H:
-                            # Click landed in the address band.
-                            if cx < NAV_BAR_W:           # Back / Forward buttons
+                        # ---- application MENU overlay handling (highest prio) ----
+                        if menu_open != 0:
+                            mid2: int32 = browserwin_menu_item_at(bw, cx, cy)
+                            if mid2 >= 0:
+                                if mid2 == 6:            # zoom out
+                                    if zoom_pct > 25:
+                                        zoom_pct = zoom_pct - 10
+                                elif mid2 == 8:          # zoom in
+                                    if zoom_pct < 300:
+                                        zoom_pct = zoom_pct + 10
+                                elif mid2 == 7:          # zoom reset
+                                    zoom_pct = 100
+                                elif mid2 >= 20 and mid2 < 30:   # pick engine
+                                    se_set_current(mid2 - 20)
+                                    menu_open = 0
+                                elif mid2 == 30:         # ad-block toggle
+                                    adblock_toggle()
+                                elif mid2 == 31:         # dev tools
+                                    if devtools_open != 0:
+                                        devtools_open = 0
+                                    else:
+                                        devtools_open = 1
+                                    menu_open = 0
+                                else:                    # other rows: dismiss
+                                    menu_open = 0
+                            else:
+                                menu_open = 0            # click outside = close
+                            if vp[0] < 1:
+                                vp[0] = 1
+                            changed = 1
+                        elif cy >= ADDR_Y and cy < ADDR_Y + ADDR_H:
+                            # Click landed in the toolbar band.
+                            nbtn: int32 = browserwin_navbtn_hit(cx, cy)
+                            if nbtn >= 0:                # Back/Fwd/Reload/Home
                                 did: int32 = 0
-                                if cx < 4 + NAV_BTN_W:
+                                if nbtn == 0:
                                     did = _nav_back()
-                                else:
+                                elif nbtn == 1:
                                     did = _nav_fwd()
+                                elif nbtn == 2:
+                                    did = _reload_page()
+                                else:
+                                    did = _go_home()
                                 if did != 0:
                                     if vp[0] < 2:
                                         vp[0] = 2
-                                    changed = 1
-                            elif cx >= bw - GO_W:        # "Go" button
-                                search_focus = 0
-                                addr_buf[addr_len] = 0
-                                if _navigate_url(&addr_buf[0]) != 0:
-                                    if vp[0] < 2:
-                                        vp[0] = 2
-                                    changed = 1
+                                changed = 1
+                            elif cx >= browserwin_menu_x(bw):   # ⋮ menu button
+                                if menu_open != 0:
+                                    menu_open = 0
+                                else:
+                                    menu_open = 1
+                                if vp[0] < 1:
+                                    vp[0] = 1
+                                changed = 1
+                            elif cx >= browserwin_adblock_x(bw):  # shield badge
+                                adblock_toggle()
+                                if vp[0] < 1:
+                                    vp[0] = 1
+                                changed = 1
+                            elif browserwin_search_x0(bw) >= 0 and \
+                                 cx >= browserwin_search_x0(bw) and \
+                                 cx < browserwin_search_x0(bw) + 24:
+                                # Engine CHIP (left of the search pill): cycle the
+                                # active search engine (Google->Bing->DDG->Brave).
+                                se_cycle()
+                                if vp[0] < 1:
+                                    vp[0] = 1
+                                changed = 1
                             elif browserwin_search_x0(bw) >= 0 and \
                                  cx >= browserwin_search_x0(bw):
                                 # SEARCH BOX: click anywhere in it to focus + type.

@@ -86,8 +86,9 @@ assert_grep '^WIN 880$'  "window width 880"
 assert_grep '^WINH 600$' "window height 600"
 assert_grep '^DOCH [1-9][0-9]*$' "document canvas has non-zero height"
 
-# The title-bar chrome pixel (2,2) is the dark blue #2f5b86 = 47 91 134.
-assert_grep '^PIX 2 2 47 91 134$' "title bar drawn in chrome blue"
+# The Chrome-style TAB STRIP background pixel (2,2) is the light grey #dee1e6 =
+# 222 225 230 (was a dark-blue title bar before the Chrome-shell redesign).
+assert_grep '^PIX 2 2 222 225 230$' "tab strip drawn in Chrome grey"
 
 # ANTI-ALIASING proof: scan the PNG for intermediate grey pixels (grayscale
 # glyph-edge coverage a 1-bit VGA font can never produce).

@@ -1,0 +1,93 @@
+# user/hambrowse_chrome_test_host.ad — HOST unit harness for the browser shell's
+# pure logic modules: the AD-BLOCK filter (lib/adblock) and the SEARCH-ENGINE
+# registry (lib/searchengines). Built for x86_64-linux; prints deterministic
+# lines a gate asserts on. No sockets / Plan 9: writes stdout only.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+from lib.adblock import adblock_enabled, adblock_toggle, adblock_matches, \
+    adblock_should_block, adblock_blocked_count, adblock_reset_count
+from lib.searchengines import se_count, se_current, se_set_current, se_cycle, \
+    se_prefix_ptr, se_prefix_len, se_name_ptr, se_name_len
+
+
+def _slen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def _puts(s: Ptr[uint8]):
+    sys_write(1, s, _slen(s))
+
+
+def _line(tag: Ptr[uint8], v: int32):
+    _puts(tag)
+    d: Array[16, uint8]
+    if v == 0:
+        d[0] = 48
+        sys_write(1, &d[0], 1)
+    else:
+        x: int32 = v
+        neg: int32 = 0
+        if x < 0:
+            neg = 1
+            x = 0 - x
+        n: int32 = 0
+        t: Array[16, uint8]
+        while x > 0:
+            t[n] = cast[uint8](x % 10) + 48
+            x = x / 10
+            n = n + 1
+        p: int32 = 0
+        if neg != 0:
+            d[p] = 45
+            p = p + 1
+        while n > 0:
+            n = n - 1
+            d[p] = t[n]
+            p = p + 1
+        sys_write(1, &d[0], cast[uint64](p))
+    sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    # ---- AD-BLOCK ----
+    ad: Ptr[uint8] = cast[Ptr[uint8]]("https://pagead2.googlesyndication.com/pagead/js/x.js")
+    ok: Ptr[uint8] = cast[Ptr[uint8]]("https://en.wikipedia.org/wiki/Plan_9")
+    tr: Ptr[uint8] = cast[Ptr[uint8]]("https://www.google-analytics.com/collect")
+    _line(cast[Ptr[uint8]]("AB_ON "), adblock_enabled())
+    _line(cast[Ptr[uint8]]("AB_MATCH_AD "), adblock_matches(ad, cast[int32](_slen(ad))))
+    _line(cast[Ptr[uint8]]("AB_MATCH_OK "), adblock_matches(ok, cast[int32](_slen(ok))))
+    _line(cast[Ptr[uint8]]("AB_MATCH_TRK "), adblock_matches(tr, cast[int32](_slen(tr))))
+    # counting: two ad hits, one miss
+    adblock_reset_count()
+    adblock_should_block(ad, cast[int32](_slen(ad)))
+    adblock_should_block(ok, cast[int32](_slen(ok)))
+    adblock_should_block(tr, cast[int32](_slen(tr)))
+    _line(cast[Ptr[uint8]]("AB_BLOCKED "), adblock_blocked_count())
+    # toggle OFF -> should_block returns 0 even for an ad
+    adblock_toggle()
+    _line(cast[Ptr[uint8]]("AB_OFF_BLOCK "), adblock_should_block(ad, cast[int32](_slen(ad))))
+    adblock_toggle()
+
+    # ---- SEARCH ENGINES ----
+    _line(cast[Ptr[uint8]]("SE_COUNT "), se_count())
+    _line(cast[Ptr[uint8]]("SE_CUR0 "), se_current())
+    # Google (default) prefix begins with https://www.google
+    p0: Ptr[uint8] = se_prefix_ptr(se_current())
+    _puts(cast[Ptr[uint8]]("SE_G_PREFIX "))
+    sys_write(1, p0, cast[uint64](se_prefix_len(se_current())))
+    sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+    # select DuckDuckGo (index 2)
+    se_set_current(2)
+    _puts(cast[Ptr[uint8]]("SE_DDG_PREFIX "))
+    p2: Ptr[uint8] = se_prefix_ptr(2)
+    sys_write(1, p2, cast[uint64](se_prefix_len(2)))
+    sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+    # cycle from DDG -> Brave(3) -> Google(0)
+    _line(cast[Ptr[uint8]]("SE_CYCLE1 "), se_cycle())
+    _line(cast[Ptr[uint8]]("SE_CYCLE2 "), se_cycle())
+    _puts(cast[Ptr[uint8]]("DONE\n"))
+    return 0

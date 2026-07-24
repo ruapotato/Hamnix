@@ -8,14 +8,17 @@
 # These live in the engine because layout wraps to bw and _vis_rows depends
 # on bh; the front-ends read/write them directly (shared globals).
 # ====================================================================
-TITLE_H:   int32 = 18
-ADDR_H:    int32 = 20           # editable address/URL bar (below the title)
-ADDR_Y:    int32 = 18           # == TITLE_H
-GO_W:      int32 = 30           # "Go" button width in the address bar
-NAV_BTN_W: int32 = 22           # Back / Forward button width (left of the URL box)
-NAV_BAR_W: int32 = 48           # 2*NAV_BTN_W + 4 left pad: URL box starts here
+# CHROME geometry — Chrome-style: a TAB STRIP (TITLE_H) atop a TOOLBAR (ADDR_H)
+# that holds the round nav buttons, the rounded omnibox + search pill, and the
+# right-hand icon cluster (ad-block shield + ⋮ menu). CONTENT_Y == TITLE_H+ADDR_H.
+TITLE_H:   int32 = 34           # tab strip height
+ADDR_H:    int32 = 44           # toolbar (nav buttons + omnibox) height
+ADDR_Y:    int32 = 34           # == TITLE_H (toolbar sits below the tab strip)
+GO_W:      int32 = 84           # right-hand icon reserve (ad-block + menu)
+NAV_BTN_W: int32 = 36           # per nav-button slot (back/fwd/reload/home)
+NAV_BAR_W: int32 = 152          # 4px pad + 4 nav slots: omnibox starts here
 CONTENT_X: int32 = 8
-CONTENT_Y: int32 = 38           # == TITLE_H + ADDR_H (page content starts here)
+CONTENT_Y: int32 = 78           # == TITLE_H + ADDR_H (page content starts here)
 STATUS_H:  int32 = 16
 LINE_H:    int32 = 16
 CELL_W:    int32 = 8

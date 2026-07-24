@@ -91,15 +91,23 @@ if ! python3 -m compiler.adder compile --target=x86_64-linux \
 fi
 
 FIX="tests/fixtures/hambrowse_img.html"
-# Back button spans x=4..24, Forward x=26..46, both on the address band (y~26).
-# Sample the button centres from the PPM (P6, 880x600).
-sample_px() {   # PPM x y -> "R G B"
-    python3 - "$1" "$2" "$3" <<'PY'
+# Chrome-shell toolbar: the nav icons are GLYPHS on the white toolbar — a DARK
+# glyph (#3c4043) when the button is live and a light-grey glyph (#bdc1c6) when
+# it is disabled (nowhere to go). Back slot centre ~x22, Forward ~x58, on the
+# toolbar band (y~56). Scan each button's box for its DARKEST pixel and classify.
+darkest_in_box() {   # PPM cx cy half -> min-of-(R+G+B)/3 in the box
+    python3 - "$1" "$2" "$3" "$4" <<'PY'
 import sys
 p=open(sys.argv[1],'rb'); assert p.readline().strip()==b'P6'
 w,h=map(int,p.readline().split()); p.readline()
-data=p.read(); x=int(sys.argv[2]); y=int(sys.argv[3]); o=(y*w+x)*3
-print(data[o],data[o+1],data[o+2])
+data=p.read(); cx=int(sys.argv[2]); cy=int(sys.argv[3]); hb=int(sys.argv[4])
+mn=255
+for y in range(cy-hb,cy+hb):
+    for x in range(cx-hb,cx+hb):
+        if 0<=x<w and 0<=y<h:
+            o=(y*w+x)*3; v=(data[o]+data[o+1]+data[o+2])//3
+            if v<mn: mn=v
+print(mn)
 PY
 }
 
@@ -111,26 +119,27 @@ render_state() {  # name can_back can_fwd
     fi
     python3 scripts/ppm_to_png.py "$ppm" "$png" 2>/dev/null && \
         echo "[hb-hist] rendered $png (back=$cb fwd=$cf)"
-    B_BACK=$(sample_px "$ppm" 6 26)
-    B_FWD=$(sample_px "$ppm" 28 26)
-    echo "[hb-hist]   back-btn px=$B_BACK  fwd-btn px=$B_FWD"
+    B_BACK=$(darkest_in_box "$ppm" 22 56 10)
+    B_FWD=$(darkest_in_box "$ppm" 58 56 10)
+    echo "[hb-hist]   back-btn dark=$B_BACK  fwd-btn dark=$B_FWD"
 }
 
-# Chrome-blue when enabled: R<120 and B>130. Greyed when disabled: R>180.
-is_blue() { local r g b; read r g b <<<"$1"; [ "$r" -lt 120 ] && [ "$b" -gt 130 ]; }
-is_grey() { local r g b; read r g b <<<"$1"; [ "$r" -gt 180 ]; }
+# A LIVE nav glyph is dark (min brightness < 120); a DISABLED one is only the
+# light-grey glyph on white (min brightness > 150).
+is_live()     { [ "$1" -lt 120 ]; }
+is_disabled() { [ "$1" -gt 150 ]; }
 
 render_state "chrome_disabled" 0 0
-is_grey "$B_BACK" && echo "[hb-hist] PASS disabled Back button is greyed" || { echo "[hb-hist] FAIL disabled Back not greyed ($B_BACK)"; fail=1; }
-is_grey "$B_FWD"  && echo "[hb-hist] PASS disabled Forward button is greyed" || { echo "[hb-hist] FAIL disabled Forward not greyed ($B_FWD)"; fail=1; }
+is_disabled "$B_BACK" && echo "[hb-hist] PASS disabled Back button is greyed" || { echo "[hb-hist] FAIL disabled Back not greyed ($B_BACK)"; fail=1; }
+is_disabled "$B_FWD"  && echo "[hb-hist] PASS disabled Forward button is greyed" || { echo "[hb-hist] FAIL disabled Forward not greyed ($B_FWD)"; fail=1; }
 
 render_state "chrome_back" 1 0
-is_blue "$B_BACK" && echo "[hb-hist] PASS enabled Back button is chrome-blue" || { echo "[hb-hist] FAIL enabled Back not blue ($B_BACK)"; fail=1; }
-is_grey "$B_FWD"  && echo "[hb-hist] PASS Forward stays greyed when only Back is available" || { echo "[hb-hist] FAIL Forward not greyed ($B_FWD)"; fail=1; }
+is_live "$B_BACK"     && echo "[hb-hist] PASS enabled Back button is dark/live" || { echo "[hb-hist] FAIL enabled Back not live ($B_BACK)"; fail=1; }
+is_disabled "$B_FWD"  && echo "[hb-hist] PASS Forward stays greyed when only Back is available" || { echo "[hb-hist] FAIL Forward not greyed ($B_FWD)"; fail=1; }
 
 render_state "chrome_both" 1 1
-is_blue "$B_BACK" && echo "[hb-hist] PASS Back button blue when both available" || { echo "[hb-hist] FAIL Back not blue ($B_BACK)"; fail=1; }
-is_blue "$B_FWD"  && echo "[hb-hist] PASS Forward button blue when both available" || { echo "[hb-hist] FAIL Forward not blue ($B_FWD)"; fail=1; }
+is_live "$B_BACK"     && echo "[hb-hist] PASS Back button live when both available" || { echo "[hb-hist] FAIL Back not live ($B_BACK)"; fail=1; }
+is_live "$B_FWD"      && echo "[hb-hist] PASS Forward button live when both available" || { echo "[hb-hist] FAIL Forward not live ($B_FWD)"; fail=1; }
 
 if [ "$fail" -eq 0 ]; then
     echo "[hb-hist] RESULT: PASS"
