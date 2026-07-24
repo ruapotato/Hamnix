@@ -1,6 +1,7 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init** (whole-kernel
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init**
+(whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
 MMU/caches on, and now **runs the kernel's OWN `start_kernel` early-init
@@ -10,6 +11,94 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-24) — A5 mem_init port + past mem_init
+
+**A5 — the aarch64 LLVM kernel goes PAST `mem_init` into full MM/slab bring-up:
+DONE.** Gate `scripts/test_arm64_llvm_kernel.sh` (extended with A5 assertions):
+**PASS**. Verified furthest-point PL011 serial from the actual
+`qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G` run (grep-a'd):
+```
+A4: start_kernel_early returned
+A5: entering start_kernel_mem_arm64 (aarch64 mem_init port)
+[000010] [arm64-mm] memblock region base=0x0000000050000000 top=0x0000000080000000
+[000011] [cow] refcount table: 524288 frames, 1048576 bytes
+[000013] [swap] 4096 slots, region @ 0x0000000050100000
+[000016] [arm64-mm] mem_init_arm64 done (buddy + slab up)
+[000033] [buddy-coalesce] PASS
+[000036] [pa-stress] PASS (churn net-neutral, free=0)
+[000038]   kmalloc(  48) = 0x0000000052400020        <- slab alloc in the aarch64 RAM window
+[000048]   large3[99999] roundtrip = 0x5a  (expect 0x5a)
+[000059] A5: mm/slab smoke tests done (buddy allocator + slab verified)
+[000072] A5: start_kernel_mem_arm64 complete
+A5: start_kernel_mem_arm64 returned
+```
+The buddy allocator and slab are fully up and exercised: `memblock_smoke_test`,
+`page_alloc_smoke_test`, `page_alloc_coalesce_test` (PASS), `page_alloc_stress_test`
+(256-iter churn, 0 OOM, PASS), and `slab_smoke_test` (kmalloc/kfree across
+32..100000 B, order-0..5, roundtrip verified) all run as emitted LLVM Adder code
+over the PL011-routed console — the "meaningfully past `mem_init`" A5 goal.
+
+**How mem_init was ported — arch-conditional continuation, x86 byte-identical.**
+The x86 `mem_init()` (`arch/x86/mm/init.ad`) builds x86 page tables
+(`pgtable_extend_from_e820` / `pgtable_build_page_offset_map` /
+`pgtable_build_cpu_entry_area` = CR3/PML4/PDPT/CEA work) that do not exist on
+aarch64 and would fault. Rather than pollute the shared x86 `mem_init` with
+runtime arch branches, A5 mirrors the A4 extract-method pattern: two **new
+additive public functions** in `init/main.ad`, `mem_init_arm64()` and
+`start_kernel_mem_arm64()`, called ONLY from `arch/arm64/llvm/head.S` (the x86
+`start_kernel()` never references them, so the x86 kernel is behaviourally
+unchanged). `mem_init_arm64()` runs the ARCH-NEUTRAL allocator bring-up from the
+x86 flow — `memblock_init` → `memblock_set_region` → `cow_init` / `swap_init` /
+`page_desc_init` (per-PFN metadata reserve) → `page_alloc_init` (buddy) →
+`slab_init` → `kswapd_init` — and **skips ALL x86 page-table construction**: the
+`head.S` identity map (RAM `0x4000_0000-0x7FFF_FFFF` Normal-WB, vaddr==paddr)
+already provides a flat mapping over the whole memblock window, so no aarch64
+TTBR page-table build is needed for the buddy/slab allocators to run. The one
+arch-specific decision is the memblock window: `e820_init()` is x86/multiboot
+(the `mb_*` getters are nops on aarch64), so it is replaced by an explicit
+`memblock_set_region(0x5000_0000, 0x8000_0000)` — 1.25–2 GiB, well above the
+kernel image (loaded @`0x4008_0000`) and inside the identity-mapped RAM block.
+`get_bsp_cr3()` inside `cow_init()` is a nop-stub on aarch64 (no CR3) — harmless.
+
+**HARD-RULE compliance.** This is a SHARED-source change (`init/main.ad`:
+two additive functions + additive imports of already-existing `mm.*` init
+functions) plus `arch/arm64/llvm/head.S` + the gate script. Per the rule:
+`scripts/test_native_vs_seed_kobjdiff.sh` was run (native kernel codegen vs seed
+— the additions compile deterministically in both, 0 semantic divergences) AND
+the x86 LLVM kernel was rebuilt + booted to prove the additive change does not
+regress the x86 boot (the two new functions are dead code on x86: never called
+by `start_kernel()`). No `ssa*.ad`/`codegen.ad`/`cfg.ad`/`regalloc.ad` edit, so
+the compiler native path is byte-identical by construction.
+
+**A6+ next phases (ranked).** Reaching a shell needs real interrupts + a console
+device the kernel's own tty path can drive:
+1. **Real exception handling + GICv2 + ARM generic-timer tick.** Port the proven
+   standalone `arch/arm64/kmain.ad` GICv2 (`GICD_*`/`GICC_*` @ the `-M virt` MMIO)
+   + `CNTV_CVAL_EL0`/`CNTV_CTL_EL0`/`CNTFRQ_EL0` timer bring-up into this lane, and
+   route the `vectors.S` IRQ slot to the kernel's `do_irq`. Gives the first
+   scheduler tick / preemption — prerequisite for anything that waits on an
+   interrupt. (Today `vectors.S` slots all dump ESR/ELR and halt.)
+2. **Continue `start_kernel` past the MM block.** The x86-specific post-`mem_init`
+   steps (`setup_smap_late`/`setup_spectre_v2`/`setup_kpti` = CR/MSR work;
+   `uaccess_smoke_test` = STAC/CLAC + user page tables) are x86 mechanisms — peel
+   the arch-neutral remainder (`softirq_init`, `workqueue_init`, `rcu_init`,
+   `sched_init`, VFS/`cpio_init`) into further small emittable `*_arm64` slices,
+   stubbing/skipping the x86 mitigation calls.
+3. **virtio-mmio console + blk + initramfs.** `-M virt` is all-virtio: bring up
+   `virtio-mmio` transport (the device tree QEMU hands in `x0`, or the fixed
+   `0x0a00_0000` MMIO window), a virtio-console for real tty I/O, virtio-blk for a
+   root device, and mount the initramfs — mirroring the standalone track's Phase
+   30+ — to reach `hamsh`.
+4. **Higher-half TTBR1 kernel VA + real page tables.** Today the kernel runs on the
+   `head.S` flat identity map (TTBR0). A real aarch64 memory model puts the kernel
+   in the TTBR1 upper half (`0xffff_...`) with demand paging; needed before
+   user-mode (EL0) tasks and per-task address spaces.
+5. **Compiler follow-ups (gated, `ssa_llvm.ad`):** `align 8` on the
+   rdrand/mul128 scratch globals (removes the build-lane sed); `FEAT_RNG` gate +
+   software fallback for `arch_get_random_u64`.
 
 ---
 

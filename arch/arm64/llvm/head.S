@@ -98,6 +98,17 @@ at_el1:
     ldr     x0, =msg_a4_ret
     bl      uart_puts
 
+    /* A5 (docs/arm64_llvm_scoping.md): go PAST mem_init. start_kernel_mem_arm64()
+     * runs the aarch64 memory-init port (memblock -> buddy -> slab, skipping the
+     * x86 CR3/PML4 page-table work) then the arch-neutral MM/slab smoke proofs,
+     * all emitted by the LLVM backend over the PL011-routed console. A fault
+     * dumps ESR_EL1/ELR_EL1 via vectors.S. */
+    ldr     x0, =msg_a5
+    bl      uart_puts
+    bl      start_kernel_mem_arm64
+    ldr     x0, =msg_a5_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -231,6 +242,10 @@ msg_a4:
     .asciz  "A4: entering start_kernel_early (real kernel init over PL011)\n"
 msg_a4_ret:
     .asciz  "A4: start_kernel_early returned\n"
+msg_a5:
+    .asciz  "A5: entering start_kernel_mem_arm64 (aarch64 mem_init port)\n"
+msg_a5_ret:
+    .asciz  "A5: start_kernel_mem_arm64 returned\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

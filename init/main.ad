@@ -729,11 +729,18 @@ extern def user_demo_entry()
 extern def tss64_percpu_init(cpu_id: uint64, rsp0: uint64, ist1: uint64)
 extern def get_percpu_df_stack_top(cpu_id: uint64) -> uint64
 from mm.memblock import memblock_alloc, memblock_used, memblock_avail
+from mm.memblock import memblock_init, memblock_set_region
 from mm.page_alloc import (
     alloc_page, free_page, alloc_pages, free_pages,
     page_alloc_total, page_alloc_free_count, count_free_at_order,
 )
+from mm.page_alloc import page_alloc_init
+from mm.cow import cow_init
+from mm.swap import swap_init
+from mm.page import page_desc_init
+from mm.kswapd import kswapd_init
 from mm.slab import kmalloc, kfree, kzalloc, kmalloc_live_render
+from mm.slab import slab_init
 from mm.uaccess import uaccess_smoke_test, smap_enforced_test
 
 extern def trigger_int3()
@@ -4373,6 +4380,69 @@ def start_kernel_early():
     # current task, schedule() would halt the box on the first yield.
     sched_mark_boot_task_running()
     printk0("Hamnix: early cpu/sched init done\n")
+
+
+# --------------------------------------------------------------------------
+# A5 (docs/arm64_llvm_scoping.md): aarch64 memory-init + allocator bring-up.
+#
+# The x86 start_kernel() calls mem_init() (arch/x86/mm/init.ad), which builds
+# x86 page tables (CR3/PML4/PDPT via pgtable_extend_from_e820,
+# pgtable_build_page_offset_map, pgtable_build_cpu_entry_area) — mechanisms
+# that do not exist on aarch64 and would fault. The aarch64 LLVM lane instead
+# calls mem_init_arm64() below, which runs the ARCH-NEUTRAL allocator bring-up
+# (memblock -> cow/swap/page-desc reserve -> buddy -> slab -> kswapd) and skips
+# ALL x86 page-table construction: the arch/arm64/llvm/head.S identity map
+# (RAM 0x4000_0000-0x7FFF_FFFF Normal-WB, vaddr==paddr) already provides a flat
+# mapping over the whole memblock window, so no aarch64 TTBR page-table build is
+# needed for the buddy/slab allocators to run. This function is called ONLY from
+# the aarch64 boot layer (head.S); x86 start_kernel() never references it, so the
+# x86 kernel is behaviourally unchanged (additive public function only).
+ARM64_MEMBLOCK_BASE: uint64 = 0x50000000   # 1.25 GiB — well above the kernel image (loaded @0x4008_0000)
+ARM64_MEMBLOCK_TOP:  uint64 = 0x80000000   # 2 GiB — top of head.S's identity-mapped RAM block
+
+
+def mem_init_arm64():
+    # memblock owns "all RAM". On aarch64 -M virt the usable RAM window is
+    # 0x4000_0000-0x7FFF_FFFF (head.S maps it Normal-WB, identity). Point the
+    # bump allocator at the sub-window above the kernel image; e820_init() is
+    # x86/multiboot-specific (mb_* getters are nops on aarch64) so it is
+    # replaced by an explicit memblock_set_region().
+    memblock_init()
+    memblock_set_region(ARM64_MEMBLOCK_BASE, ARM64_MEMBLOCK_TOP)
+    printk2("[arm64-mm] memblock region base=%p top=%p\n",
+            ARM64_MEMBLOCK_BASE, ARM64_MEMBLOCK_TOP)
+    # Reserve the per-PFN metadata tables from memblock BEFORE the buddy
+    # allocator starts (identical ordering to the x86 mem_init flow), so a
+    # metadata frame is never handed out as usable RAM. get_bsp_cr3() inside
+    # cow_init() is a nop-stub on aarch64 (no CR3) — harmless.
+    cow_init()
+    swap_init()
+    page_desc_init()
+    page_alloc_init()
+    slab_init()
+    kswapd_init()
+    printk0("[arm64-mm] mem_init_arm64 done (buddy + slab up)\n")
+
+
+def start_kernel_mem_arm64():
+    # A5 continuation of start_kernel() for the aarch64 LLVM lane: memory init
+    # then the arch-neutral MM smoke proofs (buddy + slab exercised, PASS lines
+    # over PL011). The x86-specific post-mem_init steps in start_kernel()
+    # (setup_smap_late/spectre/kpti = CR/MSR page-table work, uaccess_smoke_test =
+    # STAC/CLAC + user page tables) are NOT run here — they are x86 mechanisms.
+    # This is the "meaningfully past mem_init" milestone; the head.S vector table
+    # dumps ESR_EL1/ELR_EL1 if any step faults.
+    printk0("A5: entering start_kernel_mem_arm64 (aarch64 mem_init port)\n")
+    mem_init_arm64()
+    memblock_smoke_test()
+    page_alloc_smoke_test()
+    page_alloc_coalesce_test()
+    page_alloc_stress_test()
+    slab_smoke_test()
+    printk0("A5: mm/slab smoke tests done (buddy allocator + slab verified)\n")
+    string_ops_smoke_test()
+    list_smoke_test()
+    printk0("A5: start_kernel_mem_arm64 complete\n")
 
 
 def start_kernel():

@@ -55,6 +55,17 @@ grep_a4 "Hamnix kernel booting"           || { sed 's/^/[ARM64-LLVM]   | /' "$SE
 grep_a4 "Hamnix: trap_init done"          || fail "A4: trap_init not reached"
 grep_a4 "Hamnix: early cpu/sched init done" || fail "A4: early cpu/sched init not reached"
 grep_a4 "A4: start_kernel_early returned" || fail "A4: start_kernel_early did not return cleanly"
+# A5 assertions: aarch64 mem_init port (memblock -> buddy -> slab, skipping the
+# x86 CR3/PML4 page-table work) + the arch-neutral MM/slab smoke proofs. This is
+# the "meaningfully PAST mem_init" milestone (docs/arm64_llvm_scoping.md A5).
+grep_a5() { grep -qa "$1" "$SERIAL"; }
+grep_a5 "\[arm64-mm\] memblock region base=0x0000000050000000" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A5: aarch64 memblock region not installed"; }
+grep_a5 "\[cow\] refcount table"                || fail "A5: cow_init did not run (mem_init port)"
+grep_a5 "\[arm64-mm\] mem_init_arm64 done"      || fail "A5: mem_init_arm64 (buddy+slab) did not complete"
+grep_a5 "\[buddy-coalesce\] PASS"               || fail "A5: buddy allocator coalesce test did not PASS"
+grep_a5 "\[pa-stress\] PASS"                     || fail "A5: page_alloc stress test did not PASS"
+grep_a5 "A5: mm/slab smoke tests done"          || fail "A5: mm/slab smoke tests did not complete"
+grep_a5 "A5: start_kernel_mem_arm64 returned"   || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A5: start_kernel_mem_arm64 did not return cleanly"; }
 
 echo "[ARM64-LLVM] serial (furthest point):"
 grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[ARM64-LLVM]   | /'
