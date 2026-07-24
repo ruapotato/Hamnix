@@ -1428,6 +1428,16 @@ bash scripts/test_hambrowse_realsite_host.sh
 # Asserts the search field surface paints (white pixel) and the input FLOW tokens
 # survive, and that the native browser (search-navigation code) still compiles.
 bash scripts/test_hambrowse_searchbox_host.sh
+# scripts/test_hambrowse_inputfocus_host.sh: QEMU-free gate for the CORE browser
+# usability path — CLICK INTO AN <input>/<textarea> TO FOCUS IT, THEN TYPE and
+# see the characters land in the field. Drives the native pointer chain on the
+# host via user/hambrowse_host_gfx.ad's `clickxy X Y TEXT` verb (coordinate
+# hit-test -> he_link_evt_index -> he_dom_is_textfield -> focus ->
+# he_dom_set_value_index -> re-layout), the SAME engine functions the on-device
+# browser's /event+/keys loop uses. Asserts a click at a control box centre
+# resolves to that text field, typing appends to its DOM value and renders inside
+# the box, and a blank-area click focuses nothing. Also compiles native hambrowse.
+bash scripts/test_hambrowse_inputfocus_host.sh
 # HTML FORMS (W3C): form.submit() GET-serializes text/checkbox/radio/select into
 # an action?k=v query + cancelable/bubbling submit event + input/textarea value
 # get/set (formsubmit); and method=POST request-body serialization

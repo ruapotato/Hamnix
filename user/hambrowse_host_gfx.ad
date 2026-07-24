@@ -34,7 +34,9 @@ from lib.htmlengine import he_layout, he_n_images, he_img_name_ptr, \
     he_bfill_rgb, he_bfill_z, he_bfill_radius, he_seg_rgb, he_seg_boxart, \
     he_dom_set_value, he_dom_click, he_dom_set_checked, he_dom_submit, \
     he_set_scroll_rows, he_seg_field, he_seg_appear, he_seg_ctrlrows, \
-    he_seg_btnrad, he_seg_btnbord
+    he_seg_btnrad, he_seg_btnbord, he_set_click_links, he_link_evt_index, \
+    he_dom_is_textfield, he_dom_is_submit, he_dom_set_value_index, \
+    he_dom_get_value
 from lib.jsengine import js_set_drain
 from lib.htmlpaint import htmlpaint_load_face, htmlpaint_width, \
     htmlpaint_height, htmlpaint_fb_ptr, htmlpaint_fb_bytes, htmlpaint_pixel, \
@@ -46,7 +48,8 @@ from lib.htmlpage import htmlpage_render, htmlpage_row_top, \
     htmlpage_row_height, htmlpage_row_baseline, htmlpage_install_reflow, \
     htmlpage_seg_px_x0, htmlpage_seg_px_x1, htmlpage_n_borders, \
     htmlpage_border_x0, \
-    htmlpage_border_y0, htmlpage_border_x1, htmlpage_border_y1
+    htmlpage_border_y0, htmlpage_border_x1, htmlpage_border_y1, \
+    htmlpage_hit_link
 from lib.png import png_decode, png_width, png_height, png_rgba_ptr
 from lib.jpeg import jpeg_decode, jpeg_width, jpeg_height, jpeg_rgba_ptr
 from lib.gif import gif_decode, gif_width, gif_height, gif_rgba_ptr
@@ -730,6 +733,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         if _streq(cast[Ptr[uint8]](argv[ai]), cast[Ptr[uint8]]("nodrain")) != 0:
             js_set_drain(0)
         ai = ai + 1
+    # POINTER-FOCUS repro: the `clickxy X Y [TEXT]` verb drives the SAME native
+    # front-end path (user/hambrowse.ad) — coordinate hit-test -> field focus ->
+    # per-keystroke value edit -> re-layout — on the host so a gate can prove a
+    # pointer click into an <input> focuses it and typed text lands in the field.
+    # This wraps focusable controls in the synthetic "#__evt_N" link the pointer
+    # hit-test resolves, so it MUST be enabled before the first he_layout(). Only
+    # armed when the verb is present, keeping every other host render byte-stable.
+    if argc >= 5 and _streq(cast[Ptr[uint8]](argv[4]), cast[Ptr[uint8]]("clickxy")) != 0:
+        he_set_click_links(1)
     # scroll <rows>: STATIC scroll offset (whole rows) the positioned resolver
     # assumes for position:sticky / position:fixed — "if the page were scrolled
     # down N rows, where do sticky/fixed boxes pin?". Set BEFORE he_layout so
@@ -766,6 +778,80 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         elif _streq(verb, cast[Ptr[uint8]]("submit")) != 0 and argc >= 6:
             sub_id: Ptr[uint8] = cast[Ptr[uint8]](argv[5])
             he_dom_submit(sub_id, _slen(sub_id))
+            acted = 1
+        elif _streq(verb, cast[Ptr[uint8]]("clickxy")) != 0 and argc >= 7:
+            # Coordinate-driven field focus + typing, mirroring hambrowse.ad's
+            # pointer path. Needs the first render (segment pixel extents) to
+            # hit-test against, so render once, then act, then fall through to the
+            # normal render/dump below (which repaints the mutated DOM).
+            htmlpage_render()
+            # Dump every form-control segment's PAINTED pixel rect so a gate (and
+            # a human) can aim a click at a real control box.
+            nsf: uint64 = he_n_segs()
+            fsi: uint64 = 0
+            while fsi < nsf:
+                if he_seg_field(fsi) != 0:
+                    frow: int32 = he_seg_line(fsi)
+                    _o_str(cast[Ptr[uint8]]("FIELDSEG kind "))
+                    _o_dec(cast[int64](he_seg_field(fsi)))
+                    _o_str(cast[Ptr[uint8]](" x0 "))
+                    _o_dec(cast[int64](htmlpage_seg_px_x0(fsi)))
+                    _o_str(cast[Ptr[uint8]](" x1 "))
+                    _o_dec(cast[int64](htmlpage_seg_px_x1(fsi)))
+                    _o_str(cast[Ptr[uint8]](" y0 "))
+                    _o_dec(cast[int64](htmlpage_row_top(cast[uint64](frow))))
+                    _o_str(cast[Ptr[uint8]](" y1 "))
+                    _o_dec(cast[int64](htmlpage_row_top(cast[uint64](frow)) + \
+                           htmlpage_row_height(cast[uint64](frow))))
+                    _o_ch(10)
+                    _o_flush()
+                fsi = fsi + 1
+            cxx: int32 = _atoi(cast[Ptr[uint8]](argv[5]))
+            cyy: int32 = _atoi(cast[Ptr[uint8]](argv[6]))
+            lid: int32 = htmlpage_hit_link(cxx, cyy)
+            _o_str(cast[Ptr[uint8]]("HITLINK "))
+            _o_dec(cast[int64](lid))
+            _o_ch(10)
+            _o_flush()
+            el: int32 = -1
+            if lid >= 0:
+                el = he_link_evt_index(lid)
+            _o_str(cast[Ptr[uint8]]("HITEL "))
+            _o_dec(cast[int64](el))
+            _o_str(cast[Ptr[uint8]](" textfield "))
+            _o_dec(cast[int64](he_dom_is_textfield(el)))
+            _o_str(cast[Ptr[uint8]](" submit "))
+            _o_dec(cast[int64](he_dom_is_submit(el)))
+            _o_ch(10)
+            _o_flush()
+            if el >= 0 and he_dom_is_textfield(el) != 0:
+                # FOCUS: seed the edit buffer from the field's current value, then
+                # append the typed TEXT (argv[7]) one byte at a time — the exact
+                # per-keystroke shape of hambrowse.ad's _field_key — and push the
+                # whole buffer back into the DOM value so the field re-renders.
+                fld: Array[1024, uint8]
+                fl: int32 = he_dom_get_value(el, &fld[0], 1024)
+                tp2: Ptr[uint8] = cast[Ptr[uint8]](0)
+                tl2: int32 = 0
+                if argc >= 8:
+                    tp2 = cast[Ptr[uint8]](argv[7])
+                    tl2 = _slen(tp2)
+                k: int32 = 0
+                while k < tl2 and fl < 1023:
+                    fld[fl] = tp2[k]
+                    fl = fl + 1
+                    he_dom_set_value_index(el, &fld[0], fl)   # per-keystroke edit
+                    k = k + 1
+                fld[fl] = 0
+                _o_str(cast[Ptr[uint8]]("FOCUSED el "))
+                _o_dec(cast[int64](el))
+                _o_str(cast[Ptr[uint8]](" value "))
+                kk2: int32 = 0
+                while kk2 < fl:
+                    _o_ch(fld[kk2])
+                    kk2 = kk2 + 1
+                _o_ch(10)
+                _o_flush()
             acted = 1
 
     total_h: int32 = htmlpage_render()
