@@ -29,7 +29,7 @@ arm64_llvm_vectors:
     .balign 0x80
     b       arm64_llvm_exc          /* Synchronous */
     .balign 0x80
-    b       arm64_llvm_exc          /* IRQ */
+    b       arm64_llvm_irq_entry    /* IRQ (0x280): GICv2 + generic-timer tick (gic.S) */
     .balign 0x80
     b       arm64_llvm_exc          /* FIQ */
     .balign 0x80

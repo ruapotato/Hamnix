@@ -1,6 +1,6 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init**
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + init past MM**
 (whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
@@ -11,6 +11,114 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-24) — A6 GICv2 + generic-timer FIRST SCHEDULER TICK + init past MM
+
+**A6 — the aarch64 LLVM kernel takes its FIRST SCHEDULER TICK (GICv2 + ARM
+generic timer, IRQ handled by emitted-Adder code) AND continues real init past
+the MM boundary (rcu/sched/softirq/workqueue): DONE.** Gate
+`scripts/test_arm64_llvm_kernel.sh` (extended with A6 assertions): **PASS**.
+Verified furthest-point PL011 serial from the actual
+`qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G` run (grep-a'd):
+```
+A5: start_kernel_mem_arm64 returned
+A6: entering start_kernel_post_mm_arm64 (rcu/sched/softirq/workqueue)
+[000073] A6: entering start_kernel_post_mm_arm64 (post-MM init slices)
+[000074] [rcu] grace-period engine initialised
+[000075] A6: rcu_init done
+[000076] A6: sched_init done
+[000077] [softirq] core up: vectors HI..RCU, ksoftirqd spawned
+[000078] A6: softirq_init done
+[000079] [workqueue] up: 4 shared-pool workers spawned
+[000080] A6: workqueue_init done
+[000081] A6: start_kernel_post_mm_arm64 complete
+A6: start_kernel_post_mm_arm64 returned
+A6: gic_timer_init (GICv2 + generic timer, unmasking IRQs)
+[000082] [arm64-llvm] scheduler timer tick 1
+[000083] [arm64-llvm] scheduler timer tick 2
+[000084] [arm64-llvm] scheduler timer tick 3
+[000085] [arm64-llvm] scheduler timer tick 4
+[000086] [arm64-llvm] scheduler timer tick 5
+[000087] [arm64-llvm] timer IRQ OK (first scheduler tick(s) taken + handled)
+```
+This is a **real IRQ taken by the GIC and handled by the kernel's OWN LLVM-
+emitted Adder code**: the GICv2 distributor + CPU interface are enabled, the ARM
+virtual generic timer (`CNTV_*`, PPI INTID 27) fires a periodic ~10 ms tick, the
+`vectors.S` Current-EL-SPx IRQ slot vectors to the `gic.S` entry stub, which acks
+the GIC (`GICC_IAR`), calls the emitted-Adder handler `arm64_do_timer_tick()`
+(bumps the tick counter + prints the per-tick line), re-arms `CNTV_TVAL_EL0`, and
+EOIs (`GICC_EOIR`). After the proof quota the handler returns "stop" and the stub
+leaves the timer disabled so the boot parks quietly (masking DAIF would be undone
+by the `eret` restoring `SPSR_EL1`, so quiescing the SOURCE is the correct stop).
+Init also walks meaningfully past the MM block: `rcu_init` (grace-period engine),
+`sched_init` (O(1) run-lists + pid hash + boot task published RUNNING),
+`softirq_init` (vectors + ksoftirqd kthread spawned), `workqueue_init` (4-worker
+shared pool spawned) — all emitted LLVM Adder code over the PL011 console.
+
+**How GICv2 + timer were brought up — boot-layer assembly, isolated lane.** The
+privileged interrupt-controller / timer HW mechanics (GICv2 MMIO at the `-M virt`
+addresses `GICD @0x0800_0000` / `GICC @0x0801_0000`, the `CNTV_*` generic-timer
+sysregs, the IRQ register-frame save/restore, DAIF unmask) cannot be expressed
+from Adder in this lane, so they live in a **new boot-layer file
+`arch/arm64/llvm/gic.S`** (`gic_timer_init` + `arm64_llvm_irq_entry`), porting
+the constants + flow of the proven standalone kernel (`arch/arm64/kmain.ad`
+`arm64_gic_init`/`arm64_timer_init`/`arm64_irq_handler` +
+`arch/arm64/vectors.S`) but kept ISOLATED from that lane (separate files,
+separate build — `scripts/build_kernel_llvm_arm64.sh` assembles `gic.S`). The
+GICD/GICC/PL011 MMIO all fall in the device 0-1GiB block the `head.S` MMU already
+maps Device-nGnRE. The KERNEL-VISIBLE tick bookkeeping is done by the emitted
+Adder handler `arm64_do_timer_tick()`, so the tick is genuinely handled by the
+kernel's own compiled code, not a hand-written stub.
+
+**How init continued past MM — additive `*_arm64` slice, x86 byte-identical.**
+Mirroring the A4/A5 extract pattern: a **new additive public function**
+`start_kernel_post_mm_arm64()` in `init/main.ad` calls the ARCH-NEUTRAL init
+slices `rcu_init` → `sched_init` → `softirq_init` → `workqueue_init`, called
+ONLY from `arch/arm64/llvm/head.S` (the x86 `start_kernel()` never references it,
+so the x86 kernel is behaviourally unchanged). The x86-specific post-`mem_init`
+steps (`setup_smap_late`/`setup_spectre_v2`/`setup_kpti` = CR/MSR page-table
+work, `fpu_init_bsp` = CR4.OSXSAVE, `uaccess_smoke_test` = STAC/CLAC) are SKIPPED
+— they are x86 mechanisms. `get_bsp_cr3()` inside `sched_init()` is a nop-stub on
+aarch64 (task cr3=0), harmless because this lane never context-switches yet;
+`kthread_create` (ksoftirqd, workqueue workers) builds task structs but never
+`__switch_to`'s (no `schedule()` on this lane), so the structures are inert until
+a future EL0/preemption phase.
+
+**HARD-RULE compliance.** `init/main.ad` change is PURELY ADDITIVE (one new
+public function + one tick handler + two module globals; zero deletions,
+`start_kernel()` body untouched — `git diff` shows no change to any existing
+x86-reachable line). `scripts/test_native_vs_seed_kobjdiff.sh` was run (must
+PASS). No `ssa*.ad`/`codegen.ad`/`cfg.ad`/`regalloc.ad` edit, so the compiler
+native path is byte-identical by construction. New boot-layer files
+(`arch/arm64/llvm/gic.S`) + the arm64 build/gate scripts touch nothing on the
+x86 lane.
+
+**A7+ next phases (ranked).** Reaching a shell needs a real console device the
+kernel's own tty path can drive + a root fs:
+1. **virtio-mmio transport + virtio-console + virtio-blk + initramfs.** `-M virt`
+   is all-virtio: bring up the `virtio-mmio` transport (the device tree QEMU
+   hands in `x0`, or the fixed `0x0a00_0000` MMIO window), a virtio-console for
+   real bidirectional tty I/O (replacing the PL011-routed 8250 shim), virtio-blk
+   for a root device, and mount the initramfs — mirroring the standalone track's
+   Phase 30+ — to reach `hamsh`. This is the largest remaining item.
+2. **Preemptive EL0 scheduling.** The A6 tick is handled but does NOT yet drive a
+   context switch. Wire the `gic.S` IRQ path to the scheduler's tick/preempt hook
+   (`scheduler_tick`/`preempt_tick`) and add the Lower-EL (EL0) IRQ vector +
+   full-context save/restore (mirroring the standalone `arm64_lower_irq_entry` /
+   `arm64_sched_pick`) so the timer IRQ preempts a running EL0 task — a real
+   EL0↔EL0 switch. Needs per-task kernel stacks + the EL0 `svc` sync path.
+3. **EL0 user-mode + `svc` syscall dispatch.** Add the Lower-EL AArch64
+   synchronous vector (`svc #0` → `do_syscall`), drop to EL0 with a user page
+   table, and run a first user task — mirroring the standalone Phase 4.
+4. **Higher-half TTBR1 kernel VA + real page tables.** Today the kernel runs on
+   the `head.S` flat identity map (TTBR0). A real aarch64 memory model puts the
+   kernel in the TTBR1 upper half (`0xffff_...`) with demand paging; needed
+   before per-task address spaces.
+5. **Compiler follow-ups (gated, `ssa_llvm.ad`):** `align 8` on the
+   rdrand/mul128 scratch globals (removes the build-lane sed); `FEAT_RNG` gate +
+   software fallback for `arch_get_random_u64`.
 
 ---
 

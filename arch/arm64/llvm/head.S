@@ -109,6 +109,25 @@ at_el1:
     ldr     x0, =msg_a5_ret
     bl      uart_puts
 
+    /* A6 (docs/arm64_llvm_scoping.md): peel the next arch-neutral init slices
+     * (rcu/sched/softirq/workqueue) past the MM boundary, emitted by the LLVM
+     * backend, then bring up GICv2 + the ARM generic timer and take the FIRST
+     * SCHEDULER TICK — the gic.S IRQ stub acks the GIC and calls the emitted-
+     * Adder tick handler arm64_do_timer_tick(). A fault dumps ESR/ELR (vectors.S). */
+    ldr     x0, =msg_a6
+    bl      uart_puts
+    bl      start_kernel_post_mm_arm64
+    ldr     x0, =msg_a6_ret
+    bl      uart_puts
+
+    /* GICv2 + generic-timer: enable the controller + timer and unmask IRQs.
+     * From here IRQs are on; each virtual-timer PPI vectors to gic.S's
+     * arm64_llvm_irq_entry -> arm64_do_timer_tick(). After a few ticks the
+     * handler masks IRQs and we fall through to the wfi park loop. */
+    ldr     x0, =msg_tmr
+    bl      uart_puts
+    bl      gic_timer_init
+
 park:
     wfi
     b       park
@@ -246,6 +265,12 @@ msg_a5:
     .asciz  "A5: entering start_kernel_mem_arm64 (aarch64 mem_init port)\n"
 msg_a5_ret:
     .asciz  "A5: start_kernel_mem_arm64 returned\n"
+msg_a6:
+    .asciz  "A6: entering start_kernel_post_mm_arm64 (rcu/sched/softirq/workqueue)\n"
+msg_a6_ret:
+    .asciz  "A6: start_kernel_post_mm_arm64 returned\n"
+msg_tmr:
+    .asciz  "A6: gic_timer_init (GICv2 + generic timer, unmasking IRQs)\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

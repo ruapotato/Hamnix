@@ -4445,6 +4445,67 @@ def start_kernel_mem_arm64():
     printk0("A5: start_kernel_mem_arm64 complete\n")
 
 
+# --------------------------------------------------------------------------
+# A6 (docs/arm64_llvm_scoping.md): GICv2 + ARM generic-timer tick handler +
+# post-MM init slices for the aarch64 LLVM lane.
+#
+# These are ADDITIVE public functions called ONLY from arch/arm64/llvm/head.S
+# (+ the vectors.S IRQ stub). The x86 start_kernel() never references them, so
+# the x86 kernel is behaviourally unchanged (dead code on x86 by construction).
+# --------------------------------------------------------------------------
+
+# Timer-tick bookkeeping. The GICv2 ack/EOI + CNTV re-arm mechanics live in the
+# boot layer (arch/arm64/llvm/gic.S — MMIO + sysreg access that cannot be
+# expressed from Adder); the boot IRQ stub calls THIS emitted-Adder handler each
+# tick to do the kernel-visible bookkeeping (bump the tick counter, print the
+# per-tick line). This is the "scheduler tick handler is emitted Adder code"
+# proof — the first scheduler tick is taken and handled by the kernel's OWN code.
+arm64_llvm_tick_count: uint64 = 0
+ARM64_LLVM_TICK_LIMIT: uint64 = 5
+
+
+def arm64_do_timer_tick() -> int64:
+    # Called from the gic.S IRQ entry stub after it has acked the GIC (read
+    # GICC_IAR) and confirmed the INTID is the virtual-timer PPI. Returns 1 to
+    # request the boot stub mask IRQs (DAIF.I) — i.e. "enough ticks proven, stop
+    # re-entering" — else 0 to keep ticking. All GIC/timer HW poking is done by
+    # the caller in assembly; this function is pure kernel bookkeeping.
+    arm64_llvm_tick_count = arm64_llvm_tick_count + 1
+    printk1("[arm64-llvm] scheduler timer tick %d\n", arm64_llvm_tick_count)
+    if arm64_llvm_tick_count >= ARM64_LLVM_TICK_LIMIT:
+        printk0("[arm64-llvm] timer IRQ OK (first scheduler tick(s) taken + handled)\n")
+        return 1
+    return 0
+
+
+def start_kernel_post_mm_arm64():
+    # A6 continuation past the A5 MM boundary: peel the next ARCH-NEUTRAL init
+    # slices of start_kernel() into this aarch64-only entry. The x86-specific
+    # post-mem_init steps (setup_smap_late / setup_spectre_v2 / setup_kpti =
+    # CR/MSR page-table work, fpu_init_bsp = CR4.OSXSAVE) are x86 mechanisms and
+    # are SKIPPED. Each printk doubles as a furthest-point boot checkpoint; a
+    # fault in any slice dumps ESR_EL1/ELR_EL1 via the vectors.S diagnostic.
+    printk0("A6: entering start_kernel_post_mm_arm64 (post-MM init slices)\n")
+    # RCU grace-period engine — must be up before sched wires the context-switch
+    # QS hook. Arch-neutral (pool init + counters).
+    rcu_init()
+    printk0("A6: rcu_init done\n")
+    # Scheduler core: O(1) run-lists, pid hash, free-slot freelist, boot task
+    # (slot 0) published RUNNING. get_bsp_cr3() is a nop-stub on aarch64 (task
+    # cr3=0) — harmless because this lane never context-switches yet.
+    sched_init()
+    printk0("A6: sched_init done\n")
+    # Bottom-half stack: softirq vectors + ksoftirqd kthread, then the
+    # concurrency-managed workqueue worker pool. kthread_create builds task
+    # structs but never __switch_to's here (no schedule() on this lane), so the
+    # structures are inert until a future EL0/preemption phase.
+    softirq_init()
+    printk0("A6: softirq_init done\n")
+    workqueue_init()
+    printk0("A6: workqueue_init done\n")
+    printk0("A6: start_kernel_post_mm_arm64 complete\n")
+
+
 def start_kernel():
     start_kernel_early()
 

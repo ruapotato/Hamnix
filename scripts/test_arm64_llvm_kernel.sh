@@ -67,6 +67,20 @@ grep_a5 "\[pa-stress\] PASS"                     || fail "A5: page_alloc stress 
 grep_a5 "A5: mm/slab smoke tests done"          || fail "A5: mm/slab smoke tests did not complete"
 grep_a5 "A5: start_kernel_mem_arm64 returned"   || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A5: start_kernel_mem_arm64 did not return cleanly"; }
 
+# A6 assertions: (1) the post-MM init slices (rcu/sched/softirq/workqueue) run
+# past the A5 MM boundary as emitted LLVM Adder code, and (2) GICv2 + the ARM
+# generic timer are brought up and the FIRST SCHEDULER TICK fires + is handled by
+# the emitted-Adder tick handler arm64_do_timer_tick() (docs/arm64_llvm_scoping.md
+# A6). A fault in any slice dumps ESR_EL1/ELR_EL1 via the vectors.S diagnostic.
+grep_a6() { grep -qa "$1" "$SERIAL"; }
+grep_a6 "A6: rcu_init done"                     || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: rcu_init did not complete"; }
+grep_a6 "A6: sched_init done"                   || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: sched_init did not complete"; }
+grep_a6 "A6: softirq_init done"                 || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: softirq_init did not complete"; }
+grep_a6 "A6: workqueue_init done"               || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: workqueue_init did not complete"; }
+grep_a6 "A6: start_kernel_post_mm_arm64 returned" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: post-MM init slice did not return cleanly"; }
+grep_a6 "\[arm64-llvm\] scheduler timer tick 1"  || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: FIRST timer tick never fired/handled"; }
+grep_a6 "\[arm64-llvm\] timer IRQ OK"            || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A6: periodic timer tick did not reach the handler completion marker"; }
+
 echo "[ARM64-LLVM] serial (furthest point):"
 grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[ARM64-LLVM]   | /'
 echo "[ARM64-LLVM] PASS"
