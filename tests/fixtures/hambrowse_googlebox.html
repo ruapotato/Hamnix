@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Google search-box containing block</title>
+<!--
+  A DISTILLED, byte-stable copy of google.com's real search-box box tree — the
+  one the user reported as "the Google homepage is broken and I can't select the
+  search bar". The live homepage is 1.5 MB of minified CSS/JS and changes daily,
+  so the exact class names and the exact declarations that matter are lifted
+  here verbatim from a 2026-07 capture:
+
+      .A8SBwf { max-width:584px; margin:0 auto }   <- centred container
+      .RNNXgb { display:flex; min-height:50px; border:1px solid #dadce0;
+                border-radius:26px; margin:0 auto }
+      .SDkEP  { flex:1; display:flex; padding:0 8px 0 0 }
+      .a4bIc  { display:flex; flex-wrap:wrap; flex:1 }
+      .gLFyf  { width:100% }                        <- the search field
+      .voice  the mic / lens icon cluster on the right
+
+  CHROMIUM 147 in a 1024px viewport measures (getBoundingClientRect):
+
+      .A8SBwf  w=584  left=220  right=804
+      .RNNXgb  w=584  left=220  right=804
+      .a4bIc   w=447  left=221  right=668
+      .gLFyf   w=447  left=221  right=668     <- 447px, centred, ON SCREEN
+
+  THE BUG: horizontal CSS percentages resolved against the PAGE column instead
+  of the element's CONTAINING BLOCK, so `.gLFyf{width:100%}` computed the full
+  ~1008px content column and the field ran ~260px off the RIGHT EDGE of the
+  viewport — visually broken and unreachable. See scripts/test_hambrowse_googlebox_host.sh.
+-->
+<style>
+.A8SBwf{max-width:584px;margin:0 auto}
+.RNNXgb{display:flex;min-height:50px;border:1px solid #dadce0;border-radius:26px;margin:0 auto}
+.SDkEP{flex:1;display:flex;padding:0 8px 0 0}
+.a4bIc{display:flex;flex-wrap:wrap;flex:1}
+.gLFyf{width:100%;font-size:16px;border:none;padding:0;margin:0}
+.voice{display:flex;width:127px}
+/* A second, simpler containing block: a percentage inside a FIXED-px parent.
+   Chromium: .half is 200px wide inside the 400px .fixed (50% of 400). */
+.fixed{width:400px}
+.half{width:50%}
+</style>
+</head>
+<body>
+<form>
+  <div class="A8SBwf">
+    <div class="RNNXgb">
+      <div class="SDkEP">
+        <div class="a4bIc"><textarea class="gLFyf" name="q"></textarea></div>
+      </div>
+      <div class="voice">II</div>
+    </div>
+  </div>
+</form>
+<div class="fixed"><input class="half" name="h"></div>
+</body>
+</html>

@@ -1,0 +1,256 @@
+# user/hambrowse_tabs.ad — the browser's TAB SESSION model.
+#
+# The Chrome-style shell in lib/browserwin.ad has always DRAWN a tab strip with
+# a "+" button and has always had a hit test — but nothing sat behind it. The
+# front-end pinned `browserwin_set_tabs(1, 0)` on every frame, so "+" was
+# decoration and clicking a tab did nothing ("the + button for a new tab does
+# not work"). This module is the session that makes the strip real.
+#
+# Each tab owns:
+#   * its URL (the page it is showing),
+#   * its strip TITLE (page <title>, else the URL),
+#   * its SCROLL offset,
+#   * its Back/Forward HISTORY.
+#
+# Exactly ONE tab is live in the engine at a time — src_ptr, the DOM and the JS
+# context are global to lib/htmlengine — so a switch SAVES the live state into
+# the outgoing slot and RESTORES the incoming one, and the front-end re-fetches
+# the incoming URL. Per-tab history works the same way: lib/browserhistory owns
+# a single stack, so a save SNAPSHOTS it into the tab and a restore REPLAYS the
+# tab's entries back into it (public API only — no reaching into its arrays).
+#
+# PURE: no extern/syscall/I/O, so it links into BOTH the native browser
+# (x86_64-adder-user, user/hambrowse.ad) and the x86_64-linux host gate
+# (user/hambrowse_tabs_host.ad). All navigation I/O stays in the front-end: this
+# module only says WHICH url a tab should show, never fetches it.
+
+from lib.browserhistory import browserhist_reset, browserhist_push, \
+    browserhist_back, browserhist_fwd, browserhist_can_back, \
+    browserhist_can_fwd, browserhist_cur_ptr, browserhist_count, \
+    browserhist_index
+
+TAB_MAX:   int32  = 8            # matches BW_MAXTABS in lib/browserwin.ad
+TAB_URLSZ: uint64 = 1024         # matches cur_url / addr_buf / HIST_SLOT
+TAB_TITSZ: int32  = 48           # matches BW_TABTITLE
+TAB_HCAP:  int32  = 16           # per-tab Back/Forward depth
+
+tab_n:      int32 = 1            # live tab count (never < 1)
+tab_active: int32 = 0
+tab_url:    Array[8192, uint8]     # TAB_MAX * TAB_URLSZ
+tab_urllen: Array[8, uint64]
+tab_title:  Array[384, uint8]      # TAB_MAX * TAB_TITSZ
+tab_titlen: Array[8, int32]
+tab_scroll: Array[8, int32]
+# Per-tab session-history mirror (replayed into lib/browserhistory on switch).
+tab_hurl:   Array[131072, uint8]   # TAB_MAX * TAB_HCAP * TAB_URLSZ
+tab_hlen:   Array[128, uint64]     # TAB_MAX * TAB_HCAP
+tab_hcnt:   Array[8, int32]
+tab_hcur:   Array[8, int32]
+
+
+def _tb_copy(dst: Ptr[uint8], src: Ptr[uint8], cap: uint64) -> uint64:
+    i: uint64 = 0
+    while src[i] != 0 and i < cap - 1:
+        dst[i] = src[i]
+        i = i + 1
+    dst[i] = 0
+    return i
+
+
+def tabs_url_slot(i: int32) -> Ptr[uint8]:
+    return &tab_url[cast[uint64](i) * TAB_URLSZ]
+
+
+def tabs_title_slot(i: int32) -> Ptr[uint8]:
+    return &tab_title[cast[uint64](i) * cast[uint64](TAB_TITSZ)]
+
+
+def _tb_hslot(t: int32, k: int32) -> Ptr[uint8]:
+    return &tab_hurl[(cast[uint64](t) * cast[uint64](TAB_HCAP) + \
+                      cast[uint64](k)) * TAB_URLSZ]
+
+
+def tabs_count() -> int32:
+    return tab_n
+
+
+def tabs_active() -> int32:
+    return tab_active
+
+
+def tabs_url_len(i: int32) -> uint64:
+    if i < 0 or i >= TAB_MAX:
+        return 0
+    return tab_urllen[i]
+
+
+def tabs_title_len(i: int32) -> int32:
+    if i < 0 or i >= TAB_MAX:
+        return 0
+    return tab_titlen[i]
+
+
+def tabs_scroll(i: int32) -> int32:
+    if i < 0 or i >= TAB_MAX:
+        return 0
+    return tab_scroll[i]
+
+
+def tabs_set_title(i: int32, s: Ptr[uint8], n: int32):
+    if i < 0 or i >= TAB_MAX:
+        return
+    m: int32 = n
+    if m > TAB_TITSZ - 1:
+        m = TAB_TITSZ - 1
+    dst: Ptr[uint8] = tabs_title_slot(i)
+    k: int32 = 0
+    while k < m:
+        dst[k] = s[cast[uint64](k)]
+        k = k + 1
+    dst[m] = 0
+    tab_titlen[i] = m
+
+
+# Drop back to a single, empty tab (browser start / a fresh session).
+def tabs_reset():
+    tab_n = 1
+    tab_active = 0
+    i: int32 = 0
+    while i < TAB_MAX:
+        tab_url[cast[uint64](i) * TAB_URLSZ] = 0
+        tab_urllen[i] = 0
+        tab_title[i * TAB_TITSZ] = 0
+        tab_titlen[i] = 0
+        tab_scroll[i] = 0
+        tab_hcnt[i] = 0
+        tab_hcur[i] = 0 - 1
+        i = i + 1
+
+
+# Freeze the LIVE browser state into the ACTIVE tab's slot. `url` is the live
+# cur_url, `title` the strip label the front-end computed, `scroll` the pixel
+# scroll offset. The Back/Forward stack is read out of lib/browserhistory by
+# rewinding the cursor to the oldest entry, walking forward copying each entry,
+# then walking back to where the cursor started — back()/fwd() deliberately do
+# not push, so the live stack is left exactly as it was found.
+def tabs_save(url: Ptr[uint8], title: Ptr[uint8], tlen: int32, scroll: int32):
+    i: int32 = tab_active
+    if i < 0 or i >= TAB_MAX:
+        return
+    tab_urllen[i] = _tb_copy(tabs_url_slot(i), url, TAB_URLSZ)
+    tab_scroll[i] = scroll
+    tabs_set_title(i, title, tlen)
+    cur0: int32 = browserhist_index()
+    cnt: int32 = browserhist_count()
+    while browserhist_can_back() != 0:
+        browserhist_back()
+    n: int32 = 0
+    while n < cnt and n < TAB_HCAP:
+        p: Ptr[uint8] = browserhist_cur_ptr()
+        m: uint64 = 0
+        hs: Ptr[uint8] = _tb_hslot(i, n)
+        if cast[uint64](p) != 0:
+            m = _tb_copy(hs, p, TAB_URLSZ)
+        else:
+            hs[0] = 0
+        tab_hlen[i * TAB_HCAP + n] = m
+        n = n + 1
+        if browserhist_can_fwd() == 0:
+            break
+        browserhist_fwd()
+    tab_hcnt[i] = n
+    hc: int32 = cur0
+    if hc >= n:
+        hc = n - 1
+    tab_hcur[i] = hc
+    # We are parked at entry n-1; walk the live cursor back to cur0.
+    here: int32 = n - 1
+    if here < 0:
+        here = 0
+    while here > cur0 and browserhist_can_back() != 0:
+        browserhist_back()
+        here = here - 1
+    while here < cur0 and browserhist_can_fwd() != 0:
+        browserhist_fwd()
+        here = here + 1
+
+
+# Load tab `i`'s saved Back/Forward stack into lib/browserhistory, restoring its
+# cursor, so the toolbar's Back/Forward buttons act on THAT tab's history.
+def tabs_restore_history(i: int32):
+    if i < 0 or i >= TAB_MAX:
+        return
+    browserhist_reset()
+    n: int32 = 0
+    while n < tab_hcnt[i]:
+        browserhist_push(_tb_hslot(i, n), tab_hlen[i * TAB_HCAP + n])
+        n = n + 1
+    steps: int32 = tab_hcnt[i] - 1 - tab_hcur[i]
+    while steps > 0 and browserhist_can_back() != 0:
+        browserhist_back()
+        steps = steps - 1
+
+
+# Append a tab and make it active. The caller must have already saved the
+# outgoing tab (tabs_save). Returns the new tab's index, or -1 when the strip is
+# full (TAB_MAX, matching the compositor's BW_MAXTABS).
+def tabs_open() -> int32:
+    if tab_n >= TAB_MAX:
+        return 0 - 1
+    ni: int32 = tab_n
+    tab_url[cast[uint64](ni) * TAB_URLSZ] = 0
+    tab_urllen[ni] = 0
+    tab_title[ni * TAB_TITSZ] = 0
+    tab_titlen[ni] = 0
+    tab_scroll[ni] = 0
+    tab_hcnt[ni] = 0
+    tab_hcur[ni] = 0 - 1
+    tab_n = tab_n + 1
+    tab_active = ni
+    return ni
+
+
+# Make tab `i` active. Returns 1 when the ACTIVE tab actually changed (so the
+# caller knows to re-fetch), 0 for a no-op / out-of-range index.
+def tabs_select(i: int32) -> int32:
+    if i < 0 or i >= tab_n or i == tab_active:
+        return 0
+    tab_active = i
+    return 1
+
+
+# Close tab `i`, compacting the tabs after it down one slot. The LAST tab never
+# closes (there is no window-close path here), so that is a no-op returning 0.
+# Returns 1 when the ACTIVE page changed (the caller must re-fetch), else 0 —
+# note a successful close of a NON-active tab returns 0 but tabs_count() has
+# dropped, which is how the caller tells "nothing happened" from "strip shrank".
+def tabs_close(i: int32) -> int32:
+    if tab_n <= 1 or i < 0 or i >= tab_n:
+        return 0
+    j: int32 = i
+    while j < tab_n - 1:
+        tab_urllen[j] = _tb_copy(tabs_url_slot(j), tabs_url_slot(j + 1),
+                                 TAB_URLSZ)
+        tab_scroll[j] = tab_scroll[j + 1]
+        tab_titlen[j] = tab_titlen[j + 1]
+        tt: int32 = 0
+        while tt < TAB_TITSZ:
+            tab_title[j * TAB_TITSZ + tt] = tab_title[(j + 1) * TAB_TITSZ + tt]
+            tt = tt + 1
+        hk: int32 = 0
+        while hk < tab_hcnt[j + 1] and hk < TAB_HCAP:
+            tab_hlen[j * TAB_HCAP + hk] = \
+                _tb_copy(_tb_hslot(j, hk), _tb_hslot(j + 1, hk), TAB_URLSZ)
+            hk = hk + 1
+        tab_hcnt[j] = tab_hcnt[j + 1]
+        tab_hcur[j] = tab_hcur[j + 1]
+        j = j + 1
+    tab_n = tab_n - 1
+    if tab_active > i:
+        tab_active = tab_active - 1
+        return 0                                   # same live page, new index
+    if tab_active == i:
+        if tab_active >= tab_n:
+            tab_active = tab_n - 1                 # closed the tip: focus its left
+        return 1                                   # live page must be reloaded
+    return 0

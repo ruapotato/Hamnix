@@ -1,0 +1,205 @@
+# user/hambrowse_tabs_host.ad — HOST unit harness for the browser's TAB SESSION
+# (user/hambrowse_tabs.ad) and the tab-strip HIT TEST (lib/browserwin.ad).
+#
+# Regression guard for the user-reported bug "the + button for a new tab does not
+# work": the strip was drawn and hit-tested, but no session model sat behind it.
+# This drives the real model — open / switch / close, per-tab URL, scroll and
+# Back/Forward history — plus the pixel hit test that routes a click to it, and
+# prints deterministic lines a gate asserts on.
+#
+# Built for x86_64-linux; both modules under test are PURE (no syscalls), so
+# this exercises the SAME code the native browser runs. Writes stdout only.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+from user.hambrowse_tabs import TAB_MAX, tabs_reset, tabs_count, tabs_active, \
+    tabs_open, tabs_close, tabs_select, tabs_save, tabs_restore_history, \
+    tabs_url_slot, tabs_url_len, tabs_title_slot, tabs_title_len, tabs_scroll, \
+    tabs_set_title
+from lib.browserhistory import browserhist_reset, browserhist_push, \
+    browserhist_back, browserhist_can_back, browserhist_can_fwd, \
+    browserhist_cur_ptr, browserhist_count, browserhist_index
+from lib.browserwin import browserwin_set_tabs, browserwin_set_tab_title, \
+    browserwin_tab_hit, browserwin_tab_close_hit, browserwin_tab_w, \
+    browserwin_newtab_x, browserwin_ntabs, browserwin_active_tab
+
+WIN_W: int32 = 900
+
+
+def _slen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def _puts(s: Ptr[uint8]):
+    sys_write(1, s, _slen(s))
+
+
+def _line(tag: Ptr[uint8], v: int32):
+    _puts(tag)
+    d: Array[16, uint8]
+    t: Array[16, uint8]
+    if v == 0:
+        d[0] = 48
+        sys_write(1, &d[0], 1)
+    else:
+        x: int32 = v
+        neg: int32 = 0
+        if x < 0:
+            neg = 1
+            x = 0 - x
+        n: int32 = 0
+        while x > 0:
+            t[n] = cast[uint8](x % 10) + 48
+            x = x / 10
+            n = n + 1
+        p: int32 = 0
+        if neg != 0:
+            d[p] = 45
+            p = p + 1
+        while n > 0:
+            n = n - 1
+            d[p] = t[n]
+            p = p + 1
+        sys_write(1, &d[0], cast[uint64](p))
+    sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+
+
+def _sline(tag: Ptr[uint8], s: Ptr[uint8]):
+    _puts(tag)
+    _puts(s)
+    sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+
+
+# The strip's y band: every tab hit test uses a y inside the title bar.
+TAB_Y: int32 = 18
+
+
+# Centre x of tab `i` for the CURRENT strip width, i.e. where a user clicks to
+# switch to it. Mirrors the painter's `8 + i*tw`.
+def _tab_cx(i: int32) -> int32:
+    tw: int32 = browserwin_tab_w(WIN_W)
+    return 8 + i * tw + tw / 2
+
+
+# x of tab `i`'s close (x) box.
+def _tab_close_cx(i: int32) -> int32:
+    tw: int32 = browserwin_tab_w(WIN_W)
+    return 8 + i * tw + tw - 14
+
+
+# Push the session into the compositor exactly as hambrowse.ad's emit() does, so
+# the hit test below runs against the same geometry the painter drew.
+def _sync_strip():
+    browserwin_set_tabs(tabs_count(), tabs_active())
+    i: int32 = 0
+    while i < tabs_count():
+        browserwin_set_tab_title(i, tabs_title_slot(i), tabs_title_len(i))
+        i = i + 1
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    tabs_reset()
+    browserhist_reset()
+
+    # ---- start state: one tab -------------------------------------------
+    u0: Ptr[uint8] = cast[Ptr[uint8]]("https://example.com/one")
+    browserhist_push(u0, _slen(u0))
+    tabs_save(u0, cast[Ptr[uint8]]("Example One"), 11, 0)
+    _sync_strip()
+    _line(cast[Ptr[uint8]]("T_N0 "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_ACT0 "), tabs_active())
+
+    # ---- the "+" button: hit test must report -2, and open a tab ---------
+    nx: int32 = browserwin_newtab_x(WIN_W)
+    _line(cast[Ptr[uint8]]("T_PLUS_HIT "), browserwin_tab_hit(WIN_W, nx + 8, TAB_Y))
+    ni: int32 = tabs_open()
+    _line(cast[Ptr[uint8]]("T_OPEN_IDX "), ni)
+    _line(cast[Ptr[uint8]]("T_N1 "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_ACT1 "), tabs_active())
+    # a brand-new tab has NO url (the front-end shows about:newtab) and no history
+    _line(cast[Ptr[uint8]]("T_NEWURL_LEN "), cast[int32](tabs_url_len(ni)))
+    tabs_restore_history(ni)
+    _line(cast[Ptr[uint8]]("T_NEWHIST "), browserhist_count())
+
+    # give the new tab a page + a 2-entry history + a scroll offset
+    u1: Ptr[uint8] = cast[Ptr[uint8]]("https://example.com/two")
+    u1b: Ptr[uint8] = cast[Ptr[uint8]]("https://example.com/two-b")
+    browserhist_push(u1, _slen(u1))
+    browserhist_push(u1b, _slen(u1b))
+    tabs_save(u1b, cast[Ptr[uint8]]("Example Two"), 11, 640)
+    _sync_strip()
+
+    # ---- clicking tab 0 switches back, with ITS url/scroll/history -------
+    _line(cast[Ptr[uint8]]("T_HIT_T0 "), browserwin_tab_hit(WIN_W, _tab_cx(0), TAB_Y))
+    _line(cast[Ptr[uint8]]("T_HIT_T1 "), browserwin_tab_hit(WIN_W, _tab_cx(1), TAB_Y))
+    _line(cast[Ptr[uint8]]("T_SEL0 "), tabs_select(0))
+    _line(cast[Ptr[uint8]]("T_ACT2 "), tabs_active())
+    _sline(cast[Ptr[uint8]]("T_URL0 "), tabs_url_slot(0))
+    _line(cast[Ptr[uint8]]("T_SCROLL0 "), tabs_scroll(0))
+    tabs_restore_history(0)
+    _line(cast[Ptr[uint8]]("T_HIST0 "), browserhist_count())
+    _line(cast[Ptr[uint8]]("T_CANBACK0 "), browserhist_can_back())
+
+    # ---- and back to tab 1: its own url, scroll and 2-deep history -------
+    _line(cast[Ptr[uint8]]("T_SEL1 "), tabs_select(1))
+    _sline(cast[Ptr[uint8]]("T_URL1 "), tabs_url_slot(1))
+    _line(cast[Ptr[uint8]]("T_SCROLL1 "), tabs_scroll(1))
+    tabs_restore_history(1)
+    _line(cast[Ptr[uint8]]("T_HIST1 "), browserhist_count())
+    _line(cast[Ptr[uint8]]("T_CANBACK1 "), browserhist_can_back())
+    browserhist_back()
+    _sline(cast[Ptr[uint8]]("T_BACK1 "), browserhist_cur_ptr())
+
+    # ---- the strip reflects the live set --------------------------------
+    _sync_strip()
+    _line(cast[Ptr[uint8]]("T_STRIP_N "), browserwin_ntabs())
+    _line(cast[Ptr[uint8]]("T_STRIP_ACT "), browserwin_active_tab())
+
+    # ---- a third tab, then close the MIDDLE one -------------------------
+    tabs_save(u1b, cast[Ptr[uint8]]("Example Two"), 11, 640)
+    n2: int32 = tabs_open()
+    u2: Ptr[uint8] = cast[Ptr[uint8]]("https://example.com/three")
+    tabs_save(u2, cast[Ptr[uint8]]("Example Three"), 13, 0)
+    _sync_strip()
+    _line(cast[Ptr[uint8]]("T_N3 "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_ACT3 "), tabs_active())
+    # the close (x) hit reports -10-i through the SAME entry point a click uses
+    _line(cast[Ptr[uint8]]("T_CLOSEHIT_1 "),
+          browserwin_tab_close_hit(WIN_W, _tab_close_cx(1), TAB_Y))
+    _line(cast[Ptr[uint8]]("T_HIT_X1 "),
+          browserwin_tab_hit(WIN_W, _tab_close_cx(1), TAB_Y))
+    _line(cast[Ptr[uint8]]("T_CLOSE1_RELOAD "), tabs_close(1))
+    _line(cast[Ptr[uint8]]("T_N4 "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_ACT4 "), tabs_active())
+    # tab 2 (the active one) slid down into slot 1 and kept its url
+    _sline(cast[Ptr[uint8]]("T_URL_AFTER "), tabs_url_slot(1))
+    _sline(cast[Ptr[uint8]]("T_URL0_AFTER "), tabs_url_slot(0))
+
+    # ---- closing the ACTIVE tab must reload the page --------------------
+    _line(cast[Ptr[uint8]]("T_CLOSE_ACT "), tabs_close(tabs_active()))
+    _line(cast[Ptr[uint8]]("T_N5 "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_ACT5 "), tabs_active())
+    _sline(cast[Ptr[uint8]]("T_URL_LAST "), tabs_url_slot(0))
+
+    # ---- the LAST tab never closes --------------------------------------
+    _line(cast[Ptr[uint8]]("T_CLOSE_LAST "), tabs_close(0))
+    _line(cast[Ptr[uint8]]("T_N6 "), tabs_count())
+
+    # ---- the strip is capped at TAB_MAX ---------------------------------
+    k: int32 = 0
+    while k < TAB_MAX + 3:
+        tabs_open()
+        k = k + 1
+    _line(cast[Ptr[uint8]]("T_CAP "), tabs_count())
+    _line(cast[Ptr[uint8]]("T_CAP_OPEN "), tabs_open())
+
+    # ---- dead space in the strip is NOT a tab ---------------------------
+    _sync_strip()
+    _line(cast[Ptr[uint8]]("T_HIT_MISS "), browserwin_tab_hit(WIN_W, WIN_W - 2, TAB_Y))
+    _line(cast[Ptr[uint8]]("T_HIT_BELOW "), browserwin_tab_hit(WIN_W, _tab_cx(0), 400))
+
+    _puts(cast[Ptr[uint8]]("DONE\n"))
+    return 0

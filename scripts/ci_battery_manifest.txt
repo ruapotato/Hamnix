@@ -590,6 +590,20 @@ bash scripts/test_hambrowse_chipbg_host.sh
 # taller than one text row centres its label VERTICALLY in the box (pixel check)
 # instead of leaving it hugging the top edge.
 bash scripts/test_hambrowse_btncenter_host.sh
+# scripts/test_hambrowse_googlebox_host.sh: pins the google.com SEARCH BOX's
+# width + position against real chromium. USER BUG: the field laid out 1008px
+# wide in a 1024px viewport and ran off the right edge ("I can't select the
+# search bar"). Horizontal CSS percentages resolved against the PAGE column
+# instead of the element's containing block, so `.gLFyf{width:100%}` inside
+# `.A8SBwf{max-width:584px}` computed the whole viewport. Asserts ~447px,
+# centred, inside the viewport, plus `width:50%` of a 400px parent == 200px.
+bash scripts/test_hambrowse_googlebox_host.sh
+# scripts/test_hambrowse_tabs_host.sh: the MULTI-TAB session. USER BUG: "the +
+# button for a new tab does not work" — the strip was drawn and hit-tested but
+# no session sat behind it. Drives open/switch/close through the real hit test
+# and proves each tab keeps its own URL, scroll and Back/Forward history, then
+# composites the window and checks the new tab paints active (white).
+bash scripts/test_hambrowse_tabs_host.sh
 bash scripts/test_hambrowse_svgpctwidth.sh
 bash scripts/test_hambrowse_entities_host.sh
 bash scripts/test_hambrowse_entities2_host.sh

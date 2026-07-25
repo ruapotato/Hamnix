@@ -72,7 +72,8 @@ from lib.htmlengine import he_layout, \
     he_dom_set_value_index, he_dom_submit_index, he_dom_get_value, \
     he_nav_ptr, he_nav_len, he_nav_present, he_nav_clear, \
     he_nav_method, he_nav_body_ptr, he_nav_body_len, \
-    he_n_segs, he_seg_off, he_seg_len, he_seg_text_ptr
+    he_n_segs, he_seg_off, he_seg_len, he_seg_text_ptr, \
+    he_dom_title_present, he_dom_title_ptr, he_dom_title_len
 # The PIXEL engine: proportional AA-text + PNG-image page renderer (the SAME
 # modules the host gfx driver drives), now presented on device.
 from lib.htmlpage import htmlpage_render, htmlpage_doc_width, \
@@ -82,7 +83,8 @@ from lib.browserwin import browserwin_paint, browserwin_addr_caret_at, \
     browserwin_navbtn_hit, browserwin_menu_x, browserwin_adblock_x, \
     browserwin_set_menu_open, browserwin_menu_open, browserwin_menu_item_at, \
     browserwin_set_tabs, browserwin_set_tab_title, browserwin_set_devtools, \
-    browserwin_set_zoom, browserwin_tab_hit
+    browserwin_set_zoom, browserwin_tab_hit, browserwin_tab_close_hit, \
+    browserwin_ntabs, browserwin_active_tab, browserwin_newtab_x
 from lib.searchengines import se_current, se_set_current, se_cycle, \
     se_prefix_ptr, se_prefix_len
 from lib.adblock import adblock_enabled, adblock_toggle, adblock_should_block, \
@@ -92,6 +94,11 @@ from lib.adblock import adblock_enabled, adblock_toggle, adblock_should_block, \
 from lib.hamtextbox import htb_clip_put, htb_clip_get, htb_mid_edge
 from lib.browserhistory import browserhist_reset, browserhist_push, \
     browserhist_back, browserhist_fwd, browserhist_can_back, browserhist_can_fwd
+# The TAB SESSION model (pure; host-gated by user/hambrowse_tabs_host.ad).
+from user.hambrowse_tabs import TAB_TITSZ, tabs_reset, tabs_count, \
+    tabs_active, tabs_open, tabs_close, tabs_select, tabs_save, \
+    tabs_restore_history, tabs_url_slot, tabs_title_slot, \
+    tabs_title_len, tabs_scroll, tabs_set_title
 from lib.png import png_decode, png_width, png_height, png_rgba_ptr
 from lib.jpeg import jpeg_decode, jpeg_width, jpeg_height, jpeg_rgba_ptr
 from lib.gif import gif_decode, gif_width, gif_height, gif_rgba_ptr
@@ -222,6 +229,110 @@ search_url:  Array[2048, uint8]  # composed https://www.google.com/search?q=...
 field_focus: int32 = -1
 field_buf:   Array[1024, uint8]
 field_len:   uint64 = 0
+
+
+# ====================================================================
+# TAB SESSIONS — the I/O half of the tab strip.
+#
+# The pure session model (per-tab URL / title / scroll / Back-Forward stack)
+# lives in user/hambrowse_tabs.ad so a host gate can drive it with no kernel.
+# What is left here is the part that needs the browser: computing a tab's label
+# from the live page <title>, and the fetch + re-layout that makes a switched-to
+# tab actually appear.
+# ====================================================================
+
+# Compute the strip label for the LIVE page into the tab-title scratch: the page
+# <title> when the engine has one, else the address, else "New Tab".
+tab_lbl: Array[48, uint8]
+
+
+def _tab_label() -> int32:
+    n: int32 = 0
+    if he_dom_title_present() != 0:
+        tp: Ptr[uint8] = he_dom_title_ptr()
+        tn: uint64 = he_dom_title_len()
+        while cast[uint64](n) < tn and n < TAB_TITSZ - 1:
+            tab_lbl[n] = tp[cast[uint64](n)]
+            n = n + 1
+    if n == 0:
+        k: uint64 = 0
+        while k < addr_len and k < cast[uint64](TAB_TITSZ - 1):
+            tab_lbl[k] = addr_buf[k]
+            k = k + 1
+        n = cast[int32](k)
+    if n == 0:
+        nt: Ptr[uint8] = cast[Ptr[uint8]]("New Tab")
+        while nt[cast[uint64](n)] != 0:
+            tab_lbl[n] = nt[cast[uint64](n)]
+            n = n + 1
+    tab_lbl[n] = 0
+    return n
+
+
+# Refresh the ACTIVE tab's strip label from the live page (called every present,
+# so a page that just loaded — or set document.title from a script — relabels
+# its own tab).
+def _tab_sync_title():
+    tabs_set_title(tabs_active(), &tab_lbl[0], _tab_label())
+
+
+# Freeze the live browser state into the active tab's slot.
+def _tab_save():
+    tabs_save(&cur_url[0], &tab_lbl[0], _tab_label(), scroll_px)
+
+
+# Bring tab `i`'s page on screen: its Back/Forward stack becomes the live one,
+# then its URL is re-fetched and laid out (an empty slot = a brand-new tab, which
+# shows the offline new-tab page). Chrome-shell focus state is cleared, exactly
+# as a real tab switch does.
+def _tab_show(i: int32):
+    tabs_restore_history(i)
+    addr_focus = 0
+    search_focus = 0
+    field_focus = -1
+    menu_open = 0
+    u: Ptr[uint8] = tabs_url_slot(i)
+    if u[0] == 0:
+        _set_cur_url(cast[Ptr[uint8]]("about:newtab"))
+        _fetch(cast[Ptr[uint8]]("about:newtab"))
+    else:
+        _set_cur_url(u)
+        _fetch(u)
+    _reload_layout()
+    scroll_px = tabs_scroll(i)
+    _clamp_scroll()
+    _tab_sync_title()
+
+
+# The "+" button: open a tab on the new-tab page and switch to it.
+def _tab_new() -> int32:
+    _tab_save()
+    ni: int32 = tabs_open()
+    if ni < 0:
+        return 0                                   # strip full (TAB_MAX)
+    _tab_show(ni)
+    return 1
+
+
+# Click on a tab: switch to it.
+def _tab_select(i: int32) -> int32:
+    if i == tabs_active():
+        return 0
+    _tab_save()
+    if tabs_select(i) == 0:
+        return 0
+    _tab_show(tabs_active())
+    return 1
+
+
+# Click on a tab's close (x) box.
+def _tab_close(i: int32) -> int32:
+    if i != tabs_active():
+        _tab_save()
+    if tabs_close(i) != 0:
+        _tab_show(tabs_active())
+        return 1
+    return 0
 
 
 # ====================================================================
@@ -706,11 +817,17 @@ def emit(wid: int32):
         w = bbw
     if h > bbh:
         h = bbh
-    # Feed the Chrome-shell state into the shared compositor: a single tab
-    # titled from the address, zoom %, the menu overlay and (when open) the
-    # dev-tools Elements/Console text.
-    browserwin_set_tabs(1, 0)
-    browserwin_set_tab_title(0, &addr_buf[0], cast[int32](addr_len))
+    # Feed the Chrome-shell state into the shared compositor: the LIVE tab set
+    # (each tab labelled by its page <title>, falling back to its URL), zoom %,
+    # the menu overlay and (when open) the dev-tools Elements/Console text.
+    # The active tab's label is refreshed here so a page that just finished
+    # loading — or set document.title from a script — relabels its own tab.
+    _tab_sync_title()
+    browserwin_set_tabs(tabs_count(), tabs_active())
+    tsi: int32 = 0
+    while tsi < tabs_count():
+        browserwin_set_tab_title(tsi, tabs_title_slot(tsi), tabs_title_len(tsi))
+        tsi = tsi + 1
     browserwin_set_zoom(zoom_pct)
     browserwin_set_menu_open(menu_open)
     if devtools_open != 0:
@@ -860,6 +977,15 @@ def _set_cur_url(u: Ptr[uint8]):
 
 # Fetch `url` into src_ptr/src_len. Sets the status line. cur_url must be set.
 def _fetch(url: Ptr[uint8]):
+    # "about:" pseudo-URLs are served from memory — no network, no file. A tab
+    # opened with "+" lands on about:newtab, so the "+" works with the network
+    # down and a gate can drive it offline.
+    if _starts(url, cast[Ptr[uint8]]("about:")) != 0:
+        if _starts(url, cast[Ptr[uint8]]("about:demo")) != 0:
+            _load_demo()
+        else:
+            _load_newtab()
+        return
     if _starts(url, cast[Ptr[uint8]]("http://")) != 0 or \
        _starts(url, cast[Ptr[uint8]]("https://")) != 0:
         st: Array[1, int64]
@@ -1012,6 +1138,32 @@ def _fetch_post(url: Ptr[uint8], body: Ptr[uint8], blen: uint64):
 
 
 # Built-in demo page (no network) — exercises every supported feature.
+# The NEW TAB page — what "+" opens. Deliberately tiny and static (no network),
+# so a fresh tab always renders something useful even offline: the product mark,
+# a real <form> pointed at the current search engine, and shortcut links.
+def _load_newtab():
+    html_len = 0
+    _app(cast[Ptr[uint8]]("<html><head><title>New Tab</title>"))
+    _app(cast[Ptr[uint8]]("<style>body{text-align:center}"))
+    _app(cast[Ptr[uint8]]("h1{color:#1a73e8}"))
+    _app(cast[Ptr[uint8]](".sb{max-width:520px;margin:0 auto}"))
+    _app(cast[Ptr[uint8]](".sb input{width:100%}</style></head><body>"))
+    _app(cast[Ptr[uint8]]("<h1>hambrowse</h1>"))
+    _app(cast[Ptr[uint8]]("<div class=\"sb\">"))
+    _app(cast[Ptr[uint8]]("<form action=\"https://www.google.com/search\" "))
+    _app(cast[Ptr[uint8]]("method=\"get\">"))
+    _app(cast[Ptr[uint8]]("<input name=\"q\" placeholder=\"Search the web\">"))
+    _app(cast[Ptr[uint8]]("</form></div>"))
+    _app(cast[Ptr[uint8]]("<p>"))
+    _app(cast[Ptr[uint8]]("<a href=\"https://www.google.com/\">Google</a> &middot; "))
+    _app(cast[Ptr[uint8]]("<a href=\"https://en.wikipedia.org/\">Wikipedia</a> &middot; "))
+    _app(cast[Ptr[uint8]]("<a href=\"about:demo\">Demo page</a>"))
+    _app(cast[Ptr[uint8]]("</p></body></html>"))
+    src_ptr = &html_buf[0]
+    src_len = html_len
+    _set_status(cast[Ptr[uint8]]("new tab"))
+
+
 def _load_demo():
     html_len = 0
     _app(cast[Ptr[uint8]]("<html><head><title>ignored</title>"))
@@ -2068,6 +2220,30 @@ def _poll_events(efd: int32, vp: Ptr[int32]) -> int32:
                             else:
                                 menu_open = 0            # click outside = close
                             if vp[0] < 1:
+                                vp[0] = 1
+                            changed = 1
+                        elif cy < TITLE_H:
+                            # ---- TAB STRIP ----
+                            # browserwin_tab_hit reports: 0..n-1 = switch to that
+                            # tab, -2 = the "+" new-tab button, -10-i = tab i's
+                            # close (×) box, -1 = dead space in the strip.
+                            th: int32 = browserwin_tab_hit(bw, cx, cy)
+                            tdid: int32 = 0
+                            if th == 0 - 2:
+                                tdid = _tab_new()
+                            elif th <= 0 - 10:
+                                ntb: int32 = tabs_count()
+                                tdid = _tab_close(0 - 10 - th)
+                                if tdid == 0 and tabs_count() != ntb:
+                                    # A NON-active tab closed: the strip shrank
+                                    # even though the live page did not change.
+                                    tdid = 1
+                            elif th >= 0:
+                                tdid = _tab_select(th)
+                            if tdid != 0:
+                                if vp[0] < 2:
+                                    vp[0] = 2
+                            elif vp[0] < 1:
                                 vp[0] = 1
                             changed = 1
                         elif cy >= ADDR_Y and cy < ADDR_Y + ADDR_H:

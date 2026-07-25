@@ -4,6 +4,10 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _bg_pop, _bg_push, _color_pop, _color_push, _content_right, _css_ws, _hx_lower, _left_margin, _recompute_style
+# Live block-box stack (owned by lib/web/layout/box.ad): the open box's content
+# left/right edges. A horizontal CSS percentage resolves against THIS, not the
+# page column — see _pct_cb_w.
+from lib.htmlengine import blk_right_cur, blk_right_sp, indent_x
 # opacity / rgba-alpha helpers live in the colour-value module; import the
 # underscore-private ones explicitly so they are linked for the fold at rule
 # store time (see _pack_fill_rgb / the `opacity` declaration handler).
@@ -152,6 +156,12 @@ r_mt:     Array[2048, int32]
 r_mb:     Array[2048, int32]
 r_wd:     Array[2048, int32]
 r_wpct:   Array[2048, int32]     # 1 if this rule's `width` was a percentage
+# The rule's `width` as a BARE PERCENTAGE in milli-percent (100% -> 100000),
+# or -1 when it is not a percentage. A stylesheet is parsed ONCE, before any
+# box is open, so a percentage baked to px there can only ever be page-column
+# relative. Keeping the raw percentage lets the cascade RE-RESOLVE it at match
+# time, when the element's real containing block is on the block stack.
+r_wpm:    Array[2048, int32]
 r_bd:     Array[2048, int32]
 r_bordc:  Array[2048, int32]     # border colour (0xRRGGBB; -1 unset)
 r_accent: Array[2048, int32]     # accent-color for form controls (0xRRGGBB; -1)
@@ -330,6 +340,9 @@ m_wd:     int32 = -1
 # intrinsically-sized icon to the full column. Block layout ignores this flag
 # (still consumes m_wd), so non-replaced % widths are byte-identical.
 m_wpct:   int32 = 0
+# Winning stylesheet `width` as a bare percentage in milli-percent, or -1.
+# Re-resolved against the live containing block at the end of the match.
+m_wpm:    int32 = -1
 m_bd:     int32 = -1
 m_bordc:  int32 = -1       # border colour cascade winner (0xRRGGBB; -1 = default)
 m_accent: int32 = -1       # accent-color cascade winner (0xRRGGBB; -1 = UA default)
@@ -608,6 +621,7 @@ d_mt:     int32 = -1
 d_mb:     int32 = -1
 d_wd:     int32 = -1
 d_wpct:   int32 = 0              # 1 if inline-style `width` was a percentage
+d_wpm:    int32 = -1             # inline/decl `width` as bare-% milli-percent (-1 none)
 d_bd:     int32 = -1
 d_bordc:  int32 = -1        # border colour (0xRRGGBB; -1 = unset => default)
 d_accent: int32 = -1        # accent-color for form controls (0xRRGGBB; -1 unset)
@@ -1481,6 +1495,33 @@ def _unit_at(i: uint64, e: uint64, lit: Ptr[uint8]) -> int32:
     return 1
 
 
+# The base a HORIZONTAL percentage resolves against: per CSS 2.1 §10.2 that is
+# the CONTAINING BLOCK's content width, not the page column. The live block
+# stack already carries it — `indent_x` is the open box's content-left and
+# `blk_right_cur` its content-right — so a percentage evaluated while a box is
+# open (an inline style="", or the re-resolve of a stylesheet `width` at cascade
+# match time) sees the real containing block.
+#
+# WHY THIS MATTERS: google.com's search field is `.gLFyf{width:100%}` nested
+# four levels inside `.A8SBwf{max-width:584px;margin:0 auto}`. Resolved against
+# the page column it computed ~1008px in a 1024px viewport and ran 261px OFF the
+# RIGHT EDGE — the "the Google homepage is broken and I can't select the search
+# bar" report. Chrome computes 447px, centred.
+#
+# Only ever NARROWS (a box's content width is <= the page column) and only when
+# a block box is actually open, so stylesheet-parse-time resolution (no box on
+# the stack) is byte-identical to the old page-column behaviour.
+def _pct_cb_w() -> int32:
+    base: int32 = _content_right() - _left_margin()
+    if base < 0:
+        base = 0
+    if blk_right_sp > 0:
+        cb: int32 = blk_right_cur - indent_x
+        if cb > 0 and cb < base:
+            base = cb
+    return base
+
+
 # Resolve a milli-length (value * 1000) with the CSS unit at src[_len_i..] to
 # PIXELS, advancing _len_i past the unit. Longest units are tested first so
 # `rem`/`vmin`/`vmax` are not shadowed by their shorter prefixes.
@@ -1496,9 +1537,7 @@ def _len_apply_unit(milli: int32) -> int32:
                 vbase = 0
             _len_i = i + 1
             return milli * vbase / 100000
-        base: int32 = _content_right() - _left_margin()
-        if base < 0:
-            base = 0
+        base: int32 = _pct_cb_w()
         _len_i = i + 1
         return milli * base / 100000
     if _unit_at(i, e, cast[Ptr[uint8]]("vmin")) != 0:
@@ -1897,6 +1936,35 @@ def _fontsize_resolve(enc: int32, parent_px: int32) -> int32:
 # screenful of blank rows above the content. `calc(100% - Npx)` is a DELIBERATE
 # viewport-relative spacer (and is clamped by max-height) so it takes the calc()
 # path above and is unaffected; only a lone `N%` height is treated as auto.
+# Parse a BARE percentage value (`100%`, `62.5%`) into MILLI-PERCENT — the same
+# scale _len_number produces (whole*1000 + frac), so `milli * base / 100000` is
+# the pixel value. Returns -1 when [vs,ve) is not a lone `N%` (calc(), a fixed
+# length, `auto`, ... all keep their eagerly-resolved px).
+def _pct_milli(vs: uint64, ve: uint64) -> int32:
+    if _val_is_bare_pct(vs, ve) == 0:
+        return -1
+    i: uint64 = vs
+    while i < ve and (src_ptr[i] == 32 or src_ptr[i] == 9):
+        i = i + 1
+    if i < ve and (src_ptr[i] == 43 or src_ptr[i] == 45):
+        if src_ptr[i] == 45:
+            return -1                                  # negative % is invalid here
+        i = i + 1
+    whole: int32 = 0
+    while i < ve and src_ptr[i] >= 48 and src_ptr[i] <= 57:
+        whole = whole * 10 + cast[int32](src_ptr[i] - 48)
+        i = i + 1
+    frac: int32 = 0
+    scale: int32 = 100
+    if i < ve and src_ptr[i] == 46:
+        i = i + 1
+        while i < ve and scale > 0 and src_ptr[i] >= 48 and src_ptr[i] <= 57:
+            frac = frac + cast[int32](src_ptr[i] - 48) * scale
+            scale = scale / 10
+            i = i + 1
+    return whole * 1000 + frac
+
+
 def _val_is_bare_pct(vs: uint64, ve: uint64) -> int32:
     i: uint64 = vs
     while i < ve and (src_ptr[i] == 32 or src_ptr[i] == 9):
@@ -3129,6 +3197,10 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
             # UPSCALE an icon to the full page width (a `width:100%` resolves here
             # against the page, not the inline parent). Blocks still use d_wd.
             d_wpct = _val_has_pct(vs, ve)
+            # Keep the RAW percentage too: `width:100%` in a stylesheet is parsed
+            # long before any box exists, so the px above is page-column relative
+            # and must be re-resolved against the real containing block later.
+            d_wpm = _pct_milli(vs, ve)
         return 1
     # max-width caps the content column; for our layout it pins the wrap width
     # like `width` (the common centred-container idiom `max-width:Npx;margin:0
@@ -5835,6 +5907,7 @@ def _parse_decls(a: uint64, b: uint64):
     d_mb = -1
     d_wd = -1
     d_wpct = 0
+    d_wpm = -1
     d_bd = -1
     d_bordc = -1
     d_accent = -1
@@ -6035,6 +6108,7 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
                 r_mb[ri]     = d_mb
                 r_wd[ri]     = d_wd
                 r_wpct[ri]   = d_wpct
+                r_wpm[ri]    = d_wpm
                 r_bd[ri]     = d_bd
                 # Fold element opacity into the border colour's alpha.
                 r_bordc[ri]  = _pack_bordc(d_bordc, d_opacity)
@@ -6550,6 +6624,7 @@ def _store_keyframe(nameid: int32, isfrom: int32):
     # so the overlay leaves the cascade winner untouched).
     r_wd[ri] = d_wd
     r_wpct[ri] = d_wpct
+    r_wpm[ri] = d_wpm
     r_ht[ri] = d_ht
     r_ml[ri] = d_ml
     r_mr[ri] = d_mr
@@ -7323,6 +7398,7 @@ def _cascade_match_current():
     m_mb = -1
     m_wd = -1
     m_wpct = 0
+    m_wpm = -1
     m_bd = -1
     m_bordc = -1
     m_accent = -1
@@ -7564,6 +7640,7 @@ def _cascade_match_current():
                 swd = sp
                 m_wd = r_wd[ri]
                 m_wpct = r_wpct[ri]
+                m_wpm = r_wpm[ri]
             if r_bd[ri] >= 0 and sp >= sbd:
                 sbd = sp
                 m_bd = r_bd[ri]
@@ -7745,6 +7822,7 @@ def _cascade_match_current():
                 if r_wd[kri] >= 0:
                     m_wd = r_wd[kri]
                     m_wpct = r_wpct[kri]
+                    m_wpm = r_wpm[kri]
                 if r_ht[kri] >= 0:
                     m_ht = r_ht[kri]
                 if r_ml[kri] >= 0:
@@ -7756,6 +7834,20 @@ def _cascade_match_current():
                 if r_mb[kri] >= 0:
                     m_mb = r_mb[kri]
             kri = kri + 1
+    # PERCENTAGE WIDTH — re-resolve against the element's REAL containing block.
+    # The stylesheet baked `width:N%` to px at parse time, when the only base
+    # available was the page column; NOW the block stack holds the element's
+    # containing block (its parent box is open — the match runs before this
+    # element's own box opens), so recompute. Elements not under any open box
+    # land on the same page-column base as before, i.e. byte-identical.
+    #
+    # This is the google.com search-field fix: `.gLFyf{width:100%}` inside
+    # `.A8SBwf{max-width:584px;margin:0 auto}` computed the full 1008px page
+    # column and ran off the right edge of a 1024px viewport.
+    if m_wpm >= 0:
+        m_wd = m_wpm * _pct_cb_w() / 100000
+        if m_wd < 0:
+            m_wd = 0
     # box-sizing:border-box -> the specified width/height INCLUDE padding+border,
     # so the content box shrinks by both. Applied ONCE here against the resolved
     # cascade winners, so a `*{box-sizing:border-box}` rule composes correctly
@@ -8275,6 +8367,7 @@ def _parse_inline_wa(ne: uint64, te: uint64):
     d_mb = -1
     d_wd = -1
     d_wpct = 0
+    d_wpm = -1
     d_bd = -1
     d_bordc = -1
     d_accent = -1
