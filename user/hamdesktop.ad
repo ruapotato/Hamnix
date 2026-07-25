@@ -615,22 +615,27 @@ def emit_wallpaper() -> int32:
 
 
 # --- icon model ------------------------------------------------------
-MAX_ICONS: uint64 = 16
+# _add_icon() SILENTLY DROPS past MAX_ICONS, and etc/skel/Desktop ships 16
+# launchers — i.e. the old MAX_ICONS=16 sat EXACTLY at capacity, so the next
+# launcher dropped off the desktop with no error (the same silent-overflow
+# class that hid the office suite from the panel's Applications menu, see
+# hampanelscene.ad AM_MAX). Keep real headroom over `ls etc/skel/Desktop`.
+MAX_ICONS: uint64 = 32
 LABEL_CAP: uint64 = 24                # bytes stored per label (NUL-term)
 ACTION_CAP: uint64 = 128             # bytes stored per action path
 
-ic_label: Array[384, uint8]          # MAX_ICONS * LABEL_CAP
-ic_label_len: Array[16, uint64]
-ic_is_folder: Array[16, int32]
-ic_icon_code: Array[16, int32]       # hamscene HS_ICON_* glyph code per icon
-ic_action: Array[2048, uint8]        # MAX_ICONS * ACTION_CAP
+ic_label: Array[768, uint8]          # MAX_ICONS * LABEL_CAP
+ic_label_len: Array[32, uint64]
+ic_is_folder: Array[32, int32]
+ic_icon_code: Array[32, int32]       # hamscene HS_ICON_* glyph code per icon
+ic_action: Array[4096, uint8]        # MAX_ICONS * ACTION_CAP
 # Per-icon free position (top-left of the icon CELL in window coords). A
 # value of -1 means "no explicit position": the icon is laid out by the
 # default left-column flow (cell_y by index). A drag-drop pins an explicit
 # position, persisted to /etc/desktop.icons as two extra "|x|y" fields so it
 # survives relaunch.
-ic_x: Array[16, int32]
-ic_y: Array[16, int32]
+ic_x: Array[32, int32]
+ic_y: Array[32, int32]
 n_icons: uint64 = 0
 
 

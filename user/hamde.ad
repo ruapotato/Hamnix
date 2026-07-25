@@ -93,11 +93,11 @@ from lib.desktopentry import (
 # to its Exec program + display name in these parallel arrays; the event
 # loop looks up the clicked id and spawns the matching program. A
 # fallback set is planted if the directory is empty.
-HD_MAX: uint64 = 24
+HD_MAX: uint64 = 64
 hd_count: uint64 = 0
-hd_id:       Array[24, int32]
-hd_prog:     Array[24, Array[96, uint8]]
-hd_name:     Array[24, Array[48, uint8]]
+hd_id:       Array[64, int32]
+hd_prog:     Array[64, Array[96, uint8]]
+hd_name:     Array[64, Array[48, uint8]]
 _hd_listbuf: Array[4096, uint8]
 _hd_filebuf: Array[2048, uint8]
 _hd_path:    Array[160, uint8]

@@ -1561,7 +1561,16 @@ SESSION_W: int64 = 24                 # power glyph cell
 # (category, Name) so the flat dropdown clusters apps by section. If the
 # directory is missing/empty (e.g. a stripped image), _seed_fallback()
 # plants the known native app set so the DE is never menu-less.
-AM_MAX:      uint64 = 24
+# AM_MAX is a HARD cap: _am_add() SILENTLY DROPS every entry past it, so it
+# must stay comfortably ahead of the shipped launcher count or apps vanish
+# from the Applications menu with no error anywhere. It was 24 while
+# etc/hamde/apps/ shipped 26 launchers (+ the /n/linux section on top), which
+# is exactly how the office suite (hamwrite/hamsheet/hamslides) went missing
+# from a booted image even though every launcher, binary and package was
+# staged correctly. Keep this >= `ls etc/hamde/apps/*.desktop | wc -l` plus
+# the optional-package launchers plus the Linux-ns section (test:
+# scripts/test_de_appmenu_datadriven.sh asserts the headroom).
+AM_MAX:      uint64 = 64
 AM_NAME_CAP: uint64 = 40
 AM_PROG_CAP: uint64 = 96
 
@@ -1578,16 +1587,16 @@ def _linux_apps_dir() -> Ptr[uint8]:
     return "/n/linux/usr/share/applications"
 
 am_count: uint64 = 0
-am_name:     Array[24, Array[40, uint8]]
-am_name_len: Array[24, uint64]
-am_prog:     Array[24, Array[96, uint8]]
-am_prog_len: Array[24, uint64]
-am_cat:      Array[24, int32]
+am_name:     Array[64, Array[40, uint8]]
+am_name_len: Array[64, uint64]
+am_prog:     Array[64, Array[96, uint8]]
+am_prog_len: Array[64, uint64]
+am_cat:      Array[64, int32]
 # Per-entry Terminal=true flag (freedesktop). A CLI app (e.g. the Linux
 # "Process Viewer" `top`) has no window surface of its own, so it must be
 # hosted in a rendered terminal emulator (hamtermscene) rather than launched
 # headless — otherwise clicking it opens nothing. 1 = needs a terminal host.
-am_term:     Array[24, uint8]
+am_term:     Array[64, uint8]
 
 # Scan scratch: the directory listing + one file's contents.
 _am_listbuf: Array[4096, uint8]
@@ -1731,6 +1740,11 @@ def _am_build_path(dir: Ptr[uint8], name: Ptr[uint8], nlen: uint64):
 # lib/desktopentry parser and sorted insertion. Linux-ns entries (force_cat
 # == DE_CAT_LINUX) sort last and surface under the "Linux apps" fly-out.
 def _scan_apps_dir(dir: Ptr[uint8], force_cat: int32) -> uint64:
+    # Count what ACTUALLY landed in the model (am_count delta), not what we
+    # tried to add: _am_add() silently drops past AM_MAX, and the old
+    # optimistic counter made am_linux_count report entries that were never
+    # stored — masking the overflow that hid the office apps.
+    start: uint64 = am_count
     added: uint64 = 0
     n: int64 = p9_listdir(cast[Ptr[char]](dir), &_am_listbuf[0], 4096)
     if n <= 0:
@@ -1773,8 +1787,8 @@ def _scan_apps_dir(dir: Ptr[uint8], force_cat: int32) -> uint64:
                             _am_add(desktop_name_ptr(), desktop_name_len(),
                                     desktop_prog_ptr(), desktop_prog_len(),
                                     cat, desktop_terminal())
-                        added = added + 1
         i = e + 1
+    added = am_count - start
     return added
 
 

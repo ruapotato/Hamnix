@@ -252,6 +252,24 @@ appmenu_n=$(grep -ao '[A-Za-z0-9_-]*\.desktop' "$OUT_DIR/apps_dir.txt" | sort -u
 echo "[office] Applications-menu catalogue: $appmenu_n .desktop entries"
 [ "$appmenu_n" -ge 26 ] || say_fail "expected >=26 .desktop entries, saw $appmenu_n"
 
+# --- 1a: the PANEL's menu MODEL actually absorbed them ------------------
+# The launcher dir being right is NOT enough: hampanelscene's _am_add()
+# silently drops every entry past AM_MAX, so the office apps once vanished
+# from the dropdown while `ls /etc/hamde/apps` looked perfect (the exact
+# bug this check exists to catch). The panel self-reports its model size on
+# serial; it must have absorbed at least the whole shipped catalogue.
+panel_line=$(grep -a '\[panel\] appmenu entries:' "$LOG" | tail -1)
+panel_n=$(printf '%s' "$panel_line" | sed -n 's/.*appmenu entries: \([0-9]*\).*/\1/p')
+panel_lx=$(printf '%s' "$panel_line" | sed -n 's/.*linux section: \([0-9]*\).*/\1/p')
+echo "[office] panel menu model: ${panel_n:-?} entries (linux section ${panel_lx:-?})"
+if [ -z "$panel_n" ]; then
+    say_fail "panel never reported '[panel] appmenu entries:' on serial"
+elif [ "$panel_n" -ge $(( appmenu_n + ${panel_lx:-0} )) ]; then
+    echo "[office] PASS panel absorbed all $appmenu_n launchers (+${panel_lx:-0} linux) into its menu model"
+else
+    say_fail "panel menu model holds only $panel_n entries for $appmenu_n launchers +${panel_lx:-0} linux — AM_MAX overflow is DROPPING apps"
+fi
+
 snapshot desktop_00_idle || say_fail "could not screendump the idle desktop"
 
 # --- 1b: the Applications MENU itself lists the office apps -------------

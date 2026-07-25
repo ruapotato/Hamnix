@@ -160,6 +160,29 @@ else
     failed "build_rootfs_img.py does not stage etc/hamde/apps (nested recurse missing)"
 fi
 
+# --- 5. The menu MODELS have headroom for every shipped launcher ----
+# REGRESSION GUARD (the office suite went missing here): the panel's
+# _am_add() and the legacy DE's _hd_add() SILENTLY DROP every entry past
+# their compile-time cap. With 26 shipped launchers and AM_MAX=24, three
+# apps (hamwrite/hamsheet/hamslides) vanished from a correctly-staged
+# image with no error on serial. Assert each cap clears the shipped
+# launcher count PLUS the optional-package launchers PLUS headroom for
+# the additive /n/linux section.
+n_apps=$(ls "$APPS_DIR"/*.desktop 2>/dev/null | wc -l)
+n_opt=$(ls etc/hamde/apps-optional/*.desktop 2>/dev/null | wc -l)
+need=$(( n_apps + n_opt + 8 ))
+for spec in "user/hampanelscene.ad:AM_MAX" "user/hamde.ad:HD_MAX"; do
+    src="${spec%%:*}"; sym="${spec##*:}"
+    cap=$(sed -n "s/^${sym}: *uint64 *= *\([0-9]*\).*/\1/p" "$src" | head -1)
+    if [ -z "$cap" ]; then
+        failed "$src: cannot read $sym (menu-model cap)"
+    elif [ "$cap" -ge "$need" ]; then
+        passed "$src $sym=$cap >= $need ($n_apps shipped + $n_opt optional + 8 linux headroom)"
+    else
+        failed "$src $sym=$cap < $need — menu SILENTLY DROPS apps ($n_apps shipped + $n_opt optional launchers)"
+    fi
+done
+
 if [ "$fail" = "0" ]; then
     echo "[dd_appmenu] RESULT: PASS"
     exit 0
