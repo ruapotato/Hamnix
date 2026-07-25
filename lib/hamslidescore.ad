@@ -1,29 +1,41 @@
 # lib/hamslidescore.ad — PURE, extern-free core for HamSlides, the Hamnix office
 # PRESENTATION app (/bin/hamslides). The office suite's THIRD app alongside
-# HamWrite (word processor) and HamSheet (spreadsheet): a minimal
+# HamWrite (word processor) and HamSheet (spreadsheet): a small
 # PowerPoint / LibreOffice-Impress that edits and presents a DECK of slides.
 #
-#   1. a DECK model — an ordered list of slides; each slide has a TITLE and an
-#      ordered list of BULLET lines. Add-slide, delete-slide, next/prev
-#      navigation and in-place text editing of the title + bullets,
-#   2. two VIEWS — EDIT (the current slide shown large with an editable title +
-#      bullet list, plus a thumbnail RAIL down the left rendering every slide)
-#      and PRESENT (the current slide full-window with a big title band + large,
-#      comfortably-spaced bullets; Space/Right advance, Left goes back, Esc
-#      exits),
-#   3. a real DOCUMENT FILE (HAMSLIDES1 container) that round-trips the deck —
-#      titles and bullets survive a save->load verbatim,
-#   4. a THEME — a readable indigo/periwinkle scheme for the chrome, a clean
-#      white slide canvas in EDIT and a distinct full-bleed PRESENT look.
+#   1. a DECK model — an ordered list of slides. Each slide carries a TITLE, an
+#      ordered list of BULLETS with an INDENT LEVEL (0..2, multi-level lists),
+#      a per-slide LAYOUT and per-slide SPEAKER NOTES. Add / duplicate / delete
+#      / MOVE UP / MOVE DOWN, next/prev navigation, in-place text editing and a
+#      4-deep UNDO stack over the whole deck,
+#   2. five LAYOUTS — Title+Content (default), Title Slide (big centred title +
+#      subtitle), Two Column (bullets split across two columns), Picture
+#      (bullets left + a picture placeholder right) and Blank. The layout
+#      really changes the geometry: render, focus highlight, caret and pointer
+#      hit-testing all read the SAME _title_box()/_bul_box() placement
+#      functions, so a click always lands where the glyph was drawn,
+#   3. four THEMES — Indigo (default), Slate, Emerald and Sunset: a deck-wide
+#      colour scheme (deep chrome, accent, tint, paper, ink) applied to the app
+#      chrome, the slide canvas, the thumbnails AND the PRESENT view,
+#   4. a MENU BAR (File / Edit / Slide / View) with working drop-downs plus a
+#      toolbar and a status bar, mirroring HamWrite/HamSheet chrome,
+#   5. two VIEWS — EDIT (thumbnail rail, the current slide large, a speaker
+#      NOTES strip and a status bar) and PRESENT (full-window themed slide,
+#      Space/Right advance, Left/Backspace back, Home/End first/last, 'b'
+#      blanks the screen, 'n' overlays the speaker notes, Esc exits) with a
+#      slide counter and a progress bar,
+#   6. a real DOCUMENT FILE — the HAMSLIDES2 container round-trips EVERYTHING
+#      (theme, per-slide layout, titles, bullet text + levels, notes and slide
+#      ORDER). HAMSLIDES1 files (title + bullets only) still load.
 #
 # Like the other dual-target office apps (docs/hamui_dual_target.md) this file
 # imports ONLY lib/hamscene (the pure display-list builder) and performs NO
-# syscalls: it owns the deck model, the keyboard editing, the toolbar/thumbnail
-# hit-testing and BOTH view renders, and it SERIALISES the deck as a pure byte
-# string — but the DRIVERS (native user/hamslides.ad + the host harness
-# user/hamslides_host.ad) do the open/read/write. That lets the exact shipping
-# code path render to a PNG on the dev host and be driven by scripted keystrokes
-# deterministically (scripts/test_hamslides_host.sh).
+# syscalls: it owns the deck model, the keyboard editing, the menu/toolbar/
+# thumbnail hit-testing and BOTH view renders, and it SERIALISES the deck as a
+# pure byte string — but the DRIVERS (native user/hamslides.ad + the host
+# harness user/hamslides_host.ad) do the open/read/write. That lets the exact
+# shipping code path render to a PNG on the dev host and be driven by scripted
+# keystrokes deterministically (scripts/test_hamslides_host.sh).
 
 from lib.hamscene import hamscene_begin, hamscene_fill, hamscene_stroke, \
     hamscene_glyphs, hamscene_glyphs_bold, hamscene_line
@@ -34,22 +46,33 @@ MAXSLIDES:  uint64 = 16
 TITLECAP:   uint64 = 48                   # bytes of title text per slide
 MAXBULLETS: uint64 = 8                    # bullets per slide
 BULLETCAP:  uint64 = 64                   # bytes per bullet line
+NOTESCAP:   uint64 = 128                  # bytes of speaker notes per slide
+MAXLEVEL:   uint64 = 2                    # deepest bullet indent level
 
 # Title text (row-major, TITLECAP bytes/slide) + its length.
 title_buf: Array[768, uint8]             # MAXSLIDES * TITLECAP
 title_len: Array[16, uint8]              # MAXSLIDES
 
 # Bullet text ((slide*MAXBULLETS + b) * BULLETCAP bytes) + per-bullet length +
-# how many bullets each slide currently has.
+# per-bullet indent LEVEL + how many bullets each slide currently has.
 bullet_buf: Array[8192, uint8]           # MAXSLIDES * MAXBULLETS * BULLETCAP
 bullet_len: Array[128, uint8]            # MAXSLIDES * MAXBULLETS
+bullet_lvl: Array[128, uint8]            # MAXSLIDES * MAXBULLETS
 slide_nbul: Array[16, uint8]             # MAXSLIDES
+
+# Speaker notes (NOTESCAP bytes/slide) + length.
+notes_buf: Array[2048, uint8]            # MAXSLIDES * NOTESCAP
+notes_len: Array[16, uint8]
+
+# Per-slide layout id (see LAY_* below).
+slide_lay: Array[16, uint8]
 
 nslides: uint64 = 1                       # deck length (>= 1 always)
 cur:     uint64 = 0                       # current slide index
 
-# Edit focus: 0 = title, 1..nbul = bullet (index focus_row-1). caret = byte
-# insertion point within the focused field.
+# Edit focus: 0 = title, 1..nbul = bullet (index focus_row-1), FOCUS_NOTES =
+# the speaker-notes strip. caret = byte insertion point within that field.
+FOCUS_NOTES: uint64 = 99
 focus_row: uint64 = 0
 caret:     uint64 = 0
 
@@ -58,24 +81,255 @@ VIEW_EDIT:    int32 = 0
 VIEW_PRESENT: int32 = 1
 view: int32 = 0
 
+# PRESENT-mode toggles: blank the screen ('b') / overlay speaker notes ('n').
+present_black: int32 = 0
+present_notes: int32 = 0
+
 # Thumbnail rail scroll (index of first visible thumbnail).
 thumb_top: uint64 = 0
 
 dirty: int32 = 0
 flash: int32 = 0                          # "saved!" ack countdown
 
-# Action requested by a keystroke/click, drained by the driver: 0 none 1 save
-# 2 open.
+# Action requested by a keystroke/click, drained by the driver:
+#   0 none, 1 save, 2 open, 3 quit.
 pending_action: int32 = 0
 
 # CSI escape decode (arrow/page navigation): 0 ground, 1 saw ESC, 2 saw ESC '['.
 hs_esc: int32 = 0
 hs_par: int32 = 0
 
+# Open drop-down menu: 0 none, 1 File, 2 Edit, 3 Slide, 4 View.
+menu_open: int32 = 0
+
 # Current document filename (display only; the driver owns the real path).
 FNAME_CAP: uint64 = 128
 fname: Array[128, uint8]
 fname_len: uint64 = 0
+
+
+# ====================================================================
+# THEME — a deck-wide colour scheme. Theme 0 (Indigo) is the historical
+# HamSlides palette, so an untouched deck renders exactly as before.
+# ====================================================================
+THEME_COUNT: int32 = 4
+theme: int32 = 0
+
+
+def hamslides_theme() -> int32:
+    return theme
+
+
+def hamslides_theme_count() -> int32:
+    return THEME_COUNT
+
+
+def hamslides_set_theme(t: int32):
+    if t < 0:
+        return
+    if t >= THEME_COUNT:
+        return
+    theme = t
+    dirty = 1
+
+
+def hamslides_cycle_theme():
+    theme = theme + 1
+    if theme >= THEME_COUNT:
+        theme = 0
+    dirty = 1
+
+
+def hamslides_theme_name() -> Ptr[uint8]:
+    return _th_name()
+
+
+def _th_name() -> Ptr[uint8]:
+    if theme == 1:
+        return cast[Ptr[uint8]]("Slate")
+    if theme == 2:
+        return cast[Ptr[uint8]]("Emerald")
+    if theme == 3:
+        return cast[Ptr[uint8]]("Sunset")
+    return cast[Ptr[uint8]]("Indigo")
+
+
+def _th_deep() -> Ptr[uint8]:                    # app title bar / deep chrome
+    if theme == 1:
+        return cast[Ptr[uint8]]("#263238")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#14452f")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#6b2d12")
+    return cast[Ptr[uint8]]("#2b2d5c")
+
+
+def _th_deep_edge() -> Ptr[uint8]:
+    if theme == 1:
+        return cast[Ptr[uint8]]("#161e22")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#0b2e20")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#4a1d0b")
+    return cast[Ptr[uint8]]("#1f2044")
+
+
+def _th_accent() -> Ptr[uint8]:                  # rules, discs, present band
+    if theme == 1:
+        return cast[Ptr[uint8]]("#45718f")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#1f8a5f")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#c05621")
+    return cast[Ptr[uint8]]("#4453b8")
+
+
+def _th_tint() -> Ptr[uint8]:                    # title band / focus wash
+    if theme == 1:
+        return cast[Ptr[uint8]]("#eef2f5")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#eaf7f0")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#fdf0e6")
+    return cast[Ptr[uint8]]("#f2f3fb")
+
+
+def _th_focus() -> Ptr[uint8]:                   # focused-field highlight
+    if theme == 1:
+        return cast[Ptr[uint8]]("#e3ecf3")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#dff3e8")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#fbe6d5")
+    return cast[Ptr[uint8]]("#eef0ff")
+
+
+def _th_paper() -> Ptr[uint8]:                   # the slide canvas itself
+    if theme == 3:
+        return cast[Ptr[uint8]]("#fffdfa")
+    return cast[Ptr[uint8]]("#ffffff")
+
+
+def _th_ink() -> Ptr[uint8]:                     # body text
+    if theme == 1:
+        return cast[Ptr[uint8]]("#33404a")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#2c4038")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#4a3728")
+    return cast[Ptr[uint8]]("#333a4d")
+
+
+def _th_titleink() -> Ptr[uint8]:                # slide title text
+    if theme == 1:
+        return cast[Ptr[uint8]]("#1b2a33")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#10352a")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#40210f")
+    return cast[Ptr[uint8]]("#1c2340")
+
+
+def _th_winbg() -> Ptr[uint8]:                   # app window background
+    if theme == 1:
+        return cast[Ptr[uint8]]("#eceff1")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#edf4ef")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#f6efe9")
+    return cast[Ptr[uint8]]("#e9ebf3")
+
+
+def _th_railbg() -> Ptr[uint8]:
+    if theme == 1:
+        return cast[Ptr[uint8]]("#d5dde2")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#d7e6dc")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#ecdccd")
+    return cast[Ptr[uint8]]("#d7dbe9")
+
+
+def _th_edge() -> Ptr[uint8]:                    # 1px borders
+    if theme == 1:
+        return cast[Ptr[uint8]]("#9aa6ae")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#9ab8a8")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#c8ab92")
+    return cast[Ptr[uint8]]("#9aa2c4")
+
+
+def _th_present_bg() -> Ptr[uint8]:
+    if theme == 1:
+        return cast[Ptr[uint8]]("#f2f5f7")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#f2fbf6")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#fff8f1")
+    return cast[Ptr[uint8]]("#f4f6fc")
+
+
+def _th_muted() -> Ptr[uint8]:
+    if theme == 1:
+        return cast[Ptr[uint8]]("#8b98a2")
+    if theme == 2:
+        return cast[Ptr[uint8]]("#8aa697")
+    if theme == 3:
+        return cast[Ptr[uint8]]("#b39880")
+    return cast[Ptr[uint8]]("#a7adc8")
+
+
+# ====================================================================
+# LAYOUTS
+# ====================================================================
+LAY_CONTENT: int32 = 0          # title band + a single bullet column
+LAY_TITLE:   int32 = 1          # big centred title + subtitle
+LAY_TWOCOL:  int32 = 2          # title band + bullets in two columns
+LAY_PICTURE: int32 = 3          # title band + bullets left, picture right
+LAY_BLANK:   int32 = 4          # no title band, bullets only
+LAY_COUNT:   int32 = 5
+
+
+def _lay(s: uint64) -> int32:
+    if s >= MAXSLIDES:
+        return LAY_CONTENT
+    return cast[int32](slide_lay[s])
+
+
+def hamslides_layout(s: uint64) -> int32:
+    return _lay(s)
+
+
+def hamslides_set_layout(s: uint64, l: int32):
+    if s >= MAXSLIDES or l < 0 or l >= LAY_COUNT:
+        return
+    _undo_mark_struct()
+    slide_lay[s] = cast[uint8](l)
+    dirty = 1
+
+
+def hamslides_cycle_layout():
+    l: int32 = _lay(cur) + 1
+    if l >= LAY_COUNT:
+        l = 0
+    hamslides_set_layout(cur, l)
+
+
+def _lay_name(l: int32) -> Ptr[uint8]:
+    if l == LAY_TITLE:
+        return cast[Ptr[uint8]]("Title Slide")
+    if l == LAY_TWOCOL:
+        return cast[Ptr[uint8]]("Two Column")
+    if l == LAY_PICTURE:
+        return cast[Ptr[uint8]]("Picture")
+    if l == LAY_BLANK:
+        return cast[Ptr[uint8]]("Blank")
+    return cast[Ptr[uint8]]("Title+Content")
+
+
+def hamslides_layout_name(l: int32) -> Ptr[uint8]:
+    return _lay_name(l)
 
 
 # ---- tiny pure helpers -----------------------------------------------------
@@ -120,24 +374,34 @@ def _bullet_lidx(s: uint64, b: uint64) -> uint64:
     return s * MAXBULLETS + b
 
 
+def _notes_base(s: uint64) -> uint64:
+    return s * NOTESCAP
+
+
 def _nbul(s: uint64) -> uint64:
     return cast[uint64](slide_nbul[s])
 
 
-# Focused-field accessors (branch on title vs bullet).
+# Focused-field accessors (title vs bullet vs notes).
 def _focus_buf() -> Ptr[uint8]:
+    if focus_row == FOCUS_NOTES:
+        return &notes_buf[_notes_base(cur)]
     if focus_row == 0:
         return &title_buf[_title_base(cur)]
     return &bullet_buf[_bullet_base(cur, focus_row - 1)]
 
 
 def _focus_lenp() -> Ptr[uint8]:
+    if focus_row == FOCUS_NOTES:
+        return &notes_len[cur]
     if focus_row == 0:
         return &title_len[cur]
     return &bullet_len[_bullet_lidx(cur, focus_row - 1)]
 
 
 def _focus_cap() -> uint64:
+    if focus_row == FOCUS_NOTES:
+        return NOTESCAP
     if focus_row == 0:
         return TITLECAP
     return BULLETCAP
@@ -175,6 +439,18 @@ def hamslides_caret() -> uint64:
     return caret
 
 
+def hamslides_menu_open() -> int32:
+    return menu_open
+
+
+def hamslides_present_black() -> int32:
+    return present_black
+
+
+def hamslides_present_notes() -> int32:
+    return present_notes
+
+
 def hamslides_bullet_count(s: uint64) -> uint64:
     if s >= nslides:
         return 0
@@ -195,6 +471,22 @@ def hamslides_bullet_ptr(s: uint64, b: uint64) -> Ptr[uint8]:
 
 def hamslides_bullet_len(s: uint64, b: uint64) -> uint64:
     return cast[uint64](bullet_len[_bullet_lidx(s, b)])
+
+
+def hamslides_bullet_level(s: uint64, b: uint64) -> uint64:
+    if s >= MAXSLIDES or b >= MAXBULLETS:
+        return 0
+    return cast[uint64](bullet_lvl[_bullet_lidx(s, b)])
+
+
+def hamslides_notes_ptr(s: uint64) -> Ptr[uint8]:
+    return &notes_buf[_notes_base(s)]
+
+
+def hamslides_notes_len(s: uint64) -> uint64:
+    if s >= MAXSLIDES:
+        return 0
+    return cast[uint64](notes_len[s])
 
 
 def hamslides_dirty() -> int32:
@@ -248,13 +540,173 @@ def hamslides_set_bullet(s: uint64, b: uint64, txt: Ptr[uint8]):
     dirty = 1
 
 
+def hamslides_set_bullet_level(s: uint64, b: uint64, lvl: uint64):
+    if s >= MAXSLIDES or b >= MAXBULLETS:
+        return
+    if lvl > MAXLEVEL:
+        lvl = MAXLEVEL
+    bullet_lvl[_bullet_lidx(s, b)] = cast[uint8](lvl)
+    dirty = 1
+
+
+def hamslides_set_notes(s: uint64, txt: Ptr[uint8]):
+    if s >= MAXSLIDES:
+        return
+    base: uint64 = _notes_base(s)
+    i: uint64 = 0
+    while txt[i] != 0 and i < NOTESCAP - 1:
+        notes_buf[base + i] = txt[i]
+        i = i + 1
+    notes_len[s] = cast[uint8](i)
+    dirty = 1
+
+
+# ====================================================================
+# UNDO — a 4-deep ring of WHOLE-DECK snapshots. Structural edits (add /
+# duplicate / delete / move / layout / theme / new deck) always push; text
+# edits push once per (slide, field) "typing burst" so one Ctrl-Z undoes a
+# word-processor-ish chunk rather than a single keystroke.
+# ====================================================================
+UNDO_N: uint64 = 4
+u_title: Array[3072, uint8]              # UNDO_N * 768
+u_tlen:  Array[64, uint8]                # UNDO_N * 16
+u_bul:   Array[32768, uint8]             # UNDO_N * 8192
+u_blen:  Array[512, uint8]               # UNDO_N * 128
+u_blvl:  Array[512, uint8]
+u_nbul:  Array[64, uint8]
+u_lay:   Array[64, uint8]
+u_notes: Array[8192, uint8]              # UNDO_N * 2048
+u_nlen:  Array[64, uint8]
+u_ns:    Array[4, uint64]
+u_cur:   Array[4, uint64]
+u_theme: Array[4, int32]
+
+undo_depth: uint64 = 0                   # snapshots available to pop
+undo_head:  uint64 = 0                   # next slot to write
+UNDO_TOKEN_NONE: uint64 = 4294967295
+undo_token: uint64 = 4294967295          # coalescing key of the last push
+
+
+def _undo_push():
+    sl: uint64 = undo_head
+    o: uint64 = sl * 768
+    i: uint64 = 0
+    while i < 768:
+        u_title[o + i] = title_buf[i]
+        i = i + 1
+    o = sl * 16
+    i = 0
+    while i < 16:
+        u_tlen[o + i] = title_len[i]
+        u_nbul[o + i] = slide_nbul[i]
+        u_lay[o + i] = slide_lay[i]
+        u_nlen[o + i] = notes_len[i]
+        i = i + 1
+    o = sl * 8192
+    i = 0
+    while i < 8192:
+        u_bul[o + i] = bullet_buf[i]
+        i = i + 1
+    o = sl * 128
+    i = 0
+    while i < 128:
+        u_blen[o + i] = bullet_len[i]
+        u_blvl[o + i] = bullet_lvl[i]
+        i = i + 1
+    o = sl * 2048
+    i = 0
+    while i < 2048:
+        u_notes[o + i] = notes_buf[i]
+        i = i + 1
+    u_ns[sl] = nslides
+    u_cur[sl] = cur
+    u_theme[sl] = theme
+    undo_head = undo_head + 1
+    if undo_head >= UNDO_N:
+        undo_head = 0
+    if undo_depth < UNDO_N:
+        undo_depth = undo_depth + 1
+
+
+def _undo_mark_struct():
+    _undo_push()
+    undo_token = UNDO_TOKEN_NONE
+
+
+def _undo_mark_text():
+    tok: uint64 = cur * 256 + focus_row
+    if tok != undo_token:
+        _undo_push()
+        undo_token = tok
+
+
+def hamslides_undo_depth() -> uint64:
+    return undo_depth
+
+
+def hamslides_undo() -> int32:
+    if undo_depth == 0:
+        return 0
+    if undo_head == 0:
+        undo_head = UNDO_N - 1
+    else:
+        undo_head = undo_head - 1
+    undo_depth = undo_depth - 1
+    sl: uint64 = undo_head
+    o: uint64 = sl * 768
+    i: uint64 = 0
+    while i < 768:
+        title_buf[i] = u_title[o + i]
+        i = i + 1
+    o = sl * 16
+    i = 0
+    while i < 16:
+        title_len[i] = u_tlen[o + i]
+        slide_nbul[i] = u_nbul[o + i]
+        slide_lay[i] = u_lay[o + i]
+        notes_len[i] = u_nlen[o + i]
+        i = i + 1
+    o = sl * 8192
+    i = 0
+    while i < 8192:
+        bullet_buf[i] = u_bul[o + i]
+        i = i + 1
+    o = sl * 128
+    i = 0
+    while i < 128:
+        bullet_len[i] = u_blen[o + i]
+        bullet_lvl[i] = u_blvl[o + i]
+        i = i + 1
+    o = sl * 2048
+    i = 0
+    while i < 2048:
+        notes_buf[i] = u_notes[o + i]
+        i = i + 1
+    nslides = u_ns[sl]
+    if nslides < 1:
+        nslides = 1
+    cur = u_cur[sl]
+    if cur >= nslides:
+        cur = nslides - 1
+    theme = u_theme[sl]
+    focus_row = 0
+    caret = cast[uint64](title_len[cur])
+    undo_token = UNDO_TOKEN_NONE
+    dirty = 1
+    _ensure_thumb_visible()
+    return 1
+
+
 # ---- deck structural edits -------------------------------------------------
 def _blank_slide(s: uint64):
     title_len[s] = 0
     slide_nbul[s] = 0
+    slide_lay[s] = cast[uint8](LAY_CONTENT)
+    notes_len[s] = 0
     b: uint64 = 0
     while b < MAXBULLETS:
         bullet_len[_bullet_lidx(s, b)] = 0
+        bullet_lvl[_bullet_lidx(s, b)] = 0
         b = b + 1
 
 
@@ -267,6 +719,7 @@ def _copy_bullet(ss: uint64, sb: uint64, ds: uint64, db: uint64):
         bullet_buf[dbase + i] = bullet_buf[sbase + i]
         i = i + 1
     bullet_len[_bullet_lidx(ds, db)] = cast[uint8](ln)
+    bullet_lvl[_bullet_lidx(ds, db)] = bullet_lvl[_bullet_lidx(ss, sb)]
 
 
 def _copy_slide(src: uint64, dst: uint64):
@@ -284,12 +737,70 @@ def _copy_slide(src: uint64, dst: uint64):
         _copy_bullet(src, b, dst, b)
         b = b + 1
     slide_nbul[dst] = cast[uint8](nb)
+    slide_lay[dst] = slide_lay[src]
+    nl: uint64 = cast[uint64](notes_len[src])
+    sn: uint64 = _notes_base(src)
+    dn: uint64 = _notes_base(dst)
+    k: uint64 = 0
+    while k < nl:
+        notes_buf[dn + k] = notes_buf[sn + k]
+        k = k + 1
+    notes_len[dst] = cast[uint8](nl)
+
+
+def _swap_slides(a: uint64, b: uint64):
+    # Swap via the scratch slot MAXSLIDES-1 is unsafe (it may hold a slide), so
+    # swap field-by-field through small temporaries instead.
+    i: uint64 = 0
+    ab: uint64 = _title_base(a)
+    bb: uint64 = _title_base(b)
+    while i < TITLECAP:
+        t: uint8 = title_buf[ab + i]
+        title_buf[ab + i] = title_buf[bb + i]
+        title_buf[bb + i] = t
+        i = i + 1
+    tl: uint8 = title_len[a]
+    title_len[a] = title_len[b]
+    title_len[b] = tl
+    j: uint64 = 0
+    while j < MAXBULLETS * BULLETCAP:
+        t2: uint8 = bullet_buf[_bullet_base(a, 0) + j]
+        bullet_buf[_bullet_base(a, 0) + j] = bullet_buf[_bullet_base(b, 0) + j]
+        bullet_buf[_bullet_base(b, 0) + j] = t2
+        j = j + 1
+    k: uint64 = 0
+    while k < MAXBULLETS:
+        t3: uint8 = bullet_len[_bullet_lidx(a, k)]
+        bullet_len[_bullet_lidx(a, k)] = bullet_len[_bullet_lidx(b, k)]
+        bullet_len[_bullet_lidx(b, k)] = t3
+        t4: uint8 = bullet_lvl[_bullet_lidx(a, k)]
+        bullet_lvl[_bullet_lidx(a, k)] = bullet_lvl[_bullet_lidx(b, k)]
+        bullet_lvl[_bullet_lidx(b, k)] = t4
+        k = k + 1
+    t5: uint8 = slide_nbul[a]
+    slide_nbul[a] = slide_nbul[b]
+    slide_nbul[b] = t5
+    t6: uint8 = slide_lay[a]
+    slide_lay[a] = slide_lay[b]
+    slide_lay[b] = t6
+    m: uint64 = 0
+    na: uint64 = _notes_base(a)
+    nbz: uint64 = _notes_base(b)
+    while m < NOTESCAP:
+        t7: uint8 = notes_buf[na + m]
+        notes_buf[na + m] = notes_buf[nbz + m]
+        notes_buf[nbz + m] = t7
+        m = m + 1
+    t8: uint8 = notes_len[a]
+    notes_len[a] = notes_len[b]
+    notes_len[b] = t8
 
 
 # Insert a fresh blank slide AFTER `cur`, focus it. Returns 1 on success.
 def hamslides_add_slide() -> int32:
     if nslides >= MAXSLIDES:
         return 0
+    _undo_mark_struct()
     k: uint64 = nslides
     while k > cur + 1:
         _copy_slide(k - 1, k)
@@ -304,8 +815,29 @@ def hamslides_add_slide() -> int32:
     return 1
 
 
+# Duplicate the current slide (copy placed right after it) and focus the copy.
+def hamslides_duplicate_slide() -> int32:
+    if nslides >= MAXSLIDES:
+        return 0
+    _undo_mark_struct()
+    k: uint64 = nslides
+    while k > cur + 1:
+        _copy_slide(k - 1, k)
+        k = k - 1
+    _blank_slide(cur + 1)
+    _copy_slide(cur, cur + 1)
+    nslides = nslides + 1
+    cur = cur + 1
+    focus_row = 0
+    caret = cast[uint64](title_len[cur])
+    dirty = 1
+    _ensure_thumb_visible()
+    return 1
+
+
 # Delete the current slide (deck keeps >= 1 slide: last one is cleared).
 def hamslides_delete_slide() -> int32:
+    _undo_mark_struct()
     if nslides <= 1:
         _blank_slide(0)
         cur = 0
@@ -325,6 +857,46 @@ def hamslides_delete_slide() -> int32:
     dirty = 1
     _ensure_thumb_visible()
     return 1
+
+
+def hamslides_move_up() -> int32:
+    if cur == 0:
+        return 0
+    _undo_mark_struct()
+    _swap_slides(cur, cur - 1)
+    cur = cur - 1
+    focus_row = 0
+    caret = 0
+    dirty = 1
+    _ensure_thumb_visible()
+    return 1
+
+
+def hamslides_move_down() -> int32:
+    if cur + 1 >= nslides:
+        return 0
+    _undo_mark_struct()
+    _swap_slides(cur, cur + 1)
+    cur = cur + 1
+    focus_row = 0
+    caret = 0
+    dirty = 1
+    _ensure_thumb_visible()
+    return 1
+
+
+def hamslides_new_deck():
+    _undo_mark_struct()
+    s: uint64 = 0
+    while s < MAXSLIDES:
+        _blank_slide(s)
+        s = s + 1
+    nslides = 1
+    cur = 0
+    focus_row = 0
+    caret = 0
+    thumb_top = 0
+    dirty = 1
 
 
 def hamslides_goto(idx: uint64):
@@ -354,24 +926,43 @@ def hamslides_prev():
         _ensure_thumb_visible()
 
 
+def hamslides_first():
+    cur = 0
+    if view == VIEW_EDIT:
+        focus_row = 0
+        caret = cast[uint64](title_len[cur])
+    _ensure_thumb_visible()
+
+
+def hamslides_last():
+    cur = nslides - 1
+    if view == VIEW_EDIT:
+        focus_row = 0
+        caret = cast[uint64](title_len[cur])
+    _ensure_thumb_visible()
+
+
 def hamslides_set_present(on: int32):
     if on != 0:
         view = VIEW_PRESENT
     else:
         view = VIEW_EDIT
+    present_black = 0
+    present_notes = 0
+    menu_open = 0
 
 
 def hamslides_toggle_present():
     if view == VIEW_EDIT:
-        view = VIEW_PRESENT
+        hamslides_set_present(1)
     else:
-        view = VIEW_EDIT
+        hamslides_set_present(0)
 
 
-# ---- bullet insert / remove ------------------------------------------------
+# ---- bullet insert / remove / indent ---------------------------------------
 # Insert an empty bullet at position p in the current slide (shifting the rest
 # down). Returns 1 on success.
-def _insert_bullet(p: uint64) -> int32:
+def _insert_bullet(p: uint64, lvl: uint64) -> int32:
     nb: uint64 = _nbul(cur)
     if nb >= MAXBULLETS:
         return 0
@@ -380,6 +971,7 @@ def _insert_bullet(p: uint64) -> int32:
         _copy_bullet(cur, k - 1, cur, k)
         k = k - 1
     bullet_len[_bullet_lidx(cur, p)] = 0
+    bullet_lvl[_bullet_lidx(cur, p)] = cast[uint8](lvl)
     slide_nbul[cur] = cast[uint8](nb + 1)
     dirty = 1
     return 1
@@ -397,18 +989,63 @@ def _remove_bullet(p: uint64):
     dirty = 1
 
 
+# Tab at the START of a bullet indents it (PowerPoint behaviour); Backspace at
+# the start of an indented bullet outdents it before deleting anything.
+def _indent_bullet() -> int32:
+    if focus_row == 0 or focus_row == FOCUS_NOTES:
+        return 0
+    li: uint64 = _bullet_lidx(cur, focus_row - 1)
+    lv: uint64 = cast[uint64](bullet_lvl[li])
+    if lv >= MAXLEVEL:
+        return 0
+    _undo_mark_struct()
+    bullet_lvl[li] = cast[uint8](lv + 1)
+    dirty = 1
+    return 1
+
+
+def _outdent_bullet() -> int32:
+    if focus_row == 0 or focus_row == FOCUS_NOTES:
+        return 0
+    li: uint64 = _bullet_lidx(cur, focus_row - 1)
+    lv: uint64 = cast[uint64](bullet_lvl[li])
+    if lv == 0:
+        return 0
+    _undo_mark_struct()
+    bullet_lvl[li] = cast[uint8](lv - 1)
+    dirty = 1
+    return 1
+
+
 # ---- focus movement --------------------------------------------------------
 def _focus_down():
     nb: uint64 = _nbul(cur)
+    if focus_row == FOCUS_NOTES:
+        return
     if focus_row < nb:
         focus_row = focus_row + 1
         caret = _focus_len()
+        return
+    focus_row = FOCUS_NOTES
+    caret = _focus_len()
 
 
 def _focus_up():
+    if focus_row == FOCUS_NOTES:
+        focus_row = _nbul(cur)
+        caret = _focus_len()
+        return
     if focus_row > 0:
         focus_row = focus_row - 1
         caret = _focus_len()
+
+
+def hamslides_focus_notes():
+    if focus_row == FOCUS_NOTES:
+        focus_row = 0
+    else:
+        focus_row = FOCUS_NOTES
+    caret = _focus_len()
 
 
 # ---- in-field text editing -------------------------------------------------
@@ -419,6 +1056,7 @@ def _field_insert(c: uint8) -> int32:
     ln: uint64 = cast[uint64](lp[0])
     if ln >= cap - 1:
         return 0
+    _undo_mark_text()
     if caret > ln:
         caret = ln
     j: uint64 = ln
@@ -437,14 +1075,20 @@ def _field_backspace() -> int32:
     lp: Ptr[uint8] = _focus_lenp()
     ln: uint64 = cast[uint64](lp[0])
     if caret == 0:
+        # Backspace at the start of an INDENTED bullet outdents it first.
+        if focus_row > 0 and focus_row != FOCUS_NOTES:
+            if _outdent_bullet() != 0:
+                return 1
         # Backspace at the start of an EMPTY bullet removes the bullet.
-        if focus_row > 0 and ln == 0:
+        if focus_row > 0 and focus_row != FOCUS_NOTES and ln == 0:
+            _undo_mark_struct()
             b: uint64 = focus_row - 1
             _remove_bullet(b)
             focus_row = focus_row - 1
             caret = _focus_len()
             return 1
         return 0
+    _undo_mark_text()
     if caret > ln:
         caret = ln
     j: uint64 = caret - 1
@@ -458,17 +1102,24 @@ def _field_backspace() -> int32:
 
 
 # Enter: from the title -> first bullet (create if none); from a bullet ->
-# a new empty bullet right after it.
+# a new empty bullet right after it at the SAME indent level. In the notes
+# field Enter just leaves the field.
 def _field_enter() -> int32:
+    if focus_row == FOCUS_NOTES:
+        focus_row = 0
+        caret = _focus_len()
+        return 1
+    _undo_mark_struct()
     if focus_row == 0:
         if _nbul(cur) == 0:
-            if _insert_bullet(0) == 0:
+            if _insert_bullet(0, 0) == 0:
                 return 0
         focus_row = 1
         caret = 0
         return 1
     b: uint64 = focus_row - 1
-    if _insert_bullet(b + 1) == 0:
+    lv: uint64 = cast[uint64](bullet_lvl[_bullet_lidx(cur, b)])
+    if _insert_bullet(b + 1, lv) == 0:
         return 0
     focus_row = b + 2
     caret = 0
@@ -484,6 +1135,18 @@ def _hs_nav(fin: int32) -> int32:
             return 1
         if fin == 68:                                  # Left -> prev
             hamslides_prev()
+            return 1
+        if fin == 66 or fin == 54:                     # Down/PageDown -> next
+            hamslides_next()
+            return 1
+        if fin == 65 or fin == 53:                     # Up/PageUp -> prev
+            hamslides_prev()
+            return 1
+        if fin == 72 or fin == 49:                     # Home -> first slide
+            hamslides_first()
+            return 1
+        if fin == 70 or fin == 52:                     # End -> last slide
+            hamslides_last()
             return 1
         return 0
     if fin == 68:                                      # Left: caret back
@@ -506,48 +1169,98 @@ def _hs_nav(fin: int32) -> int32:
     if fin == 54:                                      # PageDown -> next slide
         hamslides_next()
         return 1
+    if fin == 72 or fin == 49:                         # Home -> start of field
+        caret = 0
+        return 1
+    if fin == 70 or fin == 52:                         # End -> end of field
+        caret = _focus_len()
+        return 1
     return 0
+
+
+# Resolve a PENDING bare ESC: leave PRESENT, else close an open menu.
+def _resolve_esc() -> int32:
+    if view == VIEW_PRESENT:
+        hamslides_set_present(0)
+        return 1
+    if menu_open != 0:
+        menu_open = 0
+        return 1
+    return 0
+
+
+def hamslides_esc_pending() -> int32:
+    return hs_esc
+
+
+# Called by the driver when the key stream goes idle: a bare ESC that was NOT
+# followed by '[' is a real Escape, so apply it. Returns 1 if state changed.
+def hamslides_key_idle() -> int32:
+    if hs_esc == 0:
+        return 0
+    hs_esc = 0
+    hs_par = 0
+    return _resolve_esc()
 
 
 # Apply one key (ASCII/decoded). Returns 1 if state changed (redraw needed).
 def hamslides_key(code: int32) -> int32:
     # CSI escape state machine (ESC '[' <par> <final>).
     if hs_esc == 1:
-        if code == 91:                                 # '['
+        if code == 91:                                 # '['  -> CSI sequence
             hs_esc = 2
-        else:
-            hs_esc = 0
-        return 0
+            return 0
+        # A bare ESC followed by something else: resolve the ESC now (exit
+        # PRESENT / close a menu) and swallow this byte.
+        hs_esc = 0
+        return _resolve_esc()
     if hs_esc == 2:
         if code >= 48 and code <= 57:
             hs_par = code
             return 0
         hs_esc = 0
         fin: int32 = code
-        if code == 126:                                # '~' final (5~/6~)
+        if code == 126:                                # '~' final (1~/4~/5~/6~)
             p: int32 = hs_par
             hs_par = 0
             if p == 53:
                 fin = 53
             elif p == 54:
                 fin = 54
+            elif p == 49:
+                fin = 49
+            elif p == 52:
+                fin = 52
             else:
                 return 0
         return _hs_nav(fin)
-    if code == 27:                                     # ESC
-        if view == VIEW_PRESENT:
-            view = VIEW_EDIT
-            return 1
+    if code == 27:
+        # ESC is AMBIGUOUS: it is both "leave PRESENT / close the menu" and the
+        # first byte of every arrow/Home/End CSI sequence the DE sends. So it
+        # is held PENDING: if '[' follows it is an arrow, otherwise the driver
+        # resolves it (next key, or hamslides_key_idle() on an idle tick).
         hs_esc = 1
         return 0
 
-    # ---- PRESENT mode: navigation only --------------------------------
+    # ---- PRESENT mode: navigation + presenter toggles -------------------
     if view == VIEW_PRESENT:
         if code == 32 or code == 13 or code == 10:     # Space/Enter -> next
             hamslides_next()
             return 1
         if code == 8 or code == 127:                   # Backspace -> prev
             hamslides_prev()
+            return 1
+        if code == 98 or code == 66:                   # b -> blank the screen
+            if present_black != 0:
+                present_black = 0
+            else:
+                present_black = 1
+            return 1
+        if code == 110 or code == 78:                  # n -> notes overlay
+            if present_notes != 0:
+                present_notes = 0
+            else:
+                present_notes = 1
             return 1
         return 0
 
@@ -558,16 +1271,43 @@ def hamslides_key(code: int32) -> int32:
     if code == 15:                                     # Ctrl-O -> Open
         pending_action = 2
         return 1
+    if code == 17:                                     # Ctrl-Q -> Quit
+        pending_action = 3
+        return 1
     if code == 14:                                     # Ctrl-N -> new slide
         hamslides_add_slide()
+        return 1
+    if code == 21:                                     # Ctrl-U -> duplicate
+        hamslides_duplicate_slide()
         return 1
     if code == 4:                                      # Ctrl-D -> delete slide
         hamslides_delete_slide()
         return 1
-    if code == 16:                                     # Ctrl-P -> present
-        view = VIEW_PRESENT
+    if code == 11:                                     # Ctrl-K -> move slide up
+        hamslides_move_up()
         return 1
-    if code == 9:                                      # Tab -> focus down
+    if code == 12:                                     # Ctrl-L -> move down
+        hamslides_move_down()
+        return 1
+    if code == 25:                                     # Ctrl-Y -> cycle layout
+        hamslides_cycle_layout()
+        return 1
+    if code == 20:                                     # Ctrl-T -> cycle theme
+        hamslides_cycle_theme()
+        return 1
+    if code == 26:                                     # Ctrl-Z -> undo
+        return hamslides_undo()
+    if code == 5:                                      # Ctrl-E -> speaker notes
+        hamslides_focus_notes()
+        return 1
+    if code == 16:                                     # Ctrl-P -> present
+        hamslides_set_present(1)
+        return 1
+    if code == 9:                                      # Tab
+        # At the start of a bullet Tab INDENTS it; otherwise move focus down.
+        if focus_row > 0 and focus_row != FOCUS_NOTES and caret == 0:
+            if _indent_bullet() != 0:
+                return 1
         _focus_down()
         return 1
     if code == 13 or code == 10:                       # Enter
@@ -616,6 +1356,13 @@ def hamslides_clear():
     thumb_top = 0
     dirty = 0
     view = VIEW_EDIT
+    theme = 0
+    menu_open = 0
+    present_black = 0
+    present_notes = 0
+    undo_depth = 0
+    undo_head = 0
+    undo_token = UNDO_TOKEN_NONE
 
 
 def hamslides_init():
@@ -625,15 +1372,28 @@ def hamslides_init():
 # ====================================================================
 # DOCUMENT SERIALISATION (round-trips the whole deck)
 # ====================================================================
-# Format (self-describing container, text-based):
-#   "HAMSLIDES1\n"
-#   "<nslides>\n"
-#   for each slide:
-#     "<title_len>\n" then <title_len> raw bytes then "\n"
-#     "<nbul>\n"
-#     for each bullet: "<bullet_len>\n" then <bullet_len> raw bytes then "\n"
+# Format — HAMSLIDES2, a self-describing, line-oriented text container.
+# Every field the editor can change is stored, so a save->load is lossless:
+#
+#   "HAMSLIDES2\n"
+#   "<theme>\n"                       deck-wide colour scheme id (0..3)
+#   "<nslides>\n"                     slide COUNT (order = file order)
+#   for each slide, in deck order:
+#     "<layout>\n"                    0 Title+Content 1 Title 2 TwoCol
+#                                     3 Picture 4 Blank
+#     "<title_len>\n" <title bytes> "\n"
+#     "<notes_len>\n" <notes bytes> "\n"          speaker notes
+#     "<nbul>\n"                      bullet count
+#     for each bullet:
+#       "<level> <len>\n" <bytes> "\n"            indent level 0..2 + text
+#
+# The older HAMSLIDES1 container (no theme/layout/notes/levels) still LOADS:
+# its slides come back as Title+Content with level-0 bullets and no notes.
 def hamslides_serialize(out: Ptr[uint8]) -> uint64:
-    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMSLIDES1"))
+    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMSLIDES2"))
+    out[p] = 10
+    p = p + 1
+    p = p + _hsl_udec(cast[uint64](theme), &out[p])
     out[p] = 10
     p = p + 1
     p = p + _hsl_udec(nslides, &out[p])
@@ -641,6 +1401,9 @@ def hamslides_serialize(out: Ptr[uint8]) -> uint64:
     p = p + 1
     s: uint64 = 0
     while s < nslides:
+        p = p + _hsl_udec(cast[uint64](_lay(s)), &out[p])
+        out[p] = 10
+        p = p + 1
         tl: uint64 = cast[uint64](title_len[s])
         p = p + _hsl_udec(tl, &out[p])
         out[p] = 10
@@ -653,12 +1416,28 @@ def hamslides_serialize(out: Ptr[uint8]) -> uint64:
             k = k + 1
         out[p] = 10
         p = p + 1
+        nl: uint64 = cast[uint64](notes_len[s])
+        p = p + _hsl_udec(nl, &out[p])
+        out[p] = 10
+        p = p + 1
+        nbase: uint64 = _notes_base(s)
+        k2: uint64 = 0
+        while k2 < nl:
+            out[p] = notes_buf[nbase + k2]
+            p = p + 1
+            k2 = k2 + 1
+        out[p] = 10
+        p = p + 1
         nb: uint64 = _nbul(s)
         p = p + _hsl_udec(nb, &out[p])
         out[p] = 10
         p = p + 1
         b: uint64 = 0
         while b < nb:
+            p = p + _hsl_udec(cast[uint64](bullet_lvl[_bullet_lidx(s, b)]),
+                              &out[p])
+            out[p] = 32
+            p = p + 1
             bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(s, b)])
             p = p + _hsl_udec(bl, &out[p])
             out[p] = 10
@@ -684,22 +1463,68 @@ def _parse_uint(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> uint64:
     return v
 
 
-# Parse a HAMSLIDES1 container back into the deck. A buffer that does NOT begin
-# with the magic leaves a single blank slide (defensive).
-def hamslides_deserialize(s: Ptr[uint8], n: uint64):
-    hamslides_clear()
-    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMSLIDES1")
+def _skip_nl(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]):
+    if pos[0] < n and s[pos[0]] == 10:
+        pos[0] = pos[0] + 1
+
+
+def _skip_sp(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]):
+    while pos[0] < n and s[pos[0]] == 32:
+        pos[0] = pos[0] + 1
+
+
+# Returns the container version (1 or 2), or 0 if the magic is absent.
+def _magic_ver(s: Ptr[uint8], n: uint64) -> int32:
+    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMSLIDES")
     k: uint64 = 0
     while magic[k] != 0:
         if k >= n or s[k] != magic[k]:
-            return
+            return 0
         k = k + 1
-    pos: uint64 = k
-    if pos < n and s[pos] == 10:
-        pos = pos + 1
+    if k >= n:
+        return 0
+    if s[k] == 50:                                     # '2'
+        return 2
+    if s[k] == 49:                                     # '1'
+        return 1
+    return 0
+
+
+# Read one length-prefixed text blob into dst[0..cap) and return the stored
+# length ("<len>\n" <bytes> "\n" — the byte count is authoritative, so text may
+# itself contain anything).
+def _read_blob(s: Ptr[uint8], n: uint64, pos: Ptr[uint64], dst: Ptr[uint8],
+               cap: uint64) -> uint64:
+    ln: uint64 = _parse_uint(s, n, pos)
+    _skip_nl(s, n, pos)
+    j: uint64 = 0
+    stored: uint64 = 0
+    while j < ln and pos[0] < n:
+        if stored < cap - 1:
+            dst[stored] = s[pos[0]]
+            stored = stored + 1
+        j = j + 1
+        pos[0] = pos[0] + 1
+    _skip_nl(s, n, pos)
+    return stored
+
+
+# Parse a HAMSLIDES1/HAMSLIDES2 container back into the deck. A buffer that
+# does NOT begin with the magic leaves a single blank slide (defensive).
+def hamslides_deserialize(s: Ptr[uint8], n: uint64):
+    hamslides_clear()
+    ver: int32 = _magic_ver(s, n)
+    if ver == 0:
+        return
+    pos: uint64 = 10                                   # past "HAMSLIDESx"
+    _skip_nl(s, n, &pos)
+    if ver >= 2:
+        th: uint64 = _parse_uint(s, n, &pos)
+        _skip_nl(s, n, &pos)
+        if th < cast[uint64](THEME_COUNT):
+            theme = cast[int32](th)
     ns: uint64 = _parse_uint(s, n, &pos)
-    if pos < n and s[pos] == 10:
-        pos = pos + 1
+    _skip_nl(s, n, &pos)
     if ns < 1:
         ns = 1
     if ns > MAXSLIDES:
@@ -707,43 +1532,35 @@ def hamslides_deserialize(s: Ptr[uint8], n: uint64):
     si: uint64 = 0
     while si < ns and pos < n:
         _blank_slide(si)
-        tl: uint64 = _parse_uint(s, n, &pos)
-        if pos < n and s[pos] == 10:
-            pos = pos + 1
-        tb: uint64 = _title_base(si)
-        j: uint64 = 0
-        stored: uint64 = 0
-        while j < tl and pos < n:
-            if stored < TITLECAP - 1:
-                title_buf[tb + stored] = s[pos]
-                stored = stored + 1
-            j = j + 1
-            pos = pos + 1
-        title_len[si] = cast[uint8](stored)
-        if pos < n and s[pos] == 10:
-            pos = pos + 1
+        if ver >= 2:
+            ly: uint64 = _parse_uint(s, n, &pos)
+            _skip_nl(s, n, &pos)
+            if ly < cast[uint64](LAY_COUNT):
+                slide_lay[si] = cast[uint8](ly)
+        tl: uint64 = _read_blob(s, n, &pos, &title_buf[_title_base(si)],
+                                TITLECAP)
+        title_len[si] = cast[uint8](tl)
+        if ver >= 2:
+            nl: uint64 = _read_blob(s, n, &pos, &notes_buf[_notes_base(si)],
+                                    NOTESCAP)
+            notes_len[si] = cast[uint8](nl)
         nb: uint64 = _parse_uint(s, n, &pos)
-        if pos < n and s[pos] == 10:
-            pos = pos + 1
+        _skip_nl(s, n, &pos)
         if nb > MAXBULLETS:
             nb = MAXBULLETS
         bi: uint64 = 0
         while bi < nb and pos < n:
-            bl: uint64 = _parse_uint(s, n, &pos)
-            if pos < n and s[pos] == 10:
-                pos = pos + 1
-            bb: uint64 = _bullet_base(si, bi)
-            m: uint64 = 0
-            bstored: uint64 = 0
-            while m < bl and pos < n:
-                if bstored < BULLETCAP - 1:
-                    bullet_buf[bb + bstored] = s[pos]
-                    bstored = bstored + 1
-                m = m + 1
-                pos = pos + 1
-            bullet_len[_bullet_lidx(si, bi)] = cast[uint8](bstored)
-            if pos < n and s[pos] == 10:
-                pos = pos + 1
+            lvl: uint64 = 0
+            if ver >= 2:
+                lvl = _parse_uint(s, n, &pos)
+                _skip_sp(s, n, &pos)
+                if lvl > MAXLEVEL:
+                    lvl = MAXLEVEL
+            bl: uint64 = _read_blob(s, n, &pos,
+                                    &bullet_buf[_bullet_base(si, bi)],
+                                    BULLETCAP)
+            bullet_len[_bullet_lidx(si, bi)] = cast[uint8](bl)
+            bullet_lvl[_bullet_lidx(si, bi)] = cast[uint8](lvl)
             bi = bi + 1
         slide_nbul[si] = cast[uint8](nb)
         si = si + 1
@@ -753,29 +1570,57 @@ def hamslides_deserialize(s: Ptr[uint8], n: uint64):
     caret = 0
     thumb_top = 0
     dirty = 0
+    undo_depth = 0
+    undo_head = 0
+    undo_token = UNDO_TOKEN_NONE
 
 
 # ====================================================================
 # LAYOUT + RENDER
 # ====================================================================
-WIN_W: int32 = 680
-WIN_H: int32 = 440
-BAR_H: int32 = 22            # app title bar
-TB_Y:  int32 = 22           # toolbar
-TB_H:  int32 = 28
-CONTENT_Y: int32 = 50       # BAR_H + TB_H
+WIN_W: int32 = 720
+WIN_H: int32 = 500
+BAR_H:  int32 = 22           # app title bar
+MENU_Y: int32 = 22           # menu bar (File / Edit / Slide / View)
+MENU_H: int32 = 22
+TB_Y:   int32 = 44           # toolbar
+TB_H:   int32 = 28
+CONTENT_Y: int32 = 72        # MENU_Y + MENU_H + TB_H
+DD_Y:   int32 = 44           # drop-down panels hang below the menu bar
+DD_IH:  int32 = 20           # drop-down item height
+
+# menu-bar buttons
+MB_FILE_X:  int32 = 8
+MB_FILE_W:  int32 = 44
+MB_EDIT_X:  int32 = 56
+MB_EDIT_W:  int32 = 44
+MB_SLIDE_X: int32 = 104
+MB_SLIDE_W: int32 = 52
+MB_VIEW_X:  int32 = 160
+MB_VIEW_W:  int32 = 52
 
 # toolbar buttons
 NEW_X:  int32 = 8
 NEW_W:  int32 = 46
-DEL_X:  int32 = 60
+DUP_X:  int32 = 60
+DUP_W:  int32 = 46
+DEL_X:  int32 = 112
 DEL_W:  int32 = 46
-PRES_X: int32 = 112
+UP_X:   int32 = 164
+UP_W:   int32 = 34
+DN_X:   int32 = 204
+DN_W:   int32 = 34
+LAY_X:  int32 = 246
+LAY_W:  int32 = 64
+THM_X:  int32 = 316
+THM_W:  int32 = 62
+PRES_X: int32 = 384
 PRES_W: int32 = 78
-OPEN_X: int32 = 556
+OPEN_X: int32 = 584
 OPEN_W: int32 = 52
-SAVE_X: int32 = 612
+SAVE_X: int32 = 642
 SAVE_W: int32 = 60
+COUNT_X: int32 = 486         # "i / n" slide counter in the toolbar
 
 # thumbnail rail
 RAIL_X:  int32 = 0
@@ -784,27 +1629,37 @@ THUMB_X: int32 = 12
 THUMB_W: int32 = 108
 THUMB_H: int32 = 68
 THUMB_GAP: int32 = 12
-THUMB_Y0: int32 = 60        # CONTENT_Y + 10
+THUMB_Y0: int32 = 82         # CONTENT_Y + 10
 
 # edit slide canvas (right of the rail)
-CV_X: int32 = 152           # RAIL_W + 20
-CV_Y: int32 = 66            # CONTENT_Y + 16
-CV_W: int32 = 508           # WIN_W - RAIL_W - 40
-CV_H: int32 = 358           # WIN_H - CONTENT_Y - 32
+CV_X: int32 = 152            # RAIL_W + 20
+CV_Y: int32 = 84
+CV_W: int32 = 548            # WIN_W - RAIL_W - 40
+CV_H: int32 = 328
 
-TITLE_TX:  int32 = 176      # CV_X + 24
-TITLE_TY:  int32 = 92       # CV_Y + 26
-BULLET_TX: int32 = 200      # CV_X + 48
-BULLET_DX: int32 = 178      # CV_X + 26 (disc marker)
-BULLETS_Y0: int32 = 140     # CV_Y + 74
 BULLET_LINE: int32 = 26
+
+# speaker-notes strip + status bar
+NOTES_Y: int32 = 420
+NOTES_H: int32 = 54
+STATUS_Y: int32 = 476
+STATUS_H: int32 = 24
 
 tmp_draw: Array[96, uint8]
 num_buf:  Array[24, uint8]
+stat_buf: Array[192, uint8]
+
+
+def hamslides_win_w() -> int32:
+    return WIN_W
+
+
+def hamslides_win_h() -> int32:
+    return WIN_H
 
 
 def _visible_thumbs() -> uint64:
-    n: int32 = (WIN_H - THUMB_Y0) / (THUMB_H + THUMB_GAP)
+    n: int32 = (STATUS_Y - THUMB_Y0) / (THUMB_H + THUMB_GAP)
     if n < 1:
         n = 1
     return cast[uint64](n)
@@ -840,77 +1695,447 @@ def _draw_clip(x: int32, y: int32, maxpix: int32, src: Ptr[uint8], ln: uint64,
         hamscene_glyphs(x, y, &tmp_draw[0], color)
 
 
+# Left edge that centres `ln` monospace cells inside [x0, x0+w).
+def _center_x(x0: int32, w: int32, ln: uint64) -> int32:
+    px: int32 = cast[int32](ln) * 8
+    if px > w:
+        px = w
+    cx: int32 = x0 + (w - px) / 2
+    if cx < x0:
+        cx = x0
+    return cx
+
+
+# ---- placement: the SINGLE source of truth for render + caret + hit-test ---
+# Where the current slide's TITLE text starts in the EDIT canvas.
+def _title_box(xp: Ptr[int32], yp: Ptr[int32], wp: Ptr[int32]):
+    l: int32 = _lay(cur)
+    if l == LAY_TITLE:
+        w: int32 = CV_W - 64
+        wp[0] = w
+        yp[0] = CV_Y + 120
+        xp[0] = _center_x(CV_X + 32, w, cast[uint64](title_len[cur]))
+        return
+    if l == LAY_BLANK:
+        xp[0] = CV_X + 24
+        yp[0] = CV_Y + 10
+        wp[0] = CV_W - 48
+        return
+    xp[0] = CV_X + 24
+    yp[0] = CV_Y + 26
+    wp[0] = CV_W - 48
+
+
+# Where bullet `b` of the current slide is drawn in the EDIT canvas.
+def _bul_box(b: uint64, xp: Ptr[int32], yp: Ptr[int32], wp: Ptr[int32]):
+    l: int32 = _lay(cur)
+    lvl: int32 = cast[int32](bullet_lvl[_bullet_lidx(cur, b)])
+    if l == LAY_TITLE:
+        w: int32 = CV_W - 96
+        wp[0] = w
+        yp[0] = CV_Y + 172 + cast[int32](b) * BULLET_LINE
+        bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(cur, b)])
+        xp[0] = _center_x(CV_X + 48, w, bl)
+        return
+    if l == LAY_TWOCOL:
+        nb: uint64 = _nbul(cur)
+        split: uint64 = (nb + 1) / 2
+        half: int32 = CV_W / 2
+        if b < split:
+            xp[0] = CV_X + 40 + lvl * 16
+            yp[0] = CV_Y + 74 + cast[int32](b) * BULLET_LINE
+        else:
+            xp[0] = CV_X + half + 40 + lvl * 16
+            yp[0] = CV_Y + 74 + cast[int32](b - split) * BULLET_LINE
+        wp[0] = half - 70 - lvl * 16
+        return
+    if l == LAY_PICTURE:
+        xp[0] = CV_X + 40 + lvl * 16
+        yp[0] = CV_Y + 74 + cast[int32](b) * BULLET_LINE
+        wp[0] = CV_W / 2 - 60 - lvl * 16
+        return
+    if l == LAY_BLANK:
+        xp[0] = CV_X + 36 + lvl * 18
+        yp[0] = CV_Y + 44 + cast[int32](b) * (BULLET_LINE + 2)
+        wp[0] = CV_W - 72 - lvl * 18
+        return
+    xp[0] = CV_X + 48 + lvl * 18
+    yp[0] = CV_Y + 74 + cast[int32](b) * BULLET_LINE
+    wp[0] = CV_W - 72 - lvl * 18
+
+
+# Where bullet `b` is drawn in the PRESENT view.
+def _pbul_box(b: uint64, xp: Ptr[int32], yp: Ptr[int32], wp: Ptr[int32]):
+    l: int32 = _lay(cur)
+    lvl: int32 = cast[int32](bullet_lvl[_bullet_lidx(cur, b)])
+    if l == LAY_TITLE:
+        w: int32 = WIN_W - 120
+        wp[0] = w
+        yp[0] = 250 + cast[int32](b) * 34
+        bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(cur, b)])
+        xp[0] = _center_x(60, w, bl)
+        return
+    
+    if l == LAY_TWOCOL:
+        nb: uint64 = _nbul(cur)
+        split: uint64 = (nb + 1) / 2
+        half: int32 = WIN_W / 2
+        if b < split:
+            xp[0] = 96 + lvl * 24
+            yp[0] = 176 + cast[int32](b) * 38
+        else:
+            xp[0] = half + 60 + lvl * 24
+            yp[0] = 176 + cast[int32](b - split) * 38
+        wp[0] = half - 130
+        return
+    if l == LAY_PICTURE:
+        xp[0] = 96 + lvl * 24
+        yp[0] = 176 + cast[int32](b) * 38
+        wp[0] = WIN_W / 2 - 120
+        return
+    if l == LAY_BLANK:
+        xp[0] = 96 + lvl * 24
+        yp[0] = 96 + cast[int32](b) * 40
+        wp[0] = WIN_W - 150
+        return
+    xp[0] = 124 + lvl * 24
+    yp[0] = 176 + cast[int32](b) * 38
+    wp[0] = WIN_W - 170 - lvl * 24
+    return
+
+
+# ---- small chrome helpers --------------------------------------------------
 def _toolbtn(x: int32, w: int32, label: Ptr[uint8], hot: int32):
     bg: Ptr[uint8] = cast[Ptr[uint8]]("#e7e9f2")
+    if theme == 1:
+        bg = cast[Ptr[uint8]]("#e4e9ec")
+    elif theme == 2:
+        bg = cast[Ptr[uint8]]("#e3f0e8")
+    elif theme == 3:
+        bg = cast[Ptr[uint8]]("#f7e6d8")
     if hot != 0:
-        bg = cast[Ptr[uint8]]("#c9d0f0")
+        bg = _th_focus()
     hamscene_fill(x, TB_Y + 4, w, TB_H - 8, bg)
-    hamscene_stroke(x, TB_Y + 4, w, TB_H - 8, 1, cast[Ptr[uint8]]("#9aa2c4"))
-    hamscene_glyphs_bold(x + 8, TB_Y + 8, label, cast[Ptr[uint8]]("#26305c"))
+    hamscene_stroke(x, TB_Y + 4, w, TB_H - 8, 1, _th_edge())
+    hamscene_glyphs_bold(x + 8, TB_Y + 8, label, _th_deep())
+
+
+# The bullet marker for an indent level: level 0 a filled disc, level 1 a
+# hollow square, level 2 a small dash — a real multi-level list.
+def _draw_marker(x: int32, y: int32, lvl: int32, big: int32):
+    sz: int32 = 6
+    if big != 0:
+        sz = 10
+    if lvl == 0:
+        hamscene_fill(x, y, sz, sz, _th_accent())
+        if big != 0:
+            hamscene_stroke(x, y, sz, sz, 1, _th_deep())
+        return
+    if lvl == 1:
+        hamscene_stroke(x, y, sz, sz, 1, _th_accent())
+        return
+    hamscene_fill(x, y + sz / 2 - 1, sz, 2, _th_muted())
 
 
 # ---- one small thumbnail render -------------------------------------------
 def _draw_thumb(s: uint64, tx: int32, ty: int32, selected: int32):
-    # frame
-    fillc: Ptr[uint8] = cast[Ptr[uint8]]("#ffffff")
-    hamscene_fill(tx, ty, THUMB_W, THUMB_H, fillc)
-    bc: Ptr[uint8] = cast[Ptr[uint8]]("#aab0cc")
+    hamscene_fill(tx, ty, THUMB_W, THUMB_H, _th_paper())
+    bc: Ptr[uint8] = _th_edge()
     bt: int32 = 1
     if selected != 0:
-        bc = cast[Ptr[uint8]]("#4453b8")
+        bc = _th_accent()
         bt = 2
     hamscene_stroke(tx, ty, THUMB_W, THUMB_H, bt, bc)
     # slide-number badge
     nl: uint64 = _hsl_udec(s + 1, &num_buf[0])
     num_buf[nl] = 0
-    hamscene_glyphs(tx + 3, ty + 2, &num_buf[0], cast[Ptr[uint8]]("#8088a8"))
-    # mini title (accent strip + clipped text)
-    hamscene_fill(tx + 4, ty + 14, THUMB_W - 8, 12, cast[Ptr[uint8]]("#e6e9f6"))
+    hamscene_glyphs(tx + 3, ty + 2, &num_buf[0], _th_muted())
+    l: int32 = _lay(s)
     tl: uint64 = cast[uint64](title_len[s])
-    if tl > 0:
-        _draw_clip(tx + 6, ty + 15, THUMB_W - 12, &title_buf[_title_base(s)],
-                   tl, cast[Ptr[uint8]]("#33406e"), 0)
-    # mini bullets: a disc + a gray bar per bullet
     nb: uint64 = _nbul(s)
+    if l == LAY_TITLE:
+        # centred title block, no bullet rows
+        hamscene_fill(tx + 16, ty + 26, THUMB_W - 32, 8, _th_accent())
+        if tl > 0:
+            _draw_clip(tx + 18, ty + 38, THUMB_W - 36,
+                       &title_buf[_title_base(s)], tl, _th_muted(), 0)
+        return
+    if l != LAY_BLANK:
+        hamscene_fill(tx + 4, ty + 14, THUMB_W - 8, 12, _th_tint())
+        if tl > 0:
+            _draw_clip(tx + 6, ty + 15, THUMB_W - 12,
+                       &title_buf[_title_base(s)], tl, _th_titleink(), 0)
+    if l == LAY_PICTURE:
+        hamscene_fill(tx + 58, ty + 32, 42, 28, _th_tint())
+        hamscene_stroke(tx + 58, ty + 32, 42, 28, 1, _th_edge())
     b: uint64 = 0
     while b < nb and b < 4:
         by: int32 = ty + 32 + cast[int32](b) * 9
-        hamscene_fill(tx + 8, by + 2, 3, 3, cast[Ptr[uint8]]("#5b6ee1"))
+        lvl: int32 = cast[int32](bullet_lvl[_bullet_lidx(s, b)])
+        bx: int32 = tx + 8 + lvl * 5
+        colx: int32 = bx + 7
+        maxw: int32 = THUMB_W - 24 - lvl * 5
+        if l == LAY_TWOCOL and b >= (nb + 1) / 2:
+            bx = tx + 58
+            colx = bx + 7
+            maxw = 42
+            by = ty + 32 + cast[int32](b - (nb + 1) / 2) * 9
+        if l == LAY_PICTURE:
+            maxw = 40
+        hamscene_fill(bx, by + 2, 3, 3, _th_accent())
         bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(s, b)])
         bw: int32 = cast[int32](bl) * 3
-        if bw > THUMB_W - 24:
-            bw = THUMB_W - 24
+        if bw > maxw:
+            bw = maxw
         if bw < 6:
             bw = 6
-        hamscene_fill(tx + 15, by + 2, bw, 3, cast[Ptr[uint8]]("#b9bfd6"))
+        hamscene_fill(colx, by + 2, bw, 3, _th_muted())
         b = b + 1
 
 
+# ====================================================================
+# MENU MODEL — File / Edit / Slide / View. No arrays-of-strings in this
+# language, so the item table is pure functions over (menu, index).
+# ====================================================================
+def _menu_count(m: int32) -> uint64:
+    if m == 1:
+        return 4                                        # File
+    if m == 2:
+        return 4                                        # Edit
+    if m == 3:
+        return 7                                        # Slide
+    if m == 4:
+        return 4                                        # View
+    return 0
+
+
+def _menu_x(m: int32) -> int32:
+    if m == 1:
+        return MB_FILE_X
+    if m == 2:
+        return MB_EDIT_X
+    if m == 3:
+        return MB_SLIDE_X
+    return MB_VIEW_X
+
+
+def _menu_bw(m: int32) -> int32:
+    if m == 1:
+        return MB_FILE_W
+    if m == 2:
+        return MB_EDIT_W
+    if m == 3:
+        return MB_SLIDE_W
+    return MB_VIEW_W
+
+
+def _menu_panel_w(m: int32) -> int32:
+    if m == 3:
+        return 200
+    if m == 2:
+        return 190
+    return 168
+
+
+def _menu_title(m: int32) -> Ptr[uint8]:
+    if m == 1:
+        return cast[Ptr[uint8]]("File")
+    if m == 2:
+        return cast[Ptr[uint8]]("Edit")
+    if m == 3:
+        return cast[Ptr[uint8]]("Slide")
+    return cast[Ptr[uint8]]("View")
+
+
+def _menu_item(m: int32, i: uint64) -> Ptr[uint8]:
+    if m == 1:
+        if i == 0:
+            return cast[Ptr[uint8]]("New Deck")
+        if i == 1:
+            return cast[Ptr[uint8]]("Open...")
+        if i == 2:
+            return cast[Ptr[uint8]]("Save")
+        return cast[Ptr[uint8]]("Quit")
+    if m == 2:
+        if i == 0:
+            return cast[Ptr[uint8]]("Undo")
+        if i == 1:
+            return cast[Ptr[uint8]]("New Slide")
+        if i == 2:
+            return cast[Ptr[uint8]]("Duplicate Slide")
+        return cast[Ptr[uint8]]("Delete Slide")
+    if m == 3:
+        if i == 0:
+            return cast[Ptr[uint8]]("Title+Content")
+        if i == 1:
+            return cast[Ptr[uint8]]("Title Slide")
+        if i == 2:
+            return cast[Ptr[uint8]]("Two Column")
+        if i == 3:
+            return cast[Ptr[uint8]]("Picture")
+        if i == 4:
+            return cast[Ptr[uint8]]("Blank")
+        if i == 5:
+            return cast[Ptr[uint8]]("Move Up")
+        return cast[Ptr[uint8]]("Move Down")
+    if i == 0:
+        return cast[Ptr[uint8]]("Present")
+    if i == 1:
+        return cast[Ptr[uint8]]("Next Slide")
+    if i == 2:
+        return cast[Ptr[uint8]]("Prev Slide")
+    return cast[Ptr[uint8]]("Next Theme")
+
+
+def _menu_accel(m: int32, i: uint64) -> Ptr[uint8]:
+    if m == 1:
+        if i == 1:
+            return cast[Ptr[uint8]]("^O")
+        if i == 2:
+            return cast[Ptr[uint8]]("^S")
+        if i == 3:
+            return cast[Ptr[uint8]]("^Q")
+        return cast[Ptr[uint8]]("")
+    if m == 2:
+        if i == 0:
+            return cast[Ptr[uint8]]("^Z")
+        if i == 1:
+            return cast[Ptr[uint8]]("^N")
+        if i == 2:
+            return cast[Ptr[uint8]]("^U")
+        return cast[Ptr[uint8]]("^D")
+    if m == 3:
+        if i == 5:
+            return cast[Ptr[uint8]]("^K")
+        if i == 6:
+            return cast[Ptr[uint8]]("^L")
+        return cast[Ptr[uint8]]("^Y")
+    if i == 0:
+        return cast[Ptr[uint8]]("^P")
+    if i == 3:
+        return cast[Ptr[uint8]]("^T")
+    return cast[Ptr[uint8]]("")
+
+
+# A radio dot next to the CURRENT slide's layout.
+def _menu_item_active(m: int32, i: uint64) -> int32:
+    if m == 3 and i < 5:
+        if cast[int32](i) == _lay(cur):
+            return 1
+    return 0
+
+
+# Run a menu item. Returns the hamslides_hit action code: 1 save, 2 open,
+# 3 redraw-only, 4 quit.
+def _menu_activate(m: int32, i: uint64) -> int32:
+    menu_open = 0
+    if m == 1:
+        if i == 0:
+            hamslides_new_deck()
+            return 3
+        if i == 1:
+            return 2
+        if i == 2:
+            return 1
+        return 4
+    if m == 2:
+        if i == 0:
+            hamslides_undo()
+            return 3
+        if i == 1:
+            hamslides_add_slide()
+            return 3
+        if i == 2:
+            hamslides_duplicate_slide()
+            return 3
+        hamslides_delete_slide()
+        return 3
+    if m == 3:
+        if i < 5:
+            hamslides_set_layout(cur, cast[int32](i))
+            return 3
+        if i == 5:
+            hamslides_move_up()
+            return 3
+        hamslides_move_down()
+        return 3
+    if i == 0:
+        hamslides_set_present(1)
+        return 3
+    if i == 1:
+        hamslides_next()
+        return 3
+    if i == 2:
+        hamslides_prev()
+        return 3
+    hamslides_cycle_theme()
+    return 3
+
+
+# Click an item by index without a pointer (menu keyboard/scripted driving).
+def hamslides_menu_select(m: int32, i: uint64) -> int32:
+    if i >= _menu_count(m):
+        return 0
+    return _menu_activate(m, i)
+
+
+def hamslides_menu_toggle(m: int32):
+    if menu_open == m:
+        menu_open = 0
+    else:
+        menu_open = m
+
+
 # ---- EDIT view -------------------------------------------------------------
-def _build_edit():
-    hamscene_fill(0, 0, WIN_W, WIN_H, cast[Ptr[uint8]]("#e9ebf3"))
+def _draw_menubar():
+    hamscene_fill(0, MENU_Y, WIN_W, MENU_H, _th_tint())
+    hamscene_stroke(0, MENU_Y + MENU_H - 1, WIN_W, 1, 1, _th_edge())
+    m: int32 = 1
+    while m <= 4:
+        mx: int32 = _menu_x(m)
+        mw: int32 = _menu_bw(m)
+        if menu_open == m:
+            hamscene_fill(mx, MENU_Y + 1, mw, MENU_H - 2, _th_accent())
+            hamscene_glyphs(mx + 6, MENU_Y + 4, _menu_title(m),
+                            cast[Ptr[uint8]]("#ffffff"))
+        else:
+            hamscene_glyphs(mx + 6, MENU_Y + 4, _menu_title(m), _th_deep())
+        m = m + 1
 
-    # title bar
-    hamscene_fill(0, 0, WIN_W, BAR_H, cast[Ptr[uint8]]("#2b2d5c"))
-    hamscene_fill(0, BAR_H - 1, WIN_W, 1, cast[Ptr[uint8]]("#1f2044"))
-    hamscene_glyphs_bold(10, 5, cast[Ptr[uint8]]("HamSlides"),
-                         cast[Ptr[uint8]]("#ffffff"))
-    nm: Ptr[uint8] = cast[Ptr[uint8]]("(untitled)")
-    if fname_len > 0:
-        nm = &fname[0]
-    hamscene_glyphs(104, 5, nm, cast[Ptr[uint8]]("#c8cbe8"))
-    stat: Ptr[uint8] = cast[Ptr[uint8]]("ready")
-    if flash > 0:
-        stat = cast[Ptr[uint8]]("saved!")
-    elif dirty != 0:
-        stat = cast[Ptr[uint8]]("* modified")
-    hamscene_glyphs(WIN_W - 92, 5, stat, cast[Ptr[uint8]]("#e6e8fa"))
 
-    # toolbar
-    hamscene_fill(0, TB_Y, WIN_W, TB_H, cast[Ptr[uint8]]("#eef0f6"))
-    hamscene_stroke(0, TB_Y + TB_H - 1, WIN_W, 1, 1, cast[Ptr[uint8]]("#b6bcd6"))
+def _draw_dropdown():
+    if menu_open == 0:
+        return
+    m: int32 = menu_open
+    px: int32 = _menu_x(m)
+    pw: int32 = _menu_panel_w(m)
+    cnt: uint64 = _menu_count(m)
+    ph: int32 = cast[int32](cnt) * DD_IH + 8
+    hamscene_fill(px + 2, DD_Y + 2, pw, ph, cast[Ptr[uint8]]("#00000022"))
+    hamscene_fill(px, DD_Y, pw, ph, _th_paper())
+    hamscene_stroke(px, DD_Y, pw, ph, 1, _th_edge())
+    i: uint64 = 0
+    while i < cnt:
+        iy: int32 = DD_Y + 4 + cast[int32](i) * DD_IH
+        if _menu_item_active(m, i) != 0:
+            hamscene_fill(px + 6, iy + 6, 5, 5, _th_accent())
+        hamscene_glyphs(px + 16, iy + 2, _menu_item(m, i), _th_ink())
+        acc: Ptr[uint8] = _menu_accel(m, i)
+        if acc[0] != 0:
+            hamscene_glyphs(px + pw - 26, iy + 2, acc, _th_muted())
+        i = i + 1
+
+
+def _draw_toolbar():
+    hamscene_fill(0, TB_Y, WIN_W, TB_H, _th_tint())
+    hamscene_stroke(0, TB_Y + TB_H - 1, WIN_W, 1, 1, _th_edge())
     _toolbtn(NEW_X, NEW_W, cast[Ptr[uint8]]("New"), 0)
+    _toolbtn(DUP_X, DUP_W, cast[Ptr[uint8]]("Dup"), 0)
     _toolbtn(DEL_X, DEL_W, cast[Ptr[uint8]]("Del"), 0)
+    _toolbtn(UP_X, UP_W, cast[Ptr[uint8]]("Up"), 0)
+    _toolbtn(DN_X, DN_W, cast[Ptr[uint8]]("Dn"), 0)
+    _toolbtn(LAY_X, LAY_W, cast[Ptr[uint8]]("Layout"), 0)
+    _toolbtn(THM_X, THM_W, cast[Ptr[uint8]]("Theme"), 0)
     _toolbtn(PRES_X, PRES_W, cast[Ptr[uint8]]("Present"), 0)
     _toolbtn(OPEN_X, OPEN_W, cast[Ptr[uint8]]("Open"), 0)
     _toolbtn(SAVE_X, SAVE_W, cast[Ptr[uint8]]("Save"), 0)
@@ -924,13 +2149,13 @@ def _build_edit():
     cp = cp + 1
     cp = cp + _hsl_udec(nslides, &num_buf[cp])
     num_buf[cp] = 0
-    hamscene_glyphs_bold(360, TB_Y + 8, &num_buf[0], cast[Ptr[uint8]]("#3a4270"))
+    hamscene_glyphs_bold(COUNT_X, TB_Y + 8, &num_buf[0], _th_deep())
 
-    # thumbnail rail
-    hamscene_fill(RAIL_X, CONTENT_Y, RAIL_W, WIN_H - CONTENT_Y,
-                  cast[Ptr[uint8]]("#d7dbe9"))
-    hamscene_stroke(RAIL_W - 1, CONTENT_Y, 1, WIN_H - CONTENT_Y, 1,
-                    cast[Ptr[uint8]]("#b6bcd6"))
+
+def _draw_rail():
+    hamscene_fill(RAIL_X, CONTENT_Y, RAIL_W, STATUS_Y - CONTENT_Y, _th_railbg())
+    hamscene_stroke(RAIL_W - 1, CONTENT_Y, 1, STATUS_Y - CONTENT_Y, 1,
+                    _th_edge())
     vt: uint64 = _visible_thumbs()
     row: uint64 = 0
     while row < vt and thumb_top + row < nslides:
@@ -942,107 +2167,268 @@ def _build_edit():
         _draw_thumb(s, THUMB_X, ty, sel)
         row = row + 1
 
-    # ---- the current slide, large, in the edit canvas ------------------
-    hamscene_fill(CV_X, CV_Y, CV_W, CV_H, cast[Ptr[uint8]]("#ffffff"))
-    hamscene_stroke(CV_X, CV_Y, CV_W, CV_H, 1, cast[Ptr[uint8]]("#9aa2c4"))
-    # title band
-    hamscene_fill(CV_X, CV_Y, CV_W, 42, cast[Ptr[uint8]]("#f2f3fb"))
-    hamscene_line(CV_X + 12, CV_Y + 46, CV_X + CV_W - 12, CV_Y + 46, 2,
-                  cast[Ptr[uint8]]("#4453b8"))
-    # focus highlight for the title
-    if focus_row == 0:
-        hamscene_fill(CV_X + 4, CV_Y + 4, CV_W - 8, 34,
-                      cast[Ptr[uint8]]("#eef0ff"))
-    tl: uint64 = cast[uint64](title_len[cur])
-    if tl > 0:
-        _draw_clip(TITLE_TX, TITLE_TY, CV_W - 48, &title_buf[_title_base(cur)],
-                   tl, cast[Ptr[uint8]]("#1c2340"), 1)
-    elif focus_row == 0:
-        hamscene_glyphs(TITLE_TX, TITLE_TY, cast[Ptr[uint8]]("Slide title"),
-                        cast[Ptr[uint8]]("#a7adc8"))
 
-    # bullets
+def _draw_picture_ph(x: int32, y: int32, w: int32, h: int32):
+    # A picture PLACEHOLDER: framed box with a simple mountain/sun motif and a
+    # caption, so the Picture layout reads as an image region.
+    hamscene_fill(x, y, w, h, _th_tint())
+    hamscene_stroke(x, y, w, h, 1, _th_edge())
+    hamscene_fill(x + 12, y + h - 34, w - 24, 4, _th_accent())
+    hamscene_line(x + 16, y + h - 34, x + w / 2, y + h / 2, 2, _th_accent())
+    hamscene_line(x + w / 2, y + h / 2, x + w - 16, y + h - 34, 2, _th_accent())
+    hamscene_fill(x + w - 40, y + 18, 12, 12, _th_muted())
+    _draw_clip(x + 12, y + h - 24, w - 24, cast[Ptr[uint8]]("Picture"), 7,
+               _th_muted(), 0)
+
+
+def _draw_canvas():
+    l: int32 = _lay(cur)
+    hamscene_fill(CV_X, CV_Y, CV_W, CV_H, _th_paper())
+    hamscene_stroke(CV_X, CV_Y, CV_W, CV_H, 1, _th_edge())
+
+    tx: int32 = 0
+    ty: int32 = 0
+    tw: int32 = 0
+    _title_box(&tx, &ty, &tw)
+    tl: uint64 = cast[uint64](title_len[cur])
+
+    if l == LAY_CONTENT or l == LAY_TWOCOL or l == LAY_PICTURE:
+        hamscene_fill(CV_X, CV_Y, CV_W, 42, _th_tint())
+        hamscene_line(CV_X + 12, CV_Y + 46, CV_X + CV_W - 12, CV_Y + 46, 2,
+                      _th_accent())
+    elif l == LAY_TITLE:
+        hamscene_line(CV_X + CV_W / 2 - 90, CV_Y + 148,
+                      CV_X + CV_W / 2 + 90, CV_Y + 148, 3, _th_accent())
+    if l == LAY_TWOCOL:
+        hamscene_line(CV_X + CV_W / 2, CV_Y + 60, CV_X + CV_W / 2,
+                      CV_Y + CV_H - 16, 1, _th_edge())
+    if l == LAY_PICTURE:
+        _draw_picture_ph(CV_X + CV_W / 2 + 10, CV_Y + 66, CV_W / 2 - 40, 180)
+
+    # focused-field wash for the title
+    if focus_row == 0:
+        hamscene_fill(CV_X + 4, ty - 6, CV_W - 8, 26, _th_focus())
+    tcol: Ptr[uint8] = _th_titleink()
+    if l == LAY_BLANK:
+        tcol = _th_muted()
+    if tl > 0:
+        _draw_clip(tx, ty, tw, &title_buf[_title_base(cur)], tl, tcol, 1)
+    elif focus_row == 0:
+        ph: Ptr[uint8] = cast[Ptr[uint8]]("Slide title")
+        if l == LAY_BLANK:
+            ph = cast[Ptr[uint8]]("Slide title (hidden on this layout)")
+        hamscene_glyphs(tx, ty, ph, _th_muted())
+
     nb: uint64 = _nbul(cur)
     b: uint64 = 0
     while b < nb:
-        by: int32 = BULLETS_Y0 + cast[int32](b) * BULLET_LINE
+        bx: int32 = 0
+        by: int32 = 0
+        bw: int32 = 0
+        _bul_box(b, &bx, &by, &bw)
         if focus_row == b + 1:
-            hamscene_fill(CV_X + 4, by - 4, CV_W - 8, BULLET_LINE - 2,
-                          cast[Ptr[uint8]]("#eef0ff"))
-        # disc marker
-        hamscene_fill(BULLET_DX, by + 4, 6, 6, cast[Ptr[uint8]]("#4453b8"))
+            hamscene_fill(bx - 26, by - 4, bw + 30, BULLET_LINE - 2, _th_focus())
+        lvl: int32 = cast[int32](bullet_lvl[_bullet_lidx(cur, b)])
+        if l != LAY_TITLE:
+            _draw_marker(bx - 22, by + 4, lvl, 0)
         bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(cur, b)])
         if bl > 0:
-            _draw_clip(BULLET_TX, by, CV_W - 72, &bullet_buf[_bullet_base(cur, b)],
-                       bl, cast[Ptr[uint8]]("#333a4d"), 0)
+            _draw_clip(bx, by, bw, &bullet_buf[_bullet_base(cur, b)], bl,
+                       _th_ink(), 0)
         b = b + 1
     if nb == 0:
-        hamscene_glyphs(BULLET_TX, BULLETS_Y0,
-                        cast[Ptr[uint8]]("(Enter to add a bullet)"),
-                        cast[Ptr[uint8]]("#a7adc8"))
+        hint: Ptr[uint8] = cast[Ptr[uint8]]("(Enter to add a bullet)")
+        if l == LAY_TITLE:
+            hint = cast[Ptr[uint8]]("(Enter to add a subtitle)")
+        hamscene_glyphs(CV_X + 48, CV_Y + 172, hint, _th_muted())
 
-    # caret on the focused field
     _draw_edit_caret()
 
 
 def _draw_edit_caret():
+    if focus_row == FOCUS_NOTES:
+        return
     ln: uint64 = _focus_len()
     cx: uint64 = caret
     if cx > ln:
         cx = ln
+    bx: int32 = 0
+    by: int32 = 0
+    bw: int32 = 0
     if focus_row == 0:
-        clip: int32 = (CV_W - 48) / 8
-        if cx > cast[uint64](clip):
-            cx = cast[uint64](clip)
-        px: int32 = TITLE_TX + cast[int32](cx) * 8
-        hamscene_line(px, TITLE_TY - 2, px, TITLE_TY + 14, 2,
-                      cast[Ptr[uint8]]("#2b2d5c"))
-        return
-    b: uint64 = focus_row - 1
-    clip2: int32 = (CV_W - 72) / 8
-    if cx > cast[uint64](clip2):
-        cx = cast[uint64](clip2)
-    by: int32 = BULLETS_Y0 + cast[int32](b) * BULLET_LINE
-    px2: int32 = BULLET_TX + cast[int32](cx) * 8
-    hamscene_line(px2, by - 2, px2, by + 14, 1, cast[Ptr[uint8]]("#2b2d5c"))
+        _title_box(&bx, &by, &bw)
+    else:
+        _bul_box(focus_row - 1, &bx, &by, &bw)
+    clip: int32 = bw / 8
+    if cx > cast[uint64](clip):
+        cx = cast[uint64](clip)
+    px: int32 = bx + cast[int32](cx) * 8
+    th: int32 = 1
+    if focus_row == 0:
+        th = 2
+    hamscene_line(px, by - 2, px, by + 14, th, _th_deep())
+
+
+def _draw_notes():
+    hamscene_fill(0, NOTES_Y, WIN_W, NOTES_H, _th_tint())
+    hamscene_stroke(0, NOTES_Y, WIN_W, 1, 1, _th_edge())
+    hamscene_glyphs_bold(10, NOTES_Y + 5,
+                         cast[Ptr[uint8]]("Speaker notes  (Ctrl-E)"),
+                         _th_deep())
+    bx: int32 = 10
+    by: int32 = NOTES_Y + 24
+    bw: int32 = WIN_W - 20
+    bg: Ptr[uint8] = _th_paper()
+    if focus_row == FOCUS_NOTES:
+        bg = _th_focus()
+    hamscene_fill(bx, by, bw, 22, bg)
+    hamscene_stroke(bx, by, bw, 22, 1, _th_edge())
+    nl: uint64 = cast[uint64](notes_len[cur])
+    if nl > 0:
+        _draw_clip(bx + 6, by + 3, bw - 12, &notes_buf[_notes_base(cur)], nl,
+                   _th_ink(), 0)
+    elif focus_row != FOCUS_NOTES:
+        hamscene_glyphs(bx + 6, by + 3,
+                        cast[Ptr[uint8]]("(notes for the presenter)"),
+                        _th_muted())
+    if focus_row == FOCUS_NOTES:
+        cx: uint64 = caret
+        if cx > nl:
+            cx = nl
+        maxc: int32 = (bw - 12) / 8
+        if cx > cast[uint64](maxc):
+            cx = cast[uint64](maxc)
+        px: int32 = bx + 6 + cast[int32](cx) * 8
+        hamscene_line(px, by + 2, px, by + 19, 2, _th_deep())
+
+
+def _draw_status():
+    hamscene_fill(0, STATUS_Y, WIN_W, STATUS_H, _th_railbg())
+    hamscene_stroke(0, STATUS_Y, WIN_W, 1, 1, _th_edge())
+    p: uint64 = _append_cstr(&stat_buf[0], 0, cast[Ptr[uint8]]("Slide "))
+    p = p + _hsl_udec(cur + 1, &stat_buf[p])
+    p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("/"))
+    p = p + _hsl_udec(nslides, &stat_buf[p])
+    p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Layout: "))
+    p = _append_cstr(&stat_buf[0], p, _lay_name(_lay(cur)))
+    p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Theme: "))
+    p = _append_cstr(&stat_buf[0], p, _th_name())
+    if focus_row != 0 and focus_row != FOCUS_NOTES:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Bullet L"))
+        p = p + _hsl_udec(hamslides_bullet_level(cur, focus_row - 1),
+                          &stat_buf[p])
+    elif focus_row == FOCUS_NOTES:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Notes"))
+    stat_buf[p] = 0
+    hamscene_glyphs(10, STATUS_Y + 4, &stat_buf[0], _th_deep())
+    hamscene_glyphs(WIN_W - 282, STATUS_Y + 4,
+                    cast[Ptr[uint8]]("Tab indents  ^Y layout  ^P present"),
+                    _th_muted())
+
+
+def _build_edit():
+    hamscene_fill(0, 0, WIN_W, WIN_H, _th_winbg())
+
+    # title bar
+    hamscene_fill(0, 0, WIN_W, BAR_H, _th_deep())
+    hamscene_fill(0, BAR_H - 1, WIN_W, 1, _th_deep_edge())
+    hamscene_glyphs_bold(10, 5, cast[Ptr[uint8]]("HamSlides"),
+                         cast[Ptr[uint8]]("#ffffff"))
+    nm: Ptr[uint8] = cast[Ptr[uint8]]("(untitled)")
+    if fname_len > 0:
+        nm = &fname[0]
+    hamscene_glyphs(104, 5, nm, cast[Ptr[uint8]]("#c8cbe8"))
+    stat: Ptr[uint8] = cast[Ptr[uint8]]("ready")
+    if flash > 0:
+        stat = cast[Ptr[uint8]]("saved!")
+    elif dirty != 0:
+        stat = cast[Ptr[uint8]]("* modified")
+    hamscene_glyphs(WIN_W - 92, 5, stat, cast[Ptr[uint8]]("#e6e8fa"))
+
+    _draw_menubar()
+    _draw_toolbar()
+    _draw_rail()
+    _draw_canvas()
+    _draw_notes()
+    _draw_status()
+    _draw_dropdown()
 
 
 # ---- PRESENT view ----------------------------------------------------------
 def _build_present():
-    # clean full-bleed slide
-    hamscene_fill(0, 0, WIN_W, WIN_H, cast[Ptr[uint8]]("#f4f6fc"))
-    # top accent title band
-    hamscene_fill(0, 54, WIN_W, 66, cast[Ptr[uint8]]("#4453b8"))
-    hamscene_fill(0, 120, WIN_W, 3, cast[Ptr[uint8]]("#2b2d5c"))
+    if present_black != 0:
+        hamscene_fill(0, 0, WIN_W, WIN_H, cast[Ptr[uint8]]("#000000"))
+        hamscene_glyphs(16, WIN_H - 24,
+                        cast[Ptr[uint8]]("screen blanked - b resumes"),
+                        cast[Ptr[uint8]]("#3a3a3a"))
+        return
+    l: int32 = _lay(cur)
+    hamscene_fill(0, 0, WIN_W, WIN_H, _th_present_bg())
     tl: uint64 = cast[uint64](title_len[cur])
-    if tl > 0:
-        show: uint64 = tl
-        if show > 78:
-            show = 78
-        tx: int32 = (WIN_W - cast[int32](show) * 8) / 2
-        if tx < 16:
-            tx = 16
-        _draw_clip(tx, 80, WIN_W - 32, &title_buf[_title_base(cur)], tl,
-                   cast[Ptr[uint8]]("#ffffff"), 1)
-    else:
-        _draw_clip((WIN_W - 13 * 8) / 2, 80, WIN_W, cast[Ptr[uint8]]("Untitled slide"),
-                   14, cast[Ptr[uint8]]("#dfe3ff"), 1)
 
-    # bullets, large spacing
+    if l == LAY_TITLE:
+        if tl > 0:
+            tx: int32 = _center_x(16, WIN_W - 32, tl)
+            _draw_clip(tx, 172, WIN_W - 32, &title_buf[_title_base(cur)], tl,
+                       _th_titleink(), 1)
+        else:
+            _draw_clip(_center_x(16, WIN_W - 32, 14), 172, WIN_W - 32,
+                       cast[Ptr[uint8]]("Untitled slide"), 14, _th_muted(), 1)
+        hamscene_fill(WIN_W / 2 - 110, 210, 220, 4, _th_accent())
+    elif l != LAY_BLANK:
+        hamscene_fill(0, 54, WIN_W, 66, _th_accent())
+        hamscene_fill(0, 120, WIN_W, 3, _th_deep())
+        if tl > 0:
+            tx2: int32 = _center_x(16, WIN_W - 32, tl)
+            _draw_clip(tx2, 80, WIN_W - 32, &title_buf[_title_base(cur)], tl,
+                       cast[Ptr[uint8]]("#ffffff"), 1)
+        else:
+            _draw_clip(_center_x(16, WIN_W - 32, 14), 80, WIN_W - 32,
+                       cast[Ptr[uint8]]("Untitled slide"), 14,
+                       cast[Ptr[uint8]]("#dfe3ff"), 1)
+
+    if l == LAY_TWOCOL:
+        hamscene_line(WIN_W / 2, 156, WIN_W / 2, WIN_H - 60, 1, _th_muted())
+    if l == LAY_PICTURE:
+        _draw_picture_ph(WIN_W / 2 + 20, 160, WIN_W / 2 - 60, 240)
+
     nb: uint64 = _nbul(cur)
     b: uint64 = 0
     while b < nb:
-        by: int32 = 168 + cast[int32](b) * 38
-        # disc marker
-        hamscene_fill(96, by + 3, 10, 10, cast[Ptr[uint8]]("#4453b8"))
-        hamscene_stroke(96, by + 3, 10, 10, 1, cast[Ptr[uint8]]("#2b2d5c"))
+        bx: int32 = 0
+        by: int32 = 0
+        bw: int32 = 0
+        _pbul_box(b, &bx, &by, &bw)
+        lvl: int32 = cast[int32](bullet_lvl[_bullet_lidx(cur, b)])
+        if l != LAY_TITLE:
+            _draw_marker(bx - 28, by + 3, lvl, 1)
         bl: uint64 = cast[uint64](bullet_len[_bullet_lidx(cur, b)])
         if bl > 0:
-            _draw_clip(124, by, WIN_W - 150, &bullet_buf[_bullet_base(cur, b)],
-                       bl, cast[Ptr[uint8]]("#232a4a"), 0)
+            col: Ptr[uint8] = _th_ink()
+            bold: int32 = 0
+            if l == LAY_TITLE and b == 0:
+                col = _th_accent()
+                bold = 1
+            _draw_clip(bx, by, bw, &bullet_buf[_bullet_base(cur, b)], bl, col,
+                       bold)
         b = b + 1
 
-    # page indicator, bottom-right
+    # speaker-notes overlay ('n')
+    if present_notes != 0:
+        oy: int32 = WIN_H - 108
+        hamscene_fill(24, oy, WIN_W - 48, 68, cast[Ptr[uint8]]("#ffffffdd"))
+        hamscene_stroke(24, oy, WIN_W - 48, 68, 1, _th_accent())
+        hamscene_glyphs_bold(34, oy + 6, cast[Ptr[uint8]]("Speaker notes"),
+                             _th_accent())
+        nl: uint64 = cast[uint64](notes_len[cur])
+        if nl > 0:
+            _draw_clip(34, oy + 28, WIN_W - 68, &notes_buf[_notes_base(cur)],
+                       nl, _th_ink(), 0)
+        else:
+            hamscene_glyphs(34, oy + 28, cast[Ptr[uint8]]("(none)"),
+                            _th_muted())
+
+    # page indicator + progress bar + hints
     ip: uint64 = _hsl_udec(cur + 1, &num_buf[0])
     num_buf[ip] = 32
     ip = ip + 1
@@ -1052,11 +2438,13 @@ def _build_present():
     ip = ip + 1
     ip = ip + _hsl_udec(nslides, &num_buf[ip])
     num_buf[ip] = 0
-    hamscene_glyphs(WIN_W - 84, WIN_H - 24, &num_buf[0],
-                    cast[Ptr[uint8]]("#8890b4"))
-    hamscene_glyphs(16, WIN_H - 24,
-                    cast[Ptr[uint8]]("Space/->: next   <-: back   Esc: exit"),
-                    cast[Ptr[uint8]]("#9aa0c0"))
+    hamscene_glyphs(WIN_W - 84, WIN_H - 26, &num_buf[0], _th_muted())
+    hamscene_glyphs(16, WIN_H - 26,
+                    cast[Ptr[uint8]]("Space/->: next  <-: back  n: notes  b: blank  Esc: exit"),
+                    _th_muted())
+    pw: int32 = cast[int32](((cur + 1) * cast[uint64](WIN_W)) / nslides)
+    hamscene_fill(0, WIN_H - 4, WIN_W, 4, _th_tint())
+    hamscene_fill(0, WIN_H - 4, pw, 4, _th_accent())
 
 
 def hamslides_build_scene():
@@ -1070,62 +2458,6 @@ def hamslides_build_scene():
 
 
 # ---- pointer hit-testing ---------------------------------------------------
-# Returns: 1 save, 2 open, 3 redraw-only, 0 nothing. New/Del/Present/select and
-# present-mode advance are handled internally and reported as 3 (redraw).
-def hamslides_hit(x: int64, y: int64) -> int32:
-    if view == VIEW_PRESENT:
-        # click right 2/3 -> next, left 1/3 -> prev
-        if x < cast[int64](WIN_W / 3):
-            hamslides_prev()
-        else:
-            hamslides_next()
-        return 3
-
-    # toolbar row
-    if y >= cast[int64](TB_Y) and y < cast[int64](TB_Y + TB_H):
-        if x >= cast[int64](NEW_X) and x < cast[int64](NEW_X + NEW_W):
-            hamslides_add_slide()
-            return 3
-        if x >= cast[int64](DEL_X) and x < cast[int64](DEL_X + DEL_W):
-            hamslides_delete_slide()
-            return 3
-        if x >= cast[int64](PRES_X) and x < cast[int64](PRES_X + PRES_W):
-            view = VIEW_PRESENT
-            return 3
-        if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
-            return 2
-        if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
-            return 1
-        return 0
-
-    # thumbnail rail
-    if x >= cast[int64](RAIL_X) and x < cast[int64](RAIL_W) and \
-            y >= cast[int64](CONTENT_Y):
-        vt: uint64 = _visible_thumbs()
-        row: uint64 = 0
-        while row < vt and thumb_top + row < nslides:
-            ty: int32 = THUMB_Y0 + cast[int32](row) * (THUMB_H + THUMB_GAP)
-            if y >= cast[int64](ty) and y < cast[int64](ty + THUMB_H):
-                hamslides_goto(thumb_top + row)
-                return 3
-            row = row + 1
-        return 0
-
-    # edit canvas: click title band or a bullet to focus + place caret
-    if x >= cast[int64](CV_X) and x < cast[int64](CV_X + CV_W):
-        if y >= cast[int64](CV_Y + 4) and y < cast[int64](CV_Y + 40):
-            focus_row = 0
-            _place_caret_from_x(x, TITLE_TX)
-            return 3
-        if y >= cast[int64](BULLETS_Y0 - 4):
-            idx: int64 = (y - cast[int64](BULLETS_Y0 - 4)) / cast[int64](BULLET_LINE)
-            if idx >= 0 and idx < cast[int64](_nbul(cur)):
-                focus_row = cast[uint64](idx) + 1
-                _place_caret_from_x(x, BULLET_TX)
-                return 3
-    return 0
-
-
 def _place_caret_from_x(x: int64, textx: int32):
     ln: uint64 = _focus_len()
     if x <= cast[int64](textx):
@@ -1137,3 +2469,126 @@ def _place_caret_from_x(x: int64, textx: int32):
     if col > cast[int64](ln):
         col = cast[int64](ln)
     caret = cast[uint64](col)
+
+
+# Returns: 1 save, 2 open, 3 redraw-only, 4 quit, 0 nothing. Structural
+# actions (new/dup/del/move/layout/theme/present/select/menu) are handled
+# internally and reported as 3 (redraw).
+def hamslides_hit(x: int64, y: int64) -> int32:
+    if view == VIEW_PRESENT:
+        if present_black != 0:
+            present_black = 0
+            return 3
+        if x < cast[int64](WIN_W / 3):
+            hamslides_prev()
+        else:
+            hamslides_next()
+        return 3
+
+    # open drop-down swallows the click
+    if menu_open != 0:
+        m: int32 = menu_open
+        px0: int32 = _menu_x(m)
+        pw: int32 = _menu_panel_w(m)
+        cnt: uint64 = _menu_count(m)
+        ph: int32 = cast[int32](cnt) * DD_IH + 8
+        if x >= cast[int64](px0) and x < cast[int64](px0 + pw) and \
+                y >= cast[int64](DD_Y) and y < cast[int64](DD_Y + ph):
+            idx: int64 = (y - cast[int64](DD_Y + 4)) / cast[int64](DD_IH)
+            if idx >= 0 and idx < cast[int64](cnt):
+                return _menu_activate(m, cast[uint64](idx))
+            menu_open = 0
+            return 3
+        menu_open = 0
+        return 3
+
+    # menu bar
+    if y >= cast[int64](MENU_Y) and y < cast[int64](MENU_Y + MENU_H):
+        mm: int32 = 1
+        while mm <= 4:
+            mx: int32 = _menu_x(mm)
+            mw: int32 = _menu_bw(mm)
+            if x >= cast[int64](mx) and x < cast[int64](mx + mw):
+                hamslides_menu_toggle(mm)
+                return 3
+            mm = mm + 1
+        return 0
+
+    # toolbar row
+    if y >= cast[int64](TB_Y) and y < cast[int64](TB_Y + TB_H):
+        if x >= cast[int64](NEW_X) and x < cast[int64](NEW_X + NEW_W):
+            hamslides_add_slide()
+            return 3
+        if x >= cast[int64](DUP_X) and x < cast[int64](DUP_X + DUP_W):
+            hamslides_duplicate_slide()
+            return 3
+        if x >= cast[int64](DEL_X) and x < cast[int64](DEL_X + DEL_W):
+            hamslides_delete_slide()
+            return 3
+        if x >= cast[int64](UP_X) and x < cast[int64](UP_X + UP_W):
+            hamslides_move_up()
+            return 3
+        if x >= cast[int64](DN_X) and x < cast[int64](DN_X + DN_W):
+            hamslides_move_down()
+            return 3
+        if x >= cast[int64](LAY_X) and x < cast[int64](LAY_X + LAY_W):
+            hamslides_cycle_layout()
+            return 3
+        if x >= cast[int64](THM_X) and x < cast[int64](THM_X + THM_W):
+            hamslides_cycle_theme()
+            return 3
+        if x >= cast[int64](PRES_X) and x < cast[int64](PRES_X + PRES_W):
+            hamslides_set_present(1)
+            return 3
+        if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
+            return 2
+        if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
+            return 1
+        return 0
+
+    # speaker-notes strip
+    if y >= cast[int64](NOTES_Y) and y < cast[int64](NOTES_Y + NOTES_H):
+        focus_row = FOCUS_NOTES
+        _place_caret_from_x(x, 16)
+        return 3
+
+    # thumbnail rail
+    if x >= cast[int64](RAIL_X) and x < cast[int64](RAIL_W) and \
+            y >= cast[int64](CONTENT_Y) and y < cast[int64](STATUS_Y):
+        vt: uint64 = _visible_thumbs()
+        row: uint64 = 0
+        while row < vt and thumb_top + row < nslides:
+            ty: int32 = THUMB_Y0 + cast[int32](row) * (THUMB_H + THUMB_GAP)
+            if y >= cast[int64](ty) and y < cast[int64](ty + THUMB_H):
+                hamslides_goto(thumb_top + row)
+                return 3
+            row = row + 1
+        return 0
+
+    # edit canvas: click a bullet row (layout-aware) or the title to focus +
+    # place the caret. Bullets are tested first: on centred/two-column layouts
+    # their boxes are the tighter targets.
+    if x >= cast[int64](CV_X) and x < cast[int64](CV_X + CV_W) and \
+            y >= cast[int64](CV_Y) and y < cast[int64](CV_Y + CV_H):
+        nb: uint64 = _nbul(cur)
+        b: uint64 = 0
+        while b < nb:
+            bx: int32 = 0
+            by: int32 = 0
+            bw: int32 = 0
+            _bul_box(b, &bx, &by, &bw)
+            if y >= cast[int64](by - 6) and y < cast[int64](by + 18) and \
+                    x >= cast[int64](bx - 26) and x < cast[int64](bx + bw + 4):
+                focus_row = b + 1
+                _place_caret_from_x(x, bx)
+                return 3
+            b = b + 1
+        tx: int32 = 0
+        ty2: int32 = 0
+        tw: int32 = 0
+        _title_box(&tx, &ty2, &tw)
+        if y >= cast[int64](ty2 - 10) and y < cast[int64](ty2 + 22):
+            focus_row = 0
+            _place_caret_from_x(x, tx)
+            return 3
+    return 0

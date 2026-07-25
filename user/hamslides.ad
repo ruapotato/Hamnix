@@ -2,12 +2,16 @@
 # PRESENTATION app (/bin/hamslides). The office suite's THIRD app alongside
 # HamWrite (word processor) and HamSheet (spreadsheet): a minimal
 # PowerPoint / Impress that edits and presents a DECK of slides — each slide a
-# title + bullet list, an EDIT view (thumbnail rail + large current slide) and a
-# full-window PRESENT view, saved/loaded as a HAMSLIDES1 document container that
-# round-trips the deck.
+# title + a multi-level bullet list + speaker notes + a layout, an EDIT view
+# (menu bar, toolbar, thumbnail rail, the current slide large, a notes strip and
+# a status bar) and a full-window PRESENT view, saved/loaded as a HAMSLIDES2
+# document container that round-trips the WHOLE deck (theme, layouts, bullet
+# levels, notes and slide order).
 #
 # This is the thin I/O + windowing shell around lib/hamslidescore.ad (which owns
-# the deck model, the editing, the hit-testing and BOTH view renders). The split
+# the deck model, the multi-level bullets, the five slide LAYOUTS, the four
+# THEMES, the speaker NOTES, the UNDO stack, the menu/toolbar hit-testing and
+# BOTH view renders). The split
 # lets the exact shipping code path render to a PNG on the dev host, driven by
 # scripted keystrokes (user/hamslides_host.ad + scripts/test_hamslides_host.sh).
 # This driver does the on-box work the core can't: create the wsys window,
@@ -28,7 +32,7 @@ from lib.hamtextbox import htb_evt_parse_m
 from lib.hamslidescore import hamslides_init, hamslides_build_scene, \
     hamslides_key_line, hamslides_take_action, hamslides_serialize, \
     hamslides_deserialize, hamslides_mark_saved, hamslides_set_fname, \
-    hamslides_hit
+    hamslides_hit, hamslides_key_idle
 
 
 def _slen(s: Ptr[uint8]) -> uint64:
@@ -106,7 +110,7 @@ def _winpath(out: Ptr[uint8], wid: int32, leaf: Ptr[uint8]):
 DOC_PATH_CAP: uint64 = 192
 doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
-ser_buf: Array[16384, uint8]
+ser_buf: Array[24576, uint8]
 
 
 def _set_docpath(s: Ptr[uint8]):
@@ -148,8 +152,8 @@ def _load_doc():
     if fd < 0:
         return
     total: uint64 = 0
-    while total < 16384:
-        r: int64 = sys_read(fd, &ser_buf[total], 16384 - total)
+    while total < 24576:
+        r: int64 = sys_read(fd, &ser_buf[total], 24576 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
@@ -157,11 +161,17 @@ def _load_doc():
     hamslides_deserialize(&ser_buf[0], total)
 
 
+# Set when File>Quit (or Ctrl-Q) is chosen; the event loop returns cleanly.
+want_quit: int32 = 0
+
+
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
     elif act == 2:
         _load_doc()
+    elif act == 3:
+        want_quit = 1
 
 
 # ---- pointer input --------------------------------------------------------
@@ -176,6 +186,9 @@ def _pointer(lx: int64, ly: int64, btn: int64) -> int32:
         act: int32 = hamslides_hit(lx, ly)
         if act == 1 or act == 2:
             _dispatch(act)
+            changed = 1
+        elif act == 4:                                  # File > Quit
+            want_quit = 1
             changed = 1
         elif act == 3:
             changed = 1
@@ -275,7 +288,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     cfd: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd >= 0:
-        _writeall(cfd, cast[Ptr[uint8]]("geometry 100 60 680 440\n"))
+        _writeall(cfd, cast[Ptr[uint8]]("geometry 100 60 720 500\n"))
         sys_close(cfd)
     cfd2: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd2 >= 0:
@@ -310,7 +323,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         return 1
 
     IDLE_WAIT_MS: int64 = 10
-    while True:
+    while want_quit == 0:
         room: uint64 = 512 - kev_carry
         if room == 0:
             kev_carry = 0
@@ -335,7 +348,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 hamslides_build_scene()
                 hamscene_commit(wid)
             did_work = 1
+        if want_quit != 0:
+            break
         if did_work == 0:
+            # A bare ESC (not followed by '[') is a real Escape once the key
+            # stream goes quiet: leave PRESENT / close the menu.
+            if hamslides_key_idle() != 0:
+                hamslides_build_scene()
+                hamscene_commit(wid)
             wfds: Array[1, int32]
             wfds[0] = kfd
             sys_waitfds(&wfds[0], 1, IDLE_WAIT_MS)

@@ -2,16 +2,21 @@
 # PRESENTATION app (built for x86_64-linux; runs on the dev host, no QEMU).
 #
 # Drives the SAME core the native app ships (lib/hamslidescore.ad) end-to-end
-# against the REAL host filesystem: it builds a small DECK by typing a title +
-# bullets through the KEY path, adds a second slide, asserts the deck model,
-# renders the EDIT view (thumbnail rail + large current slide), SAVES it
-# (Ctrl-S -> a HAMSLIDES1 container on disk), CLEARS the deck, then RE-OPENS the
-# file off disk (Ctrl-O) — proving titles AND bullets survive a save->load
-# round-trip. It then toggles PRESENT view and renders that too. Two PPMs
-# (EDIT + PRESENT) are written for a human/agent to LOOK at.
+# against the REAL host filesystem. It builds a real DECK by TYPING through the
+# key path (titles, multi-level bullets via Tab, speaker notes via Ctrl-E),
+# exercises the deck EDITS (add / duplicate / delete / move up / move down /
+# undo), switches LAYOUTS through the Slide MENU, cycles the THEME, renders the
+# EDIT view, SAVES it (Ctrl-S -> a HAMSLIDES2 container on disk), CLEARS the
+# deck and RE-OPENS it off disk (Ctrl-O) — proving theme, layouts, titles,
+# bullets, bullet LEVELS, notes and slide ORDER all survive a save->load
+# round-trip. It then presents (PRESENT view, Space/Home/End navigation, 'n'
+# notes overlay, 'b' blank, Esc exit) and finally loads a legacy HAMSLIDES1
+# file to prove backward compatibility. Four PPMs are written for a
+# human/agent to LOOK at (EDIT two-column, EDIT picture, PRESENT, title slide).
 #
 # USAGE (built to build/host/hamslides_host):
-#   hamslides_host DOCPATH EDIT.ppm PRESENT.ppm
+#   hamslides_host DOC.hamslides EDIT.ppm PRESENT.ppm TITLE.ppm \
+#                  PICTURE.ppm V1FILE
 
 extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
@@ -27,15 +32,22 @@ from lib.hamslidescore import hamslides_init, hamslides_build_scene, \
     hamslides_serialize, hamslides_deserialize, hamslides_clear, \
     hamslides_slide_count, hamslides_cur, hamslides_view, \
     hamslides_bullet_count, hamslides_title_ptr, hamslides_title_len, \
-    hamslides_bullet_ptr, hamslides_bullet_len, hamslides_set_present
+    hamslides_bullet_ptr, hamslides_bullet_len, hamslides_set_present, \
+    hamslides_bullet_level, hamslides_notes_ptr, hamslides_notes_len, \
+    hamslides_layout, hamslides_layout_name, hamslides_theme, \
+    hamslides_theme_name, hamslides_menu_select, hamslides_menu_toggle, \
+    hamslides_menu_open, hamslides_undo_depth, hamslides_hit, \
+    hamslides_focus_row, hamslides_present_black, hamslides_present_notes, \
+    hamslides_win_w, hamslides_win_h, hamslides_goto, hamslides_key_idle, \
+    hamslides_esc_pending
 
 
-obuf: Array[512, uint8]
+obuf: Array[1024, uint8]
 obuf_n: uint64 = 0
 
 
 def _o_ch(c: uint8):
-    if obuf_n < 511:
+    if obuf_n < 1023:
         obuf[obuf_n] = c
         obuf_n = obuf_n + 1
 
@@ -72,6 +84,15 @@ def _o_flush():
         obuf_n = 0
 
 
+# `<TAG> <value>` line.
+def _kv(tag: Ptr[uint8], v: int64):
+    _o_str(tag)
+    _o_ch(32)
+    _o_dec(v)
+    _o_ch(10)
+    _o_flush()
+
+
 ppm_hdr: Array[64, uint8]
 
 
@@ -86,23 +107,24 @@ def _write_ppm(path: Ptr[char]) -> int32:
     return 0
 
 
-def _render(w: int32, h: int32) -> int32:
+def _render() -> int32:
     hamslides_build_scene()
-    hamui_host_begin(w, h)
+    hamui_host_begin(hamslides_win_w(), hamslides_win_h())
     return hamui_host_rasterize()
 
 
 # ---- host-side persistence (mirrors user/hamslides.ad) --------------------
-ser_buf: Array[16384, uint8]
+ser_buf: Array[24576, uint8]
 doc_path: Array[192, uint8]
+v1_path: Array[192, uint8]
 
 
-def _set_docpath(s: Ptr[uint8]):
+def _copy_path(dst: Ptr[uint8], s: Ptr[uint8]):
     i: uint64 = 0
     while s[i] != 0 and i < 191:
-        doc_path[i] = s[i]
+        dst[i] = s[i]
         i = i + 1
-    doc_path[i] = 0
+    dst[i] = 0
 
 
 def _save_doc():
@@ -114,14 +136,14 @@ def _save_doc():
     sys_close(fd)
 
 
-def _load_doc():
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 0, 0)   # O_RDONLY
+def _load_path(p: Ptr[uint8]):
+    fd: int32 = sys_open(cast[Ptr[char]](p), 0, 0)     # O_RDONLY
     if fd < 0:
         hamslides_deserialize(&ser_buf[0], 0)
         return
     total: uint64 = 0
-    while total < 16384:
-        r: int64 = sys_read(fd, &ser_buf[total], 16384 - total)
+    while total < 24576:
+        r: int64 = sys_read(fd, &ser_buf[total], 24576 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
@@ -129,7 +151,11 @@ def _load_doc():
     hamslides_deserialize(&ser_buf[0], total)
 
 
-raw_buf: Array[16384, uint8]
+def _load_doc():
+    _load_path(&doc_path[0])
+
+
+raw_buf: Array[24576, uint8]
 
 
 def _file_len() -> int64:
@@ -137,8 +163,8 @@ def _file_len() -> int64:
     if fd < 0:
         return -1
     total: int64 = 0
-    while total < 16384:
-        r: int64 = sys_read(fd, &raw_buf[total], 16384 - cast[uint64](total))
+    while total < 24576:
+        r: int64 = sys_read(fd, &raw_buf[total], 24576 - cast[uint64](total))
         if r <= 0:
             break
         total = total + r
@@ -189,7 +215,6 @@ def _type(s: Ptr[uint8]):
         i = i + 1
 
 
-# Dump a title/bullet as `<tag> <text>`.
 def _dump_title(tag: Ptr[uint8], s: uint64):
     _o_str(tag)
     _o_ch(32)
@@ -200,6 +225,7 @@ def _dump_title(tag: Ptr[uint8], s: uint64):
         _o_ch(ptr[i])
         i = i + 1
     _o_ch(10)
+    _o_flush()
 
 
 def _dump_bullet(tag: Ptr[uint8], s: uint64, b: uint64):
@@ -212,128 +238,275 @@ def _dump_bullet(tag: Ptr[uint8], s: uint64, b: uint64):
         _o_ch(ptr[i])
         i = i + 1
     _o_ch(10)
+    _o_flush()
+
+
+def _dump_notes(tag: Ptr[uint8], s: uint64):
+    _o_str(tag)
+    _o_ch(32)
+    ptr: Ptr[uint8] = hamslides_notes_ptr(s)
+    ln: uint64 = hamslides_notes_len(s)
+    i: uint64 = 0
+    while i < ln:
+        _o_ch(ptr[i])
+        i = i + 1
+    _o_ch(10)
+    _o_flush()
+
+
+def _dump_str(tag: Ptr[uint8], v: Ptr[uint8]):
+    _o_str(tag)
+    _o_ch(32)
+    _o_str(v)
+    _o_ch(10)
+    _o_flush()
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
-    if argc < 4:
+    if argc < 7:
         _o_str(cast[Ptr[uint8]](
-            "usage: hamslides_host DOCPATH EDIT.ppm PRESENT.ppm\n"))
+            "usage: hamslides_host DOC EDIT PRESENT TITLE PICTURE V1FILE\n"))
         _o_flush()
         return 2
 
-    _set_docpath(cast[Ptr[uint8]](argv[1]))
+    _copy_path(&doc_path[0], cast[Ptr[uint8]](argv[1]))
+    _copy_path(&v1_path[0], cast[Ptr[uint8]](argv[6]))
     hamslides_init()
     hamslides_set_fname(cast[Ptr[uint8]]("talk.hamslides"))
 
-    W: int32 = 680
-    H: int32 = 440
-
-    # ---- (1) build slide 1 by TYPING through the key path --------------
-    # Focus starts on the title. Type a title, Enter to the first bullet, then
-    # two bullets (Enter between them).
+    # ---- (1) slide 1: title + a MULTI-LEVEL bullet list ----------------
+    # Focus starts on the title. Enter drops into the bullet list; Tab at the
+    # START of a bullet indents it one level (PowerPoint behaviour).
     _type(cast[Ptr[uint8]]("Welcome to HamSlides"))
     _press(13)                                         # Enter -> first bullet
     _type(cast[Ptr[uint8]]("Native presentation app"))
-    _press(13)                                         # Enter -> second bullet
+    _press(13)
+    _press(9)                                          # Tab -> indent level 1
+    _type(cast[Ptr[uint8]]("Multi-level bullets"))
+    _press(13)
+    _press(9)                                          # Tab -> level 2
+    _type(cast[Ptr[uint8]]("Tab indents, Backspace outdents"))
+    _press(13)
+    _press(8)                                          # Backspace -> outdent
+    _press(8)                                          # Backspace -> outdent
     _type(cast[Ptr[uint8]]("Edit and present decks"))
+    # speaker notes for slide 1 (Ctrl-E focuses the notes strip)
+    _press(5)
+    _type(cast[Ptr[uint8]]("Remember to demo the thumbnail rail"))
+    _press(13)                                         # Enter leaves the notes
 
-    # ---- (2) add a SECOND slide (Ctrl-N) and populate it ---------------
-    _press(14)                                         # Ctrl-N -> new slide, focus title
+    _kv(cast[Ptr[uint8]]("S0_NBUL"), cast[int64](hamslides_bullet_count(0)))
+    _kv(cast[Ptr[uint8]]("S0_B1_LVL"), cast[int64](hamslides_bullet_level(0, 1)))
+    _kv(cast[Ptr[uint8]]("S0_B2_LVL"), cast[int64](hamslides_bullet_level(0, 2)))
+    _kv(cast[Ptr[uint8]]("S0_B3_LVL"), cast[int64](hamslides_bullet_level(0, 3)))
+    _dump_notes(cast[Ptr[uint8]]("S0_NOTES"), 0)
+
+    # ---- (2) slide 2 (Ctrl-N) + slide 3 --------------------------------
+    _press(14)                                         # Ctrl-N -> new slide
     _type(cast[Ptr[uint8]]("Features"))
     _press(13)
     _type(cast[Ptr[uint8]]("Thumbnail rail"))
     _press(13)
-    _type(cast[Ptr[uint8]]("Save and load .hamslides"))
+    _type(cast[Ptr[uint8]]("Five slide layouts"))
+    _press(13)
+    _type(cast[Ptr[uint8]]("Four colour themes"))
+    _press(13)
+    _type(cast[Ptr[uint8]]("Speaker notes"))
 
-    # ---- (3) assert the deck model -------------------------------------
-    _o_str(cast[Ptr[uint8]]("NSLIDES "))
-    _o_dec(cast[int64](hamslides_slide_count()))       # 2
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("CUR "))
-    _o_dec(cast[int64](hamslides_cur()))               # 1 (on slide 2)
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("S0_NBUL "))
-    _o_dec(cast[int64](hamslides_bullet_count(0)))     # 2
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("S1_NBUL "))
-    _o_dec(cast[int64](hamslides_bullet_count(1)))     # 2
-    _o_ch(10)
-    _dump_title(cast[Ptr[uint8]]("S0_TITLE"), 0)       # Welcome to HamSlides
-    _dump_bullet(cast[Ptr[uint8]]("S0_B0"), 0, 0)      # Native presentation app
-    _dump_bullet(cast[Ptr[uint8]]("S0_B1"), 0, 1)      # Edit and present decks
-    _dump_title(cast[Ptr[uint8]]("S1_TITLE"), 1)       # Features
-    _o_flush()
+    _press(14)                                         # Ctrl-N -> slide 3
+    _type(cast[Ptr[uint8]]("Thank You"))
+    _press(13)
+    _type(cast[Ptr[uint8]]("Questions?"))
 
-    # ---- (4) navigate to slide 1 + render the EDIT view ----------------
-    # PageUp is CSI 5~; feed the real escape sequence to move to the prev slide.
-    _press(27)                                         # ESC
-    _press(91)                                         # [
-    _press(53)                                         # 5
-    _press(126)                                        # ~  -> PageUp -> prev
-    _o_str(cast[Ptr[uint8]]("CUR_AFTER_PGUP "))
-    _o_dec(cast[int64](hamslides_cur()))               # 0
-    _o_ch(10)
-    _o_flush()
+    _kv(cast[Ptr[uint8]]("NSLIDES"), cast[int64](hamslides_slide_count()))
+    _kv(cast[Ptr[uint8]]("CUR"), cast[int64](hamslides_cur()))
 
-    prims: int32 = _render(W, H)
+    # ---- (3) LAYOUTS through the Slide menu ----------------------------
+    # slide 3 -> "Title Slide" (menu 3, item 1)
+    hamslides_menu_toggle(3)
+    _kv(cast[Ptr[uint8]]("MENU_OPEN"), cast[int64](hamslides_menu_open()))
+    hamslides_menu_select(3, 1)
+    _kv(cast[Ptr[uint8]]("MENU_OPEN_AFTER"), cast[int64](hamslides_menu_open()))
+    _kv(cast[Ptr[uint8]]("S2_LAYOUT"), cast[int64](hamslides_layout(2)))
+    _dump_str(cast[Ptr[uint8]]("S2_LAYOUT_NAME"),
+              hamslides_layout_name(hamslides_layout(2)))
+    # slide 2 -> "Two Column" (menu 3, item 2)
+    hamslides_goto(1)
+    hamslides_menu_select(3, 2)
+    _kv(cast[Ptr[uint8]]("S1_LAYOUT"), cast[int64](hamslides_layout(1)))
+
+    # ---- (4) DUPLICATE + DELETE + UNDO ---------------------------------
+    hamslides_goto(1)
+    _press(21)                                         # Ctrl-U -> duplicate
+    _kv(cast[Ptr[uint8]]("NSLIDES_AFTER_DUP"),
+        cast[int64](hamslides_slide_count()))
+    _dump_title(cast[Ptr[uint8]]("DUP_TITLE"), 2)       # copy of "Features"
+    _kv(cast[Ptr[uint8]]("DUP_LAYOUT"), cast[int64](hamslides_layout(2)))
+    _press(4)                                          # Ctrl-D -> delete it
+    _kv(cast[Ptr[uint8]]("NSLIDES_AFTER_DEL"),
+        cast[int64](hamslides_slide_count()))
+    _press(26)                                         # Ctrl-Z -> undo delete
+    _kv(cast[Ptr[uint8]]("NSLIDES_AFTER_UNDO"),
+        cast[int64](hamslides_slide_count()))
+    _dump_title(cast[Ptr[uint8]]("UNDO_TITLE"), 2)
+    _press(4)                                          # delete the copy again
+    _kv(cast[Ptr[uint8]]("NSLIDES_FINAL"),
+        cast[int64](hamslides_slide_count()))
+
+    # ---- (5) REORDER: move slide 2 up, then back down ------------------
+    hamslides_goto(1)
+    _press(11)                                         # Ctrl-K -> move up
+    _dump_title(cast[Ptr[uint8]]("MOVEUP_S0"), 0)      # Features
+    _dump_title(cast[Ptr[uint8]]("MOVEUP_S1"), 1)      # Welcome to HamSlides
+    _kv(cast[Ptr[uint8]]("MOVEUP_CUR"), cast[int64](hamslides_cur()))
+    _press(12)                                         # Ctrl-L -> move down
+    _dump_title(cast[Ptr[uint8]]("MOVEDN_S0"), 0)      # Welcome to HamSlides
+    _dump_title(cast[Ptr[uint8]]("MOVEDN_S1"), 1)      # Features
+
+    # ---- (6) THEME -----------------------------------------------------
+    _press(20)                                         # Ctrl-T -> next theme
+    _kv(cast[Ptr[uint8]]("THEME"), cast[int64](hamslides_theme()))
+    _dump_str(cast[Ptr[uint8]]("THEME_NAME"), hamslides_theme_name())
+    _render()
+    _kv(cast[Ptr[uint8]]("THEME1_TITLEBAR_PIX"),
+        cast[int64](hamui_host_pixel(4, 4)))           # Slate #263238
+    _press(20)
+    _press(20)
+    _press(20)                                         # back round to Indigo
+    _kv(cast[Ptr[uint8]]("THEME_WRAP"), cast[int64](hamslides_theme()))
+
+    # ---- (7) render the EDIT view (slide 2, Two Column) ----------------
+    hamslides_goto(1)
+    prims: int32 = _render()
     _write_ppm(cast[Ptr[char]](argv[2]))
-    _o_str(cast[Ptr[uint8]]("EDIT_PRIMS "))
-    _o_dec(cast[int64](prims))
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("PIX_TITLEBAR "))
-    _o_dec(cast[int64](hamui_host_pixel(4, 4)))        # dark indigo title bar
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("EDIT_VIEW "))
-    _o_dec(cast[int64](hamslides_view()))              # 0 = EDIT
-    _o_ch(10)
-    _o_str(cast[Ptr[uint8]]("SCENE-BEGIN\n"))
+    _kv(cast[Ptr[uint8]]("EDIT_PRIMS"), cast[int64](prims))
+    _kv(cast[Ptr[uint8]]("PIX_TITLEBAR"), cast[int64](hamui_host_pixel(4, 4)))
+    _kv(cast[Ptr[uint8]]("EDIT_VIEW"), cast[int64](hamslides_view()))
+    _o_str(cast[Ptr[uint8]]("TWOCOL-SCENE-BEGIN\n"))
     _o_flush()
     sys_write(1, hamscene_bufptr(), hamscene_length())
-    _o_str(cast[Ptr[uint8]]("SCENE-END\n"))
+    _o_str(cast[Ptr[uint8]]("TWOCOL-SCENE-END\n"))
     _o_flush()
 
-    # ---- (5) SAVE (Ctrl-S) ---------------------------------------------
+    # the SAME slide rendered as Title+Content: the geometry must MOVE
+    hamslides_menu_select(3, 0)                        # layout Title+Content
+    _render()
+    _o_str(cast[Ptr[uint8]]("CONTENT-SCENE-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("CONTENT-SCENE-END\n"))
+    _o_flush()
+    # ... and as the Picture layout (bullets left, picture placeholder right)
+    hamslides_menu_select(3, 3)
+    _render()
+    _write_ppm(cast[Ptr[char]](argv[5]))
+    _o_str(cast[Ptr[uint8]]("PICTURE-SCENE-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("PICTURE-SCENE-END\n"))
+    _o_flush()
+    hamslides_menu_select(3, 2)                        # back to Two Column
+
+    # a click on the notes strip focuses the speaker notes (hit-testing)
+    hamslides_goto(0)
+    hamslides_hit(cast[int64](200), cast[int64](446))
+    _kv(cast[Ptr[uint8]]("FOCUS_AFTER_NOTES_CLICK"),
+        cast[int64](hamslides_focus_row()))
+    hamslides_hit(cast[int64](200), cast[int64](112))   # click the title band
+    _kv(cast[Ptr[uint8]]("FOCUS_AFTER_TITLE_CLICK"),
+        cast[int64](hamslides_focus_row()))
+
+    # ---- (8) SAVE (Ctrl-S) ---------------------------------------------
     _press(19)
-    _o_str(cast[Ptr[uint8]]("FILE_LEN "))
-    _o_dec(_file_len())
-    _o_ch(10)
-    _o_flush()
+    _kv(cast[Ptr[uint8]]("FILE_LEN"), _file_len())
 
-    # ---- (6) CLEAR, then RE-OPEN off disk (round-trip proof) -----------
+    # ---- (9) CLEAR, then RE-OPEN off disk (round-trip proof) -----------
     hamslides_clear()
-    _o_str(cast[Ptr[uint8]]("NSLIDES_AFTER_CLEAR "))
-    _o_dec(cast[int64](hamslides_slide_count()))       # 1
-    _o_ch(10)
+    _kv(cast[Ptr[uint8]]("NSLIDES_AFTER_CLEAR"),
+        cast[int64](hamslides_slide_count()))
     _press(15)                                         # Ctrl-O -> _load_doc
-    _o_str(cast[Ptr[uint8]]("NSLIDES_AFTER_OPEN "))
-    _o_dec(cast[int64](hamslides_slide_count()))       # 2 again
-    _o_ch(10)
-    _dump_title(cast[Ptr[uint8]]("S0_TITLE_RELOAD"), 0)  # Welcome to HamSlides
-    _dump_bullet(cast[Ptr[uint8]]("S0_B0_RELOAD"), 0, 0) # Native presentation app
-    _dump_title(cast[Ptr[uint8]]("S1_TITLE_RELOAD"), 1)  # Features
-    _o_str(cast[Ptr[uint8]]("S1_NBUL_RELOAD "))
-    _o_dec(cast[int64](hamslides_bullet_count(1)))       # 2
-    _o_ch(10)
+    _kv(cast[Ptr[uint8]]("NSLIDES_AFTER_OPEN"),
+        cast[int64](hamslides_slide_count()))
+    _dump_title(cast[Ptr[uint8]]("S0_TITLE_RELOAD"), 0)
+    _dump_bullet(cast[Ptr[uint8]]("S0_B0_RELOAD"), 0, 0)
+    _dump_bullet(cast[Ptr[uint8]]("S0_B1_RELOAD"), 0, 1)
+    _kv(cast[Ptr[uint8]]("S0_B1_LVL_RELOAD"),
+        cast[int64](hamslides_bullet_level(0, 1)))
+    _kv(cast[Ptr[uint8]]("S0_B2_LVL_RELOAD"),
+        cast[int64](hamslides_bullet_level(0, 2)))
+    _dump_notes(cast[Ptr[uint8]]("S0_NOTES_RELOAD"), 0)
+    _dump_title(cast[Ptr[uint8]]("S1_TITLE_RELOAD"), 1)
+    _kv(cast[Ptr[uint8]]("S1_LAYOUT_RELOAD"), cast[int64](hamslides_layout(1)))
+    _kv(cast[Ptr[uint8]]("S1_NBUL_RELOAD"),
+        cast[int64](hamslides_bullet_count(1)))
+    _dump_title(cast[Ptr[uint8]]("S2_TITLE_RELOAD"), 2)
+    _kv(cast[Ptr[uint8]]("S2_LAYOUT_RELOAD"), cast[int64](hamslides_layout(2)))
+    _kv(cast[Ptr[uint8]]("THEME_RELOAD"), cast[int64](hamslides_theme()))
+
+    # ---- (10) PRESENT view: render + navigate --------------------------
+    hamslides_set_present(1)
+    _kv(cast[Ptr[uint8]]("PRESENT_VIEW"), cast[int64](hamslides_view()))
+    _render()
+    _write_ppm(cast[Ptr[char]](argv[3]))
+    _kv(cast[Ptr[uint8]]("PRESENT_PIX"), cast[int64](hamui_host_pixel(4, 60)))
+    _o_str(cast[Ptr[uint8]]("PRESENT-SCENE-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("PRESENT-SCENE-END\n"))
     _o_flush()
 
-    # ---- (7) PRESENT view: toggle + render -----------------------------
-    hamslides_set_present(1)
-    _o_str(cast[Ptr[uint8]]("PRESENT_VIEW "))
-    _o_dec(cast[int64](hamslides_view()))              # 1 = PRESENT
-    _o_ch(10)
-    _render(W, H)
-    _write_ppm(cast[Ptr[char]](argv[3]))
-    _o_str(cast[Ptr[uint8]]("PRESENT_PIX "))
-    _o_dec(cast[int64](hamui_host_pixel(4, 60)))       # accent title band pixel
-    _o_ch(10)
-    # advance the presentation with Space, then Left to go back
     _press(32)                                         # Space -> next
-    _o_str(cast[Ptr[uint8]]("PRESENT_CUR_AFTER_SPACE "))
-    _o_dec(cast[int64](hamslides_cur()))               # 1
-    _o_ch(10)
-    _press(27)                                         # ESC -> exit present
-    _o_str(cast[Ptr[uint8]]("VIEW_AFTER_ESC "))
-    _o_dec(cast[int64](hamslides_view()))              # 0 = EDIT
-    _o_ch(10)
+    _kv(cast[Ptr[uint8]]("PRESENT_CUR_AFTER_SPACE"),
+        cast[int64](hamslides_cur()))
+    _press(27)                                         # ESC [ 6 ~ = PageDown
+    _press(91)
+    _press(54)
+    _press(126)
+    _kv(cast[Ptr[uint8]]("PRESENT_CUR_AFTER_PGDN"), cast[int64](hamslides_cur()))
+    _press(27)                                         # ESC [ H = Home
+    _press(91)
+    _press(72)
+    _kv(cast[Ptr[uint8]]("PRESENT_CUR_AFTER_HOME"), cast[int64](hamslides_cur()))
+    _press(27)                                         # ESC [ F = End
+    _press(91)
+    _press(70)
+    _kv(cast[Ptr[uint8]]("PRESENT_CUR_AFTER_END"), cast[int64](hamslides_cur()))
+
+    # the LAST slide is the Title-Slide layout — render it for a human look
+    _press(110)                                        # n -> notes overlay
+    _kv(cast[Ptr[uint8]]("PRESENT_NOTES"),
+        cast[int64](hamslides_present_notes()))
+    _render()
+    _write_ppm(cast[Ptr[char]](argv[4]))
+    _o_str(cast[Ptr[uint8]]("TITLESLIDE-SCENE-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("TITLESLIDE-SCENE-END\n"))
+    _o_flush()
+    _press(110)                                        # n -> hide notes again
+
+    _press(98)                                         # b -> blank the screen
+    _kv(cast[Ptr[uint8]]("PRESENT_BLACK"),
+        cast[int64](hamslides_present_black()))
+    _render()
+    _kv(cast[Ptr[uint8]]("BLACK_PIX"), cast[int64](hamui_host_pixel(300, 200)))
+    _press(98)                                         # b -> back
+    _kv(cast[Ptr[uint8]]("PRESENT_BLACK_OFF"),
+        cast[int64](hamslides_present_black()))
+
+    _press(27)                                         # ESC ...
+    _kv(cast[Ptr[uint8]]("ESC_PENDING"), cast[int64](hamslides_esc_pending()))
+    hamslides_key_idle()                               # ... resolved on idle
+    _kv(cast[Ptr[uint8]]("VIEW_AFTER_ESC"), cast[int64](hamslides_view()))
+
+    # ---- (11) legacy HAMSLIDES1 file still loads -----------------------
+    _load_path(&v1_path[0])
+    _kv(cast[Ptr[uint8]]("V1_NSLIDES"), cast[int64](hamslides_slide_count()))
+    _dump_title(cast[Ptr[uint8]]("V1_S0_TITLE"), 0)
+    _dump_bullet(cast[Ptr[uint8]]("V1_S0_B0"), 0, 0)
+    _dump_title(cast[Ptr[uint8]]("V1_S1_TITLE"), 1)
+    _kv(cast[Ptr[uint8]]("V1_S1_NBUL"), cast[int64](hamslides_bullet_count(1)))
+    _kv(cast[Ptr[uint8]]("V1_S0_LAYOUT"), cast[int64](hamslides_layout(0)))
+    _kv(cast[Ptr[uint8]]("V1_UNDO_DEPTH"), cast[int64](hamslides_undo_depth()))
     _o_flush()
     return 0
