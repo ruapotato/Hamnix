@@ -2867,3 +2867,24 @@ bash scripts/test_hambrowse_layoutread_host.sh
 # (typedarray_map/typedarray_set/uint8_subarray/arraybuffer). Every expected
 # value is node/V8's. Implementation: lib/web/js/builtins/r8_ta.ad.
 bash scripts/test_hambrowse_bindata_host.sh
+
+# test_de_stress_soak: the 30-MINUTE DESKTOP SOAK — open a bunch of apps,
+# close a bunch of apps, repeat, and prove the session recovers its RAM.
+# NOT FOR THE PER-SHARD BUDGET: this gate runs SOAK_MINUTES (default 30) of
+# continuous open/close churn plus ~4 min of boot/teardown, which alone would
+# blow the 50-min shard cap that the whole round-robin sharding scheme exists
+# to respect. It is therefore gated on HAMNIX_SOAK=1 and is a NO-OP in the
+# normal battery; run it nightly, or by hand, or before a release.
+#
+# What only a soak can see: scripts/test_de_open_close_cycles.sh proves ONE
+# open/close cycle works and scripts/test_de_app_churn.sh proves a burst of
+# launches maps windows, but a leak of a few hundred KiB per app-close is
+# inside boot noise at 24 cycles and fatal over a working day. This gate
+# measures the REGRESSION SLOPE of MemFree / PagesInUse / VmaNodesLive /
+# KmallocLive / TasksLive / live-wid-count against cycle number, sampled with
+# apps OPEN and again with apps CLOSED, and fails on a bad-direction drift
+# beyond tolerance — plus wid-table exhaustion (32 slots), task-slot
+# exhaustion, unexpected code=143 exits, kernel faults and a wedged console.
+# It BUILDS the image rather than warning about staleness: 30 minutes of soak
+# against a stale image is 30 minutes of confident nonsense.
+[ "${HAMNIX_SOAK:-0}" = "1" ] && bash scripts/test_de_stress_soak.sh || true

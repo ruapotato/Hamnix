@@ -98,6 +98,12 @@ def build_ext4_with_file(out_path: Path, name: str, body: bytes):
     img_bytes *= 1024 * 1024
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.py): unlink rather
+    # than truncate over the previous image, so a mkfs/debugfs failure below
+    # cannot leave a half-updated ext4 that still carries a valid superblock.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _fresh_artifact import fresh_artifact
+    fresh_artifact("[build_realgz_img]", out_path)
     with open(out_path, "wb") as f:
         f.truncate(img_bytes)
 

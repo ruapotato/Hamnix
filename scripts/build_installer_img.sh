@@ -188,6 +188,22 @@ INSTALLER_KERNEL="$OUTDIR/hamnix-installer-kernel.elf"
 EFI_STUB="$OUTDIR/hamnix-bootx64.efi"
 ROOTFS_IMG="$OUTDIR/hamnix-rootfs.img"
 SQFS_IMG="$OUTDIR/hamnix-rootfs.sqfs"
+LIVE_DISTRO_IMG="$OUTDIR/hamnix-live-distro.img"
+
+# ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.sh). Every output this
+# script produces is deleted NOW, before a single byte of work happens, so
+# that a build which dies in stage 5 cannot leave a stage-8 image from
+# yesterday sitting in build/ with a plausible mtime, looking valid to
+# every gate that boots it. Costs a full rebuild on re-run; buys the
+# guarantee that "the image exists" implies "this tree built it".
+# HAMNIX_REUSE_ARTIFACTS=1 opts out, loudly.
+# shellcheck source=_fresh_artifact.sh
+source "$PROJ_ROOT/scripts/_fresh_artifact.sh"
+fresh_artifact "[build_installer_img]" \
+    "$OUT" "$INSTALLED_KERNEL" "$INSTALLER_KERNEL" "$EFI_STUB" \
+    "$ROOTFS_IMG" "$SQFS_IMG" "$LIVE_DISTRO_IMG" \
+    "$INSTALLED_KERNEL.cpio-manifest" "$INSTALLER_KERNEL.cpio-manifest"
+
 # Auto-size the shipped ext4 (staged bytes + metadata + apt scratch) with a
 # 512 MiB FLOOR. Do NOT pin a fixed size here: the Debian fixture grows (real
 # debootstrap closure + staged GUI clients), and a pinned 512 MiB made
@@ -362,7 +378,6 @@ echo "[build_installer_img]   NVMe ESP image: ${ESP_IMG_MB} MiB (LOG.TXT + BOOTX
 # gzip (id=1) + xz (id=4) and a block size up to 1 MiB; mksquashfs'
 # 128 KiB default is well within.
 echo "[build_installer_img] Stage 5: build in-RAM squashfs payload (esp.img + live-distro.ext4)."
-LIVE_DISTRO_IMG="$OUTDIR/hamnix-live-distro.img"
 HAMNIX_ROOTFS_LIVE=1 HAMNIX_ROOTFS_OUT="$LIVE_DISTRO_IMG" \
     HAMNIX_ROOTFS_SIZE_MB="${HAMNIX_LIVE_DISTRO_SIZE_MB:-}" \
     python3 scripts/build_rootfs_img.py

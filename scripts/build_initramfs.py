@@ -5377,7 +5377,6 @@ def emit_asm(archive: bytes, dest: Path) -> None:
 
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent.parent
-    archive = build_archive()
     # Opt-in build isolation: when HAMNIX_BUILD_DIR is set, emit the blob
     # there instead of the shared in-source fs/initramfs_blob.S so two
     # builds in ONE checkout don't clobber each other. Default (unset) is
@@ -5388,6 +5387,18 @@ if __name__ == "__main__":
         dest.parent.mkdir(parents=True, exist_ok=True)
     else:
         dest = here / "fs" / "initramfs_blob.S"
+
+    # ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.py). The blob (and
+    # its cpio manifest) are unlinked BEFORE build_archive() runs, not after:
+    # staging can raise, and a leftover blob from the previous run would then
+    # be assembled into the kernel by the next `as`/`ld` step, shipping an
+    # image whose cpio contents predate the tree. Deleting first turns that
+    # silent staleness into a loud missing-file build error.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _fresh_artifact import fresh_artifact
+    fresh_artifact("[build_initramfs]", dest, str(dest) + ".manifest")
+
+    archive = build_archive()
     emit_asm(archive, dest)
     # #410 Item 1: alongside an isolated blob, emit a manifest of the cpio
     # entry names so scripts/verify_kernel_cpio.py can assert the compiled

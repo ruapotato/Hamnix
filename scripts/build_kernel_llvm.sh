@@ -56,6 +56,14 @@ LD_CMD="${LD:-ld}"
 WORK="${HAMNIX_BUILD_DIR:-build}/kllvm"
 mkdir -p "$WORK"
 
+# ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.sh): drop the previous
+# ELF now, so a compile/link failure below cannot leave yesterday's kernel
+# sitting at $OUT_ELF for build_installer_img.sh to pick up and ship.
+mkdir -p "$(dirname "$OUT_ELF")"
+# shellcheck source=_fresh_artifact.sh
+source "$PROJ_ROOT/scripts/_fresh_artifact.sh"
+fresh_artifact "[kllvm]" "$OUT_ELF"
+
 command -v "$CLANG" >/dev/null || { echo "[kllvm] ERROR: $CLANG not found" >&2; exit 1; }
 [ -x "$HOST_AC" ] || { echo "[kllvm] ERROR: no host_ac.elf at $HOST_AC (build via scripts/_adder_cc.sh adder_cc_bootstrap)" >&2; exit 1; }
 

@@ -33,7 +33,9 @@
 #   INSTALL_WAIT       install-complete wait(default: 400)
 #   OVMF_FD            OVMF firmware path   (auto-resolved)
 #   HAMNIX_SKIP_BUILD  1 = reuse build/hamnix-installer.img (default: rebuild)
-#   HAMNIX_FORCE_GOLDEN 1 = rebuild golden even if it already exists
+#   HAMNIX_REUSE_ARTIFACTS 1 = reuse an existing golden disk (LOUD; default:
+#                      always rebuild — see scripts/_fresh_artifact.sh)
+#   HAMNIX_FORCE_GOLDEN deprecated no-op: rebuilding is now the DEFAULT.
 
 set -uo pipefail
 
@@ -75,12 +77,31 @@ if ! command -v mksquashfs >/dev/null 2>&1; then
     exit 0
 fi
 
-# Reuse an existing golden disk unless forced.
-if [ -f "$GOLDEN_NVME" ] && [ "${HAMNIX_FORCE_GOLDEN:-0}" != "1" ]; then
-    echo "[build_installed_nvme] reusing existing golden disk: $GOLDEN_NVME"
-    echo "[build_installed_nvme]   (set HAMNIX_FORCE_GOLDEN=1 to rebuild)"
+# ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.sh).
+#
+# This block used to read `if [ -f "$GOLDEN_NVME" ] && [ FORCE != 1 ]; then
+# reuse; exit 0; fi` — reuse-if-present BY DEFAULT. Nothing in the tree ever
+# deletes build/hamnix-installed.qcow2, so once it existed this "build" was a
+# permanent no-op and every feature test booting a copy of it was asserting
+# against whatever tree happened to produce it, possibly weeks earlier. That
+# is the same stale-artifact class documented in scripts/_installer_img.sh,
+# except the consumer-side mtime guard cannot help here: the golden disk is
+# produced by a QEMU install run, so nothing about it is derivable from the
+# input mtimes alone.
+#
+# Now: rebuild ALWAYS. HAMNIX_REUSE_ARTIFACTS=1 restores the old behaviour and
+# says so loudly. HAMNIX_FORCE_GOLDEN is kept as an accepted no-op so existing
+# callers passing it keep working (rebuilding is what it asked for anyway).
+# shellcheck source=_fresh_artifact.sh
+source "$PROJ_ROOT/scripts/_fresh_artifact.sh"
+if artifact_reuse_allowed "[build_installed_nvme]" "$GOLDEN_NVME"; then
     exit 0
 fi
+# Drop the old golden NOW. The verified build below lands in a temp qcow2 and
+# is `mv -f`'d into place only after the HOST byte-check passes, so a failed
+# run leaves NO golden disk at all — callers then SKIP (loudly absent) rather
+# than silently validating last week's install.
+fresh_artifact "[build_installed_nvme]" "$GOLDEN_NVME"
 
 # --- Stage A: build ESP-only installer medium + blank NVMe target -----
 echo "[build_installed_nvme] Stage A: build ESP-only installer medium + blank NVMe target"

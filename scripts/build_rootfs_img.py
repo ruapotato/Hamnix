@@ -1499,6 +1499,15 @@ def build_image(out_path: Path) -> Path:
     out_path = out_path.resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # ALWAYS-OVERWRITE CONTRACT (scripts/_fresh_artifact.py). Unlink the
+    # previous image up front rather than truncating over it below: staging
+    # or mkfs.ext4 can fail, and `open(out, "wb")` would then leave a
+    # partially-written ext4 that still carries a valid superblock magic —
+    # indistinguishable from a good image to every gate that boots it.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _fresh_artifact import fresh_artifact
+    fresh_artifact("[build_rootfs_img]", out_path)
+
     # Stage under build/.rootfs-stage/ (project disk, NEVER /tmp tmpfs).
     stage_root = HERE / "build" / ".rootfs-stage"
     if stage_root.is_dir():

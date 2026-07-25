@@ -186,6 +186,69 @@ for g in $ALTITUDE_REGISTRY; do
     fi
 done
 
+echo "$TAG PART 4: PRODUCER-side always-overwrite contract"
+echo "$TAG         (a build script must ALWAYS write a fresh artifact)"
+
+# PARTS 1-3 are all CONSUMER-side: they catch a gate that boots something old.
+# That is reactive — it depends on mtime heuristics over a fixed input-dir
+# list, and anything the heuristic misses slips through. The producer-side
+# invariant needs no heuristics: RUNNING A BUILD SCRIPT ALWAYS PRODUCES A
+# FRESH ARTIFACT. scripts/_fresh_artifact.sh implements it (delete the output
+# BEFORE building, so a half-failed build leaves nothing that looks valid);
+# this part keeps the primary producers wired to it.
+PRODUCERS="
+scripts/build_installer_img.sh
+scripts/build_installed_nvme.sh
+scripts/build_kernel_llvm.sh
+scripts/build_rootfs_img.py
+scripts/build_initramfs.py
+"
+for p in $PRODUCERS; do
+    [ -f "$p" ] || { echo "$TAG   note: $p no longer exists"; continue; }
+    if grep -q 'fresh_artifact\|artifact_reuse_allowed' "$p"; then
+        echo "$TAG   ok  $p honours the always-overwrite contract"
+    else
+        echo "$TAG FAIL: $p produces a build artifact but never calls" >&2
+        echo "$TAG   fresh_artifact() — a failed run there can leave an OLD" >&2
+        echo "$TAG   artifact in place looking valid. See scripts/_fresh_artifact.sh" >&2
+        FAILED=1
+    fi
+done
+
+# A build script must not RETURN EARLY because its output already exists.
+# That is a stale-artifact factory: nothing ever deletes those outputs, so the
+# "build" silently becomes a permanent no-op. The one legal form is
+# artifact_reuse_allowed(), which requires the explicit HAMNIX_REUSE_ARTIFACTS
+# opt-out and shouts about it.
+REUSE_VIOLATIONS=$(python3 - <<'PY'
+import glob, re
+bad = []
+for f in sorted(glob.glob('scripts/build_*.sh')):
+    lines = open(f, errors='replace').read().split('\n')
+    for i, l in enumerate(lines):
+        if l.lstrip().startswith('#'):
+            continue
+        # `if [ -f "$OUT" ] ...` guarding an early `exit 0` a few lines below
+        if not re.match(r'\s*if \[ -f "\$\{?\w+\}?" \]', l):
+            continue
+        window = '\n'.join(lines[i:i + 8])
+        if re.search(r'^\s*exit 0\s*$', window, re.M) and \
+           'artifact_reuse_allowed' not in window:
+            bad.append('%s:%d: %s' % (f, i + 1, l.strip()))
+print('\n'.join(bad))
+PY
+)
+if [ -n "$REUSE_VIOLATIONS" ]; then
+    echo "$TAG FAIL: build scripts that skip the build when the output exists:" >&2
+    echo "$REUSE_VIOLATIONS" | sed "s|^|$TAG   |" >&2
+    echo "$TAG   Fix: source scripts/_fresh_artifact.sh and use" >&2
+    echo "$TAG   \`if artifact_reuse_allowed \"[tag]\" \"\$OUT\"; then exit 0; fi\`," >&2
+    echo "$TAG   which reuses ONLY under an explicit HAMNIX_REUSE_ARTIFACTS=1." >&2
+    FAILED=1
+else
+    echo "$TAG   ok  no build script skips itself when its output already exists"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
     echo "$TAG FAIL"
     exit 1
