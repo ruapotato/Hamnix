@@ -1,0 +1,42 @@
+[ad_codegen_host] (re)building dump driver (inputs-hash 12326a6d9738)
+[bench_llvm] suite=['matmul', 'sieve', 'licm', 'dcecopy', 'tak', 'collatz', 'mandel', 'saxpy'] reps(best-of)=7 clang=clang-19
+[bench_llvm] compiling configs + cross-config checksum gate
+
+  matmul    checksum=            1886692650  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  sieve     checksum=               1787196  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  licm      checksum=        53068958052892  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  dcecopy   checksum=      6400000000000000  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  tak       checksum=                    36  AGREE  LLVM=OK [ADDER_STAT funcs=3 emitted=3 bailed=0]
+  collatz   checksum=             103275238  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  mandel    checksum=               6712881  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+  saxpy     checksum=           10116645105  AGREE  LLVM=OK [ADDER_STAT funcs=2 emitted=2 bailed=0]
+
+[bench_llvm] timing (best-of-7)
+
+kernel      nat-SSA      LLVM    gcc-O0    gcc-O2   LLVM/O2  natSSA/O2   LLVM/O0
+----------------------------------------------------------------------------------
+matmul      0.1525s   0.0135s   0.0783s   0.0188s     0.72x      8.11x     0.17x
+sieve       0.3303s   0.0443s   0.1943s   0.0426s     1.04x      7.75x     0.23x
+licm        0.2756s   0.0296s   0.1405s   0.0329s     0.90x      8.37x     0.21x
+dcecopy     0.3179s   0.0500s   0.3302s   0.0605s     0.83x      5.26x     0.15x
+tak         0.7641s   0.3786s   0.4695s   0.3169s     1.19x      2.41x     0.81x
+collatz     1.3500s   0.1028s   0.3909s   0.1409s     0.73x      9.58x     0.26x
+mandel      0.1036s   0.0212s   0.0365s   0.0212s     1.00x      4.90x     0.58x
+saxpy       0.2342s   0.0600s   0.1280s   0.0595s     1.01x      3.93x     0.47x
+----------------------------------------------------------------------------------
+geomean                                               0.91x      5.77x     0.30x
+
+[bench_llvm] HEADLINE: Adder-LLVM-backend geomean 0.91x gcc-O2 (lower=better, <1 faster); native-SSA 5.77x gcc-O2. LLVM is 0.30x gcc-O0.
+[bench_llvm] LLVM compiled 8/8 kernels; bailed: []; wrong: []
+=== BENCH_LLVM_MD_BEGIN ===
+REPS 7
+ROW matmul 0.1525 0.0135 0.0783 0.0188 0.72 8.11 0.17
+ROW sieve 0.3303 0.0443 0.1943 0.0426 1.04 7.75 0.23
+ROW licm 0.2756 0.0296 0.1405 0.0329 0.90 8.37 0.21
+ROW dcecopy 0.3179 0.0500 0.3302 0.0605 0.83 5.26 0.15
+ROW tak 0.7641 0.3786 0.4695 0.3169 1.19 2.41 0.81
+ROW collatz 1.3500 0.1028 0.3909 0.1409 0.73 9.58 0.26
+ROW mandel 0.1036 0.0212 0.0365 0.0212 1.00 4.90 0.58
+ROW saxpy 0.2342 0.0600 0.1280 0.0595 1.01 3.93 0.47
+GEOMEAN 0.91 5.77 0.30
+=== BENCH_LLVM_MD_END ===
