@@ -58,7 +58,7 @@ DEVFD_PIPE_R:   int32 = 2
 DEVFD_PIPE_W:   int32 = 3
 SPAWN_STDIO_NS: int32 = -2
 
-from lib.p9 import spawn, p9_listdir
+from lib.p9 import spawn, p9_listdir, p9_note
 # Tab completion: the SAME pure matching kernel hamsh's interactive Tab uses.
 # lib/hamcompgather sits atop lib/hamcomplete; the syscall gather (builtins,
 # /bin listings, dir entries) is done locally in _term_tab_complete below.
@@ -920,13 +920,79 @@ def _start_shell() -> int32:
     # goes to /dev/cons (which hamtermscene itself opens separately); only the
     # inner shell's stderr is redirected to the visible grid.
     sys_fdbind(pid, 2, DEVFD_PIPE_W, out_slot)
-    # Drop OUR write-reference to the stdin-read pipe and read-reference to
-    # the stdout-write pipe by releasing the creator slot bindings: the
-    # child + our held ends keep the refcounts alive. (We never bound those
-    # opposite ends at our own names, so nothing to release here; the
-    # pipechan creator ref is consumed by the two fdbinds.)
+    # ORPHANED-SHELL LEAK FIX (2026-07-25 desktop soak, docs/de_stress_soak.md).
+    #
+    # THE LEAK. Closing a terminal window posts the Plan 9 "terminate" note to
+    # THIS process, and a note to a handler-less process terminates it outright
+    # (sys/src/9/port/sysnote.ad's default action -> signal_post(SIGTERM)). We
+    # never run another instruction, so we cannot reap the shell here. The
+    # thing that is SUPPOSED to collect it is the oldest rule in the book: the
+    # terminal goes away, its shell reads EOF on stdin and exits. It didn't —
+    # every terminal close stranded a LIVE hamsh spinning in its readline
+    # forever (~1 task, 2 VMA nodes, ~300 pages each; TasksLive 20 -> 35 and
+    # VmaNodesLive 28 -> 58 over 36 soak cycles, versus dead flat without the
+    # terminal in the mix).
+    #
+    # WHY EOF NEVER CAME. A pipe reader sees EOF exactly when writers == 0
+    # (fs/pipe.ad pipe_close_writer -> wq_wake_all; devfd.ad's read arms return
+    # 0/-1 on writers == 0). We bind the stdin pipe's WRITE end at our own
+    # /fd/10 above — BEFORE the spawn — and rfork's RFNAMEG clones our whole
+    # /fd row into the child (chan.ad pgrp_clone -> devfd_clone_row), which
+    # pipe_inc_writer()s every DEVFD_PIPE_W slot it copies. So the child got a
+    # second writer reference ON ITS OWN STDIN at /fd/10, and nothing ever
+    # dropped it: lib/p9.ad's p9_closefrom(3) sweeps INTEGER fds, not /fd/N
+    # names, and hamsh's _setup_fd_namespace only ever seeds 0/1/2. When we
+    # died, in_slot's writer count fell 2 -> 1 and stopped. hamsh's
+    # sys_read_nb(0) kept returning "would block", so its REPL idled forever
+    # instead of taking the EOF exit.
+    #
+    # THE FIX. Rebind the child's inherited copies of our two scratch names to
+    # the console. devfd_bind releases whatever Chan sits at the name first
+    # (_devfd_release_slot -> pipe_close_writer / pipe_close_reader), so this
+    # drops exactly the two refs the clone added, leaving in_slot with ONE
+    # writer (ours) and out_slot with ONE reader (ours). The child never opens
+    # /fd/10 or /fd/11, so where they point afterwards is immaterial — the
+    # point is that they no longer pin our pipes.
+    #
+    # Rebinding (rather than binding our ends after the spawn) keeps a writer
+    # pinned across the whole fork window: had the count been allowed to touch
+    # zero, a child that reached its first read before our bind landed would
+    # have seen an instant EOF and the terminal would open with a dead shell.
+    #
+    # Net effect: when this process dies — by the close box, /bin/kill, a
+    # crash, anything — its /fd row is released, in_slot's writers hits 0, and
+    # hamsh's readline takes its EOF path and exits. The zombie is orphaned
+    # (its parent is gone), and reap_orphan_zombies reclaims an orphan at the
+    # next task allocation, which returns TasksLive / VmaNodesLive /
+    # PagesInUse to baseline. scripts/test_de_term_child_reap.sh pins it.
+    sys_fdbind(pid, TERM_IN_FD,  DEVFD_CONS, 0)
+    sys_fdbind(pid, TERM_OUT_FD, DEVFD_CONS, 0)
     sh_alive = 1
     return 0
+
+
+# Terminate + reap the inner shell. Used on hamtermscene's OWN orderly exit
+# paths, where we DO still get to run code: the EOF chain above only fires
+# when our /fd row is released at process teardown, and an orderly return
+# should not lean on that. Safe to call when the shell already exited (the
+# note write fails harmlessly and the reap is non-blocking) or was never
+# started (sh_pid < 0).
+def _shutdown_shell():
+    if sh_pid < 0:
+        return
+    if sh_alive != 0:
+        p9_note(sh_pid, cast[Ptr[uint8]]("terminate"))
+    # Bounded non-blocking reap: -EAGAIN (-11) means "still running", so give
+    # the note a few scheduler passes to land rather than leaving a zombie.
+    tries: int32 = 0
+    while tries < 64:
+        wr: int64 = sys_waitpid_nb_raw(sh_pid, WAITPID_WNOHANG)
+        if wr != cast[int64](-11):
+            break
+        sys_yield()
+        tries = tries + 1
+    sh_alive = 0
+    sh_pid = -1
 
 
 # Cooperative short sleep (jiffy-granular, HZ=100 → 10 ms floor). Parks the
@@ -2331,6 +2397,10 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 if consfd >= 0:
                     _writeall(consfd, cast[Ptr[uint8]](
                         "[hamterm] shell exited; closing window\n"))
+                # sh_alive == 0 only means the pipe/waitpid said "gone"; run
+                # the full teardown so a shell that is merely mid-exit is
+                # noted and reaped rather than left behind.
+                _shutdown_shell()
                 return 0
             s2: uint64 = sys_get_jiffies()
             while sys_get_jiffies() - s2 < 2:
@@ -2454,4 +2524,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             wfds[0] = kfd
             wfds[1] = sh_out_fd
             sys_waitfds(&wfds[0], 2, TERM_IDLE_SLEEP_MS)
+    # Orderly exit: note + reap the shell so this path never leaves a live
+    # child or a zombie behind (see _shutdown_shell).
+    _shutdown_shell()
     return 0

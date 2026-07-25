@@ -1090,6 +1090,12 @@ def _begin_install():
         return
     sys_fdbind(pid, 1, DEVFD_PIPE_W, out_slot)
     sys_fdbind(pid, 2, DEVFD_PIPE_W, out_slot)
+    # rfork's RFNAMEG clone copied our whole /fd row into the child, including
+    # our scratch INST_OUT_FD read end, and devfd_clone_row refcounts every
+    # copied pipe end. Rebind the child's inherited copy to the console so it
+    # does not hold a reader reference on its own stdout for life (same class
+    # of leak as the DE terminal's stranded shell — user/hamtermscene.ad).
+    sys_fdbind(pid, INST_OUT_FD, DEVFD_CONS, 0)
     phase = 1
     if use_online != 0 and net_up != 0:
         _prog_push(cast[Ptr[uint8]]("installing from ONLINE repo..."), 30)

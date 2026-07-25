@@ -264,6 +264,80 @@ Per terminal open/close the orphan costs **1 task, 2 VMA nodes and ~300 pages
 This is the highest-value fix on the list and it is local: note `sh_pid` from
 hamtermscene's own exit path.
 
+#### FIXED, 2026-07-25 — and the first guess about the mechanism was wrong
+
+hamtermscene **cannot** note `sh_pid` from its own exit path: closing the
+window posts the Plan 9 `terminate` note to hamtermscene, and a note to a
+handler-less process terminates it *outright*
+(`sys/src/9/port/sysnote.ad`, default action → `signal_post(SIGTERM)`). It
+never runs another instruction. Installing a note handler is not an option
+either — cross-task handler retarget is still an open kernel milestone, so a
+handler would only make the terminal **unkillable**.
+
+The mechanism that was *supposed* to collect the shell is the oldest rule in
+the book: the terminal goes away, the shell reads EOF on stdin and exits. It
+never fired, and the reason is one refcount:
+
+* hamtermscene binds the stdin pipe's **write** end at its own `/fd/10`
+  *before* the spawn;
+* `rfork`'s `RFNAMEG` clones the whole `/fd` row into the child
+  (`chan.ad` `pgrp_clone` → `devfd_clone_row`), which `pipe_inc_writer()`s
+  **every** copied `DEVFD_PIPE_W` slot;
+* so the child held a second writer reference **on its own stdin**, and
+  nothing dropped it — `lib/p9.ad`'s `p9_closefrom(3)` sweeps *integer* fds,
+  not `/fd/N` names, and hamsh's `_setup_fd_namespace` only seeds 0/1/2.
+
+When hamtermscene died, `in_slot`'s writer count fell 2 → 1 and stopped. No
+`wq_wake_all`, no EOF: hamsh's `sys_read_nb(0)` kept returning "would block"
+and its REPL idled forever.
+
+The fix is two lines in `_start_shell()`: after wiring the child's stdio,
+rebind the child's *inherited* copies of the two scratch names to the console
+(`sys_fdbind(pid, TERM_IN_FD, DEVFD_CONS, 0)` and the same for `TERM_OUT_FD`).
+`devfd_bind` releases whatever Chan sits at the name first, which drops
+exactly the two references the clone added. Rebinding, rather than deferring
+our own binds until after the spawn, keeps a writer pinned across the whole
+fork window — had the count been allowed to reach zero, a child that got to
+its first read first would have seen an instant EOF and the terminal would
+open with a dead shell.
+
+Now the terminal is self-healing against *any* killer: close box, `/bin/kill`,
+crash. Its `/fd` row is released at teardown, `in_slot` hits zero writers, and
+hamsh takes its EOF exit. Belt and braces on top of that:
+
+* `lib/p9.ad` gained `p9_note_tree()` — note a pid **and its attached
+  descendants** — used by the DE close paths (`hamUId` `daemon_close_slot`,
+  `hamUI close`) and `/bin/kill`. Detached (`RFNOWAIT` / `spawn_detached`)
+  processes have `parent_pid == 0` and are never reached, so independently
+  launched DE apps still survive their launcher.
+* `hamtermscene` gained `_shutdown_shell()` for its own orderly exits.
+* The same `/fd`-row-clone reference pin was fixed in the three siblings that
+  copy hamtermscene's spawn shape — `hampkgscene`, `hamsoftware`,
+  `haminstallui` (they pin the *read* end, so the symptom there is a missing
+  EPIPE rather than a stranded shell).
+
+Measured with `scripts/test_de_term_child_reap.sh`, 12 terminal open/close
+cycles, same image before and after:
+
+| counter | before | after |
+|---|---|---|
+| `TasksLive` | 20 → 32, monotone (**+1 per close**) | oscillates 20 ↔ 22, **settled floor exactly 20** |
+| `VmaNodesLive` | 28 → 52, monotone (**+2 per close**) | oscillates 28 ↔ 32, **settled floor exactly 28** |
+| live `hamsh` rows | 4 → 16 (**+1 per close**) | never above 5, back to 4 (**+0 per close**) |
+| `PagesInUse` | 5 947 → 9 427 (**+290/cycle**) | settled samples 5 968 → 6 076 (**+13.5/cycle**, 21×) |
+| `MemFree` | −2 236 kB/cycle | settled samples **−666 kB/cycle** (3.4×) |
+
+The after-fix oscillation is expected and is not a leak: a close leaves a
+zombie for a beat, because `reap_orphan_zombies` collects an orphan at the
+next task ALLOCATION — i.e. when the next app launches. A sample that lands
+mid-teardown reads baseline+1 task / +2 VMA nodes; the next settled sample is
+back at baseline exactly. The gate therefore judges the **settled floor over
+the back third of the run** (0 with the fix, +9 tasks / +18 VMA nodes
+without), not any single sample.
+
+The residual −666 kB/cycle is finding #3 below (the ~6-pages-per-app-open/close
+leak), which is a different bug and still open.
+
 ### 3. Residual page leak of ~6 pages (~24 KiB) per app open/close
 
 With the terminal removed, `PagesInUse` still climbs **+24.4 pages/cycle** at

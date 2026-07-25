@@ -60,7 +60,10 @@ extern def sys_yield() -> int32
 # #450 F6: SYS_KILL retired; positive-pid kills are now lib.p9.p9_note
 # writes to /proc/<pid>/note. lib.p9 is already imported above for
 # spawn() and p9_listdir.
-from lib.p9 import p9_note
+# p9_note_tree is the window-CLOSE flavour: it notes the window owner's
+# attached descendants too, so closing the DE terminal also takes down
+# the inner hamsh it spawned (the 2026-07-25 soak leak — see lib/p9.ad).
+from lib.p9 import p9_note, p9_note_tree
 extern def sys_wsys_alloc(pid: uint64) -> int32
 extern def sys_wsys_free(wid: int32) -> int32
 extern def sys_pipe(fds: Ptr[int32]) -> int32
@@ -15813,7 +15816,11 @@ def daemon_close_slot(slot: int64):
     pid: int32 = DWIN_PID[s]
     if pid > 0:
         # #450 F6: SIGTERM → Plan-9 note "terminate" /proc/<pid>/note.
-        p9_note(pid, cast[Ptr[uint8]]("terminate"))
+        # TREE flavour: the window's owner may have spawned a lifetime-
+        # coupled child (hamtermscene -> /bin/hamsh). The owner is
+        # terminated outright by the note and gets no chance to reap it,
+        # so the close path notes the attached descendants as well.
+        p9_note_tree(pid, cast[Ptr[uint8]]("terminate"))
     wid: int32 = DWIN_WID[s]
     if wid >= 2:
         sys_wsys_free(wid)

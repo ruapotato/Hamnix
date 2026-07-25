@@ -48,7 +48,7 @@ extern def sys_errstr(buf: Ptr[uint8], nbuf: uint64) -> int32
 # rfork+exec wrapper (same 5-arg signature); p9_note writes a note
 # string to /proc/<pid>/note (the SIGTERM "terminate" verb here is
 # the Plan-9 equivalent of Linux SIGTERM).
-from lib.p9 import spawn, p9_note
+from lib.p9 import spawn, p9_note, p9_note_tree
 
 
 # Match the hamsh SPAWN_STDIO_NS sentinel: the child's stdio is bound
@@ -238,8 +238,11 @@ def cmd_close(wid_str: Ptr[uint8]) -> int32:
         return 1
     # SIGTERM → Plan-9 note "terminate" /proc/<pid>/note. Ignore the
     # return — the shell may already have exited; we still want to
-    # free the slot.
-    p9_note(pid_n, cast[Ptr[uint8]]("terminate"))
+    # free the slot. TREE flavour so a window owner's lifetime-coupled
+    # child (hamtermscene -> /bin/hamsh) dies with the window instead of
+    # being stranded — the owner is terminated outright by the note and
+    # never gets to reap it (lib/p9.ad p9_note_tree).
+    p9_note_tree(pid_n, cast[Ptr[uint8]]("terminate"))
     rc: int32 = sys_wsys_free(wid)
     if rc < 0:
         write_str(2, "hamUI: close: wsys_free failed\n")

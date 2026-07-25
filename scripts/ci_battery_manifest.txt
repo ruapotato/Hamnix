@@ -2868,6 +2868,20 @@ bash scripts/test_hambrowse_layoutread_host.sh
 # value is node/V8's. Implementation: lib/web/js/builtins/r8_ta.ad.
 bash scripts/test_hambrowse_bindata_host.sh
 
+# test_de_term_child_reap: the DE terminal must not strand its child shell.
+# The soak below found that closing a hamtermscene window left its inner
+# `/bin/hamsh` RUNNING FOREVER — the window close is a Plan 9 terminate note,
+# which kills the terminal outright before it can reap anything, and the
+# child had inherited (via rfork's /fd-row clone) a WRITER reference on its
+# own stdin pipe, so the EOF that should have ended it never came. Cost: ~1
+# task, 2 VMA nodes and ~300 pages per close — measured at exactly +12 tasks
+# / +24 VMA nodes / +12 live hamsh over 12 cycles before the fix, and flat
+# after. This gate is the cheap (~4 min) regression sentinel for that: 12
+# terminal open/close cycles, with TasksLive / VmaNodesLive / the live hamsh
+# census required to come back to baseline. Unlike the soak it fits the
+# per-shard budget, so it runs unconditionally.
+bash scripts/test_de_term_child_reap.sh
+
 # test_de_stress_soak: the 30-MINUTE DESKTOP SOAK — open a bunch of apps,
 # close a bunch of apps, repeat, and prove the session recovers its RAM.
 # NOT FOR THE PER-SHARD BUDGET: this gate runs SOAK_MINUTES (default 30) of

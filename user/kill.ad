@@ -9,9 +9,20 @@
 # (lib/p9.ad's p9_note). The retired SYS_KILL drift arm is gone from
 # the kernel; this is the only path. Exit 0 on a successful write,
 # 1 on bad args / write failure / target not found.
+#
+# LIFETIME COHORT (2026-07-25 soak fix). The note goes out through
+# p9_note_tree, so it also reaches the target's ATTACHED descendants —
+# the children a plain spawn() created and that the target was going to
+# reap. Detached processes (rfork RFNOWAIT / lib.p9 spawn_detached) have
+# no parent link and are NEVER reached, so the independent DE apps a
+# panel/desktop/session parent launched survive that parent's death
+# exactly as before. See lib/p9.ad's p9_note_tree for the rationale: a
+# noted process cannot clean up after itself (a note to a handler-less
+# process terminates it outright), so the DE terminal's inner shell can
+# only be freed from the killer's side.
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-from lib.p9 import p9_note
+from lib.p9 import p9_note_tree
 
 
 def strlen_u8(s: Ptr[uint8]) -> uint64:
@@ -114,7 +125,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if cast[uint64](note) == 0:
         write_str(2, cast[Ptr[uint8]]("kill: bad signal\n"))
         return 1
-    rc: int32 = p9_note(pid, note)
+    rc: int32 = p9_note_tree(pid, note)
     if rc < 0:
         write_str(2, cast[Ptr[uint8]](
             "kill: note write failed\n"))

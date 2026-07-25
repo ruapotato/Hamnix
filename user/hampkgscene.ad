@@ -184,6 +184,14 @@ def _run(argv: Ptr[uint64], mode: int32) -> int32:
         return -1
     sys_fdbind(pid, 1, DEVFD_PIPE_W, out_slot)
     sys_fdbind(pid, 2, DEVFD_PIPE_W, out_slot)
+    # rfork's RFNAMEG clone copied our WHOLE /fd row into the child, including
+    # our scratch OUT_FD read end — and devfd_clone_row refcounts every copied
+    # pipe end. The child would then hold a READER reference on its own stdout
+    # for life, so if this window is closed mid-run the orphaned child never
+    # gets the EPIPE that tells it nobody is listening. Rebind the child's
+    # inherited copy to the console to drop that reference (same class of leak
+    # as the DE terminal's stranded shell — see user/hamtermscene.ad).
+    sys_fdbind(pid, OUT_FD, DEVFD_CONS, 0)
     # blocking drain until every write end closes (child exit) => read 0
     while True:
         r: int64 = sys_read(ofd, &logbuf[0], 4096)

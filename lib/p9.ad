@@ -608,6 +608,193 @@ def p9_listdir(path: Ptr[char], buf: Ptr[uint8], count: uint64) -> int64:
     return total
 
 
+# --- p9_note_tree() — note a process AND its ATTACHED descendants ----
+#
+# THE LEAK THIS EXISTS TO CLOSE (2026-07-25 desktop soak).
+#
+# A note posted to a handler-less process TERMINATES it, instantly, with
+# no chance to run any cleanup (sys/src/9/port/sysnote.ad's default
+# action -> signal_post(SIGTERM); the cross-task handler retarget is an
+# open kernel milestone, and installing a handler today would make the
+# process UNKILLABLE instead of graceful). So an app that spawned a
+# lifetime-coupled child — the DE terminal, user/hamtermscene.ad, and
+# its inner `/bin/hamsh --no-echo /etc/rc.de-user` — CANNOT reap that
+# child when its window is closed: hamtermscene is already gone.
+#
+# The 30-minute stress soak (docs/de_stress_soak.md) measured the cost.
+# With hamtermscene in the app mix TasksLive climbed 20 -> 35 and
+# VmaNodesLive 28 -> 58 over 36 cycles and MemFree fell 4525 kB/cycle;
+# with the terminal dropped from the mix both counters were FLAT and the
+# slope was 1443 kB/cycle. Every terminal close stranded one live hamsh
+# (~1 task, 2 VMA nodes, ~300 pages) that nothing would ever kill.
+#
+# The fix has to live on the KILLER's side, because the killed process
+# gets no say. p9_note_tree posts `msg` to every ATTACHED descendant of
+# `pid` and then to `pid` itself.
+#
+# WHY "ATTACHED" IS THE RIGHT CUT, AND WHY IT IS SELF-LIMITING
+#
+# rfork(RFNOWAIT) / lib.p9 spawn_detached SEVERS the parent link — it
+# sets parent_pid = 0 (sys/src/9/port/sysproc.ad). Every DE launcher
+# that fires off an INDEPENDENT app — hamUId's app launches, the panel's
+# menu launchers, hamdesktop's icon double-click, hamfmscene's editor —
+# uses spawn_detached precisely because it never wait4s them. Those apps
+# therefore have NO ppid and this walk can never reach them: closing the
+# panel does not take the desktop's windows with it.
+#
+# What IS reachable is exactly the cohort a plain spawn() creates: a
+# child the parent tracks and whose whole reason to exist is the parent
+# (hamtermscene's shell, hampkgscene's `/bin/hpm`, a hamsh pipeline
+# stage). That is the set that must die with it.
+#
+# Descendants are noted BEFORE the target so a child never observes a
+# half-torn-down parent. Each one is left a zombie whose parent is dying
+# too; the kernel's reap_orphan_zombies (kernel/sched/core.ad) reclaims
+# an orphaned zombie at the next task allocation, which is what returns
+# TasksLive / VmaNodesLive / PagesInUse to baseline.
+_P9_TREE_MAX: uint64 = 64
+_p9_tree_kids:  Array[64, int32]
+_p9_tree_dir:   Array[4096, uint8]
+_p9_tree_stat:  Array[256, uint8]
+_p9_tree_path:  Array[64, uint8]
+
+
+def _p9_build_stat_path(pid: int32) -> Ptr[char]:
+    # Render "/proc/<pid>/stat" into _p9_tree_path. Same shape as
+    # _p9_build_note_path; kept separate so the two scratch buffers
+    # never alias (p9_note_tree holds a stat path open while it walks).
+    p: Ptr[uint8] = cast[Ptr[uint8]](&_p9_tree_path[0])
+    p[0] = 47                                    # '/'
+    p[1] = 112                                   # 'p'
+    p[2] = 114                                   # 'r'
+    p[3] = 111                                   # 'o'
+    p[4] = 99                                    # 'c'
+    p[5] = 47                                    # '/'
+    off: uint64 = 6
+    nlen: uint64 = _p9_render_u32(cast[uint32](pid),
+                                  cast[Ptr[uint8]](&_p9_tree_path[off]),
+                                  64 - off)
+    off = off + nlen
+    p[off] = 47                                  # '/'
+    p[off + 1] = 115                             # 's'
+    p[off + 2] = 116                             # 't'
+    p[off + 3] = 97                              # 'a'
+    p[off + 4] = 116                             # 't'
+    p[off + 5] = 0
+    return cast[Ptr[char]](&_p9_tree_path[0])
+
+
+def p9_ppid(pid: int32) -> int32:
+    # Parent pid of `pid`, or -1 if it can't be determined.
+    #
+    # /proc/<pid>/stat is the Linux-shape one-liner devproc renders
+    # (sys/src/9/port/devproc.ad::_emit_linux_stat):
+    #     pid (comm) state ppid pgrp ...
+    # comm can itself contain spaces and parentheses, so field 4 is
+    # located the way every real parser does it: scan to the LAST ')',
+    # then skip " <state> " and read the decimal that follows.
+    path: Ptr[char] = _p9_build_stat_path(pid)
+    fd: int32 = sys_open(path)
+    if fd < 0:
+        return -1
+    n: int64 = sys_read(fd, &_p9_tree_stat[0], 255)
+    sys_close(fd)
+    if n <= 0:
+        return -1
+    ln: uint64 = cast[uint64](n)
+    # Last ')'.
+    rp: uint64 = 0
+    found: int32 = 0
+    i: uint64 = 0
+    while i < ln:
+        if _p9_tree_stat[i] == 41:               # ')'
+            rp = i
+            found = 1
+        i = i + 1
+    if found == 0:
+        return -1
+    p: uint64 = rp + 1
+    # skip spaces, the single state letter, spaces.
+    while p < ln and _p9_tree_stat[p] == 32:
+        p = p + 1
+    while p < ln and _p9_tree_stat[p] != 32:
+        p = p + 1
+    while p < ln and _p9_tree_stat[p] == 32:
+        p = p + 1
+    if p >= ln:
+        return -1
+    if _p9_tree_stat[p] < 48 or _p9_tree_stat[p] > 57:
+        return -1
+    v: int32 = 0
+    while p < ln and _p9_tree_stat[p] >= 48 and _p9_tree_stat[p] <= 57:
+        v = v * 10 + cast[int32](_p9_tree_stat[p]) - 48
+        p = p + 1
+    return v
+
+
+def _p9_collect_children(pid: int32, at: uint64) -> uint64:
+    # Append every LIVE task whose ppid == pid onto _p9_tree_kids
+    # starting at index `at`; return the new count. /proc's root listing
+    # is "NAME\n"-packed and carries one decimal entry per live pid.
+    if at >= _P9_TREE_MAX:
+        return at
+    n: int64 = p9_listdir(cast[Ptr[char]]("/proc"), &_p9_tree_dir[0], 4096)
+    if n <= 0:
+        return at
+    ln: uint64 = cast[uint64](n)
+    out: uint64 = at
+    i: uint64 = 0
+    while i < ln and out < _P9_TREE_MAX:
+        # One name per line.
+        s: uint64 = i
+        while i < ln and _p9_tree_dir[i] != 10:
+            i = i + 1
+        e: uint64 = i
+        if i < ln:
+            i = i + 1                            # step past '\n'
+        # Numeric names only — the static well-known files (version,
+        # uptime, tasks, meminfo, ...) are not pids.
+        if e > s:
+            allnum: int32 = 1
+            v: int32 = 0
+            k: uint64 = s
+            while k < e:
+                c: uint8 = _p9_tree_dir[k]
+                if c < 48 or c > 57:
+                    allnum = 0
+                else:
+                    v = v * 10 + cast[int32](c) - 48
+                k = k + 1
+            if allnum != 0 and v > 1 and v != pid:
+                if p9_ppid(v) == pid:
+                    _p9_tree_kids[out] = v
+                    out = out + 1
+    return out
+
+
+def p9_note_tree(pid: int32, msg: Ptr[uint8]) -> int32:
+    # Post `msg` to every attached descendant of `pid`, then to `pid`.
+    # Returns p9_note's result for the target itself (the descendants are
+    # best-effort — one that raced us out of existence is not an error).
+    #
+    # The walk is breadth-first over a bounded 64-entry queue, so a deep
+    # chain (terminal -> shell -> a running command) is covered without
+    # recursion (the scratch buffers are module-scope BSS and a recursive
+    # walk would clobber them). pid <= 1 is refused: init's "descendants"
+    # are the whole system.
+    if pid > 1:
+        total: uint64 = _p9_collect_children(pid, 0)
+        head: uint64 = 0
+        while head < total and total < _P9_TREE_MAX:
+            total = _p9_collect_children(_p9_tree_kids[head], total)
+            head = head + 1
+        i: uint64 = 0
+        while i < total:
+            p9_note(_p9_tree_kids[i], msg)
+            i = i + 1
+    return p9_note(pid, msg)
+
+
 # --- F10-6: Plan 9 Dir record — first-class struct + wire format -----
 #
 # Adder has no `struct` keyword (see neighbouring modules' "Adder
