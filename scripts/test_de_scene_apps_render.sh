@@ -26,6 +26,12 @@ OVMF_FD="${OVMF_FD:-/usr/share/OVMF/OVMF_CODE.fd}"
 [ -f "$OVMF_FD" ] || { echo "[apps_render] SKIP: OVMF firmware not found" >&2; exit 0; }
 command -v socat >/dev/null 2>&1 || { echo "[apps_render] SKIP: socat required" >&2; exit 0; }
 [ -f "$INSTALLER_IMG" ] || { echo "[apps_render] SKIP: $INSTALLER_IMG absent" >&2; exit 0; }
+# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
+# build. Booting a stale one silently is the 2026-07-24 false-negative
+# class — be loud about it. shellcheck source=_installer_img.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
+PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+installer_img_warn_if_stale "$INSTALLER_IMG" "[de_scene_apps_render]"
 
 echo "[apps_render] output dir: $OUT_DIR"
 OVMF_RW=$(mktemp --tmpdir hamnix-ar.ovmf.XXXXXX.fd)

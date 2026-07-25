@@ -90,11 +90,15 @@ if [ -z "$OVMF_FD" ] || [ ! -f "$OVMF_FD" ]; then
 fi
 
 # --- ensure the installer image exists (rebuild by default) -----------
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
 if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
     if [ ! -f "$INSTALLER_IMG" ]; then
         echo "$TAG SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1." >&2
         exit 0
     fi
+    # Reusing a pre-existing image: say so LOUDLY when it predates the tree.
+    installer_img_warn_if_stale "$INSTALLER_IMG" "[live_writable]"
 else
     echo "$TAG rebuilding installer image via build_installer_img.sh (~6 min; HAMNIX_SKIP_BUILD=1 to reuse)"
     if ! bash "$PROJ_ROOT/scripts/build_installer_img.sh"; then

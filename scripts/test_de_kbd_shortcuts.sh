@@ -95,6 +95,11 @@ if [ ! -f "$ELF" ]; then
     } > "$OUT_REPORT"
     exit 0
 fi
+# Stale-artifact guard: a PRESENT-but-OLD kernel ELF is booted silently otherwise,
+# which is exactly the 2026-07-24 false-negative class. See _installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$ELF" "[de_kbd_shortcuts]"
 
 # Multiboot/VBE host limit probe (same shape as test_de_cursor_nudge).
 if ! timeout 5 qemu-system-x86_64 -kernel "$ELF" -smp 1 -vga none -display none \

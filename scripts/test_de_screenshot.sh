@@ -141,10 +141,7 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
     # screendump as a picture of current source (scripts/_installer_img.sh).
     # shellcheck source=_installer_img.sh
     source "$PROJ_ROOT/scripts/_installer_img.sh"
-    if installer_img_is_stale "$INSTALLER_IMG"; then
-        echo "[test_de_screenshot] WARNING: $INSTALLER_IMG is STALE (older than a" >&2
-        echo "[test_de_screenshot]   tracked build input) — the PNG below shows an OLD build." >&2
-    fi
+    installer_img_warn_if_stale "$INSTALLER_IMG" "[de_screenshot]"
 else
     echo "[test_de_screenshot] rebuilding $INSTALLER_IMG via build_installer_img.sh (~10-15 min)..."
     # HAMNIX_INSTALLER_IMG_OUT is already exported for the selftest image;

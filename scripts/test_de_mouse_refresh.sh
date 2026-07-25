@@ -83,7 +83,10 @@ else
     exit 0
 fi
 
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[de_mouse_refresh]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[test_de_mouse_refresh] SKIP: $INSTALLER_IMG absent + HAMNIX_SKIP_BUILD=1" >&2
         exit 0

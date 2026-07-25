@@ -198,6 +198,40 @@ else:
     print(f"[build_initramfs] WARN: video fixture {_vid_src} absent — "
           f"hamvideo has no default clip")
 
+# --- PROVENANCE STAMP (always planted) --------------------------------
+# /etc/hamnix-build carries "<git-sha12>[-dirty] <build UTC>" as a
+# NUL-terminated string. init/main.ad prints it at boot:03 as
+#     [boot] image built <sha> <time>
+# so ANY serial log — a gate's, a screenshot's, a human's — names the build
+# that actually ran. On 2026-07-24 three agents and the orchestrator each
+# reported a different answer about whether the office suite shipped, because
+# each was looking at a different artifact and none matched what booted. This
+# one line makes that mistake impossible to make silently.
+#
+# fs/initramfs_blob.S is .gitignore'd, so a per-build timestamp costs no git
+# churn. HAMNIX_BUILD_STAMP overrides it (reproducible-build experiments).
+def _provenance_stamp() -> bytes:
+    override = os.environ.get("HAMNIX_BUILD_STAMP")
+    if override:
+        return override.encode()[:95] + b"\x00"
+    import subprocess as _sp
+    import datetime as _dt
+    root = Path(__file__).resolve().parent.parent
+    def _git(*a):
+        try:
+            return _sp.check_output(["git", *a], cwd=str(root),
+                                    stderr=_sp.DEVNULL).decode().strip()
+        except Exception:
+            return ""
+    sha = _git("rev-parse", "--short=12", "HEAD") or "nogit"
+    if _git("status", "--porcelain", "--untracked-files=no"):
+        sha += "-dirty"
+    when = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (sha + " " + when).encode()[:95] + b"\x00"
+
+
+FILES.append(("/etc/hamnix-build", _provenance_stamp()))
+
 # Optional opt-in markers controlled by env vars. Used by per-test
 # harness scripts to enable kernel-side smoke tests that would
 # otherwise hang/regress unrelated test runs. See

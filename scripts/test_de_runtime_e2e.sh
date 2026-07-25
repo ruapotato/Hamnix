@@ -86,12 +86,16 @@ if ! command -v socat >/dev/null 2>&1 && ! command -v nc >/dev/null 2>&1; then
 fi
 
 # --- prepare a bootable disk ------------------------------------------
+# Stale-artifact guard for BOTH artifacts this gate can boot (the installer
+# image and the golden installed disk). See scripts/_installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
 DISK_KIND=""
 DISK_SRC=""
 
 case "$MODE" in
     installer)
-        if [ ! -f "$INSTALLER_IMG" ] && [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
+        if installer_img_is_stale "$INSTALLER_IMG" && [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
             echo "[test_de_runtime_e2e] building installer image via scripts/build_installer_img.sh"
             if ! bash scripts/build_installer_img.sh; then
                 echo "[test_de_runtime_e2e] SKIP: installer image build failed (cascading dependency missing)"
@@ -102,17 +106,19 @@ case "$MODE" in
             echo "[test_de_runtime_e2e] SKIP: installer image $INSTALLER_IMG unavailable"
             exit 0
         fi
+        installer_img_warn_if_stale "$INSTALLER_IMG" "[de_runtime_e2e]"
         DISK_KIND="installer"
         DISK_SRC="$INSTALLER_IMG"
         ;;
     installed)
-        if [ ! -f "$GOLDEN_NVME" ] && [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
+        if installer_img_is_stale "$GOLDEN_NVME" && [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
             echo "[test_de_runtime_e2e] building golden installed disk via scripts/build_installed_nvme.sh"
             if ! bash scripts/build_installed_nvme.sh; then
                 echo "[test_de_runtime_e2e] SKIP: golden disk build failed"
                 exit 0
             fi
         fi
+        installer_img_warn_if_stale "$GOLDEN_NVME" "[de_runtime_e2e]"
         if [ ! -f "$GOLDEN_NVME" ]; then
             echo "[test_de_runtime_e2e] SKIP: golden installed disk $GOLDEN_NVME unavailable"
             exit 0

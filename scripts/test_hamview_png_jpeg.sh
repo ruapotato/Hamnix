@@ -40,7 +40,10 @@ OVMF_FD="${OVMF_FD:-/usr/share/OVMF/OVMF_CODE.fd}"
 [ -f "$OVMF_FD" ] || { echo "[hamview] SKIP: OVMF firmware not found" >&2; exit 0; }
 command -v socat >/dev/null 2>&1 || { echo "[hamview] SKIP: socat required" >&2; exit 0; }
 
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[hamview_png_jpeg]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[hamview] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
         exit 0

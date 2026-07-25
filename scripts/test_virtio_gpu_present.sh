@@ -189,6 +189,12 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     ENABLE_VIRTIO_GPU_TEST=1 HAMNIX_FORCE_SELFTESTS=1 \
         bash "$PROJ_ROOT/scripts/build_installer_img.sh"
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$HAMNIX_INSTALLER_IMG" "[virtio_gpu_present]"
 if [ ! -f "$HAMNIX_INSTALLER_IMG" ]; then
     echo "[test_vgpu] FAIL: $HAMNIX_INSTALLER_IMG missing after build_installer_img.sh" >&2
     exit 1

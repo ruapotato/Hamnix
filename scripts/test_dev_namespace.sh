@@ -67,6 +67,12 @@ HAMNIX_INSTALLER_AUTORUN=1 bash scripts/build_installer_img.sh >/tmp/test_dev_na
 if [ ! -f "$INSTALLER_IMG" ]; then
     verdict_inconclusive "$TAG" "$INSTALLER_IMG not built — cannot boot the gate."
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$INSTALLER_IMG" "[dev_namespace]"
 
 NVME_IMG=$(mktemp --tmpdir hamnix-devns-nvme.XXXXXX.qcow2)
 OVMF_RW=$(mktemp --tmpdir hamnix-devns.ovmf.XXXXXX.fd)

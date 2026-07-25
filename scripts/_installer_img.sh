@@ -109,3 +109,79 @@ ensure_installer_img() {
     [ -f "$img" ] || { echo "$tag ERROR: $img still absent after build" >&2; return 1; }
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# ROLLOUT API (2026-07-24) — the shapes found across the ~70 other gates that
+# boot a prebuilt build/ artifact. See scripts/test_artifact_freshness.sh for
+# the QEMU-free canary that keeps this honest.
+# ---------------------------------------------------------------------------
+
+# installer_img_age_str <path> — "2d00h13m old (built 2026-07-22 09:35:41)".
+installer_img_age_str() {
+    local p="$1" t now age d h m
+    [ -f "$p" ] || { echo "ABSENT"; return 0; }
+    t=$(stat -c %Y "$p" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$(( now - t ))
+    [ "$age" -lt 0 ] && age=0
+    d=$(( age / 86400 )); h=$(( (age % 86400) / 3600 )); m=$(( (age % 3600) / 60 ))
+    printf '%dd%02dh%02dm old (built %s)' "$d" "$h" "$m" \
+        "$(date -d "@$t" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?')"
+}
+
+# _installer_img_loud <tag> <line>... — a banner nobody can miss in a CI log.
+_installer_img_loud() {
+    local tag="$1"; shift
+    echo "$tag ############################################################" >&2
+    local l
+    for l in "$@"; do echo "$tag ## $l" >&2; done
+    echo "$tag ############################################################" >&2
+}
+
+# installer_img_warn_if_stale <img> <tag>
+#
+# For gates that deliberately boot a PRE-EXISTING artifact (the
+# `if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]` family, and the handful that never
+# build at all). ALWAYS returns 0 — it only makes the staleness LOUD so a
+# PASS/FAIL below can never be silently attributed to the wrong build.
+installer_img_warn_if_stale() {
+    local img="$1" tag="${2:-[installer_img]}"
+    [ -f "$img" ] || return 0
+    installer_img_is_stale "$img" || return 0
+    _installer_img_loud "$tag" \
+        "STALE ARTIFACT WARNING" \
+        "$img" \
+        "  $(installer_img_age_str "$img")" \
+        "  is OLDER than a tracked build input — it does NOT contain the" \
+        "  code in this working tree. The verdict below may describe an" \
+        "  OLD build (this exact trap cost two agent-days on 2026-07-24)." \
+        "  Rebuild: bash scripts/build_installer_img.sh"
+    return 0
+}
+
+# installer_img_needs_build <img> <tag>
+#
+# Drop-in replacement for the buggy `if [ ! -f "$IMG" ]; then <build>; fi`
+# condition. Returns 0 (=> run the gate's own build block, which may carry
+# gate-specific env such as ENABLE_SPINE_SELFTEST=1) when the image is
+# missing OR stale; returns 1 when the image is present and fresh.
+#
+# HAMNIX_SKIP_BUILD=1 + present-but-stale => LOUD warning and return 1, so the
+# gate boots the old image knowingly rather than silently.
+installer_img_needs_build() {
+    local img="$1" tag="${2:-[installer_img]}"
+    if ! installer_img_is_stale "$img"; then
+        return 1                       # present and fresh — nothing to do
+    fi
+    if [ -f "$img" ]; then
+        if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
+            installer_img_warn_if_stale "$img" "$tag"
+            return 1
+        fi
+        _installer_img_loud "$tag" \
+            "$img is STALE ($(installer_img_age_str "$img"))" \
+            "  — older than a tracked build input. REBUILDING (~6-14 min)."
+        return 0
+    fi
+    return 0                           # absent — caller's block handles it
+}

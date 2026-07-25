@@ -96,11 +96,15 @@ fi
 # never reached the guest — the gate "tested" an old kernel. Default is
 # now to REBUILD every run; HAMNIX_SKIP_BUILD=1 keeps the fast path for
 # callers that just built it.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
 if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
     if [ ! -f "$INSTALLER_IMG" ]; then
         echo "$TAG SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1." >&2
         exit 0
     fi
+    # Reusing a pre-existing image: say so LOUDLY when it predates the tree.
+    installer_img_warn_if_stale "$INSTALLER_IMG" "[installer_live_debian]"
 else
     echo "$TAG rebuilding installer image via build_installer_img.sh (~6 min; HAMNIX_SKIP_BUILD=1 to reuse)"
     # This test exercises REAL Debian apt/dpkg inside the LIVE linux ns, so

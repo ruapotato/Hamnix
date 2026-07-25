@@ -60,7 +60,10 @@ TMPL="$PWD/scripts/fixtures/hambrowse_post_ondevice/page.html.tmpl"
 [ -f "$TMPL" ] || { echo "[jspost] SKIP: fixture $TMPL missing" >&2; exit 0; }
 
 # --- build / stale-guard the installer image (mirrors test_hambrowse_fetch) ---
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[hambrowse_post_ondevice]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[jspost] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
         exit 0

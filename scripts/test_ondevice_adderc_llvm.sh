@@ -99,6 +99,12 @@ else
     echo "$TAG rebuilding installer image with HAMNIX_STAGE_CLANG=1 (~8 min, ~250 MiB clang closure)"
     HAMNIX_STAGE_CLANG=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$INSTALLER_IMG" "[ondevice_adderc_llvm]"
 [ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP: $INSTALLER_IMG unavailable" >&2; exit 0; }
 
 # --- confirm the live image carries adderc + clang --------------------

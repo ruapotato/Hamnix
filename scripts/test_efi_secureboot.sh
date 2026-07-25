@@ -90,6 +90,12 @@ if [ ! -f "$HAMNIX_INSTALLER_IMG" ]; then
     echo "[test_efi] FAIL: $HAMNIX_INSTALLER_IMG missing after build_installer_img.sh." >&2
     exit 1
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$HAMNIX_INSTALLER_IMG" "[efi_secureboot]"
 
 # OVMF persists UEFI variables back into its file, and the disk is opened
 # r/w — copy both so a re-run starts pristine.

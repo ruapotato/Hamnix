@@ -62,6 +62,11 @@ if [ ! -f "$HAMNIX_ISO" ]; then
     echo "[test_cpio_capacity] FAIL"
     exit 1
 fi
+# Stale-artifact guard: HAMNIX_SKIP_BUILD=1 reuses whatever ISO/rootfs is
+# already on disk. Say so LOUDLY when it predates the tree under test.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$HAMNIX_ISO" "[cpio_capacity]"
 
 LOGFILE=$(mktemp --tmpdir hamnix-cpio-capacity.XXXXXX.log)
 cleanup() { rm -f "$LOGFILE"; }

@@ -107,6 +107,11 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     rm -f "$HAMNIX_ISO"
     bash "$PROJ_ROOT/scripts/build_iso.sh"
 fi
+# HAMNIX_SKIP_BUILD=1 reuses whatever ISO is on disk — say so LOUDLY when
+# that ISO predates the tree under test (scripts/_installer_img.sh).
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$HAMNIX_ISO" "[uefi_boot]"
 if [ ! -f "$HAMNIX_ISO" ]; then
     echo "[test_uefi_boot] FAIL: $HAMNIX_ISO missing after build_iso.sh." >&2
     exit 1

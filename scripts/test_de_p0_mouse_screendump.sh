@@ -55,7 +55,10 @@ MON_DRIVER=""
 for c in socat nc; do command -v "$c" >/dev/null 2>&1 && MON_DRIVER="$c" && break; done
 [ -z "$MON_DRIVER" ] && { echo "[p0_mouse] SKIP: no socat/nc to drive QEMU monitor" >&2; exit 0; }
 
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[de_p0_mouse_screendump]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[p0_mouse] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1." >&2; exit 0
     fi

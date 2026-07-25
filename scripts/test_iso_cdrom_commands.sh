@@ -56,6 +56,11 @@ if [ ! -f "$HAMNIX_ISO" ]; then
     echo "[test_iso_cdrom] FAIL: $HAMNIX_ISO missing after build_iso.sh." >&2
     exit 1
 fi
+# Stale-artifact guard: HAMNIX_SKIP_BUILD=1 reuses whatever ISO/rootfs is
+# already on disk. Say so LOUDLY when it predates the tree under test.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$HAMNIX_ISO" "[iso_cdrom_commands]"
 
 LOG=$(mktemp --tmpdir hamnix-iso-cdrom.XXXXXX.log)
 INFIFO=$(mktemp --tmpdir -u hamnix-iso-cdrom-in.XXXXXX)

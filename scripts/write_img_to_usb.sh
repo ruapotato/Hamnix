@@ -120,6 +120,12 @@ if [ -z "$DEVICE" ]; then
 fi
 
 # ---- Image sanity --------------------------------------------------------
+# Writing a STALE image to a USB stick is the most expensive form of this
+# mistake: you then boot real hardware and debug code that is not on it.
+# shellcheck source=_installer_img.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
+PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+installer_img_warn_if_stale "$IMG_PATH" "[write_img_to_usb]"
 if [ ! -f "$IMG_PATH" ]; then
     echo "[write_img_to_usb] ERROR: image not found at '$IMG_PATH'." >&2
     if [ "$IMG_PATH" = "$IMG_DEFAULT" ]; then

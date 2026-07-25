@@ -200,7 +200,10 @@ fi
 # The installer build is SLOW (~15-20 min). Battery shards set
 # HAMNIX_SKIP_BUILD=1 so this gate is a fast, clean SKIP when the image is not
 # prebuilt; the full build + OVMF boot runs in the installer CI job / locally.
-if [ ! -f "$IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$IMG" "[kpti_uefi]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         say "SKIP: $IMG absent and HAMNIX_SKIP_BUILD=1 (no prebuilt image here)."
         say "SKIP"; exit 0

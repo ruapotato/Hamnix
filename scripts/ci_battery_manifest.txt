@@ -11,6 +11,12 @@
 # (INCONCLUSIVE→warning on a TCG-starved runner); direct ones are hard
 # PASS/FAIL. Blank lines and # comments are ignored.
 
+# FIRST, and ~1 s: the stale-artifact canary. No QEMU. Fails when any tracked
+# build artifact under build/ is older than a tracked build input (booting one
+# makes every downstream verdict describe the WRONG build — the 2026-07-24
+# office-suite false negative), or when a gate reuses a prebuilt artifact
+# behind the banned `if [ ! -f "$IMG" ]` rebuild-only-when-absent shape.
+bash scripts/test_artifact_freshness.sh
 bash scripts/test_hamsh.sh
 bash scripts/ci_run_gate.sh scripts/test_hamsh_heartbeat.sh
 # QEMU-free host gate for the 2048 scene app: renders the board, drives scripted

@@ -85,6 +85,11 @@ if [ ! -f "$HAMNIX_ISO" ]; then
     echo "[test_efi_gop] ERROR: $HAMNIX_ISO not found after build." >&2
     exit 1
 fi
+# Stale-artifact guard: HAMNIX_SKIP_BUILD=1 reuses whatever ISO/rootfs is
+# already on disk. Say so LOUDLY when it predates the tree under test.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$HAMNIX_ISO" "[efi_gop]"
 
 # OVMF wants a writable copy because UEFI variables get persisted.
 OVMF_RW=$(mktemp --tmpdir ovmf-efi-gop.XXXXXX.fd)

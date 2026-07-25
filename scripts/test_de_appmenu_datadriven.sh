@@ -16,6 +16,16 @@
 #      image, and the hamnix-desktop-config package.
 #
 # Pass marker: RESULT: PASS
+#
+# ASSERTION ALTITUDE — READ BEFORE TRUSTING A GREEN HERE.
+# This gate proves the .desktop CATALOGUE is well-formed and staged — i.e. it
+# asserts on a DIRECTORY LISTING. It does NOT prove the menu SHOWS those apps.
+# Its predecessor stayed green while the live Applications menu silently
+# dropped every app past an internal cap (AM_MAX): the listing was perfect and
+# the menu was wrong. A green here is necessary, not sufficient; the
+# shipped-menu verdict (`[panel] appmenu entries: N`, asserted against the
+# catalogue size) comes from the gate named below.
+# RESULT-LEVEL GATE: scripts/test_de_office_suite.sh
 
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

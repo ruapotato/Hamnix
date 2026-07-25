@@ -174,7 +174,10 @@ if [ -n "${SERIAL_LOG:-}" ]; then
 fi
 
 # --- ensure the installer image exists (build it unless SKIP_BUILD) ---
-if [ ! -f "$IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$IMG" "[installer_boot_heartbeat]"; then
     if [ "${SKIP_BUILD:-0}" = "1" ]; then
         say "FAIL: $IMG missing and SKIP_BUILD=1 (refusing the ~14-min rebuild)."
         say "FAIL"

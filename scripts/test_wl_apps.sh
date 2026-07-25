@@ -23,6 +23,12 @@ OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd; do [ -f "$c" ] && OVMF_FD="$c" && break; done; fi
 [ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "$TAG SKIP: OVMF not found." >&2; exit 0; }
 [ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP: $INSTALLER_IMG absent." >&2; exit 0; }
+# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
+# build. Booting a stale one silently is the 2026-07-24 false-negative
+# class — be loud about it. shellcheck source=_installer_img.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
+PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+installer_img_warn_if_stale "$INSTALLER_IMG" "[wl_apps]"
 
 OVMF_RW=$(mktemp --tmpdir hamnix-wlapps.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-wlapps.img.XXXXXX.raw)

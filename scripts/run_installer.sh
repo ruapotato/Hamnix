@@ -49,8 +49,10 @@ MEM="${MEM:-2G}"
 say() { echo "[run_installer] $*"; }
 
 # --- installer image (build on demand) --------------------------------------
-if [ ! -f "$IMG" ]; then
-    say "installer image $IMG absent — building via scripts/build_installer_img.sh (~14 min)"
+# shellcheck source=_installer_img.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
+if installer_img_needs_build "$IMG" "[run_installer]"; then
+    say "installer image $IMG absent/stale — building via scripts/build_installer_img.sh (~14 min)"
     env $AUTORUN_BUILD_ENV HAMNIX_INSTALLER_IMG_OUT="$IMG" bash scripts/build_installer_img.sh
 fi
 [ -f "$IMG" ] || { say "FAIL: $IMG still missing after build."; exit 1; }

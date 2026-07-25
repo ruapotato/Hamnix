@@ -81,6 +81,12 @@ fi
 [ -f "$INSTALLER_IMG" ] \
     || verdict_inconclusive "$TAG" \
          "$INSTALLER_IMG absent — run: bash scripts/build_installer_img.sh"
+# This gate deliberately boots whatever image is already there. That is only
+# safe if the reader is TOLD when that image predates the tree under test —
+# a silent stale boot is how the 2026-07-24 office-suite false negative
+# happened. shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$INSTALLER_IMG" "[ls_overlay_dirs]"
 
 OVMF_RW=$(mktemp --tmpdir hamnix-lsov.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-lsov.img.XXXXXX.raw)

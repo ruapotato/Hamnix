@@ -145,7 +145,10 @@ if [ -n "${SERIAL_LOG:-}" ]; then
 fi
 
 # --- ensure the installer image exists --------------------------------
-if [ ! -f "$IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$IMG" "[installer_madt_enum]"; then
     if [ "${SKIP_BUILD:-0}" = "1" ]; then
         say "SKIP: $IMG absent and SKIP_BUILD=1 (no prebuilt image on this shard)."
         say "SKIP"; exit 0

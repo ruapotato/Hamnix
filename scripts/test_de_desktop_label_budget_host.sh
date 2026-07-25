@@ -19,6 +19,14 @@
 #     * EVERY label line is present: 2 glyph runs x 2 lines x 16 icons = 64.
 #
 # SKIPS CLEANLY when the Python seed compiler is unavailable.
+#
+# ASSERTION ALTITUDE — READ BEFORE TRUSTING A GREEN HERE.
+# This gate proves the label glyph runs are EMITTED into the display list. It
+# does NOT prove they RENDER. Its predecessor stayed green for days while the
+# shipped desktop drew a grid of icons with blank space under them, because
+# emission and rendering are different facts. A green here is necessary, not
+# sufficient; the shipped-pixels verdict comes from the gate named below.
+# RESULT-LEVEL GATE: scripts/test_de_office_suite.sh
 
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

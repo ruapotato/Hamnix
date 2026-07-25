@@ -53,7 +53,10 @@ command -v python3 >/dev/null 2>&1 || { echo "[hb-nav-od] SKIP: python3 required
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "[hb-nav-od] SKIP: qemu required" >&2; exit 0; }
 
 # --- build / stale-guard the installer image (mirrors test_hambrowse_post) ---
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[hambrowse_navigation_ondevice]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[hb-nav-od] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
         exit 0

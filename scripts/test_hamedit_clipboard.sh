@@ -67,7 +67,10 @@ fi
 if [ -z "$OVMF_FD" ] || [ ! -f "$OVMF_FD" ]; then echo "[clip_gate] SKIP: OVMF absent" >&2; exit 0; fi
 command -v socat >/dev/null 2>&1 || { echo "[clip_gate] SKIP: socat absent" >&2; exit 0; }
 
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[hamedit_clipboard]"; then
     if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         echo "[clip_gate] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2; exit 0
     fi

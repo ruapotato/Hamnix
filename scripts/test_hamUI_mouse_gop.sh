@@ -87,6 +87,12 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     echo "[test_mouse_gop] building installer image with ENABLE_MOUSETEST_SELFTEST=1 (autostart live-mouse self-test)"
     ENABLE_MOUSETEST_SELFTEST=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$INSTALLER_IMG" "[hamUI_mouse_gop]"
 if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[test_mouse_gop] SKIP: installer image $INSTALLER_IMG unavailable (build gated)." >&2
     exit 0

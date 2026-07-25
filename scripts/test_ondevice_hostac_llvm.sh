@@ -137,11 +137,15 @@ fi
 # via scripts/build_rootfs_img.py::_stage_phase0b_hostac. The DEFAULT
 # (busybox-minimal, HAMNIX_LIVE_MINIMAL=1) live image is used — no heavy
 # real-Debian closure is needed to exec a static compiler.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
 if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
     if [ ! -f "$INSTALLER_IMG" ]; then
         echo "$TAG SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1." >&2
         exit 0
     fi
+    # Reusing a pre-existing image: say so LOUDLY when it predates the tree.
+    installer_img_warn_if_stale "$INSTALLER_IMG" "[ondevice_hostac_llvm]"
 else
     echo "$TAG rebuilding installer image with HAMNIX_STAGE_HOSTAC=1 (~6 min)"
     HAMNIX_STAGE_HOSTAC=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"

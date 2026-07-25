@@ -84,6 +84,11 @@ if [ ! -f "$ELF" ]; then
     echo "[test_de_cursor_nudge] SKIP: $ELF absent (build via test_de_runtime_smoke or build_user+build_modules+build_initramfs+adder compile init/main.ad)" >&2
     exit 0
 fi
+# Stale-artifact guard: a PRESENT-but-OLD kernel ELF is booted silently otherwise,
+# which is exactly the 2026-07-24 false-negative class. See _installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$ELF" "[de_cursor_nudge]"
 
 # Probe the multiboot/VBE host-QEMU limit (project_qemu_multiboot_vbe_limit):
 # QEMU 10.x rejects 64-bit kernel ELFs through -kernel because the stub

@@ -62,7 +62,10 @@ if [ -z "$OVMF_FD" ] || [ ! -f "$OVMF_FD" ]; then
     exit 0
 fi
 
-if [ ! -f "$INSTALLER_IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$INSTALLER_IMG" "[de_slot_exhaustion]"; then
     echo "[slot_gate] building installer image (~6 min)"
     bash "$PROJ_ROOT/scripts/build_installer_img.sh" || {
         echo "[slot_gate] SKIP: installer image build failed" >&2

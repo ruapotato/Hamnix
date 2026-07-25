@@ -44,6 +44,12 @@ fi
 [ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "[occ] SKIP-RUNTIME: no OVMF" >&2; exit 0; }
 command -v socat >/dev/null 2>&1 || { echo "[occ] SKIP-RUNTIME: no socat" >&2; exit 0; }
 [ -f "$INSTALLER_IMG" ] || { echo "[occ] SKIP-RUNTIME: $INSTALLER_IMG absent" >&2; exit 0; }
+# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
+# build. Booting a stale one silently is the 2026-07-24 false-negative
+# class — be loud about it. shellcheck source=_installer_img.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
+PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+installer_img_warn_if_stale "$INSTALLER_IMG" "[de_open_close_cycles]"
 
 mkdir -p "$OUT_DIR"
 echo "[occ] output dir: $OUT_DIR"

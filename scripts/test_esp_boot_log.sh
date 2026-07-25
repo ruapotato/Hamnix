@@ -74,8 +74,12 @@ fi
 # --- ensure the golden installed disk exists --------------------------
 # build_installed_nvme.sh installs ONCE via the real installer path and
 # gates cleanly (exit 0, no disk) when KVM/OVMF/mksquashfs is missing.
-if [ ! -f "$GOLDEN_NVME" ]; then
-    echo "[test_esp_log] golden installed disk absent; building it via build_installed_nvme.sh"
+# Stale-artifact guard: "build only when ABSENT" is the shape that produced
+# the 2026-07-24 false negative. See scripts/_installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+if installer_img_needs_build "$GOLDEN_NVME" "[esp_boot_log]"; then
+    echo "[test_esp_log] golden installed disk absent/stale; building it via build_installed_nvme.sh"
     bash "$PROJ_ROOT/scripts/build_installed_nvme.sh"
 fi
 if [ ! -f "$GOLDEN_NVME" ]; then

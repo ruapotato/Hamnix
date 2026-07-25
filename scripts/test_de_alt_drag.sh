@@ -103,6 +103,11 @@ if [ ! -f "$ELF" ]; then
     echo "PASS: DE Alt+drag (move + resize) intact (structural only)"
     exit 0
 fi
+# Stale-artifact guard: a PRESENT-but-OLD kernel ELF is booted silently otherwise,
+# which is exactly the 2026-07-24 false-negative class. See _installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$ELF" "[de_alt_drag]"
 
 # Probe the multiboot/VBE host-QEMU limit (mirrors test_de_cursor_nudge.sh):
 # QEMU 10.x rejects 64-bit kernel ELFs through -kernel because the stub

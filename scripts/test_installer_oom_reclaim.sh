@@ -137,7 +137,10 @@ fi
 # On a battery shard with no prebuilt image, SKIP cleanly (the full image
 # build + OVMF boot runs in the installer CI job / locally) — exactly the
 # HAMNIX_SKIP_BUILD=1 / SKIP_BUILD=1 pattern the sibling installer gates use.
-if [ ! -f "$IMG" ]; then
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+if installer_img_needs_build "$IMG" "[installer_oom_reclaim]"; then
     if [ "${SKIP_BUILD:-0}" = "1" ] || [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         say "SKIP: $IMG absent and SKIP_BUILD set — no prebuilt installer image"
         say "      on this shard (exercised in the installer CI job / locally)."

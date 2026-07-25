@@ -19,6 +19,11 @@ if [ ! -f "$IMG" ]; then
     echo "[img-size] SKIP: $IMG not built (run build_installer_img.sh first)"
     exit 0
 fi
+# This gate measures a PRE-EXISTING artifact by design. Measuring a stale one
+# reports yesterday's size as today's verdict — be loud about it.
+# shellcheck source=_installer_img.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_installer_img.sh"
+installer_img_warn_if_stale "$IMG" "[img-size]"
 # If the broad-coverage embed was explicitly requested, the image is expected
 # to be large — don't enforce the default ceiling.
 if [ "${HAMNIX_DEBIAN_BREADTH:-0}" = "1" ] || [ "${HAMNIX_LIVE_MINIMAL:-1}" = "0" ]; then

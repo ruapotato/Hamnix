@@ -91,6 +91,12 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     rm -f "$INSTALLER_IMG"
     HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # E2E install regression needs the unattended auto-install path
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$INSTALLER_IMG" "[installer_nvme_inram]"
 if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[test_installer_nvme_inram] FAIL Stage A: $INSTALLER_IMG not built" >&2
     exit 1

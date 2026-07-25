@@ -88,6 +88,9 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     rm -f "$INSTALLER_IMG"
     HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # golden-disk build needs the unattended auto-install path
 fi
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$INSTALLER_IMG" "[build_installed_nvme]"
 if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[build_installed_nvme] FAIL Stage A: $INSTALLER_IMG not built" >&2
     exit 1

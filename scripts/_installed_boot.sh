@@ -57,11 +57,23 @@ fi
 command -v mksquashfs >/dev/null 2>&1 || _ib_skip "mksquashfs not found (apt install squashfs-tools)"
 
 # --- ensure the golden installed disk exists --------------------------
-if [ ! -f "$_IB_ROOT/$GOLDEN_NVME" ] && [ ! -f "$GOLDEN_NVME" ]; then
-    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
+# STALE-ARTIFACT GUARD. The golden disk is installed ONCE and then reused
+# forever by every installed-boot gate (test_auth, test_bios_boot,
+# test_useradd, test_himem_above_4g, test_img_uefi_*, test_user_home_mount).
+# "Rebuild only when ABSENT" is exactly the shape that produced the
+# 2026-07-24 office-suite false negative on the installer image: nothing ever
+# deletes build/hamnix-installed.qcow2, so these gates would happily validate
+# a disk installed days before the code under test.
+# shellcheck source=_installer_img.sh
+source "$_IB_ROOT/scripts/_installer_img.sh"
+PROJ_ROOT="${PROJ_ROOT:-$_IB_ROOT}"
+_IB_GOLDEN_ABS="$GOLDEN_NVME"
+[ -f "$_IB_ROOT/$GOLDEN_NVME" ] && _IB_GOLDEN_ABS="$_IB_ROOT/$GOLDEN_NVME"
+if installer_img_needs_build "$_IB_GOLDEN_ABS" "[installed_boot]"; then
+    if [ ! -f "$_IB_GOLDEN_ABS" ] && [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         _ib_skip "golden disk $GOLDEN_NVME absent and HAMNIX_SKIP_BUILD=1"
     fi
-    echo "[installed_boot] golden disk absent; building it via build_installed_nvme.sh (installs once)"
+    echo "[installed_boot] golden disk absent/stale; (re)building via build_installed_nvme.sh (installs once)"
     bash "$_IB_ROOT/scripts/build_installed_nvme.sh"
 fi
 # Resolve the golden disk to an absolute path.

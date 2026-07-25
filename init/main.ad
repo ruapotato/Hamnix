@@ -5110,6 +5110,36 @@ def start_kernel():
     printk0("[boot:03] cpio_init\n")
     cpio_init()                                # idempotent w/ vfs_init's
 
+    # --- provenance: name the build that is actually running ----------
+    # scripts/build_initramfs.py ALWAYS plants /etc/hamnix-build, whose
+    # contents are a NUL-terminated "<git-sha12>[-dirty] <build UTC>".
+    # Printing it here means every serial log — gate capture, screenshot
+    # run, human console — says WHICH build produced it. On 2026-07-24
+    # three agents plus the orchestrator reported contradictory answers
+    # about whether the office suite shipped, because each inspected a
+    # different artifact and none matched what had booted; one gate had
+    # silently re-booted a two-day-old image. This single line makes that
+    # class of false report impossible to make silently.
+    pv_target: Ptr[uint8] = "/etc/hamnix-build"
+    pv_idx: uint64 = 0
+    pv_cnt: uint64 = initramfs_entry_count()
+    while pv_idx < pv_cnt:
+        pv_nm: Ptr[char] = initramfs_entry_name(pv_idx)
+        pv_ok: int32 = 1
+        pv_j: uint64 = 0
+        while pv_j < 18:                       # 17 chars + NUL
+            if cast[uint8](pv_nm[pv_j]) != pv_target[pv_j]:
+                pv_ok = 0
+                pv_j = 18                      # break
+            else:
+                pv_j = pv_j + 1
+        if pv_ok == 1:
+            printk1("[boot] image built %s\n",
+                    cast[uint64](initramfs_entry_data(pv_idx)))
+            pv_idx = pv_cnt                    # break
+        else:
+            pv_idx = pv_idx + 1
+
     # --- /etc/log-slow gate: page-pause the framebuffer console -------
     # When the initramfs ships /etc/log-slow, the GOP text console pauses
     # ~1 s and stamps an OCR delimiter ("### HAMNIX-LOGPAGE NNNN ###")

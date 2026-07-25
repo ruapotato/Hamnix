@@ -68,8 +68,13 @@ fi
 # --- ensure the golden installed disk exists --------------------------
 # build_installed_nvme.sh installs ONCE via the real installer path and
 # gates cleanly (exit 0, no disk) when KVM/OVMF/mksquashfs is missing.
-if [ ! -f "$GOLDEN_NVME" ]; then
-    echo "[test_img_hamui] golden installed disk absent; building it via build_installed_nvme.sh"
+# Stale-artifact guard: "(re)build only when ABSENT" is the shape that
+# produced the 2026-07-24 false negative — the golden disk is installed once
+# and then reused forever. See scripts/_installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+if installer_img_needs_build "$GOLDEN_NVME" "[img_uefi_hamui]"; then
+    echo "[test_img_hamui] golden installed disk absent/stale; building it via build_installed_nvme.sh"
     bash "$PROJ_ROOT/scripts/build_installed_nvme.sh"
 fi
 if [ ! -f "$GOLDEN_NVME" ]; then

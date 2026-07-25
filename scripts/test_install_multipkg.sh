@@ -62,6 +62,11 @@ if [ ! -f "$HAMNIX_ISO" ]; then
     echo "[test_install_multipkg] FAIL Stage A: ISO not built" >&2
     exit 1
 fi
+# Stale-artifact guard: HAMNIX_SKIP_BUILD=1 reuses whatever ISO/rootfs is
+# already on disk. Say so LOUDLY when it predates the tree under test.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+installer_img_warn_if_stale "$HAMNIX_ISO" "[install_multipkg]"
 
 rm -f "$TARGET_IMG"
 qemu-img create -f qcow2 "$TARGET_IMG" "$TARGET_SIZE" >/dev/null

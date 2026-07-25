@@ -72,6 +72,12 @@ if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[test_proc_namespace] FAIL: $INSTALLER_IMG not built"
     exit 1
 fi
+# Stale-image guard: NEVER boot an image older than the tree under test.
+# See scripts/_installer_img.sh (2026-07-24 false-negative).
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+# A pre-existing image must never be validated silently — see
+# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
+installer_img_warn_if_stale "$INSTALLER_IMG" "[proc_namespace]"
 
 NVME_IMG=$(mktemp --tmpdir hamnix-procns-nvme.XXXXXX.qcow2)
 OVMF_RW=$(mktemp --tmpdir hamnix-procns.ovmf.XXXXXX.fd)
