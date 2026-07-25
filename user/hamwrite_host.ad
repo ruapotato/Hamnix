@@ -715,6 +715,32 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_ch(10)
     _o_flush()
 
+    # ---- (10a) the EDIT and FORMAT drop-downs carry the new commands --
+    hamwrite_hit(70, 32)                               # click "Edit"
+    _o_str(cast[Ptr[uint8]]("EDIT_MENU "))
+    _o_dec(cast[int64](hamwrite_menu_open()))          # 2
+    _o_ch(10)
+    _render(W, H)
+    _o_str(cast[Ptr[uint8]]("EDITMENU-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("EDITMENU-END\n"))
+    _o_flush()
+    hamwrite_hit(4, 300)                               # click away: close it
+    hamwrite_hit(130, 32)                              # click "Format"
+    _o_str(cast[Ptr[uint8]]("FMT_MENU "))
+    _o_dec(cast[int64](hamwrite_menu_open()))          # 3
+    _o_ch(10)
+    _render(W, H)
+    if argc >= 8:
+        _write_ppm(cast[Ptr[char]](argv[7]))
+    _o_str(cast[Ptr[uint8]]("FMTMENU-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("FMTMENU-END\n"))
+    _o_flush()
+    hamwrite_hit(4, 300)                               # close the drop-down
+
     # ---- (10b) FULL-CAPACITY round-trip -------------------------------
     # A document at the 4096-char cap serialises to 10 + 5 + 3*4096 = 12303
     # bytes across three planes — this is the case that overflows an

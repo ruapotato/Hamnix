@@ -74,11 +74,11 @@ echo "[hamwrite-host] PASS native hamwrite still compiles"
 DUMP="$OUT/hw_dump.txt"
 if ! "$BIN" "$DOC" "$OUT/hw_before.ppm" "$OUT/hw_after.ppm" \
         'Hello world from HamWrite' "$OUT/hw_showcase.ppm" \
-        "$OUT/hw_find.ppm" >"$DUMP" 2>&1; then
+        "$OUT/hw_find.ppm" "$OUT/hw_menu.ppm" >"$DUMP" 2>&1; then
     echo "[hamwrite-host] FAIL: host harness exited non-zero"; cat "$DUMP"; exit 1
 fi
 
-for f in before after find showcase; do
+for f in before after find menu showcase; do
     if python3 scripts/ppm_to_png.py "$OUT/hw_$f.ppm" "$OUT/hw_$f.png" 2>"$OUT/hw_png.log"; then
         echo "[hamwrite-host] PASS rendered $OUT/hw_$f.png"
     else
@@ -319,6 +319,20 @@ assert_grep '^A2_COLOR 15'                      "the TEXT COLOUR survived the ro
 assert_grep '^A2_HILITE 15'                     "the HIGHLIGHT survived the round-trip"
 assert_grep '^A2_HEAD3 15'                      "the H3 heading level survived the round-trip"
 assert_grep '^A2_UNDO_AT_LOAD 0'                "opening a document resets the undo history"
+
+# --- the Edit + Format drop-downs carry the new commands -------------------
+assert_grep '^EDIT_MENU 2'                      "clicking \"Edit\" opens its drop-down"
+assert_in EDITMENU 'glyphs [0-9]+ [0-9]+ \"Undo\"'  "Edit menu draws \"Undo\""
+assert_in EDITMENU 'glyphs [0-9]+ [0-9]+ \"Redo\"'  "Edit menu draws \"Redo\""
+assert_in EDITMENU 'glyphs [0-9]+ [0-9]+ \"Find & Replace\.\.\.\"' \
+    "Edit menu draws \"Find & Replace...\""
+assert_grep '^FMT_MENU 3'                       "clicking \"Format\" opens its drop-down"
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Heading 1\"'     "Format menu draws \"Heading 1\""
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Heading 3\"'     "Format menu draws \"Heading 3\""
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Body Text\"'     "Format menu draws \"Body Text\""
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Bullet List\"'   "Format menu draws \"Bullet List\""
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Numbered List\"' "Format menu draws \"Numbered List\""
+assert_in FMTMENU 'glyphs [0-9]+ [0-9]+ \"Outdent\"'       "Format menu draws \"Outdent\""
 
 # --- a FULL-CAPACITY document round-trips (3 planes, 12303 bytes) ----------
 assert_grep '^BIG_FILE_LEN 12303'               "a 4096-char document serialises to 12303 bytes"
