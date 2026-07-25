@@ -37,7 +37,10 @@ from mm.page_alloc import (
     page_alloc_total, page_alloc_free_count,
     page_alloc_freed_total, page_alloc_in_use,
     page_alloc_buddy_free_pages,
+    region_pool_free_bytes, region_carved_bytes, region_leaked_bytes,
+    region_quarantine_bytes, region_recovered_bytes,
 )
+from mm.slab import kmalloc_live_objects, kmalloc_live_slabs
 from mm.vma import vma_nodes_live, vma_hugepages_total, vma_hugepages_live
 from kernel.sched.core import (
     tasks_spawned_total, tasks_reaped_total, tasks_live_count,
@@ -123,11 +126,24 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     # though the RAM was actually reclaimed. Adding the buddy free pool
     # makes MemFree move up as apps close (fix for the "free RAM only ever
     # goes DOWN" report). Symmetrically, MemUsed drops by the same amount.
-    buddy_free_bytes: uint64 = page_alloc_buddy_free_pages() * PAGE_SIZE_BYTES
-    free_bytes: uint64 = avail + buddy_free_bytes
+    #
+    # THIRD supply, added here: the REGION pool. ELF images are too big for
+    # the buddy allocator (MAX_ORDER = 4 MiB vs a ~17 MiB native image), so
+    # they come from region_alloc, which carves from memblock on a cold miss
+    # and recycles through its OWN free list thereafter (mm/page_alloc.ad).
+    # A pooled region chunk is reusable free RAM that appears in NEITHER
+    # memblock_avail (the bump cursor already passed it) NOR the buddy free
+    # pool — so MemFree under-reported by the entire warm region pool, and
+    # every app launch looked like it permanently consumed its whole image
+    # span even when the very next launch reused the same chunk. That is the
+    # bulk of the soak's "MemFree slope" and it was an ACCOUNTING artefact.
+    buddy_free_bytes:  uint64 = page_alloc_buddy_free_pages() * PAGE_SIZE_BYTES
+    region_free_bytes: uint64 = region_pool_free_bytes()
+    reclaimable: uint64 = buddy_free_bytes + region_free_bytes
+    free_bytes: uint64 = avail + reclaimable
     used_bytes: uint64 = used
-    if used_bytes >= buddy_free_bytes:
-        used_bytes = used_bytes - buddy_free_bytes
+    if used_bytes >= reclaimable:
+        used_bytes = used_bytes - reclaimable
     else:
         used_bytes = 0
 
@@ -157,17 +173,27 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     pos = _emit_kb_line(out, pos, "SwapFree: ", 0)
     pos = _emit_kb_line(out, pos, "MemUsed:  ", used_bytes)
 
+    # PagesFree is the WHOLE buddy free pool (total - live), not
+    # page_alloc_free_count() — that accessor returns nr_pages_free, which
+    # only ever counted the ORDER-0 free list, so every higher-order free
+    # run was reported as in-use and (PagesTotal - PagesFree) disagreed with
+    # PagesInUse by tens of MiB. With the buddy-pool form the identity
+    # PagesTotal - PagesFree == PagesInUse holds exactly, which is what
+    # makes either number safe to reason about.
     npages_total: uint64 = page_alloc_total()
-    npages_free:  uint64 = page_alloc_free_count()
+    npages_free:  uint64 = page_alloc_buddy_free_pages()
     pos = _emit_count_line(out, pos, "Pages:     ", npages_total)
     pos = _emit_count_line(out, pos, "PagesFree: ", npages_free)
 
-    # KmallocLive proxy: pages currently in use (total - free). Real
-    # per-cache nr_inuse summing waits on a new mm/slab.ad accessor.
-    in_use_pages: uint64 = 0
-    if npages_total >= npages_free:
-        in_use_pages = npages_total - npages_free
-    pos = _emit_count_line(out, pos, "KmallocLive: ", in_use_pages)
+    # KmallocLive: live kmalloc OBJECTS, summed over the seven slab caches
+    # (mm/slab.ad::kmalloc_live_objects). This used to be
+    # (npages_total - npages_free) — a PAGE count wearing a kmalloc name,
+    # and a broken one: page_alloc's nr_pages_free only tracks the order-0
+    # free list, so every higher-order free run counted as "in use". A soak
+    # reading KmallocLive as a slab-object leak signal was actually watching
+    # the buddy pool grow. KmallocSlabs is the backing page count.
+    pos = _emit_count_line(out, pos, "KmallocLive: ", kmalloc_live_objects())
+    pos = _emit_count_line(out, pos, "KmallocSlabs: ", kmalloc_live_slabs())
 
     # Leak-accounting fields. These expose cumulative + current-live
     # counters across the page allocator, VMA layer, and task scheduler.
@@ -180,6 +206,17 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     pos = _emit_count_line(out, pos, "TasksSpawned:   ", tasks_spawned_total())
     pos = _emit_count_line(out, pos, "TasksReaped:    ", tasks_reaped_total())
     pos = _emit_count_line(out, pos, "TasksLive:      ", tasks_live_count())
+
+    # Region-allocator accounting (ELF image spans). RegionPoolFree is the
+    # reusable pool (already folded into MemFree above); RegionCarved is the
+    # cumulative memblock cold-miss draw, which must FLATTEN once the pool is
+    # warm; RegionLeaked is the cumulative span region_free_cow_safe refused
+    # to pool and must stay at 0.
+    pos = _emit_kb_line(out, pos, "RegionPoolFree: ", region_pool_free_bytes())
+    pos = _emit_kb_line(out, pos, "RegionCarved:   ", region_carved_bytes())
+    pos = _emit_kb_line(out, pos, "RegionLeaked:   ", region_leaked_bytes())
+    pos = _emit_kb_line(out, pos, "RegionQuarantine: ", region_quarantine_bytes())
+    pos = _emit_kb_line(out, pos, "RegionRecovered: ", region_recovered_bytes())
 
     # §hugepage: 2 MiB MAP_HUGETLB accounting. HugePages_Total is the
     # cumulative count of 2 MiB huge PDEs ever demand-installed; the live
@@ -226,8 +263,8 @@ def devmeminfo_read_at(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
     # and it is exactly what the single-read path already did.
     if count == 0:
         return 0
-    scratch: Array[768, uint8]
-    n: uint64 = _build_meminfo(&scratch[0], 768)
+    scratch: Array[1024, uint8]
+    n: uint64 = _build_meminfo(&scratch[0], 1024)
     if off >= n:
         return 0
     remain: uint64 = n - off

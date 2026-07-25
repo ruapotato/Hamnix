@@ -35,6 +35,7 @@
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
 from mm.cow import cow_boot_cr3, cow_refcount, cow_drop_page
 from kernel.printk.printk import printk1, printk2, printk_set_level
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 # #mm-parity: reset a frame's struct-page descriptor (LRU membership,
 # rmap, flags, mapcount) when it is freed, so a later re-allocation of the
 # same PFN never inherits stale reclaim bookkeeping (a freed page still
@@ -720,6 +721,79 @@ def free_page(page: uint64):
 
 _region_free_head: uint64 = 0     # lowest-addr free chunk (0 = empty)
 
+# --- region-pool accounting (leak attribution) -----------------------
+#
+# The region allocator is the THIRD memory supply in the kernel (after
+# memblock's bump cursor and the buddy allocator), and it was the only one
+# with no counters at all — so a region that was carved from memblock and
+# then never returned to the pool was invisible to /proc/meminfo. MemFree
+# reads (memblock_avail + buddy_free); a pooled region chunk is free RAM
+# that appears in NEITHER term, so every cold-miss carve looked like a
+# permanent loss even when the chunk was recycled forever after, and a
+# genuinely leaked region looked exactly the same. These three counters
+# separate the two cases:
+#
+#   _region_pool_bytes    bytes sitting on the region free list RIGHT NOW
+#                         (reusable => must be added to MemFree)
+#   _region_carved_bytes  cumulative bytes taken from memblock on a cold
+#                         miss (monotonic; the memblock headroom the
+#                         region layer owns)
+#   _region_leaked_bytes  cumulative bytes region_free_cow_safe REFUSED to
+#                         pool because a frame was still COW-tracked. This
+#                         is the true unbounded leak: carved but never
+#                         poolable, so it belongs to nobody.
+#
+# Invariant when nothing leaks: _region_carved_bytes stops growing once
+# the pool is warm, and _region_leaked_bytes stays at 0.
+_region_pool_bytes:   uint64 = 0
+_region_carved_bytes: uint64 = 0
+_region_leaked_bytes: uint64 = 0
+
+# --- region QUARANTINE (the desktop's last RAM leak) -----------------
+#
+# THE BUG. region_free_cow_safe used to permanently ABANDON any image /
+# interp region that had EVER been COW-shared into a fork child ("a
+# bounded address leak, never a use-after-free"). It is not bounded. Every
+# app that fork()s even once — hamtermscene spawning its child shell, any
+# app that shells out — loses its ENTIRE ~17 MiB image span for the rest
+# of the boot, because the owner is the only task that can pool the region
+# and by the time it exits a relative has already touched the refcounts.
+# Over a 30-minute desktop soak (244 launches) that drained ~350 MiB of
+# memblock headroom: the LEAK verdict on MemFree, at −4.8 MB/cycle.
+#
+# WHY THE OWNER CANNOT SIMPLY POOL IT. The frames may still be COW-mapped
+# by a live forked relative. Pooling them hands live .text to the next
+# region_alloc — the code=139 / cleared-PTE aliasing crash (dfd59371) that
+# motivated the abandon-everything rule in the first place. And the
+# relative CANNOT pool it either: fork children carry image_phys == 0 by
+# design (owner-only reclaim), so nobody is left holding the bag.
+#
+# THE FIX: don't decide at owner-exit — DEFER. A region whose frames are
+# still COW-tracked goes onto a small fixed-size quarantine list (external
+# storage: we must NOT write an intrusive free-list header into frames a
+# live relative still maps). Every later region_alloc / region_free_cow_safe
+# sweeps the list and pools any entry whose frames have ALL dropped to
+# refcount 0 — i.e. the last relative has exited and released them. The
+# region is therefore reclaimed by the LAST holder instead of being lost by
+# the first, and it is never pooled while a holder is alive (a strictly
+# LATER, safer instant than the still_live>0 check that crashed).
+#
+# The list is fixed-size and needs no allocator of its own. If it ever
+# fills, the overflow region is abandoned exactly as before and counted in
+# _region_leaked_bytes — the old behaviour survives as the bounded
+# worst case, and the counter makes it visible instead of silent.
+_RGN_Q_MAX: uint64 = 64
+_rgn_q_addr: Array[64, uint64]
+_rgn_q_size: Array[64, uint64]
+_pa_quar_lock: uint32 = 0
+# Bytes sitting in quarantine right now (NOT free, NOT leaked — pending a
+# relative's exit). A soak in which this oscillates and RegionRecovered
+# climbs is healthy; one in which it climbs monotonically means some COW
+# reference is never dropped.
+_region_quar_bytes:      uint64 = 0
+# Cumulative bytes released from quarantine back into the pool.
+_region_recovered_bytes: uint64 = 0
+
 
 def _region_link_get(chunk: uint64) -> uint64:
     return cast[Ptr[uint64]](chunk)[0]
@@ -737,6 +811,80 @@ def _region_size_set(chunk: uint64, sz: uint64):
     cast[Ptr[uint64]](chunk + 8)[0] = sz
 
 
+def _region_frames_all_free(addr: uint64, rsize: uint64) -> int32:
+    # 1 iff EVERY 4 KiB frame in [addr, addr+rsize) has COW refcount 0 —
+    # i.e. no task anywhere still holds a COW reference to this span. Bails
+    # on the first tracked frame, so the common answer costs one read.
+    # cow_refcount is a plain table load (no lock), so this is cheap enough
+    # to run on the region_alloc path.
+    off: uint64 = 0
+    while off < rsize:
+        if cow_refcount(addr + off) > 0:
+            return 0
+        off = off + 4096
+    return 1
+
+
+def _region_quarantine_push(addr: uint64, rsize: uint64) -> int32:
+    # Park a still-COW-referenced region until its last holder exits.
+    # Returns 1 if parked, 0 if the list is full (caller abandons it, the
+    # pre-fix behaviour, and counts it as a true leak).
+    _q_irq: uint64 = local_irq_save()
+    spinlock_lock(&_pa_quar_lock)
+    slot: uint64 = _RGN_Q_MAX
+    i: uint64 = 0
+    while i < _RGN_Q_MAX and slot == _RGN_Q_MAX:
+        if _rgn_q_addr[i] == 0:
+            slot = i
+        i = i + 1
+    if slot != _RGN_Q_MAX:
+        _rgn_q_addr[slot] = addr
+        _rgn_q_size[slot] = rsize
+        _region_quar_bytes = _region_quar_bytes + rsize
+    spinlock_unlock(&_pa_quar_lock)
+    local_irq_restore(_q_irq)
+    if slot == _RGN_Q_MAX:
+        return 0
+    return 1
+
+
+def region_quarantine_sweep():
+    # Release every quarantined region whose frames have ALL dropped to
+    # refcount 0 (the last forked relative has exited and released them)
+    # back into the reuse pool. Safe to call from anywhere that does NOT
+    # already hold _pa_region_lock — region_free re-takes it.
+    #
+    # The slot is CLAIMED under _pa_quar_lock (re-checking that the entry
+    # is still the one we tested) before region_free is called outside the
+    # lock, so two CPUs sweeping concurrently can never double-free.
+    i: uint64 = 0
+    while i < _RGN_Q_MAX:
+        _s_irq: uint64 = local_irq_save()
+        spinlock_lock(&_pa_quar_lock)
+        a: uint64 = _rgn_q_addr[i]
+        s: uint64 = _rgn_q_size[i]
+        spinlock_unlock(&_pa_quar_lock)
+        local_irq_restore(_s_irq)
+        if a != 0 and _region_frames_all_free(a, s) != 0:
+            _c_irq: uint64 = local_irq_save()
+            spinlock_lock(&_pa_quar_lock)
+            claimed: int32 = 0
+            if _rgn_q_addr[i] == a and _rgn_q_size[i] == s:
+                _rgn_q_addr[i] = 0
+                _rgn_q_size[i] = 0
+                claimed = 1
+                if _region_quar_bytes >= s:
+                    _region_quar_bytes = _region_quar_bytes - s
+                else:
+                    _region_quar_bytes = 0
+            spinlock_unlock(&_pa_quar_lock)
+            local_irq_restore(_c_irq)
+            if claimed != 0:
+                _region_recovered_bytes = _region_recovered_bytes + s
+                region_free(a, s)
+        i = i + 1
+
+
 def region_alloc(size: uint64) -> uint64:
     # Allocate a page-aligned contiguous region of `size` bytes that can
     # later be returned via region_free(addr, size). Reuses a pooled
@@ -745,6 +893,13 @@ def region_alloc(size: uint64) -> uint64:
     # Returns 0 on OOM.
     if size == 0:
         return 0
+    # Reclaim first, carve second: a region quarantined at some earlier
+    # task's exit may have become poolable since (its last COW holder has
+    # died). Sweeping BEFORE the first-fit walk is what turns the pool
+    # net-neutral across a spawn/exit cycle instead of cold-missing into
+    # memblock for every fork-shared image. Must run OUTSIDE the region
+    # lock — region_free re-takes it.
+    region_quarantine_sweep()
     rsize: uint64 = (size + 4095) & ~cast[uint64](4095)
     # The free list + intrusive header are shared RMW state. Run the WHOLE
     # critical section (list walk, split, cold-miss carve) under IRQ-off +
@@ -786,12 +941,18 @@ def region_alloc(size: uint64) -> uint64:
                     _region_link_set(prev, nxt)
             ret = cur
             got = 1
+            if _region_pool_bytes >= rsize:
+                _region_pool_bytes = _region_pool_bytes - rsize
+            else:
+                _region_pool_bytes = 0
         else:
             prev = cur
             cur = _region_link_get(cur)
     if got == 0:
         # Cold miss: carve fresh from memblock (one-way bump; self-locks).
         ret = memblock_alloc(rsize, 4096)
+        if ret != 0:
+            _region_carved_bytes = _region_carved_bytes + rsize
     spinlock_unlock(&_pa_region_lock)
     if _ra_sw != 0:
         load_cr3(_ra_live)
@@ -847,19 +1008,7 @@ def region_free(addr: uint64, size: uint64):
     if addr == 0 or size == 0:
         return
     rsize: uint64 = (size + 4095) & ~cast[uint64](4095)
-    # DIAG (frame-lifetime hunt): scan the region for frames that are still
-    # COW-tracked (cow_refcount > 0). If any are, returning this region to
-    # the reuse pool hands a frame back to region_alloc while a forked
-    # relative still COW-maps it -> the fork+exec corruption. Count + report.
-    _rf_diag_n: uint64 = 0
-    _rf_diag_off: uint64 = 0
-    while _rf_diag_off < rsize:
-        if cow_refcount(addr + _rf_diag_off) > 0:
-            _rf_diag_n = _rf_diag_n + 1
-        _rf_diag_off = _rf_diag_off + 4096
-    if _rf_diag_n != 0:
-        printk2("[rfdiag] region_free addr=%p has COW-live frames=%d\n",
-                addr, _rf_diag_n)
+    _region_pool_bytes = _region_pool_bytes + rsize
     # Raw physical header writes: boot-CR3 guard; the sorted-insert +
     # coalesce runs under the SMP region lock so a concurrent region_alloc
     # can't observe a torn list.
@@ -984,6 +1133,20 @@ def region_free_cow_safe(addr: uint64, size: uint64):
         # No frame was ever COW-shared: the region is genuinely private and
         # free — pool it for reuse.
         region_free(addr, rsize)
+    elif _region_frames_all_free(addr, rsize) != 0:
+        # It WAS shared, but this owner's drop above took the last
+        # reference: every frame is now at refcount 0, so no live relative
+        # maps the span and it is safe to pool immediately.
+        region_free(addr, rsize)
+    elif _region_quarantine_push(addr, rsize) == 0:
+        # Quarantine full — abandon it (the pre-fix behaviour) and SAY SO.
+        _region_leaked_bytes = _region_leaked_bytes + rsize
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk1("[region] quarantine full — abandoning %d bytes\n", rsize)
+    # Otherwise the span is quarantined: some relative still COW-maps it.
+    # A later region_alloc / region_free_cow_safe sweep pools it once the
+    # last holder exits. Drain what we can now, cheaply.
+    region_quarantine_sweep()
 
 
 # --- bring-up + stats ----------------------------------------------
@@ -1019,6 +1182,40 @@ def page_alloc_in_use() -> uint64:
     # nr_pages_freed_total) form, which drifted to 0 once physical pages
     # were reused (freed_total counts every free of a reused PFN).
     return nr_pages_live
+
+
+def region_pool_free_bytes() -> uint64:
+    # Bytes currently pooled on the region free list — carved from memblock
+    # but not handed to any task. This is REUSABLE free RAM (the next
+    # region_alloc of a fitting size takes it), so MemFree must include it;
+    # omitting it made every ELF-image carve look like a permanent loss.
+    return _region_pool_bytes
+
+
+def region_carved_bytes() -> uint64:
+    # Cumulative bytes the region allocator took from memblock on a cold
+    # miss. Monotonic. Flattens once the pool is warm iff nothing leaks.
+    return _region_carved_bytes
+
+
+def region_leaked_bytes() -> uint64:
+    # Cumulative bytes ABANDONED because the quarantine list overflowed.
+    # Must stay 0; non-zero means _RGN_Q_MAX is too small.
+    return _region_leaked_bytes
+
+
+def region_quarantine_bytes() -> uint64:
+    # Bytes parked in quarantine right now — still COW-referenced by a live
+    # forked relative, poolable the moment the last one exits. Oscillates
+    # in a healthy system; monotonic growth means a COW ref is never
+    # dropped.
+    return _region_quar_bytes
+
+
+def region_recovered_bytes() -> uint64:
+    # Cumulative bytes returned to the pool from quarantine. This is the
+    # RAM the pre-fix kernel lost forever on every fork+exec app.
+    return _region_recovered_bytes
 
 
 def page_alloc_buddy_free_pages() -> uint64:

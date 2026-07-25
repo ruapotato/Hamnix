@@ -353,6 +353,37 @@ def _kml_emit_dec(out: Ptr[uint8], pos: uint64,
     return o
 
 
+def kmalloc_live_objects() -> uint64:
+    # Total live (allocated, not yet kfree'd) objects across all seven
+    # kmalloc slab caches — the REAL "KmallocLive" number.
+    #
+    # /proc/meminfo's KmallocLive line used to be
+    # (page_alloc_total - page_alloc_free_count), i.e. a PAGE count wearing
+    # a kmalloc name: it duplicated PagesInUse (badly — page_alloc's
+    # nr_pages_free only tracks the order-0 free list, so the difference
+    # also counted every higher-order free run as "in use"). A soak reading
+    # it as a slab-object leak signal was reading buddy-pool growth. This
+    # accessor is the honest counter the label always claimed to be.
+    total: uint64 = 0
+    i: uint64 = 0
+    while i < NUM_KMALLOC_CACHES:
+        total = total + kmalloc_caches[i].nr_allocated
+        i = i + 1
+    return total
+
+
+def kmalloc_live_slabs() -> uint64:
+    # Total slab PAGES held by the kmalloc caches. Slabs are never reaped
+    # yet, so this is a high-water mark; it growing without
+    # kmalloc_live_objects() growing means fragmentation, not a leak.
+    total: uint64 = 0
+    i: uint64 = 0
+    while i < NUM_KMALLOC_CACHES:
+        total = total + kmalloc_caches[i].nr_slabs
+        i = i + 1
+    return total
+
+
 def kmalloc_live_render(buf: Ptr[uint8], count: uint64) -> uint64:
     # Render the per-cache live slab stats as /proc/slabinfo-shape
     # text into buf, capped at `count` bytes. Returns bytes written.

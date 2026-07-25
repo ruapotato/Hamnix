@@ -773,7 +773,8 @@ from arch.x86.kernel.power import (
 from drivers.rtc.cmos import rtc_boot_epoch_get
 from mm.slab import kmalloc, kfree, kzalloc
 from mm.page_alloc import alloc_pages, free_pages, \
-    page_alloc_free_count, alloc_page, free_page
+    page_alloc_free_count, alloc_page, free_page, \
+    page_alloc_buddy_free_pages, region_pool_free_bytes
 # §kmod: init_module / finit_module / delete_module marshal user (or fd)
 # .ko bytes into Hamnix's existing in-kernel Linux-module loader. We only
 # wire the syscall entry points; the loader machinery is unchanged.
@@ -11352,12 +11353,20 @@ def _u_sysinfo(a0: uint64, a1: uint64, a2: uint64,
     # [base, top); that is the honest "totalram". Free RAM is the part
     # of that region the bump allocator has not handed out yet
     # (memblock_avail), plus any 4 KiB pages the buddy allocator has
-    # returned to its order-0 free list (page_alloc_free_count). This is
-    # always <= totalram. (page_alloc_total only counts pages lazily
-    # pulled INTO the buddy allocator, so it is not the machine's RAM.)
+    # returned to its free lists, plus the region allocator's reusable
+    # pool. This is always <= totalram. (page_alloc_total only counts pages
+    # lazily pulled INTO the buddy allocator, so it is not the machine's
+    # RAM.)
+    #
+    # page_alloc_free_count() is NOT usable here: it only tracks the ORDER-0
+    # free list, so every higher-order free run was missing and `free` /
+    # sysinfo under-reported. Use the same three-supply sum /proc/meminfo
+    # uses (sys/src/9/port/devmeminfo.ad): memblock headroom + the whole
+    # buddy free pool + the region pool.
     total_ram: uint64 = memblock_region_top() - memblock_region_base()
     free_ram:  uint64 = memblock_avail() \
-        + (page_alloc_free_count() * _SYSINFO_PAGE_BYTES)
+        + (page_alloc_buddy_free_pages() * _SYSINFO_PAGE_BYTES) \
+        + region_pool_free_bytes()
     if free_ram > total_ram:
         free_ram = total_ram
     cast[Ptr[uint64]](ksi + SYSINFO_OFF_TOTALRAM)[0] = total_ram
