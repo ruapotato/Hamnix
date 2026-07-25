@@ -11585,12 +11585,23 @@ def _wsys_tb_update_hover(sx: int64, sy: int64):
     wsys_tb_hover_btn = new_btn
     if fb_get_initialized() == 0:
         return
+    # LOCK DISCIPLINE: wsys_present_lock is taken from the timer-tick mouse
+    # pump (IRQ context) as well as from syscall context, so EVERY other
+    # acquisition in this file wraps it in local_irq_save/restore. This one
+    # did not — the single exception. Taken with IRQs still enabled, a timer
+    # tick landing between the lock and the unlock re-enters the compositor
+    # (mouse_pump_to_compositor -> _wsys_route_common -> any present-lock
+    # path) and spins forever on a lock THIS cpu already holds: a silent,
+    # output-less freeze of the whole box, entered by nothing more exotic
+    # than moving the pointer across a titlebar button.
+    fl_hov: uint64 = local_irq_save()
     spinlock_lock(&wsys_present_lock)
     if old_wid > 0 and old_btn > 0:
         _wsys_tb_damage_btn(old_wid, old_btn)
     if new_wid > 0 and new_btn > 0:
         _wsys_tb_damage_btn(new_wid, new_btn)
     spinlock_unlock(&wsys_present_lock)
+    local_irq_restore(fl_hov)
 
 
 def _wsys_minimize(wid: int32):

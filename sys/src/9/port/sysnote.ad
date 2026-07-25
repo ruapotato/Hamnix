@@ -71,6 +71,10 @@ from kernel.sched.core import (
     # single-target self-test scaffolding (stamp a known pid on an
     # inert claimed slot so task_lookup_by_pid resolves it).
     notetest_set_slot_pid,
+    # Cross-task DEFAULT ACTION: a note to a handler-less process
+    # terminates it (Plan 9). Expressed through the signal machinery —
+    # the same signal_post(SIGTERM) the compositor's close box uses.
+    signal_post, SIGTERM, SIGKILL,
 )
 from kernel.printk.printk import printk0, printk1, printk2
 
@@ -336,6 +340,27 @@ def post_note_to_group(group: int32, msg: Ptr[uint8],
 _ESRCH: int64 = -3                            # No such process
 
 
+def _note_is_kill(msg: Ptr[uint8], count: uint64) -> int32:
+    # 1 iff the note string is exactly Plan 9's uncatchable "kill" note
+    # (trailing newline / NUL tolerated, as p9_note writes the bare word
+    # but a shell `echo kill > /proc/N/note` appends '\n'). Everything
+    # else — "terminate", "interrupt", "hangup", an app-defined note —
+    # takes the catchable terminate default.
+    k: Ptr[uint8] = "kill"
+    i: uint64 = 0
+    while i < 4:
+        if i >= count:
+            return 0
+        if msg[i] != k[i]:
+            return 0
+        i = i + 1
+    if count > 4:
+        c: uint8 = msg[4]
+        if c != 10 and c != 0:
+            return 0
+    return 1
+
+
 def post_note_to_pid(target_pid: uint64, msg: Ptr[uint8],
                      count: uint64) -> int64:
     slot: int32 = task_lookup_by_pid(target_pid)
@@ -351,10 +376,43 @@ def post_note_to_pid(target_pid: uint64, msg: Ptr[uint8],
         # Self-delivery: full handler-retarget on this syscall's return.
         return deliver_note_to_current(msg, count)
 
-    # Cross-task: park the pending note + message; target drains it on
-    # its next return-to-user via the same note_pending model the group
-    # path relies on.
+    # Cross-task: park the pending note + message; a target that installed
+    # a handler drains it on its next return-to-user via the same
+    # note_pending model the group path relies on.
     _enqueue_note_on_slot(su, msg, count)
+    # DEFAULT ACTION — the fix for "the desktop stops opening apps".
+    #
+    # Plan 9's contract: a note posted to a process with NO note handler
+    # installed TERMINATES it. That default is what makes
+    # `echo terminate > /proc/<pid>/note` the SYS_KILL replacement the
+    # whole native userland is written against — lib/p9.ad p9_note, and
+    # through it user/kill.ad, hamsh's `kill` / `svc stop` / runlevel
+    # stop-all, hamUI/hamUId window close, and the panel's Applications-
+    # menu + notification-inbox toggles.
+    #
+    # Until now the cross-task arm ONLY parked note_pending, and NOTHING
+    # in the kernel ever consumed it (the only readers of note_pending are
+    # the self-tests), so every one of those callers was a silent NO-OP:
+    # nothing in a DE session could ever be closed. Each launched app kept
+    # its wid slot AND its whole address space forever; after ~30 launches
+    # wsys_alloc_wid ran out of slots and EVERY newly launched app died
+    # with "newwindow alloc failed" (exit code=1) — the desktop stopped
+    # opening anything — having bled ~150 MB of RAM on the way there.
+    # (Reproduced with scripts/test_de_open_close_cycles.sh.)
+    #
+    # The default action is expressed through the SIGNAL machinery, which
+    # is fully implemented and already proven on this exact shape: the
+    # compositor's close box calls signal_post(SIGTERM) and the client
+    # exits 128+15 = 143. "kill" is Plan 9's uncatchable note, so it maps
+    # to SIGKILL; every other note takes the terminate default. A target
+    # that DID install a handler is left alone — running that handler is
+    # the (still-open) cross-task handler-retarget milestone, and killing
+    # it here would defeat the very handler it registered.
+    if task_note_handler_rip(su) == 0:
+        if _note_is_kill(msg, count) != 0:
+            signal_post(su, SIGKILL)
+        else:
+            signal_post(su, SIGTERM)
     printk1("note: single-target delivery enqueued on pid %d\n",
             cast[uint64](target_pid))
     return cast[int64](count)
