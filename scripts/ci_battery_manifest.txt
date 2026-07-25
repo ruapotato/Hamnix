@@ -2842,3 +2842,28 @@ bash scripts/test_hamview_zoom_host.sh
 # (Chrome-exact), while a </p><h2> boundary RESTORES the row to BODY_H (heading margin
 # wins the collapse). Asserts exactly 4 gap rows at 16px from the fixture.
 bash scripts/test_hambrowse_pmargin_host.sh
+
+# test_hambrowse_layoutread: QEMU-free gate for the LAYOUT-READ (CSSOM geometry)
+# surface — getBoundingClientRect / offsetWidth|Height|Left|Top /
+# getComputedStyle().width|height|padding|display. Ranked gap #2 (HIGH) in
+# docs/browser_gap_analysis_2026-07-24.md: every "measure then position" script
+# (dropdowns, sticky headers, tooltips, carousels, charts, lazy-load) reads
+# these, and the engine used to answer with the element's TEXT INK or a stub
+# (a `width:200px;height:80px` box reported 40x16; a stylesheet `padding:10px`
+# read back `0px`; `display:flex` read back `block`). The layout engine now
+# records each element's real laid-out box (lib/web/layout/box.ad `ebox_*`) and
+# lib/web/dom/query.ad reports it. All 26 assertions are byte-identical to real
+# `chromium --headless --window-size=880,900 --dump-dom` on the same fixture;
+# on the pre-fix engine every one of them fails.
+bash scripts/test_hambrowse_layoutread_host.sh
+
+# test_hambrowse_bindata: QEMU-free gate for the BINARY-DATA builtins — the
+# Array-shaped half of TypedArray.prototype (join/map/filter/forEach/reduce/
+# indexOf/includes/find/at/reverse/sort, incl. the species + in-place rules),
+# DataView (big-endian by default, little-endian on request, float + signed
+# reads, sub-range views), and Intl.Collator as a sort comparator. Round 7 gave
+# typed arrays a real byte buffer but none of the Array methods, so `a.join()`
+# threw and DataView did not exist — probe_js_hard.sh saw that as four failures
+# (typedarray_map/typedarray_set/uint8_subarray/arraybuffer). Every expected
+# value is node/V8's. Implementation: lib/web/js/builtins/r8_ta.ad.
+bash scripts/test_hambrowse_bindata_host.sh

@@ -708,7 +708,13 @@ def install_intl():
     g_intl_dtf: int32 = v_new_native(NAT_INTL_DATETIMEFORMAT)
     obj_set(objid_of(g_intl_dtf), str_from_cstr(cast[Ptr[uint8]]("prototype")), g_intl_dtf_proto)
     obj_set(objid_of(g_intl_dtf_proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), g_intl_dtf)
+    # Intl.Collator — locale-aware comparison (lib/web/js/builtins/r8_ta.ad).
+    g_intl_coll_proto: int32 = v_new_object()
+    g_intl_coll: int32 = v_new_native(NAT_INTL_COLLATOR)
+    obj_set(objid_of(g_intl_coll), str_from_cstr(cast[Ptr[uint8]]("prototype")), g_intl_coll_proto)
+    obj_set(objid_of(g_intl_coll_proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), g_intl_coll)
     g_intl: int32 = v_new_object()
     obj_set(objid_of(g_intl), str_from_cstr(cast[Ptr[uint8]]("NumberFormat")), g_intl_nf)
     obj_set(objid_of(g_intl), str_from_cstr(cast[Ptr[uint8]]("DateTimeFormat")), g_intl_dtf)
+    obj_set(objid_of(g_intl), str_from_cstr(cast[Ptr[uint8]]("Collator")), g_intl_coll)
     env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("Intl")), g_intl, 0)

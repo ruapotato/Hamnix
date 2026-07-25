@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- tests/fixtures/hambrowse_layoutread.html — fixture for the layout-read
+     (CSSOM geometry) gate: scripts/test_hambrowse_layoutread_host.sh.
+
+     Every expected number in that gate was READ OFF real Chrome:
+       chromium --headless --window-size=880,900 --dump-dom file://<this file>
+     and the JSLOG lines below are formatted so the two can be diffed directly.
+
+     What this exercises: getBoundingClientRect / offsetWidth / offsetHeight /
+     offsetLeft / offsetTop / getComputedStyle().width|height|padding|display —
+     i.e. everything a "measure then position" script (dropdown, sticky header,
+     tooltip, carousel, chart) reads before it decides where to put something.
+     Before the ebox registry these all returned text-INK or stub constants.
+
+     Patterns covered, each a distinct failure mode:
+       A  explicitly sized box + padding + border   (border-box arithmetic)
+       B  sibling after a margin                    (margin quantisation)
+       C  display:flex container                    (cascaded display read-back)
+       W  padded+bordered container of sized cards  (ancestor coordinate skew,
+          child-derived auto height, per-sibling quantisation debt)
+       H  text-only blocks / nested prose           (line-height rhythm, 19px
+          per 16px line — NOT the engine's 16px grid)
+       G  font-size:24px and line-height:32px       (non-default rhythm)
+       R  a paragraph that WRAPS to several lines   (multi-line auto height)
+
+     Every block carries an EXPLICIT width so the comparison is viewport- and
+     scrollbar-independent (Chrome reserves ~15px for a scrollbar; the host
+     harness does not, and that difference is not what this gate measures).
+-->
+<html><head><meta charset="utf-8"><title>layoutread</title><style>
+  body { margin: 0; font: 16px monospace; }
+
+  /* A/B/C — box-model arithmetic and cascaded display */
+  #a { width: 200px; height: 80px; padding: 10px; border: 2px solid #333; background: #eee; }
+  #b { width: 120px; height: 40px; margin-top: 15px; background: #cfc; }
+  #c { display: flex; width: 300px; height: 50px; }
+
+  /* W — padded + bordered container holding sized cards */
+  #w    { width: 600px; padding: 20px; border: 1px solid #999; }
+  .card { width: 260px; height: 120px; padding: 8px; margin-bottom: 12px; background: #f4f4f4; }
+  #bar  { width: 400px; height: 24px; background: #39f; }
+
+  /* H — text-only blocks: header bar, flex nav, padded main, two paragraphs */
+  #h  { width: 800px; padding: 12px; background: #222; color: #fff; }
+  #n  { width: 800px; display: flex; padding: 8px; }
+  #m  { width: 800px; padding: 16px; }
+  #p1, #p2 { margin: 0 0 16px 0; }
+
+  /* G/R — non-default font rhythm and a wrapping paragraph */
+  #big  { width: 800px; font-size: 24px; padding: 6px; background: #eee; }
+  #lh   { width: 800px; line-height: 32px; background: #dfd; }
+  #wrap { width: 300px; background: #ffd; }
+</style></head><body>
+
+<div id="a">Alpha</div>
+<div id="b">Beta</div>
+<div id="c">Gamma</div>
+
+<div id="w">
+  <div class="card" id="c1">One</div>
+  <div class="card" id="c2">Two</div>
+  <div id="bar">Bar</div>
+</div>
+
+<div id="h">Site</div>
+<div id="n">Home About</div>
+<div id="m">
+  <div id="p1">Lorem ipsum dolor sit amet, consectetur adipiscing elit sed do eiusmod tempor.</div>
+  <div id="p2">Second paragraph here with more text to wrap across a couple of lines maybe.</div>
+</div>
+
+<div id="big">Big Text</div>
+<div id="lh">Loose line</div>
+<div id="wrap">This paragraph is long enough that it must wrap onto several lines at this width.</div>
+
+<script>
+// RECT id=WxH@L,T  — getBoundingClientRect, rounded to whole px.
+function rect(id) {
+  var e = document.getElementById(id), r = e.getBoundingClientRect();
+  console.log("RECT " + id + "=" + Math.round(r.width) + "x" + Math.round(r.height) +
+              "@" + Math.round(r.left) + "," + Math.round(r.top));
+}
+// OFF id=W,H,L,T — the offset* family must agree with the rect (border box).
+function off(id) {
+  var e = document.getElementById(id);
+  console.log("OFF " + id + "=" + e.offsetWidth + "," + e.offsetHeight +
+              "," + e.offsetLeft + "," + e.offsetTop);
+}
+// CS id=width,height,padding,display — resolved values, incl. from a <style> rule.
+function cs(id) {
+  var s = getComputedStyle(document.getElementById(id));
+  console.log("CS " + id + "=" + s.width + "," + s.height + "," + s.padding + "," + s.display);
+}
+
+["a","b","c","w","c1","c2","bar","h","n","m","p1","p2","big","lh","wrap"].forEach(rect);
+["a","b","c","w","bar"].forEach(off);
+["a","b","c","w","c1","big"].forEach(cs);
+</script>
+</body></html>

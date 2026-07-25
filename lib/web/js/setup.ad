@@ -1975,6 +1975,10 @@ def install_builtins():
     def_global_native(cast[Ptr[uint8]]("Proxy"), NAT_PROXY)
     # ArrayBuffer + typed arrays (byte-backed)
     install_typed_arrays()
+    # DataView — typed reads/writes at arbitrary byte offsets, big-endian by
+    # default (lib/web/js/builtins/r8_ta.ad). Must follow install_typed_arrays:
+    # it shares the ArrayBuffer byte pool those set up.
+    install_dataview()
     # structuredClone(value) — deep structural clone
     def_global_native(cast[Ptr[uint8]]("structuredClone"), NAT_STRUCTURED_CLONE)
     # URL / URLSearchParams constructors + btoa / atob base64 globals

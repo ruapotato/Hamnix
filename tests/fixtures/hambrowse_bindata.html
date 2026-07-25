@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- tests/fixtures/hambrowse_bindata.html — fixture for the binary-data gate:
+     scripts/test_hambrowse_bindata_host.sh.
+
+     Every expected value in that gate came from NODE (V8 == Chrome's engine);
+     the gate's header records the exact command. Nothing here is copied from
+     hambrowse's own output.
+
+     Covers the round-8 additions (lib/web/js/builtins/r8_ta.ad):
+       * the Array-shaped half of TypedArray.prototype — join / map / filter /
+         forEach / reduce / indexOf / includes / find / at / reverse / sort,
+         including the SPECIES rule (map/filter yield a TypedArray of the same
+         element type, not a plain Array) and the IN-PLACE rule (reverse/sort
+         mutate the receiver and return it);
+       * DataView over an ArrayBuffer, exercising the part that actually matters
+         for real binary formats: BIG-endian by default, little-endian on
+         request, plus float and signed reads and a sub-range view;
+       * Intl.Collator, in its dominant real use — a reusable sort comparator.
+-->
+<html><head><meta charset="utf-8"><title>bindata</title></head><body>
+<div id="out">bindata</div>
+<script>
+function log(k, v) { console.log(k + " " + v); }
+
+// ---- TypedArray: the methods that used to throw "is not a function" --------
+log("JOIN", new Uint8Array([1, 2]).join(","));
+log("SET", (function () { var a = new Uint8Array(4); a.set([9, 8], 1); return a.join(","); })());
+log("SUB", new Uint8Array([1, 2, 3, 4]).subarray(1, 3).join(","));
+log("MAP", new Int32Array([1, 2, 3]).map(function (x) { return x * 2; }).join(","));
+log("MAPTYPE", new Uint8Array([1, 2]).map(function (x) { return x; }) instanceof Uint8Array);
+log("FILTER", new Int32Array([1, 2, 3, 4]).filter(function (x) { return x % 2 === 0; }).join(","));
+log("FILTERTYPE", new Int32Array([1, 2, 3, 4]).filter(function (x) { return x > 2; }) instanceof Int32Array);
+log("REDUCE", new Int32Array([1, 2, 3]).reduce(function (a, b) { return a + b; }, 0));
+log("FOREACH", (function () { var s = 0; new Uint8Array([1, 2, 3]).forEach(function (v) { s += v; }); return s; })());
+log("INDEXOF", new Int32Array([5, 6, 7]).indexOf(6));
+log("INCLUDES", new Int32Array([5, 6, 7]).includes(7));
+log("FIND", new Int32Array([5, 6, 7]).find(function (x) { return x > 5; }));
+log("AT", new Int32Array([5, 6, 7]).at(-1));
+log("REV", new Uint8Array([1, 2, 3]).reverse().join(","));
+log("SORT", new Uint8Array([3, 1, 2]).sort().join(","));
+
+// ---- DataView: byte order is the whole point of the type -------------------
+var buf = new ArrayBuffer(8);
+var dv = new DataView(buf);
+dv.setInt32(0, 258);
+log("I32", dv.getInt32(0));
+dv.setUint16(0, 4660);              // 0x1234 big-endian  -> bytes 0x12 0x34
+log("BE", dv.getUint8(0) + "," + dv.getUint8(1));
+dv.setUint16(0, 4660, true);        // little-endian       -> bytes 0x34 0x12
+log("LE", dv.getUint8(0) + "," + dv.getUint8(1));
+dv.setFloat64(0, 1.5);
+log("F64", dv.getFloat64(0));
+dv.setInt8(0, -5);
+log("I8", dv.getInt8(0));
+log("DVLEN", dv.byteLength + " " + new DataView(buf, 2, 4).byteLength + " " + new DataView(buf, 2, 4).byteOffset);
+
+// ---- Intl.Collator as a sort comparator ------------------------------------
+log("COLLTYPE", typeof Intl.Collator);
+log("COLLSORT", ["b", "a", "c"].sort(new Intl.Collator().compare).join(","));
+</script>
+</body></html>

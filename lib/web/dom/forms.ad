@@ -922,6 +922,17 @@ def _handle_tag(ts: uint64, te: uint64):
     if nlen == 0:
         return
 
+    # CSSOM layout-read tap: remember WHICH element is about to lay out, keyed
+    # the way the DOM keys a node (`dom_anchor` = the source offset of its '<',
+    # i.e. ts - 1). `_block_box_open` consumes this to stamp the box it opens
+    # with its element identity so getBoundingClientRect/offsetWidth/
+    # getComputedStyle can read the element's REAL laid-out box back. A CLOSE
+    # tag clears it so a stray box never picks up the closing tag's offset.
+    if is_close == 0:
+        g_open_src = cast[int32](ts) - 1
+    else:
+        g_open_src = -1
+
     # MASTHEAD tracking for the app-shell landmark float: keep a `<header>`
     # nesting depth so a chrome <nav> INSIDE the page header (the site top bar /
     # masthead) is recognised and NOT floated into a narrow side gutter (see the

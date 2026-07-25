@@ -336,6 +336,40 @@ NAT_PROMISE_ALL:      int32 = 96    # Promise.all([...])
 NAT_PROMISE_RACE:     int32 = 97    # Promise.race([...])
 NAT_PROMISE_ALLSETTLED: int32 = 98  # Promise.allSettled([...])
 NAT_PROMISE_ANY:      int32 = 324   # Promise.any([...])
+# ---- Round-8 TypedArray/DataView/Intl completion (see r7.ad, r8_ta.ad) -------
+# The TypedArray prototypes carried only set/subarray/slice/fill/values, so the
+# ITERATION half of the Array surface (join/map/forEach/reduce/indexOf/…) threw
+# "is not a function" — the failure mode probe_js_hard.sh saw as `typedarray_map`
+# / `typedarray_set` / `uint8_subarray` (all three actually died on `.join()`).
+# One native serves them all; the method is selected by a TAM_* code stashed in
+# obj_p_a of the bound function object.
+NAT_TA_ARRMETH:       int32 = 325   # TypedArray.prototype.<array method> (TAM_* in obj_p_a)
+NAT_DATAVIEW:         int32 = 326   # new DataView(buffer[, byteOffset[, byteLength]])
+NAT_DV_GET:           int32 = 327   # DataView.prototype.get<Type>(byteOffset[, littleEndian])
+NAT_DV_SET:           int32 = 328   # DataView.prototype.set<Type>(byteOffset, value[, littleEndian])
+NAT_INTL_COLLATOR:    int32 = 330   # new Intl.Collator([locales[, options]])
+NAT_COLLATOR_COMPARE: int32 = 331   # Intl.Collator.prototype.compare(a, b)
+
+# TypedArray array-method selector codes (obj_p_a of the method function).
+TAM_JOIN:      int32 = 1
+TAM_MAP:       int32 = 2
+TAM_FILTER:    int32 = 3
+TAM_FOREACH:   int32 = 4
+TAM_REDUCE:    int32 = 5
+TAM_INDEXOF:   int32 = 6
+TAM_INCLUDES:  int32 = 7
+TAM_FIND:      int32 = 8
+TAM_FINDINDEX: int32 = 9
+TAM_SOME:      int32 = 10
+TAM_EVERY:     int32 = 11
+TAM_AT:        int32 = 12
+TAM_REVERSE:   int32 = 13
+TAM_SORT:      int32 = 14
+TAM_LASTINDEX: int32 = 15
+TAM_REDUCERIGHT: int32 = 16
+TAM_TOSTRING:  int32 = 17
+TAM_KEYS:      int32 = 18
+TAM_ENTRIES:   int32 = 19
 NAT_PROMISE_THEN:     int32 = 99    # Promise.prototype.then
 NAT_PROMISE_CATCH:    int32 = 100   # Promise.prototype.catch
 NAT_PROMISE_FINALLY:  int32 = 101   # Promise.prototype.finally

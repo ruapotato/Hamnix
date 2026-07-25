@@ -34,7 +34,7 @@ def call_native_r7(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return symbol_for(arg_or(base, argc, 0))
     if id == NAT_SYMBOL_KEYFOR:
         return symbol_key_for(arg_or(base, argc, 0))
-    return call_native_url(id, thisv, base, argc)
+    return call_native_r8(id, thisv, base, argc)
 
 
 # ====================================================================
@@ -703,6 +703,9 @@ def install_typed_array(name: Ptr[uint8], kind: int32):
     from_fn: int32 = v_new_native(NAT_TA_FROM)
     obj_p_a[objid_of(from_fn)] = kind
     obj_set(objid_of(ctor), str_from_cstr(cast[Ptr[uint8]]("from")), from_fn)
+    # The Array-shaped half of the prototype (join/map/forEach/reduce/…), which
+    # this round-7 set never had — see lib/web/js/builtins/r8_ta.ad.
+    ta_install_arrmeths(proto)
     g_ta_proto[kind] = proto
     env_define(g_env, str_from_cstr(name), ctor, 0)
 

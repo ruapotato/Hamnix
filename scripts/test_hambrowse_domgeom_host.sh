@@ -9,8 +9,25 @@
 #   (3) document.body / documentElement / head resolve to the real <body>/<html>/
 #       <head> element nodes (spec-uppercase tagName).
 #   (4) getBoundingClientRect()/offsetWidth/Height/clientWidth/Height read the
-#       laid-out box: a 9-char block ("Rectangle") is pinned to width 72 (9*CELL_W)
-#       x height 16 (LINE_H), with x/y cross-checked against the SEG display dump.
+#       element's real CSS BORDER BOX.
+#
+#       UPDATED (layout-read / CSSOM round): these used to be pinned to the
+#       element's TEXT INK — a 9-char word "Rectangle" gave width 72 (9*CELL_W)
+#       x height 16 (LINE_H), cross-checked against the SEG display dump. That
+#       was the bug, not the contract: #box is a BLOCK <div>, so a browser
+#       reports the full content column, and every measure-then-position script
+#       reading it got a number ~12x too small. Verified with
+#           chromium --headless --window-size=880,900 --dump-dom
+#       on this same fixture, Chrome answers `864 x 18 @ (8, 8)`. The engine now
+#       answers `864 x 19 @ (8, 0)`:
+#         * width 864 and left 8 are EXACT;
+#         * height 19 vs 18 is one px of line-box rounding (the engine models
+#           `line-height: normal` as 19px at 16px);
+#         * top 0 vs 8 is the UA <body> top margin, which the engine's row grid
+#           does not reserve a row for (a known residual — the horizontal body
+#           margin IS honoured, which is why left matches).
+#       See scripts/test_hambrowse_layoutread_host.sh for the full Chrome-exact
+#       layout-read gate.
 #
 # Builds the host harness (x86_64-linux) AND the native browser
 # (x86_64-adder-user) with the frozen seed compiler, so a regression in either
@@ -75,25 +92,23 @@ assert_grep '^JSLOG c2 panel$' "closest('.panel') finds ancestor by class"
 assert_grep '^JSLOG c3 true$'  "closest('.nope') returns null on no match"
 assert_grep '^JSLOG c4 first$' "alink.closest('.item') walks up to the enclosing li"
 
-# ---- getBoundingClientRect()/offset*/client* pinned to the laid-out box --
-# "Rectangle" == 9 chars -> 9*CELL_W(8)=72 wide, LINE_H=16 tall.
-assert_grep '^JSLOG wh 72 16$'  "getBoundingClientRect() width==72 height==16"
-assert_grep '^JSLOG off 72 16$' "offsetWidth==72 offsetHeight==16"
-assert_grep '^JSLOG cli 72 16$' "clientWidth==72 clientHeight==16"
+# ---- getBoundingClientRect()/offset*/client* == the real BORDER BOX --------
+# #box is a block <div>, so its box is the full content column (Chrome: 864),
+# NOT the 72px ink of the word "Rectangle" it happens to contain.
+assert_grep '^JSLOG wh 864 19$'  "getBoundingClientRect() is the block box (Chrome: 864x18)"
+assert_grep '^JSLOG off 864 19$' "offsetWidth/Height agree with the rect"
+assert_grep '^JSLOG cli 864 19$' "clientWidth/Height agree with the rect"
 assert_grep '^JSLOG edge true true true true$' \
     "left/top mirror x/y; right/bottom == x+w / y+h"
 
-# ---- x/y cross-checked against the SEG display dump ----------------------
-SEGLINE=$(grep -E 'SEG [0-9]+ [0-9]+ .*\|Rectangle\|' "$D0" | head -1)
-if [ -z "$SEGLINE" ]; then
-    echo "[hb-domgeom] FAIL: no SEG line for |Rectangle| to cross-check against"; fail=1
-else
-    SROW=$(echo "$SEGLINE" | awk '{print $2}')
-    SX=$(echo "$SEGLINE"   | awk '{print $3}')
-    EXP_TOP=$(( SROW * 16 ))
-    assert_grep "^JSLOG xy ${SX} ${EXP_TOP} ${SX} ${EXP_TOP}\$" \
-        "getBoundingClientRect() x/y (and offsetLeft/Top) match the SEG-dump box"
-fi
+# ---- x/y ----------------------------------------------------------------
+# The block box starts at the body's left margin (8, matching Chrome exactly)
+# on the page's first row. This is NO LONGER cross-checked against the SEG dump:
+# a SEG is where the element's TEXT was drawn, which for a block element is not
+# where its BOX starts (the old check only agreed because the box used to BE the
+# ink). offsetLeft/Top mirror the rect.
+assert_grep '^JSLOG xy 8 0 8 0$' \
+    "getBoundingClientRect() x/y (and offsetLeft/Top) are the block box origin"
 
 # ---- no uncaught error ---------------------------------------------------
 assert_nogrep '^JSERR'   "no uncaught JS error across the domgeom script"

@@ -57,33 +57,38 @@ assert_nogrep() { # pattern message
     fi
 }
 
-# ---- Baseline box, cross-checked against the SEG dump for |AlphaOne| --------
-SEGLINE=$(grep -E 'SEG [0-9]+ [0-9]+ .*\|AlphaOne\|' "$D0" | head -1)
-if [ -z "$SEGLINE" ]; then
-    echo "[hb-domgeom2] FAIL: no SEG line for |AlphaOne| to cross-check against"; fail=1
-else
-    SROW=$(echo "$SEGLINE" | awk '{print $2}')
-    SX=$(echo "$SEGLINE"   | awk '{print $3}')
-    EXP_TOP=$(( SROW * 16 ))
-    EXP_W=$(( 8 * 8 ))   # 8 chars * CELL_W
-    assert_grep "^JSLOG base ${SX} ${EXP_TOP} ${EXP_W} 16\$" \
-        "unscrolled getBoundingClientRect() == the SEG-dump box"
+# ---- Baseline box = the element's real CSS BORDER BOX ----------------------
+# UPDATED (layout-read / CSSOM round). This used to derive the expected rect
+# from the SEG dump for |AlphaOne| — 8 chars * CELL_W = 64 wide, LINE_H tall —
+# i.e. the element's TEXT INK. #a is a block <div>, so a browser reports the
+# whole content column instead. Verified against
+#   chromium --headless --window-size=880,900 --dump-dom
+# on this fixture, Chrome answers `left 8, width 864`; the engine now answers
+# left 8 / width 864 EXACTLY. (Chrome's top 8 vs the engine's 0 is the UA <body>
+# top margin the row grid reserves no row for; its height differs by the line-box
+# rounding — both are the known residuals documented in
+# scripts/test_hambrowse_domgeom_host.sh and the Chrome-exact
+# scripts/test_hambrowse_layoutread_host.sh.)
+BX=8 ; BY=0 ; BW=864 ; BH=19
+assert_grep "^JSLOG base ${BX} ${BY} ${BW} ${BH}\$" \
+    "unscrolled getBoundingClientRect() == the element's block box"
 
-    # ---- getClientRects(): one-entry list, holding the bounding rect ---------
-    assert_grep '^JSLOG rects 1$' "getClientRects().length == 1 (single fragment)"
-    assert_grep "^JSLOG rl0 ${SX} ${EXP_TOP} ${EXP_W} 16\$" \
-        "getClientRects()[0] == the bounding rect"
+# ---- getClientRects(): one-entry list, holding the bounding rect ---------
+assert_grep '^JSLOG rects 1$' "getClientRects().length == 1 (single fragment)"
+assert_grep "^JSLOG rl0 ${BX} ${BY} ${BW} ${BH}\$" \
+    "getClientRects()[0] == the bounding rect"
 
-    # ---- viewport-relative: scroll(10,40) shifts the rect UP/LEFT by that -----
-    SCX=$(( SX - 10 ))
-    SCY=$(( EXP_TOP - 40 ))
-    assert_grep "^JSLOG scrolled ${SCX} ${SCY} ${EXP_W} 16\$" \
-        "after scrollTop=40/scrollLeft=10, rect is offset by the scroll amount"
-    assert_grep '^JSLOG delta 10 40$' \
-        "rect delta equals exactly the (scrollLeft, scrollTop) applied"
-    assert_grep "^JSLOG srect0 ${SCX} ${SCY}\$" \
-        "getClientRects() honours the same scroll translation"
-fi
+# ---- viewport-relative: scroll(10,40) shifts the rect UP/LEFT by that -----
+# This is the property the gate really guards: whatever the box is, scrolling
+# translates it by exactly the scroll offset (CSSOM-View).
+SCX=$(( BX - 10 ))
+SCY=$(( BY - 40 ))
+assert_grep "^JSLOG scrolled ${SCX} ${SCY} ${BW} ${BH}\$" \
+    "after scrollTop=40/scrollLeft=10, rect is offset by the scroll amount"
+assert_grep '^JSLOG delta 10 40$' \
+    "rect delta equals exactly the (scrollLeft, scrollTop) applied"
+assert_grep "^JSLOG srect0 ${SCX} ${SCY}\$" \
+    "getClientRects() honours the same scroll translation"
 
 # ---- Expanded getComputedStyle resolved properties --------------------------
 assert_grep '^JSLOG pad 0px$'                "getComputedStyle().padding default resolves to 0px"

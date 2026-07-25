@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _attr_op_match, _build_dataset, _bytes_eq, _content_right, _cstr_len, _dom_lookup_anchor, _extract_html, _extract_text, _find_cre_by_obj, _has_word, _hx_find_attr, _hx_lower, _idbytes_eq, _input_type_is, _is_undef_str, _left_margin, _match_chain, _nth_match, _palette_rgb, _parse_nth, _sel_attr_name_end, _sel_isname, _sel_parse, _sel_split, _select_index, _select_text, _tx_by_anchor, _tx_next_sibling, _tx_prev_sibling, _upper, css_color_rgb
+from lib.htmlengine import _ebox_find, _attr_op_match, _build_dataset, _bytes_eq, _content_right, _cstr_len, _dom_lookup_anchor, _extract_html, _extract_text, _find_cre_by_obj, _has_word, _hx_find_attr, _hx_lower, _idbytes_eq, _input_type_is, _is_undef_str, _left_margin, _match_chain, _nth_match, _palette_rgb, _parse_nth, _sel_attr_name_end, _sel_isname, _sel_parse, _sel_split, _select_index, _select_text, _tx_by_anchor, _tx_next_sibling, _tx_prev_sibling, _upper, css_color_rgb
 
 # ====================================================================
 # Created-node selector traversal (round 5).
@@ -1424,8 +1424,71 @@ def _geom_match_fwd(si0: int32, toff: int32, tlen: int32) -> int32:
     return -1
 
 
+# The ebox registry slot recorded by the layout engine for element `el`, or -1
+# when this element never opened a block box (an inline / text-only element, or
+# a node created at runtime that has not been laid out).
+def _el_ebox(el: int32) -> int32:
+    if el < 0 or el >= dom_n:
+        return -1
+    return _ebox_find(dom_anchor[el])
+
+
+# Fill g_geom_* from the element's REAL laid-out CSS BORDER box, recorded by the
+# layout engine in the ebox registry. Returns 1 on success, 0 when this element
+# has no recorded box (the caller then falls back to the text-ink estimate).
+#
+# The registry stores the CONTENT column [cx, cr) and the content row span
+# [top, bot); the cascade's resolved padding is a per-axis SUM (the engine has no
+# per-side padding), so it is split evenly, and the border adds `bord` px per
+# side. An explicitly sized box reports its exact CSS height rather than the
+# row-quantised span, so `height:80px` reads back as 80 and not a rounded 96.
+def _el_bbox_from_ebox(el: int32) -> int32:
+    ei: int32 = _el_ebox(el)
+    if ei < 0:
+        return 0
+    cx: int32 = ebox_cx[ei]
+    cr: int32 = ebox_cr[ei]
+    if cr < cx:
+        cr = cx
+    padx: int32 = ebox_padx[ei]
+    pady: int32 = ebox_pady[ei]
+    bord: int32 = ebox_bord[ei]
+    padl: int32 = padx / 2
+    # BORDER-box height in true CSS px, stamped by the close (an explicit CSS
+    # height, or the row span corrected by the children's quantisation debt).
+    # Fall back to the raw row span if this box somehow never closed.
+    bh: int32 = ebox_bbh[ei]
+    if bh < 0:
+        bh = (ebox_bot[ei] - ebox_top[ei]) * LINE_H + pady + 2 * bord
+    if bh < 0:
+        bh = 0
+    # Undo the engine-vs-CSS skew this element's ancestors introduced (a bordered
+    # ancestor's CELL_W inset; a padded ancestor's baked top padding + border) so
+    # the reported box is in TRUE document coordinates, not grid coordinates.
+    bx: int32 = cx - padl - ebox_bins[ei] - ebox_skx[ei]
+    if bx < 0:
+        bx = 0
+    g_geom_x = bx
+    g_geom_y = ebox_top[ei] * LINE_H + ebox_sky[ei]
+    g_geom_w = (cr - cx) + padx + 2 * bord
+    g_geom_h = bh
+    g_geom_found = 1
+    return 1
+
+
 # Compute element `el`'s laid-out box into g_geom_* (pixels). Sets g_geom_found
-# = 1 on success, 0 when the element has no matchable rendered text.
+# = 1 on success, 0 when the element has neither a recorded CSS box nor
+# matchable rendered text.
+#
+# TWO SOURCES, best first:
+#   1. the ebox registry — the element's REAL border box as the layout engine
+#      laid it out (block-level elements). This is what a browser reports.
+#   2. the rendered TEXT SEGMENTS — a bounding box over the runs that reconstruct
+#      the element's text. Used for inline elements (which open no block box) and
+#      as the fallback. It measures text INK, so it under-reports a sized box.
+# The segment scan runs FIRST regardless because it also resolves g_geom_s0, the
+# segment getComputedStyle reads the used colour/weight from; the ebox box then
+# OVERRIDES the geometry when the element has one.
 def _el_bbox(el: int32):
     g_geom_found = 0
     g_geom_x = 0
@@ -1436,6 +1499,7 @@ def _el_bbox(el: int32):
     if el < 0 or el >= dom_n:
         return
     if n_segs == 0:
+        _el_bbox_from_ebox(el)
         return
     toff: int32 = dom_orig_off[el]
     tlen: int32 = dom_orig_len[el]
@@ -1451,6 +1515,7 @@ def _el_bbox(el: int32):
         else:
             si = si + 1
     if s0 < 0:
+        _el_bbox_from_ebox(el)                        # no text: box-only element
         return
     minx: int32 = seg_x[s0]
     maxr: int32 = seg_x[s0] + seg_len[s0] * CELL_W
@@ -1475,6 +1540,10 @@ def _el_bbox(el: int32):
     g_geom_h = (maxrow - minrow + 1) * LINE_H
     g_geom_s0 = s0
     g_geom_found = 1
+    # Prefer the element's REAL border box when the layout engine recorded one —
+    # the segment bbox above only measured its text ink. g_geom_s0 is kept so the
+    # colour/weight read-back still comes from the element's own segment.
+    _el_bbox_from_ebox(el)
 
 
 # Current viewport scroll offset (CSS px). getBoundingClientRect()/getClientRects()
@@ -1960,6 +2029,77 @@ def _cs_fontweight(cs: int32, el: int32, segbold: int32):
     _cs_set2(cs, cast[Ptr[uint8]]("fontWeight"), 10, cast[Ptr[uint8]]("font-weight"), 11, val)
 
 
+# ---- CASCADED box values for getComputedStyle ---------------------------
+# getComputedStyle used to consult ONLY the element's script-set INLINE style
+# (`el.style.*`); a value that came from a <style> rule was invisible, so
+# `#a{padding:10px;display:flex}` read back as `0px`/`block`. These helpers read
+# the values the CASCADE actually resolved for the element, as recorded by the
+# layout engine when it laid the element's box out — the same numbers that were
+# painted, so the read-back cannot disagree with the render. Each returns -1
+# ("no recorded box": an inline element, or a node created after layout) so the
+# caller can fall back to its previous behavior.
+
+# The CONTENT-box width px the engine laid out (CSSOM `width` is the content box
+# under the default `box-sizing: content-box`).
+def _cs_ebox_cw(el: int32) -> int32:
+    ei: int32 = _el_ebox(el)
+    if ei < 0:
+        return -1
+    w: int32 = ebox_cr[ei] - ebox_cx[ei]
+    if w < 0:
+        w = 0
+    return w
+
+
+# The CONTENT-box height px: the cascade's explicit height when it set one, else
+# the laid-out row span minus the vertical padding those rows absorbed.
+def _cs_ebox_ch(el: int32) -> int32:
+    ei: int32 = _el_ebox(el)
+    if ei < 0:
+        return -1
+    h: int32 = ebox_ehpx[ei]
+    if h >= 0:
+        return h
+    h = ebox_bbh[ei]
+    if h < 0:
+        return -1
+    h = h - ebox_pady[ei] - 2 * ebox_bord[ei]
+    if h < 0:
+        h = 0
+    return h
+
+
+# The cascade's resolved padding px PER SIDE (the engine tracks a per-axis sum,
+# so this is the symmetric half), or -1 when no box was recorded.
+def _cs_ebox_pad(el: int32) -> int32:
+    ei: int32 = _el_ebox(el)
+    if ei < 0:
+        return -1
+    return ebox_padx[ei] / 2
+
+
+# The cascade's resolved `display` keyword as a JS string value, or -1 when the
+# element has no recorded box or the cascade set no display.
+def _cs_ebox_display(el: int32) -> int32:
+    ei: int32 = _el_ebox(el)
+    if ei < 0:
+        return -1
+    d: int32 = ebox_disp[ei]
+    if d == 1:
+        return js_new_string(cast[Ptr[uint8]]("none"), 4)
+    if d == 2:
+        return js_new_string(cast[Ptr[uint8]]("flex"), 4)
+    if d == 3:
+        return js_new_string(cast[Ptr[uint8]]("block"), 5)
+    if d == 4:
+        return js_new_string(cast[Ptr[uint8]]("inline-block"), 12)
+    if d == 5:
+        return js_new_string(cast[Ptr[uint8]]("inline"), 6)
+    if d == 6:
+        return js_new_string(cast[Ptr[uint8]]("grid"), 4)
+    return -1
+
+
 # Build the getComputedStyle() result: an object whose common properties report
 # RESOLVED / used values per CSSOM — colours as rgb()/rgba(), lengths as used px
 # (percentages resolved), keywords computed. Used geometry comes from the laid-
@@ -1973,6 +2113,9 @@ def _new_computed_style(el: int32) -> int32:
     if dn > 0:
         js_set_prop(cs, cast[Ptr[uint8]]("display"), 7, \
                     js_new_string(&g_cs_vbuf[0], cast[uint64](dn)))
+    elif _cs_ebox_display(el) >= 0:
+        # a <style>/`style=` rule the CASCADE resolved (flex/grid/inline-block/…)
+        js_set_prop(cs, cast[Ptr[uint8]]("display"), 7, _cs_ebox_display(el))
     else:
         dd: int32 = _el_default_display(el)
         if dd == 1:
@@ -1994,6 +2137,11 @@ def _new_computed_style(el: int32) -> int32:
         if segrgb < 0:
             segrgb = _palette_rgb(seg_color[gs0])
         segbold = cast[int32](seg_bold[gs0])
+    # The element's CASCADED content box (from the layout pass; -1 = none), used
+    # so a `width`/`height`/`padding` that came from a STYLESHEET rule — not just
+    # an inline `el.style` — reads back at its real used px.
+    ecw: int32 = _cs_ebox_cw(el)
+    ech: int32 = _cs_ebox_ch(el)
     # ---- width: explicit px/em, resolved percentage, else used box width -----
     wn: int32 = _cs_inline_len(el, cast[Ptr[uint8]]("width"), 5)
     if wn > 0:
@@ -2005,10 +2153,16 @@ def _new_computed_style(el: int32) -> int32:
             if wpct != CS_LEN_NONE:
                 pw: int32 = _cs_used_width(_el_parent_idx(el), 32)
                 js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, _px_string(pw * wpct / 100))
+            elif ecw >= 0:
+                js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, _px_string(ecw))
             elif found != 0:
                 js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, _px_string(gw))
             else:
                 js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, js_new_string(cast[Ptr[uint8]]("auto"), 4))
+    elif ecw >= 0:
+        # the CONTENT width the engine laid out — CSSOM's used `width` under the
+        # default box-sizing, and what Chrome reports for a `width:` from a sheet.
+        js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, _px_string(ecw))
     elif found != 0:
         js_set_prop(cs, cast[Ptr[uint8]]("width"), 5, _px_string(gw))
     else:
@@ -2019,10 +2173,14 @@ def _new_computed_style(el: int32) -> int32:
         hpx: int32 = _cs_len_px(&g_cs_vbuf[0], hn, 16)
         if hpx != CS_LEN_NONE and hpx >= 0:
             js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, _px_string(hpx))
+        elif ech >= 0:
+            js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, _px_string(ech))
         elif found != 0:
             js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, _px_string(gh))
         else:
             js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, js_new_string(cast[Ptr[uint8]]("auto"), 4))
+    elif ech >= 0:
+        js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, _px_string(ech))
     elif found != 0:
         js_set_prop(cs, cast[Ptr[uint8]]("height"), 6, _px_string(gh))
     else:
@@ -2050,8 +2208,24 @@ def _new_computed_style(el: int32) -> int32:
                 cast[Ptr[uint8]]("font-family"), 11, cast[Ptr[uint8]]("monospace"), 9)
     _cs_fontweight(cs, el, segbold)
     # ---- box-model spacing (resolved to px; 0px default) --------------------
-    _cs_length(cs, el, cast[Ptr[uint8]]("padding"), 7, \
-               cast[Ptr[uint8]]("padding"), 7, cast[Ptr[uint8]]("0px"), 3)
+    # `padding` prefers the CASCADE's resolved value (a <style> rule's padding was
+    # previously invisible here and always read back "0px").
+    pn: int32 = _cs_inline_len(el, cast[Ptr[uint8]]("padding"), 7)
+    epad: int32 = _cs_ebox_pad(el)
+    if pn <= 0 and epad > 0:
+        _cs_set2(cs, cast[Ptr[uint8]]("padding"), 7, cast[Ptr[uint8]]("padding"), 7, \
+                 _px_string(epad))
+        _cs_set2(cs, cast[Ptr[uint8]]("paddingTop"), 10, cast[Ptr[uint8]]("padding-top"), 11, \
+                 _px_string(epad))
+        _cs_set2(cs, cast[Ptr[uint8]]("paddingLeft"), 11, cast[Ptr[uint8]]("padding-left"), 12, \
+                 _px_string(epad))
+        _cs_set2(cs, cast[Ptr[uint8]]("paddingRight"), 12, cast[Ptr[uint8]]("padding-right"), 13, \
+                 _px_string(epad))
+        _cs_set2(cs, cast[Ptr[uint8]]("paddingBottom"), 13, cast[Ptr[uint8]]("padding-bottom"), 14, \
+                 _px_string(epad))
+    else:
+        _cs_length(cs, el, cast[Ptr[uint8]]("padding"), 7, \
+                   cast[Ptr[uint8]]("padding"), 7, cast[Ptr[uint8]]("0px"), 3)
     _cs_length(cs, el, cast[Ptr[uint8]]("margin"), 6, \
                cast[Ptr[uint8]]("margin"), 6, cast[Ptr[uint8]]("0px"), 3)
     # ---- keyword / positioning properties (computed) ------------------------

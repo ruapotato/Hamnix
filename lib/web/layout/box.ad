@@ -280,6 +280,134 @@ bfill_inlb: Array[256, uint8]
 bfill_bord: Array[256, int32]
 n_bfills:   int32 = 0
 
+# ---- ELEMENT BOX registry (CSSOM / layout-read geometry) -------------
+# The DOM's layout-read surface (getBoundingClientRect / offsetWidth / offsetTop
+# / getComputedStyle) needs an element's REAL laid-out CSS box. Before this
+# registry the only geometry the JS layer could see was reconstructed from the
+# rendered TEXT SEGMENTS (see query.ad `_el_bbox`), which measures the element's
+# text INK, not its box: a `div{width:200px;height:80px}` holding the word
+# "Alpha" reported 40x16 (five 8px cells on one 16px row) where Chrome reports
+# 224x104. Every measure-then-position script (dropdowns, sticky headers,
+# tooltips, carousels, charts) reads those numbers, so they were all wrong.
+#
+# The layout engine already computes the true box when it opens/closes a block:
+# the content column [cx, cr), the row span, and the cascade's resolved padding /
+# border / margin / display. We simply RECORD it, keyed by the source offset of
+# the element's '<' (the same key `dom_anchor` uses to identify a DOM node), so
+# query.ad can join a JS element handle to its real box. NOTHING about layout or
+# paint changes — this is a pure read-back tap, so the 19 pixel-parity rounds are
+# untouched (no seg_*/bfill_*/bbox_* value is written or read here).
+#
+# Coordinates are DOCUMENT px. cx/cr are the CONTENT box's left/right (padding
+# was already folded into the content indent by the cascade, so the padding box
+# is [cx - padl, cr + padr) and the border box grows a further `bord` per side).
+# top/bot are ROW indices [top, bot); a row is LINE_H px in the engine's grid,
+# but when the cascade resolved an explicit height we keep the exact px in
+# `ehpx` so an 80px box reports 80, not a row-quantised 96.
+EBOX_MAX:  int32 = 256
+ebox_src:  Array[256, int32]     # source offset of the element's '<' (-1 = free)
+ebox_cx:   Array[256, int32]     # content-box left  (document px)
+ebox_cr:   Array[256, int32]     # content-box right (document px)
+ebox_top:  Array[256, int32]     # first content row
+ebox_bot:  Array[256, int32]     # row past the last content row
+ebox_padx: Array[256, int32]     # horizontal padding SUM px (left+right)
+ebox_pady: Array[256, int32]     # vertical padding SUM px (top+bottom)
+ebox_bord: Array[256, int32]     # border width px PER SIDE (0 = none)
+# The engine insets a bordered box's content by a whole CHARACTER CELL (CELL_W)
+# rather than by the CSS border width, because the monospace text dump draws the
+# frame in a glyph column. The recorded content-left therefore sits `bordins` —
+# not `bord` — px right of the border edge, and the read-back must subtract the
+# inset the engine actually applied or every bordered box reports a left edge
+# (CELL_W - border) px too far right. 0 = no border cell was inserted.
+ebox_bins: Array[256, int32]     # engine's left content inset for the border (px)
+ebox_mt:   Array[256, int32]     # margin-top px (as the box requested it)
+ebox_ml:   Array[256, int32]     # margin-left px
+ebox_ehpx: Array[256, int32]     # cascade-resolved CSS height px (-1 = auto)
+ebox_ewpx: Array[256, int32]     # cascade-resolved CSS width px  (-1 = auto)
+ebox_disp: Array[256, int32]     # display code (see cascade _disp_value; 0 unset)
+# ENGINE-vs-CSS coordinate SKEW accumulated by this element's ANCESTORS.
+# The engine's grid differs from CSS pixels in two systematic, correctable ways:
+#   * horizontally, a bordered box insets its content by a whole CELL_W column
+#     instead of the CSS border width, so every DESCENDANT sits (CELL_W - border)
+#     px right of where CSS puts it, once per bordered ancestor;
+#   * vertically, a padded/bordered box's top padding + top border are BAKED into
+#     the first content row at paint time rather than occupying grid rows, so
+#     every descendant sits (padding-top + border-top) px ABOVE its CSS position,
+#     once per such ancestor.
+# Both are pure read-back corrections (paint is unchanged — it applies the same
+# offsets at pixel time). Recording the accumulated ancestor skew at open lets
+# the read-back subtract/add it and report true document coordinates.
+ebox_skx:  Array[256, int32]     # ancestor x skew px (subtract from the engine x)
+ebox_sky:  Array[256, int32]     # ancestor y skew px (add to the engine y)
+ebox_own:  Array[256, int32]     # this box's OWN y-skew contribution (padt+bord)
+# The box's BORDER-box height in true CSS px, stamped at close. For an
+# explicitly sized box this is the CSS height plus padding and borders; for an
+# AUTO-height box it is the laid-out row span corrected by the vertical
+# quantisation debt its children accumulated (without which a container of
+# quantised children under-reports its height by that same drift). -1 until the
+# close stamps it.
+ebox_bbh:  Array[256, int32]
+ebox_pitch: Array[256, int32]    # one text line's real px pitch in this box
+n_eboxes:  int32 = 0
+
+# Live accumulators for the skews above, pushed/restored across a box's span.
+g_ebox_skx: int32 = 0
+g_ebox_sky: int32 = 0
+box_skx_stack: Array[64, int32]
+box_sky_stack: Array[64, int32]
+
+# Lowest corrected BOTTOM (document px) of any element box closed inside the
+# currently-open box, or -1 when it has closed no child boxes. An AUTO-height
+# container's used height is where its last child ENDS — deriving it that way
+# gives Chrome's number exactly, where deriving it from the container's own grid
+# row span inherits every child's row-quantisation error plus the trailing row
+# the grid reserves. Saved/restored across each box like the skews.
+g_ebox_maxbot: int32 = -1
+box_maxbot_stack: Array[64, int32]
+
+# Source offset of the '<' of the element whose block box is about to open. Set
+# by the tag handler (one tag opens at most one block box) and CONSUMED by
+# `_block_box_open` so a box opened without a tag (an anonymous/implicit box)
+# never inherits a stale element identity. -1 = no element.
+g_open_src: int32 = -1
+
+# Per-open-box ebox slot (-1 = this box is not element-keyed), pushed at open
+# and read back at close to stamp the final row span.
+box_ebox_stack: Array[64, int32]
+
+
+# Find the ebox slot recorded for the element anchored at source offset `src`,
+# or -1. The LAST matching record wins: a re-layout (a script mutated the DOM
+# and the page was laid out again) appends fresh records, and the newest is the
+# live one.
+# The real vertical PITCH (px) of one text line in the block being opened.
+# The engine wraps on a LINE_H (16px) grid, but the renderer — like Chrome —
+# advances a line box at `line-height: normal`, ~1.2em (19px at the default
+# 16px). A text box measured on the grid therefore under-reports by ~3px PER
+# LINE, and the error compounds down a column of paragraphs. Read at box OPEN,
+# where the cascade globals still hold the block's own font-size / line-height.
+def _ebox_line_pitch() -> int32:
+    if g_lineh > 0:
+        return g_lineh
+    fpx: int32 = g_font_px
+    if fpx <= 0:
+        fpx = 16
+    p: int32 = fpx * 19 / 16
+    if p <= 0:
+        p = LINE_H
+    return p
+
+
+def _ebox_find(src: int32) -> int32:
+    if src < 0:
+        return -1
+    i: int32 = n_eboxes - 1
+    while i >= 0:
+        if ebox_src[i] == src:
+            return i
+        i = i - 1
+    return -1
+
 
 # Top/bottom padding-box pixel extension of background fill i (0 = none): the
 # pixel renderer grows the fill UP by padt and DOWN by padb so a padded coloured
@@ -2191,6 +2319,12 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
             ext_topg = 0
     if ext_topg > 0:
         _emit_vgap((ext_topg + LINE_H / 2) / LINE_H)
+        # CSSOM layout-read tap: the gap was rounded to whole grid rows, so this
+        # box and everything after it sits (true margin - emitted rows) px off its
+        # CSS position. Fold that into the y skew (read-back only; the flow keeps
+        # its grid position). `margin-top:15px` then reads back at 119, not 120.
+        g_ebox_sky = g_ebox_sky + ext_topg \
+                     - ((ext_topg + LINE_H / 2) / LINE_H) * LINE_H
     # left inset (+ a cell for the border) shifts the content column.
     li: int32 = left
     if bord != 0:
@@ -2370,6 +2504,68 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         box_seg0_stack[box_sp] = cast[int32](n_segs)
         box_bf0_stack[box_sp]  = n_bfills
         box_bx0_stack[box_sp]  = n_bboxes
+        # ---- CSSOM layout-read tap: record this element's REAL box ----------
+        # Pure read-back (see the ebox registry comment): stash the content
+        # column, the opening row and the cascade's resolved box-model values so
+        # getBoundingClientRect/offset*/getComputedStyle can report the box the
+        # engine actually laid out. The close stamps the final row span.
+        esrc: int32 = g_open_src
+        g_open_src = -1                                # one tag = one block box
+        ebord: int32 = 0
+        if bord != 0:
+            ebord = 1
+        if m_bordw > 0:
+            ebord = m_bordw
+        ebins: int32 = 0
+        if bord != 0:
+            ebins = CELL_W                             # `li = li + CELL_W` above
+        # This box's OWN contribution to the engine-vs-CSS skew its descendants
+        # inherit: horizontally the border CELL it inset instead of the CSS border
+        # width; vertically the top padding it BAKED into the first content row
+        # (exactly the `padv_half` the open subtracted from the external gap) plus
+        # the top border, neither of which occupies a grid row.
+        ebake: int32 = 0
+        if padv_half > 0 and (bord != 0 or (eff_bps_o == 0 and open_flexitem == 0)):
+            ebake = padv_half
+        box_skx_stack[box_sp] = g_ebox_skx
+        box_sky_stack[box_sp] = g_ebox_sky
+        box_maxbot_stack[box_sp] = g_ebox_maxbot
+        g_ebox_maxbot = -1
+        eslot: int32 = -1
+        if esrc >= 0 and n_eboxes < EBOX_MAX:
+            eslot = n_eboxes
+            edisp: int32 = m_disp
+            if d_disp != 0:
+                edisp = d_disp
+            eml: int32 = m_ml
+            if eml < 0:
+                eml = 0
+            emt: int32 = m_mt
+            if emt < 0:
+                emt = 0
+            ebox_src[eslot]  = esrc
+            ebox_cx[eslot]   = indent_x
+            ebox_cr[eslot]   = new_right
+            ebox_top[eslot]  = cast[int32](cur_row)
+            ebox_bot[eslot]  = cast[int32](cur_row)   # provisional; close stamps it
+            ebox_padx[eslot] = epadx
+            ebox_pady[eslot] = epady
+            ebox_bord[eslot] = ebord
+            ebox_bins[eslot] = ebins
+            ebox_mt[eslot]   = emt
+            ebox_ml[eslot]   = eml
+            ebox_ehpx[eslot] = eff_ht
+            ebox_ewpx[eslot] = wd
+            ebox_disp[eslot] = edisp
+            ebox_skx[eslot]  = g_ebox_skx
+            ebox_sky[eslot]  = g_ebox_sky
+            ebox_own[eslot]  = ebake + ebord
+            ebox_pitch[eslot] = _ebox_line_pitch()
+            ebox_bbh[eslot]  = -1                     # close stamps the real one
+            n_eboxes = n_eboxes + 1
+        g_ebox_skx = g_ebox_skx + ebins - ebord
+        g_ebox_sky = g_ebox_sky + ebake + ebord
+        box_ebox_stack[box_sp] = eslot
         box_sp = box_sp + 1
     # ROUND-3 text-indent: arm the first-line inset for this block (inline over
     # sheet). Consumed once by the first word on the opening line.
@@ -2798,6 +2994,66 @@ def _block_box_close():
         # without this the padding would VANISH. Re-emit it as a quantised gap (the
         # old behavior) so the box keeps its vertical space — top+bottom padding.
         _emit_vgap((pady + LINE_H / 2) / LINE_H)
+    # ---- CSSOM layout-read tap: stamp this element's final row span ---------
+    # Read-back only (no layout/paint value is touched). The content rows are
+    # [srow, endrow); an empty box (endrow == srow) keeps a zero-height box,
+    # which is what Chrome reports for an empty auto-height element too.
+    eslot_c: int32 = -1
+    chdebt: int32 = 0
+    kidbot: int32 = -1
+    parbot: int32 = -1
+    mybot: int32 = -1
+    if box_sp >= 0 and box_sp < 64:
+        eslot_c = box_ebox_stack[box_sp]
+        kidbot = g_ebox_maxbot
+        parbot = box_maxbot_stack[box_sp]
+        # Everything this box's SUBTREE added to the y skew beyond the box's own
+        # contribution is the quantisation debt its children accumulated — the px
+        # by which the grid's row span under-reports their true stacked height.
+        chdebt = g_ebox_sky - box_sky_stack[box_sp]
+        if eslot_c >= 0 and eslot_c < n_eboxes:
+            chdebt = chdebt - ebox_own[eslot_c]
+        # Restore (never decrement) the engine-vs-CSS skews to their value when
+        # this box opened, so an unbalanced push can never leave them drifting.
+        g_ebox_skx = box_skx_stack[box_sp]
+        g_ebox_sky = box_sky_stack[box_sp]
+
+    if eslot_c >= 0 and eslot_c < n_eboxes:
+        endrow: int32 = cast[int32](cur_row)
+        if row_dirty != 0:
+            endrow = endrow + 1
+        if endrow < srow:
+            endrow = srow
+        ebox_top[eslot_c] = srow
+        ebox_bot[eslot_c] = endrow
+        # The close may have narrowed/clipped the box; re-read the live column so
+        # the recorded content box matches what was painted.
+        ebox_cx[eslot_c] = lx + CELL_W
+        ebox_cr[eslot_c] = rx
+        # BORDER-box height in true CSS px. An explicit height is exact; an AUTO
+        # height is the row span plus its children's quantisation debt, plus the
+        # padding/border the grid never reserved rows for.
+        ebbord: int32 = ebox_bord[eslot_c]
+        if ehc >= 0:
+            ebox_bbh[eslot_c] = ehc + pady + 2 * ebbord
+        else:
+            # Row-span estimate at the renderer's real line pitch, corrected by
+            # the children's quantisation debt.
+            abh: int32 = (endrow - srow) * ebox_pitch[eslot_c] \
+                         + chdebt + pady + 2 * ebbord
+            # Better, when this box CONTAINS element boxes: its content ends where
+            # its last child ends, in already-corrected document coordinates.
+            if kidbot >= 0:
+                ctop: int32 = srow * LINE_H + ebox_sky[eslot_c] + pady / 2 + ebbord
+                kh: int32 = kidbot - ctop + pady + 2 * ebbord
+                if kh > 0:
+                    abh = kh
+            if abh < 0:
+                abh = 0
+            ebox_bbh[eslot_c] = abh
+        # Report this box's bottom to its PARENT's auto-height derivation. The
+        # bottom MARGIN is added at the end of the close, where it is resolved.
+        mybot = srow * LINE_H + ebox_sky[eslot_c] + ebox_bbh[eslot_c]
     # restore the parent right edge + pop the left indent.
     if blk_right_sp > 0:
         blk_right_sp = blk_right_sp - 1
@@ -2814,6 +3070,32 @@ def _block_box_close():
             ext_botg = 0
     if ext_botg > 0:
         _emit_vgap((ext_botg + LINE_H / 2) / LINE_H)
+    # ---- CSSOM layout-read tap: vertical QUANTISATION debt ------------------
+    # The engine advances the flow in whole LINE_H rows, so a box's exact CSS
+    # height and its bottom margin are each rounded to the grid. The rounding
+    # error is a constant offset for every FOLLOWING sibling, and it compounds
+    # down a column (a list of cards drifted ~8px per item). Fold the error into
+    # the y skew here — the parent's own close restores the skew, so the debt is
+    # correctly scoped to this box's siblings. Read-back only; the flow itself
+    # keeps its grid position (paint is untouched).
+    if eslot_c >= 0 and eslot_c < n_eboxes:
+        rowspx: int32 = (ebox_bot[eslot_c] - ebox_top[eslot_c]) * LINE_H
+        trueh: int32 = ebox_bbh[eslot_c]
+        if trueh < 0:
+            trueh = rowspx
+        gappx: int32 = 0
+        if ext_botg > 0:
+            gappx = ((ext_botg + LINE_H / 2) / LINE_H) * LINE_H
+        g_ebox_sky = g_ebox_sky + (trueh - rowspx) + (ext_botg - gappx)
+    # Hand this box's bottom (and any bottom seen by a sibling before it) back to
+    # the PARENT's auto-height derivation. The bottom margin is included: it does
+    # NOT collapse through a padded/bordered parent, which is exactly the parent
+    # a script measures (a card/section/main with padding).
+    if mybot >= 0:
+        mybot = mybot + ext_botg
+        if mybot > parbot:
+            parbot = mybot
+    g_ebox_maxbot = parbot
     pen_x = indent_x
 
 

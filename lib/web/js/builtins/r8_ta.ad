@@ -1,0 +1,448 @@
+# lib/web/js/builtins/r8_ta.ad — round-8 completion of the binary-data and
+# collation builtins for the modular JS engine:
+#
+#   * the ITERATION half of TypedArray.prototype (join / map / filter / forEach /
+#     reduce / indexOf / includes / find / some / every / at / reverse / sort /
+#     keys / entries / toString),
+#   * DataView (get/set Int8..Float64, with real big-endian default byte order),
+#   * Intl.Collator.
+#
+# WHY. lib/web/js/builtins/r7.ad already gives every TypedArray a real byte-backed
+# buffer plus set/subarray/slice/fill/values — but NOT the Array-shaped methods.
+# scripts/probe_js_hard.sh recorded that as four separate failures
+# (`typedarray_map`, `typedarray_set`, `uint8_subarray`, `arraybuffer`); three of
+# them actually died on the same missing `.join()`. Binary-data glue in the wild
+# (canvas ImageData, wasm, crypto, image/audio decoders, protocol parsers) uses
+# these constantly, and DataView is how every binary protocol reads a header.
+#
+# Behavior-preserving split: Adder merges all imported files into one Program, so
+# every public top-level name here resolves globally across the merged engine.
+
+from lib.htmlengine import arg_or
+
+
+# ====================================================================
+# TypedArray.prototype — the Array-shaped methods.
+# ====================================================================
+# Implemented by DELEGATION rather than duplication: snapshot the view into a
+# plain JS Array (`typedarray_to_array`, already used by the iterator), invoke
+# the REAL Array.prototype method on it with the caller's own arguments, then
+# map the result back into typed-array terms. That inherits the engine's tested
+# Array semantics (callback arity, thisArg, holes, comparator support) for free
+# and cannot drift from them, at the cost of one snapshot per call — the right
+# trade for methods that are already O(n).
+#
+# Three result shapes:
+#   * SPECIES  — map/filter/reverse/sort must yield a TypedArray, not an Array.
+#                map/filter build a fresh view of the same element type;
+#                reverse is in-place, so the result is written back over the
+#                receiver and the RECEIVER is returned (as the spec says).
+#   * PLAIN    — join/reduce/indexOf/find/some/every/at/... return their value
+#                unchanged (a string, number, boolean, or element).
+#   * ITERATOR — keys/entries return the Array iterator over the snapshot.
+
+# The Array.prototype method name for a TAM_* selector.
+def tam_name(code: int32) -> Ptr[uint8]:
+    if code == TAM_JOIN:
+        return cast[Ptr[uint8]]("join")
+    if code == TAM_MAP:
+        return cast[Ptr[uint8]]("map")
+    if code == TAM_FILTER:
+        return cast[Ptr[uint8]]("filter")
+    if code == TAM_FOREACH:
+        return cast[Ptr[uint8]]("forEach")
+    if code == TAM_REDUCE:
+        return cast[Ptr[uint8]]("reduce")
+    if code == TAM_INDEXOF:
+        return cast[Ptr[uint8]]("indexOf")
+    if code == TAM_INCLUDES:
+        return cast[Ptr[uint8]]("includes")
+    if code == TAM_FIND:
+        return cast[Ptr[uint8]]("find")
+    if code == TAM_FINDINDEX:
+        return cast[Ptr[uint8]]("findIndex")
+    if code == TAM_SOME:
+        return cast[Ptr[uint8]]("some")
+    if code == TAM_EVERY:
+        return cast[Ptr[uint8]]("every")
+    if code == TAM_AT:
+        return cast[Ptr[uint8]]("at")
+    if code == TAM_REVERSE:
+        return cast[Ptr[uint8]]("reverse")
+    if code == TAM_SORT:
+        return cast[Ptr[uint8]]("sort")
+    if code == TAM_LASTINDEX:
+        return cast[Ptr[uint8]]("lastIndexOf")
+    if code == TAM_REDUCERIGHT:
+        return cast[Ptr[uint8]]("reduceRight")
+    if code == TAM_TOSTRING:
+        return cast[Ptr[uint8]]("toString")
+    if code == TAM_KEYS:
+        return cast[Ptr[uint8]]("keys")
+    if code == TAM_ENTRIES:
+        return cast[Ptr[uint8]]("entries")
+    return cast[Ptr[uint8]]("join")
+
+
+# A fresh TypedArray of `kind` holding every element of the plain array `srco`.
+def ta_from_plain(kind: int32, srco: int32) -> int32:
+    n: int32 = arr_len[srco]
+    out: int32 = make_typed_array(kind, n)
+    oo: int32 = objid_of(out)
+    i: int32 = 0
+    while i < n:
+        ta_store_val(oo, i, arr_get(srco, i))
+        i = i + 1
+    return out
+
+
+# In-place sort of a typed array. `cmpfn` is the optional user comparator; with
+# none, elements sort NUMERICALLY (typed arrays hold numbers, so the Array
+# default's string coercion would be wrong). Insertion sort — typed arrays being
+# sorted from page code are short, and it is stable.
+def ta_sort_inplace(to: int32, cmpfn: int32):
+    n: int32 = obj_ta_len[to]
+    i: int32 = 1
+    while i < n:
+        j: int32 = i
+        while j > 0:
+            a: int32 = ta_load(to, j - 1)
+            b: int32 = ta_load(to, j)
+            swap: int32 = 0
+            if is_callable(cmpfn) != 0:
+                mb: int32 = call_top
+                call_args[call_top] = a
+                call_args[call_top + 1] = b
+                call_top = call_top + 2
+                r: int32 = invoke(cmpfn, v_undef(), mb, 2)
+                call_top = mb
+                if to_number(r) > 0.0:
+                    swap = 1
+            elif to_number(a) > to_number(b):
+                swap = 1
+            if swap == 0:
+                break
+            ta_store_val(to, j - 1, b)
+            ta_store_val(to, j, a)
+            j = j - 1
+        i = i + 1
+
+
+# TypedArray.prototype.<method> — see the delegation note above. fn_o is the
+# bound method's object id; obj_p_a[fn_o] carries the TAM_* selector.
+def typedarray_arrmeth(fn_o: int32, thisv: int32, base: int32, argc: int32) -> int32:
+    code: int32 = obj_p_a[fn_o]
+    if is_typed_array(thisv) == 0:
+        return v_undef()
+    to: int32 = objid_of(thisv)
+    kind: int32 = cast[int32](obj_ta_kind[to])
+    # `at` and `sort` are NOT delegable: the engine implements those two on the
+    # AST-call path (array_method(..., argnode, env) in builtins/strings.ad),
+    # which the generic NAT_AP_METHOD callable does not reach — delegating them
+    # returned undefined / threw. Both are small, so they are done directly here.
+    if code == TAM_AT:
+        rel: int32 = to_int32(arg_or(base, argc, 0))
+        if rel < 0:
+            rel = obj_ta_len[to] + rel
+        if rel < 0 or rel >= obj_ta_len[to]:
+            return v_undef()
+        return ta_load(to, rel)
+    if code == TAM_SORT:
+        ta_sort_inplace(to, arg_or(base, argc, 0))
+        return thisv
+    snap: int32 = typedarray_to_array(thisv)
+    fn: int32 = member_get(snap, str_from_cstr(tam_name(code)))
+    if is_callable(fn) == 0:
+        return v_undef()
+    res: int32 = invoke(fn, snap, base, argc)
+    # SPECIES: map/filter yield a TypedArray of this view's element type.
+    if code == TAM_MAP or code == TAM_FILTER:
+        if is_array(res) == 0:
+            return res
+        return ta_from_plain(kind, objid_of(res))
+    # IN-PLACE: reverse reorders the receiver itself and returns it.
+    if code == TAM_REVERSE:
+        if is_array(res) == 0:
+            return thisv
+        ro: int32 = objid_of(res)
+        n: int32 = arr_len[ro]
+        if n > obj_ta_len[to]:
+            n = obj_ta_len[to]
+        i: int32 = 0
+        while i < n:
+            ta_store_val(to, i, arr_get(ro, i))
+            i = i + 1
+        return thisv
+    return res
+
+
+# Bind one Array-shaped method onto a TypedArray prototype.
+def ta_add_arrmeth(proto: int32, name: Ptr[uint8], code: int32):
+    f: int32 = v_new_native(NAT_TA_ARRMETH)
+    obj_p_a[objid_of(f)] = code
+    obj_set(objid_of(proto), str_from_cstr(name), f)
+
+
+# Install every Array-shaped method on one TypedArray prototype. Called from
+# install_typed_array (r7.ad) for each element type.
+def ta_install_arrmeths(proto: int32):
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("join"), TAM_JOIN)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("map"), TAM_MAP)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("filter"), TAM_FILTER)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("forEach"), TAM_FOREACH)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("reduce"), TAM_REDUCE)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("reduceRight"), TAM_REDUCERIGHT)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("indexOf"), TAM_INDEXOF)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("lastIndexOf"), TAM_LASTINDEX)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("includes"), TAM_INCLUDES)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("find"), TAM_FIND)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("findIndex"), TAM_FINDINDEX)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("some"), TAM_SOME)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("every"), TAM_EVERY)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("at"), TAM_AT)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("reverse"), TAM_REVERSE)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("sort"), TAM_SORT)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("toString"), TAM_TOSTRING)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("keys"), TAM_KEYS)
+    ta_add_arrmeth(proto, cast[Ptr[uint8]]("entries"), TAM_ENTRIES)
+
+
+# ====================================================================
+# DataView — arbitrary-typed reads/writes at arbitrary byte offsets.
+# ====================================================================
+# A DataView reuses the typed-array view slots (obj_ta_buf / obj_ta_off) but
+# NOT obj_ta_kind, which stays 0 so `is_typed_array` keeps rejecting it — a
+# DataView has no element type and must not answer typed-array element reads.
+# obj_dv_len holds its byteLength (obj_ta_len is left alone for the same reason).
+#
+# BYTE ORDER: unlike a typed array (which is native/little-endian), DataView
+# defaults to BIG-endian and takes an optional `littleEndian` flag. That is the
+# whole point of the type — network and file formats are big-endian — so the
+# bytes are gathered through a scratch buffer in the requested order and only
+# then reinterpreted, rather than aliased in place.
+dv_scratch: Array[8, uint8]
+obj_dv_len: Array[40000, int32]     # byteLength of a DataView, or 0 = not one
+
+
+def is_dataview(h: int32) -> int32:
+    if tag_of(h) != TAG_OBJ:
+        return 0
+    if obj_dv_len[objid_of(h)] > 0:
+        return 1
+    return 0
+
+
+# Absolute start of the view within the shared ta_bytes pool.
+def dv_base(dvo: int32) -> int32:
+    bufv: int32 = obj_ta_buf[dvo]
+    return obj_ab_off[objid_of(bufv)] + obj_ta_off[dvo]
+
+
+# Bounds check for an n-byte access at byteOffset. 1 = in range.
+def dv_in_range(dvo: int32, byteoff: int32, n: int32) -> int32:
+    if byteoff < 0:
+        return 0
+    if byteoff + n > obj_dv_len[dvo]:
+        return 0
+    return 1
+
+
+# Copy n bytes at byteOffset into dv_scratch in NATIVE (little-endian) order.
+def dv_gather(dvo: int32, byteoff: int32, n: int32, little: int32):
+    b: int32 = dv_base(dvo) + byteoff
+    i: int32 = 0
+    while i < n:
+        if little != 0:
+            dv_scratch[i] = ta_bytes[b + i]
+        else:
+            dv_scratch[i] = ta_bytes[b + n - 1 - i]
+        i = i + 1
+
+
+# Write dv_scratch's n NATIVE-order bytes back out in the requested order.
+def dv_scatter(dvo: int32, byteoff: int32, n: int32, little: int32):
+    b: int32 = dv_base(dvo) + byteoff
+    i: int32 = 0
+    while i < n:
+        if little != 0:
+            ta_bytes[b + i] = dv_scratch[i]
+        else:
+            ta_bytes[b + n - 1 - i] = dv_scratch[i]
+        i = i + 1
+
+
+# new DataView(buffer[, byteOffset[, byteLength]])
+def dataview_construct(thisv: int32, base: int32, argc: int32) -> int32:
+    bufv: int32 = arg_or(base, argc, 0)
+    if is_arraybuffer(bufv) == 0:
+        set_error(cast[Ptr[uint8]]("First argument to DataView constructor must be an ArrayBuffer"))
+        return thisv
+    vo: int32 = objid_of(thisv)
+    ablen: int32 = obj_ab_len[objid_of(bufv)]
+    byteoff: int32 = 0
+    if argc > 1:
+        byteoff = to_int32(arg_or(base, argc, 1))
+    if byteoff < 0:
+        byteoff = 0
+    if byteoff > ablen:
+        byteoff = ablen
+    blen: int32 = ablen - byteoff
+    if argc > 2:
+        blen = to_int32(arg_or(base, argc, 2))
+    if blen < 0:
+        blen = 0
+    if byteoff + blen > ablen:
+        blen = ablen - byteoff
+    obj_ta_buf[vo] = bufv
+    obj_ta_off[vo] = byteoff
+    obj_dv_len[vo] = blen
+    obj_set(vo, str_from_cstr(cast[Ptr[uint8]]("buffer")), bufv)
+    obj_set(vo, str_from_cstr(cast[Ptr[uint8]]("byteOffset")), v_number(cast[float64](byteoff)))
+    obj_set(vo, str_from_cstr(cast[Ptr[uint8]]("byteLength")), v_number(cast[float64](blen)))
+    return thisv
+
+
+# DataView.prototype.get<Type>(byteOffset[, littleEndian]) — kind in obj_p_a.
+def dataview_get(fn_o: int32, thisv: int32, base: int32, argc: int32) -> int32:
+    kind: int32 = obj_p_a[fn_o]
+    if is_dataview(thisv) == 0:
+        return v_undef()
+    dvo: int32 = objid_of(thisv)
+    n: int32 = ta_elem_size(kind)
+    byteoff: int32 = to_int32(arg_or(base, argc, 0))
+    little: int32 = 0
+    if argc > 1 and to_bool(arg_or(base, argc, 1)) != 0:
+        little = 1
+    if dv_in_range(dvo, byteoff, n) == 0:
+        set_error(cast[Ptr[uint8]]("Offset is outside the bounds of the DataView"))
+        return v_undef()
+    dv_gather(dvo, byteoff, n, little)
+    if kind == TA_FLOAT64:
+        return v_number(cast[Ptr[float64]](&dv_scratch[0])[0])
+    if kind == TA_FLOAT32:
+        return v_number(cast[float64](cast[Ptr[float32]](&dv_scratch[0])[0]))
+    if kind == TA_INT8:
+        return v_number(cast[float64](cast[Ptr[int8]](&dv_scratch[0])[0]))
+    if kind == TA_UINT8:
+        return v_number(cast[float64](cast[Ptr[uint8]](&dv_scratch[0])[0]))
+    if kind == TA_INT16:
+        return v_number(cast[float64](cast[Ptr[int16]](&dv_scratch[0])[0]))
+    if kind == TA_UINT16:
+        return v_number(cast[float64](cast[Ptr[uint16]](&dv_scratch[0])[0]))
+    if kind == TA_INT32:
+        return v_number(cast[float64](cast[Ptr[int32]](&dv_scratch[0])[0]))
+    if kind == TA_UINT32:
+        return v_number(cast[float64](cast[Ptr[uint32]](&dv_scratch[0])[0]))
+    return v_number(0.0)
+
+
+# DataView.prototype.set<Type>(byteOffset, value[, littleEndian]).
+def dataview_set(fn_o: int32, thisv: int32, base: int32, argc: int32) -> int32:
+    kind: int32 = obj_p_a[fn_o]
+    if is_dataview(thisv) == 0:
+        return v_undef()
+    dvo: int32 = objid_of(thisv)
+    n: int32 = ta_elem_size(kind)
+    byteoff: int32 = to_int32(arg_or(base, argc, 0))
+    valh: int32 = arg_or(base, argc, 1)
+    little: int32 = 0
+    if argc > 2 and to_bool(arg_or(base, argc, 2)) != 0:
+        little = 1
+    if dv_in_range(dvo, byteoff, n) == 0:
+        set_error(cast[Ptr[uint8]]("Offset is outside the bounds of the DataView"))
+        return v_undef()
+    if kind == TA_FLOAT64:
+        cast[Ptr[float64]](&dv_scratch[0])[0] = to_number(valh)
+    elif kind == TA_FLOAT32:
+        cast[Ptr[float32]](&dv_scratch[0])[0] = cast[float32](to_number(valh))
+    else:
+        iv: int32 = to_int32(valh)
+        if n == 1:
+            cast[Ptr[uint8]](&dv_scratch[0])[0] = cast[uint8](iv & 255)
+        elif n == 2:
+            cast[Ptr[uint16]](&dv_scratch[0])[0] = cast[uint16](iv & 65535)
+        else:
+            cast[Ptr[int32]](&dv_scratch[0])[0] = iv
+    dv_scatter(dvo, byteoff, n, little)
+    return v_undef()
+
+
+def dv_add(proto: int32, name: Ptr[uint8], natid: int32, kind: int32):
+    f: int32 = v_new_native(natid)
+    obj_p_a[objid_of(f)] = kind
+    obj_set(objid_of(proto), str_from_cstr(name), f)
+
+
+def install_dataview():
+    ctor: int32 = v_new_native(NAT_DATAVIEW)
+    proto: int32 = v_new_object()
+    dv_add(proto, cast[Ptr[uint8]]("getInt8"), NAT_DV_GET, TA_INT8)
+    dv_add(proto, cast[Ptr[uint8]]("getUint8"), NAT_DV_GET, TA_UINT8)
+    dv_add(proto, cast[Ptr[uint8]]("getInt16"), NAT_DV_GET, TA_INT16)
+    dv_add(proto, cast[Ptr[uint8]]("getUint16"), NAT_DV_GET, TA_UINT16)
+    dv_add(proto, cast[Ptr[uint8]]("getInt32"), NAT_DV_GET, TA_INT32)
+    dv_add(proto, cast[Ptr[uint8]]("getUint32"), NAT_DV_GET, TA_UINT32)
+    dv_add(proto, cast[Ptr[uint8]]("getFloat32"), NAT_DV_GET, TA_FLOAT32)
+    dv_add(proto, cast[Ptr[uint8]]("getFloat64"), NAT_DV_GET, TA_FLOAT64)
+    dv_add(proto, cast[Ptr[uint8]]("setInt8"), NAT_DV_SET, TA_INT8)
+    dv_add(proto, cast[Ptr[uint8]]("setUint8"), NAT_DV_SET, TA_UINT8)
+    dv_add(proto, cast[Ptr[uint8]]("setInt16"), NAT_DV_SET, TA_INT16)
+    dv_add(proto, cast[Ptr[uint8]]("setUint16"), NAT_DV_SET, TA_UINT16)
+    dv_add(proto, cast[Ptr[uint8]]("setInt32"), NAT_DV_SET, TA_INT32)
+    dv_add(proto, cast[Ptr[uint8]]("setUint32"), NAT_DV_SET, TA_UINT32)
+    dv_add(proto, cast[Ptr[uint8]]("setFloat32"), NAT_DV_SET, TA_FLOAT32)
+    dv_add(proto, cast[Ptr[uint8]]("setFloat64"), NAT_DV_SET, TA_FLOAT64)
+    obj_set(objid_of(proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), ctor)
+    obj_set(objid_of(ctor), str_from_cstr(cast[Ptr[uint8]]("prototype")), proto)
+    g_dataview_proto = proto
+    env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("DataView")), ctor, 0)
+
+
+g_dataview_proto: int32 = 0
+
+
+# ====================================================================
+# Intl.Collator — locale-aware string comparison.
+# ====================================================================
+# Backed by the same ordering `String.prototype.localeCompare` already provides
+# (which the engine implements). A Collator is the reusable-comparator form of
+# it, and its dominant real use is `arr.sort(new Intl.Collator().compare)` —
+# so `compare` is exposed as a plain function value that carries no `this`
+# requirement, exactly as the spec mandates (Collator.prototype.compare is a
+# bound accessor). Locale/options arguments are accepted and ignored: the
+# engine has one collation order.
+def collator_compare(base: int32, argc: int32) -> int32:
+    a: int32 = to_string_val(arg_or(base, argc, 0))
+    b: int32 = to_string_val(arg_or(base, argc, 1))
+    c: int32 = str_cmp(strid_of(a), strid_of(b))
+    return v_number(cast[float64](c))
+
+
+def collator_construct(thisv: int32) -> int32:
+    o: int32 = objid_of(thisv)
+    obj_add_native(thisv, cast[Ptr[uint8]]("compare"), NAT_COLLATOR_COMPARE)
+    # resolvedOptions(): pages read `.locale` for feature detection.
+    ropts: int32 = v_new_object()
+    obj_set(objid_of(ropts), str_from_cstr(cast[Ptr[uint8]]("locale")), \
+            v_string_cstr(cast[Ptr[uint8]]("en-US")))
+    obj_set(objid_of(ropts), str_from_cstr(cast[Ptr[uint8]]("usage")), \
+            v_string_cstr(cast[Ptr[uint8]]("sort")))
+    obj_set(o, str_from_cstr(cast[Ptr[uint8]]("__resolved")), ropts)
+    return thisv
+
+
+# Round-8 native dispatch: chained from call_native_r7's tail.
+def call_native_r8(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
+    if id == NAT_TA_ARRMETH:
+        return typedarray_arrmeth(native_self, thisv, base, argc)
+    if id == NAT_DATAVIEW:
+        return dataview_construct(thisv, base, argc)
+    if id == NAT_DV_GET:
+        return dataview_get(native_self, thisv, base, argc)
+    if id == NAT_DV_SET:
+        return dataview_set(native_self, thisv, base, argc)
+    if id == NAT_INTL_COLLATOR:
+        return collator_construct(thisv)
+    if id == NAT_COLLATOR_COMPARE:
+        return collator_compare(base, argc)
+    return call_native_url(id, thisv, base, argc)

@@ -22,9 +22,19 @@ probe() {
     local name="$1" js="$2"
     [ -n "$FILTER" ] && [[ "$name" != *"$FILTER"* ]] && return
     cat > "$WORK/p.html" <<EOF
-<!doctype html><html><head><title>NORESULT</title></head><body>
+<!doctype html><html><head><title>NORESULT</title><style>
+/* Fixed-size SOURCE boxes for the layout-read probes. They carry explicit
+   widths so the measurement is viewport/scrollbar independent, and their style
+   comes from a SHEET (not an inline attribute) so getComputedStyle has to
+   consult the cascade rather than echoing back el.style. Inert for every other
+   probe. */
+#geo{width:200px;height:80px;padding:10px;border:2px solid #333}
+#geoflex{display:flex;width:300px;height:50px}
+</style></head><body>
 <div id="out">NORESULT</div>
 <div id="work"></div>
+<div id="geo">Alpha</div>
+<div id="geoflex">Gamma</div>
 <script>
 try {
 $js
@@ -119,6 +129,22 @@ probe history_api          'document.title=""+(typeof history.pushState)+"";'
 probe getComputedStyle     'var e=document.createElement("div");e.style.color="red";document.body.appendChild(e);document.title=""+(typeof getComputedStyle(e).color)+"";'
 probe element_style        'var e=document.createElement("div");e.style.width="50px";document.title=""+e.style.width+"";'
 probe getBoundingRect      'var e=document.getElementById("out");document.title=""+(typeof e.getBoundingClientRect().width)+"";'
+
+# --- REAL layout-read geometry (gap #2 of docs/browser_gap_analysis_2026-07-24).
+# The three probes above only assert the TYPE of the returned value, so they
+# passed even while the engine reported the element's TEXT INK or a stub
+# constant (a 200x80 box read back as 40x16, a stylesheet padding as 0px,
+# display:flex as block). These compare the NUMBERS against Chrome, over the
+# #geo / #geoflex source boxes defined in the template above.
+probe rect_real_size       'var r=document.getElementById("geo").getBoundingClientRect();document.title=Math.round(r.width)+"x"+Math.round(r.height);'
+# Vertical ADVANCE between two source boxes: #geo's full border-box height must
+# separate them. Expressed as a difference so it does not depend on the height
+# the probe template's own preamble happens to occupy.
+probe rect_real_advance    'var a=document.getElementById("geo").getBoundingClientRect(),b=document.getElementById("geoflex").getBoundingClientRect();document.title=Math.round(b.top-a.top)+"/"+Math.round(b.left-a.left);'
+probe offset_real_size     'var g=document.getElementById("geo");document.title=g.offsetWidth+"x"+g.offsetHeight;'
+probe computed_sheet_width 'document.title=getComputedStyle(document.getElementById("geo")).width;'
+probe computed_sheet_pad   'document.title=getComputedStyle(document.getElementById("geo")).padding;'
+probe computed_sheet_disp  'document.title=getComputedStyle(document.getElementById("geoflex")).display;'
 
 # ---- canvas / SVG ----
 probe canvas_ctx           'var c=document.createElement("canvas");var ctx=c.getContext("2d");document.title=""+(ctx?"Y":"N")+"";'
