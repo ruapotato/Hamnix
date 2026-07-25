@@ -50,9 +50,14 @@ on:
 # each other. The Publish-packages workflow has its OWN concurrency group
 # (cancel-in-progress:false) to protect its cross-repo git push, and is
 # unaffected by this one.
+# Event-aware: pushes still cancel each other (fast feedback on a busy branch),
+# but the SCHEDULED nightly — the run this workflow's own notes designate as the
+# reliable signal — gets its own group and is never cancelled. Before this, a
+# push storm cancelled 45 of 60 consecutive runs, so CI produced no signal at
+# all for days (see docs/ci_status_2026-07-25.md).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'fast' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
 
 jobs:
   # ---------------------------------------------------------------------
@@ -86,6 +91,7 @@ jobs:
       - name: Adder compiler functional check
         run: bash scripts/test_adder_pin.sh
       - name: Compiler feature tests (test_compiler_*)
+        if: ${{ !cancelled() }}
         run: |
           fail=0
           for t in scripts/test_compiler_*.sh; do
@@ -95,19 +101,27 @@ jobs:
           done
           exit $fail
       - name: Optimizer battery (test_opt_*)
+        if: ${{ !cancelled() }}
         # GLOB-driven so a new optimizer test is gated the moment it lands.
         #
-        # test_opt_basehoist / test_opt_coalesce / test_opt_idxreg were dark
-        # (never in CI) and RED since 2026-07-05. The 2026-07-09 triage found
-        # the optimizations ARE implemented and firing (BASEHOIST/COPYPROP/
-        # IDXREG counters increment, values match, safety corpora pass) — the
-        # tests were STALE: their disasm regexes hardcoded register names the
-        # matured codegen no longer emits (index promoted into %rbx/%r12 not
-        # %rcx; accumulator/base allocated to callee-saved %r9/%r8 not %rax).
-        # The assertions were corrected to be register-agnostic while staying
-        # revert-sensitive (each aggressive shape is present ON, absent OFF),
-        # so all test_opt_*.sh now run — no skip list. A NEW opt test that is
-        # red WILL red the build (correct).
+        # UPDATED 2026-07-25 (the 2026-07-09 note below it was invalidated).
+        # Commit ba2e4bcf (2026-07-21) RETIRED the legacy opt1 optimizer and
+        # rewired `--opt` to arm the SSA pipeline, but the host emission path
+        # no longer calls ra_enable(). So the opt1 AST counters (DCE/FOLDS/
+        # CSE/COPYPROP/LICM) are never emitted and every ra_enabled-gated
+        # codegen lever is structurally inert — 44/52 test_opt_*.sh asserted
+        # on a feature that is now intentionally OFF, and CI was red for days
+        # as a result (0 successes in 60 runs; see docs/ci_status_2026-07-25.md).
+        # The guards now source scripts/lib_opt1_lane.sh, which consults a
+        # DIFFERENTIAL probe (counters --opt ON vs OFF, plus a --dump-regalloc
+        # positive control). While the lane is retired they print an explicit
+        # SKIPPED: with reason/evidence/tracking and exit 0; the probe is
+        # cached on the driver's inputs-hash, so the moment the optimizer is
+        # re-armed the guards RE-ARM THEMSELVES — no hardcoded skip list.
+        # test_opt_reglower carries a loud XFAIL for a REAL open SSA bug
+        # (ssa-evalorder: --opt evaluates binop operands left-first vs the
+        # seed/-O0 right-first) that hard-fails the moment it is fixed.
+        # A NEW opt test that is red WILL still red the build (correct).
         run: |
           fail=0
           for t in scripts/test_opt_*.sh; do
@@ -117,6 +131,7 @@ jobs:
           done
           exit $fail
       - name: Codegen + invariant static checks
+        if: ${{ !cancelled() }}
         # A curated set of cheap host-side checks confirmed to PASS quickly
         # on a quiet host (2026-07-09 sweep). Each guards a load-bearing
         # low-level invariant (subword access, param spill truncation, the
@@ -137,6 +152,7 @@ jobs:
           done
           exit $fail
       - name: Native browser engine (host-side dual-target)
+        if: ${{ !cancelled() }}
         # hambrowse's parse+layout+CSS engine (lib/htmlengine.ad) compiles for
         # the x86_64-linux Adder target and renders a fixture on the HOST in
         # milliseconds — no QEMU. The gate also confirms the NATIVE hambrowse
@@ -144,6 +160,7 @@ jobs:
         # browser iterable without a boot.
         run: bash scripts/test_hambrowse_host.sh
       - name: Native browser google.com usability (form submit → action nav)
+        if: ${{ !cancelled() }}
         # A google-representative fixture (search box + hidden field + a
         # <form action="/search">) rendered on the HOST. Asserts the box+button
         # render, a typed query appears, and submit navigates to /search?q=...
@@ -151,12 +168,14 @@ jobs:
         # for the "google loads but isn't usable" QA report. No QEMU.
         run: bash scripts/test_hambrowse_google_host.sh
       - name: Native browser pixel graphics (proportional-font render)
+        if: ${{ !cancelled() }}
         # The new pixel rendering backend (lib/htmlpage.ad + lib/htmlpaint.ad):
         # proportional BDF fonts, real heading sizes, pixel box model. Renders a
         # page to a real PNG on the HOST and asserts exact pixel geometry (h1 row
         # height, proportional-vs-mono advances) + that native hambrowse compiles.
         run: bash scripts/test_hambrowse_gfx.sh
       - name: Native browser form-control boxes (textarea/submit paint real bordered boxes)
+        if: ${{ !cancelled() }}
         # Framebuffer-level guard for the QA "text renders slightly outside the
         # input box" bug: <textarea> and <input type=submit> now commit field/
         # button segments so the pixel painter draws a bordered box with the text
@@ -166,6 +185,7 @@ jobs:
         # text-mode host harness structurally cannot catch. No QEMU.
         run: bash scripts/test_hambrowse_fieldinbox_host.sh
       - name: Native browser image rendering (PNG <img> decode + blit)
+        if: ${{ !cancelled() }}
         # lib/png.ad — a from-scratch pure-Adder PNG decoder (DEFLATE inflate +
         # all 5 unfilters, RGB/RGBA/gray/palette) — wired to <img> decode +
         # alpha-blit (lib/htmlimg.ad). Renders a page with an embedded PNG to a
@@ -173,12 +193,14 @@ jobs:
         # the image box, plus a broken-src placeholder. No QEMU.
         run: bash scripts/test_hambrowse_img.sh
       - name: Native browser interlaced PNG decode (Adam7 — real debian.org logo)
+        if: ${{ !cancelled() }}
         # lib/png.ad Adam7 7-pass interlace path. Decodes an interlaced quadrant
         # fixture (pixel-exact) AND the real debian.org logo bytes (openlogo-50.png,
         # 8-bit RGBA interlaced) → the red Debian swirl renders instead of a broken
         # box. The gap found rendering LIVE https://www.debian.org on-device. No QEMU.
         run: bash scripts/test_hambrowse_png_interlaced.sh
       - name: Native browser SVG <img> rasterizer (vector logos/icons)
+        if: ${{ !cancelled() }}
         # lib/svg.ad — a from-scratch pure-Adder integer SVG rasterizer: rect/
         # circle/ellipse/line/polygon/polyline + <path> (M/L/H/V/C/Q/Z, abs+rel),
         # fill/opacity/fill-rule/stroke, AA scanline fill, content-sniff dispatch.
@@ -186,18 +208,21 @@ jobs:
         # Real-web logos/icons (many sites, incl. debian.org's) are SVG. No QEMU.
         run: bash scripts/test_hambrowse_svg.sh
       - name: Native browser on-device window (pixel engine → v2 blit backbuffer)
+        if: ${{ !cancelled() }}
         # lib/browserwin.ad drives BOTH the native hambrowse window (pixel engine
         # published through the scene `buffer` verb) and this host-parity render.
         # Asserts AA text (grey edge pixels), a decoded PNG quadrant, and the
         # chrome title bar in the composed window RGBA. No QEMU.
         run: bash scripts/test_hambrowse_window.sh
       - name: Native browser Back/Forward history (#139)
+        if: ${{ !cancelled() }}
         # lib/browserhistory.ad session-history model + the Back/Forward chrome
         # buttons in lib/browserwin.ad. Asserts the classic history walk (visit
         # A/B/C -> back/back -> forward -> branch discards forward) and samples the
         # button pixels (blue when live, grey when disabled). No QEMU.
         run: bash scripts/test_hambrowse_history.sh
       - name: Native browser line reflow (wrap to viewport at the pixel measure)
+        if: ${{ !cancelled() }}
         # The engine's line-breaker measures candidate words in real proportional
         # TTF advances (via a measure hook) and wraps prose to the window width,
         # instead of the old widen-the-canvas hack. Renders a long paragraph at a
@@ -205,6 +230,7 @@ jobs:
         # control overruns, proving the fix isn't tautological). No QEMU.
         run: bash scripts/test_hambrowse_reflow.sh
       - name: Native browser JPEG <img> decode (real web photos)
+        if: ${{ !cancelled() }}
         # lib/jpeg.ad — a from-scratch pure-Adder integer-only baseline JPEG
         # decoder (Huffman + fixed-point IDCT + YCbCr->RGB, 4:4:4/4:2:2/4:2:0).
         # Magic-dispatched alongside PNG at the <img> decode sites. Decodes the
@@ -212,6 +238,7 @@ jobs:
         # progressive JPEG draws the broken-image placeholder (fail-clean). No QEMU.
         run: bash scripts/test_hambrowse_jpeg.sh
       - name: Native browser GIF <img> decode (LZW, interlace, transparency)
+        if: ${{ !cancelled() }}
         # lib/gif.ad — a from-scratch pure-Adder integer-only GIF87a/89a first-
         # frame decoder (LZW + interlace 4-pass + transparent-index alpha),
         # magic-dispatched alongside PNG/JPEG. Decodes plain + interlaced +
@@ -219,6 +246,7 @@ jobs:
         # clean to the placeholder. No QEMU.
         run: bash scripts/test_hambrowse_gif.sh
       - name: hamUI GUI apps (host-side dual-target render + input)
+        if: ${{ !cancelled() }}
         # The hamUI scene builder (lib/hamscene.ad) is extern-free, so a GUI
         # app's core (lib/ham2048core.ad, lib/hamcalccore.ad) compiles for the
         # x86_64-linux Adder target and its scene is RASTERIZED to a PNG on the
@@ -235,6 +263,7 @@ jobs:
           done
           exit $fail
       - name: Data-driven DE app menu (host-side parser + structural)
+        if: ${{ !cancelled() }}
         # The .desktop parser (lib/desktopentry.ad) is extern-free; the DE panel
         # populates its Applications menu from /etc/hamde/apps/*.desktop at boot.
         # Both gates run on the HOST with no QEMU: one parses .desktop fixtures,
