@@ -1,0 +1,10 @@
+# The remaining WARNING tier: a narrowing ASSIGNMENT (not a call argument).
+#
+# `narrowing-arg` (a call site) is an error — the callee cannot see the
+# truncation, which is exactly the wrong-type-of-argument case. A narrowing
+# ASSIGNMENT is a local truncation the author is looking straight at, and
+# the tree still has a handful, so it warns and must NOT block the build.
+def main() -> int32:
+    big: uint64 = 0
+    n:   uint32 = big        # [narrowing-assign] — warns, still compiles
+    return cast[int32](n)

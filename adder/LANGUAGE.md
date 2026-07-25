@@ -268,13 +268,14 @@ severity, so a class can be tightened or loosened without a code change.
 | `kwarg` | **error** | unknown / duplicated keyword argument |
 | `lit-range` | **error** | integer literal with no representation in the target type (`uint8 = 300`). `-1` into an unsigned type is legal — it names a valid bit pattern |
 | `ptr-int` | **error** | an integer used where a `Ptr[T]` is declared — the callee will dereference it |
-| `ptr-ptr` | warning | `Ptr[A]` assigned from `Ptr[B]`. The 8-bit types (`uint8`/`int8`/`char`) are one type for this purpose |
-| `int-from-ptr` | warning | a pointer stored in an integer — lossless on x86_64, and an established idiom here |
-| `int-float` | warning | integer/float mixed without a `cast` |
+| `ptr-ptr` | **error** | `Ptr[A]` assigned from `Ptr[B]`. The 8-bit types (`uint8`/`int8`/`char`) are one type for this purpose |
+| `int-from-ptr` | **error** | a pointer used where an integer is declared |
+| `int-float` | **error** | integer/float mixed without a `cast` |
+| `narrowing-arg` | **error** | a call ARGUMENT narrows an integer without a cast (`uint64` into a `uint32` parameter). The callee only ever sees the low bits and cannot detect the truncation |
 | `cmp-sign` | warning | `<`/`<=`/`>`/`>=` between a signed and an unsigned operand of the same width. The backend picks ONE comparison for the whole expression — this is the shape behind the `icmp slt`/`ult` kernel miscompile |
 | `ret-value` | warning | bare `return` from a value-returning function, or a value returned from `-> None` |
 | `deref` | warning | indexing something that is neither a pointer, an array nor a slice |
-| `narrowing` | off | assignment narrows an integer without a cast (~11k sites in-tree) |
+| `narrowing-assign` | warning | a non-argument narrowing (assignment, initialiser, `return`) without a cast |
 | `not-callable` | off | call to a name with no visible declaration |
 
 Environment knobs:

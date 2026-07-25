@@ -1,0 +1,43 @@
+# Wrong TYPE of argument at a call site — one of each class.
+#
+# The user directive is "calling a function with the wrong args or the wrong
+# type of args should cause an error". Wrong NUMBER of args was already an
+# error (sema_arity.ad); this fixture pins the wrong-TYPE half:
+#
+#   1. [narrowing-arg] uint64 argument into a uint32 parameter — the callee
+#      only ever sees the low 32 bits, and it cannot see the truncation.
+#   2. [ptr-ptr]       Ptr[uint8] argument into a Ptr[uint64] parameter.
+#   3. [int-from-ptr]  pointer argument into an integer parameter.
+#   4. [int-float]     float argument into an integer parameter.
+#   5. [ptr-int]       integer argument into a pointer parameter.
+#
+# All five must be REJECTED, and all five must be reported from ONE
+# compile (gcc-style multi-error), not just the first.
+
+def want_u32(v: uint32):
+    return
+
+
+def want_pu64(p: Ptr[uint64]):
+    return
+
+
+def want_int(v: uint64):
+    return
+
+
+def want_float(v: float64):
+    return
+
+
+def main() -> int32:
+    big:  uint64      = 0
+    p8:   Ptr[uint8]  = cast[Ptr[uint8]](0)
+    f:    float64     = 1.5
+
+    want_u32(big)          # [narrowing-arg]
+    want_pu64(p8)          # [ptr-ptr]
+    want_int(p8)           # [int-from-ptr]
+    want_int(f)            # [int-float]
+    want_pu64(12345)       # [ptr-int]
+    return 0

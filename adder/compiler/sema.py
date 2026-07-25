@@ -72,14 +72,17 @@ CLASSES = (
     "lit-range",    # integer literal cannot be represented in the target type
     "ptr-int",      # INTEGER used where a POINTER is required — the crashing
                     # direction: the callee will dereference it
-    "int-from-ptr", # pointer stored into an integer without a cast — lossless
-                    # on x86_64 and an established idiom in this tree
+    "int-from-ptr", # pointer used where an integer is required
     "ptr-ptr",      # pointer of an incompatible pointee type
     "ret-value",    # value returned from `-> None`, or bare `return` from a
                     # value-returning function
     "int-float",    # float used where an integer is required (or vice versa)
     "cmp-sign",     # signed/unsigned mixed comparison (the `icmp slt` bug)
-    "narrowing",    # assignment narrows an integer without a cast
+    "narrowing-arg",    # ARGUMENT narrows an integer without a cast — a
+                        # wrong-TYPE-of-argument at a CALL SITE, which is
+                        # exactly what the directive is about
+    "narrowing-assign", # every OTHER narrowing (assignment, init, return);
+                        # ~10.7k sites in-tree, so it cannot hard-error yet
     "deref",        # indexing / dereferencing a non-pointer, non-array
 )
 
@@ -87,18 +90,33 @@ CLASSES = (
 # commit message and scripts/sema_scan.py.  A class is only an ERROR if the
 # existing 905k-line corpus is clean (or near-clean and the hits are real
 # bugs); everything noisier warns until the tree catches up.
+#
+# WRONG TYPE OF ARGUMENT.  Every way an argument's type can disagree with its
+# parameter's declared type is now an ERROR: `ptr-int` and `ptr-ptr` and
+# `int-from-ptr` (pointer confusion), `int-float` (float/int confusion),
+# `lit-range` (a constant with no representation in the parameter type) and
+# `narrowing-arg` (a wider integer silently truncated to the parameter's
+# width).  Together with `arity`/`kwarg` that makes "wrong args OR wrong type
+# of args" a compile error, which is the whole point of the pass.
+#
+# `narrowing-assign` is the one deliberate hold-out.  It is NOT an argument
+# check — it is `x: uint32 = some_uint64`, a local truncation the author is
+# looking straight at, whereas a narrowed ARGUMENT is invisible from inside
+# the callee.  11 sites remain in-tree (listed in the commit message); it
+# warns until they are burned down.
 DEFAULT_SEVERITY = {
     "arity":        "error",
     "kwarg":        "error",
     "not-callable": "off",      # needs full builtin/vtable modelling first
     "lit-range":    "error",
     "ptr-int":      "error",
-    "int-from-ptr": "warning",
-    "ptr-ptr":      "warning",
+    "int-from-ptr": "error",
+    "ptr-ptr":      "error",
     "ret-value":    "warning",
-    "int-float":    "warning",
+    "int-float":    "error",
     "cmp-sign":     "warning",
-    "narrowing":    "off",      # ~every `uint64 = uint32` in the tree
+    "narrowing-arg":    "error",
+    "narrowing-assign": "warning",
     "deref":        "warning",
 }
 
@@ -559,17 +577,51 @@ class Checker:
             return rt_
         if lt is not None and rt_ is not None and lt[0] == "int" \
                 and rt_[0] == "int":
+            # An untyped integer CONSTANT has no width of its own: it adopts
+            # the width of the other operand, exactly as C and Go do and
+            # exactly as the backend emits it (`x + 1` for an int32 `x` is a
+            # 32-bit add, not a 64-bit one).  Without this rule every
+            # `f(x + 1)` for an int32 parameter looked like an int64 argument
+            # being narrowed to int32 — 1802 of the 2122 call-site narrowing
+            # reports were this one false positive.  A constant that does NOT
+            # fit the other operand's type really does widen, so it still
+            # falls through to the widest-wins rule below.
+            lc = _int_literal_value(e.left)
+            rc = _int_literal_value(e.right)
+            if rc is not None and lc is None and _int_fits(rc, lt[1], lt[2]):
+                return lt
+            if lc is not None and rc is None and _int_fits(lc, rt_[1], rt_[2]):
+                return rt_
             # Widest wins; signedness follows the wider operand (mirrors what
             # the backend actually does when it recovers a width).
             return lt if lt[1] >= rt_[1] else rt_
-        return lt if lt is not None else rt_
+        # One side is unknown. Normally the known side is the best answer, but
+        # if the known side is an untyped integer CONSTANT then by the rule
+        # above it takes its width FROM the unknown side — so the result is
+        # unknown, not int64. Returning int64 here is what made `g_len - 1`
+        # (g_len's type dropped as ambiguous) report a bogus int64->int32
+        # argument narrowing; silence is the safe answer for an unknown type.
+        known, known_expr = (rt_, e.right) if lt is None else (lt, e.left)
+        if known is not None and known[0] == "int" \
+                and _int_literal_value(known_expr) is not None:
+            return None
+        return known
 
     # ---- compatibility ---------------------------------------------------
 
-    def check_assignable(self, dst, src_expr, span, what: str) -> None:
+    def check_assignable(self, dst, src_expr, span, what: str,
+                         ctx: str = "assign") -> None:
         """Report any incompatibility between `dst` and the type of `src_expr`.
 
         `what` is a fragment naming the context, e.g. "argument 2 of 'foo'".
+
+        `ctx` is `"arg"` when `dst` is a PARAMETER type at a call site and
+        `"assign"` everywhere else.  The two are separate diagnostic classes
+        for the width-narrowing case: passing a `uint64` into a `uint32`
+        parameter is a wrong-TYPE-of-argument bug the callee cannot see,
+        while `x: uint32 = some_uint64` is a local truncation the author is
+        looking straight at.  The tree has ~10.7k of the latter and few of
+        the former, so only the former can hard-error today.
         """
         if dst is None:
             return
@@ -597,9 +649,10 @@ class Checker:
         src = self.type_of(src_expr)
         if src is None:
             return
-        self.check_types_assignable(dst, src, span, what)
+        self.check_types_assignable(dst, src, span, what, ctx)
 
-    def check_types_assignable(self, dst, src, span, what: str) -> None:
+    def check_types_assignable(self, dst, src, span, what: str,
+                               ctx: str = "assign") -> None:
         if dst is None or src is None:
             return
         dk, sk = dst[0], src[0]
@@ -655,14 +708,25 @@ class Checker:
             return
         if dk == "int" and sk == "int":
             if src[1] > dst[1]:
-                self.report("narrowing", span,
-                            "'%s' narrowed to '%s' without a cast (%s)"
-                            % (type_name(src), type_name(dst), what), None)
+                self.report(
+                    "narrowing-arg" if ctx == "arg" else "narrowing-assign",
+                    span,
+                    "'%s' narrowed to '%s' without a cast (%s)"
+                    % (type_name(src), type_name(dst), what),
+                    note=("the callee only ever sees the low %d bits; add an "
+                          "explicit cast[%s](...) if the truncation is "
+                          "intended" % (dst[1], type_name(dst)))
+                         if ctx == "arg" else None)
             return
-        if dk == "struct" and sk == "struct" and dst[1] != src[1]:
-            self.report("ptr-ptr", span,
-                        "incompatible struct types: '%s' from '%s' (%s)"
-                        % (type_name(dst), type_name(src), what), None)
+        if dk == "struct" or sk == "struct":
+            # Struct vs struct (different tags) AND struct vs scalar. In
+            # practice structs reach a call site as `Ptr[T]`, which the
+            # pointer branch above already covers; this closes the by-value
+            # hole so a struct can never silently stand in for a scalar.
+            if dk != sk or dst[1] != src[1]:
+                self.report("ptr-ptr", span,
+                            "incompatible types: '%s' from '%s' (%s)"
+                            % (type_name(dst), type_name(src), what), None)
             return
 
     # ---- statements ------------------------------------------------------
@@ -973,7 +1037,7 @@ class Checker:
             self.check_assignable(
                 pty, e.args[i], _span_of(e.args[i]) or _span_of(e),
                 "argument %d ('%s') of '%s'"
-                % (i + 1, params[i].name, _pretty(decl)))
+                % (i + 1, params[i].name, _pretty(decl)), ctx="arg")
 
     # ---- driver ----------------------------------------------------------
 

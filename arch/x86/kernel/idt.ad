@@ -120,7 +120,7 @@ def idt_init():
     # spins/overheats if S5 fails to power the board down.
     idt_set_gate(243, cast[uint64](&irq_stub_243))
 
-    idt_load(&idt_table)
+    idt_load(cast[uint64](&idt_table))
 
 
 def idt_load_ap():
@@ -132,4 +132,4 @@ def idt_load_ap():
     # IDTR at it. Called from ap_main_hamnix() before the AP enables
     # interrupt delivery. No re-init of the gates: idt_init() already
     # populated idt_table once on the BSP.
-    idt_load(&idt_table)
+    idt_load(cast[uint64](&idt_table))

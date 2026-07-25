@@ -76,12 +76,58 @@ for cls in lit-range arity ptr-int; do
 done
 ok "three-error program reports all 3 errors"
 
-# ---- (3) the warning tier still compiles ----------------------------------
-compile "$FIX/sema_ptr_mismatch.ad" "$WORK/ptrmm.elf" \
-    || { cat "$WORK/cerr"; fail "ptr-ptr warning must NOT be fatal"; }
-grep -q "warning:.*\[ptr-ptr\]" "$WORK/cerr" \
-    || { cat "$WORK/cerr"; fail "expected a [ptr-ptr] warning"; }
-ok "incompatible-pointer class warns without blocking the build"
+# ---- (3) incompatible pointer types are REJECTED --------------------------
+check_reject sema_ptr_mismatch ptr-ptr \
+    "incompatible pointer types: 'Ptr\[uint64\]' from 'Ptr\[uint8\]'"
+
+# ---- (3b) WRONG TYPE OF ARGUMENT at a call site is REJECTED ---------------
+# The user directive: "calling a function with the wrong args or the wrong
+# type of args should cause an error". Wrong NUMBER of args is (1) above;
+# this is the wrong-TYPE half — one call of each class, all five reported
+# from ONE compile.
+compile "$FIX/sema_arg_types.ad" "$WORK/argty.elf" \
+    && fail "sema_arg_types compiled; a wrong-type argument must be rejected"
+n=$(grep -cE ': error: ' "$WORK/cerr")
+[ "$n" -eq 5 ] || { cat "$WORK/cerr"; fail "expected 5 arg-type errors, got $n"; }
+for cls in narrowing-arg ptr-ptr int-from-ptr int-float ptr-int; do
+    grep -q "error:.*\[$cls\]" "$WORK/cerr" \
+        || { cat "$WORK/cerr"; fail "arg types: missing [$cls] error"; }
+    grep -q "\[$cls\]" "$WORK/cerr" && \
+    grep -qE "argument [0-9]+ \('[a-z0-9_]+'\) of '" "$WORK/cerr" \
+        || { cat "$WORK/cerr"; fail "[$cls]: no argument-slot attribution"; }
+done
+grep -qE '^ +\| *\^' "$WORK/cerr" \
+    || { cat "$WORK/cerr"; fail "arg types: no caret line"; }
+ok "wrong-TYPE argument rejected: 5 classes, argument slot named, carets"
+
+# ---- (3c) the remaining warning tier still compiles -----------------------
+compile "$FIX/sema_narrow_assign.ad" "$WORK/narr.elf" \
+    || { cat "$WORK/cerr"; fail "narrowing-assign warning must NOT be fatal"; }
+grep -q "warning:.*\[narrowing-assign\]" "$WORK/cerr" \
+    || { cat "$WORK/cerr"; fail "expected a [narrowing-assign] warning"; }
+ok "narrowing ASSIGNMENT warns without blocking the build"
+
+# ---- (3d) an untyped integer literal does not fabricate a narrowing -------
+# `x + 1` for an int32 `x` is an int32, exactly as the backend emits it.
+# Getting this wrong made 1802 of 2122 call-site narrowing reports bogus and
+# would have made this class unlandable.
+cat > "$WORK/litw.ad" <<'ADEOF'
+def sink(x: int32, y: uint8):
+    return
+
+
+def main() -> int32:
+    a: int32 = 100
+    b: uint8 = 7
+    sink(a + 1, b - 2)
+    sink(a * 2 - 3, b + 1)
+    return 0
+ADEOF
+compile "$WORK/litw.ad" "$WORK/litw.elf" \
+    || { cat "$WORK/cerr"; fail "literal-width arithmetic rejected"; }
+grep -qE ': (error|warning): ' "$WORK/cerr" \
+    && { cat "$WORK/cerr"; fail "untyped literal fabricated a diagnostic"; }
+ok "untyped integer literal adopts the other operand's width"
 
 # ---- (4) no false positives on well-typed code ----------------------------
 compile "$FIX/sema_ok.ad" "$WORK/ok.elf" \

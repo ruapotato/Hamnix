@@ -2765,7 +2765,12 @@ def _u_move_pages(a0: uint64, a1: uint64, a2: uint64,
         i: uint64 = 0
         while i < count:
             # status is an array of int (4 bytes/entry); 0 == node 0.
-            if put_user_32(status + i * 4, 0) != 0:
+            # put_user_32 is (VALUE, USER-ADDRESS). The arguments were
+            # swapped here: it wrote the low 32 bits of the ADDRESS
+            # `status + i*4` to user address 0, which always faults, so
+            # move_pages(2) returned EFAULT for every non-empty query
+            # instead of filling status[] with node 0.
+            if put_user_32(0, status + i * 4) != 0:
                 return ELINUX_EFAULT
             i = i + 1
     return 0
