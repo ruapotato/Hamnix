@@ -189,6 +189,20 @@ bash scripts/test_vk2d_opt_swrender.sh
 # loop moved the ball + rasterized it. Recompiles the NATIVE x86_64-adder-user
 # shell to prove the device build is unaffected. Milliseconds, no QEMU.
 bash scripts/test_hamsh_pygame_host.sh
+# QEMU-free host gate for the "hamsh never returns a confidently wrong value"
+# rule (HAMSH_SPEC §16a). Replays every silent-wrong repro from
+# docs/hamsh_review_2026-07-25.md — the SCOPE_MAX-vs-Array[64] overrun that
+# wiped the first two variables at the 65th binding, the loop that printed a
+# plausible wrong sum and claimed success, recursion past the depth cap, 1/0,
+# int bitwise, ${x:-y} — and asserts each now raises a DIAGNOSABLE error
+# ($status=1 + $errstr + a stderr line) while the in-budget cases still
+# compute exact answers. Recompiles the NATIVE shell too. Milliseconds.
+bash scripts/test_hamsh_nosilentwrong_host.sh
+# QEMU-free host gate proving hamsh's indent and brace block forms are
+# interchangeable PER BLOCK and mix freely (HAMSH_SPEC §5): 8 cases through
+# the REPL/stdin seam, including both mixing directions and a clean
+# line-numbered error when a block has neither opener.
+bash scripts/test_hamsh_dualsyntax_host.sh
 # QEMU-free host gate for the hamML colour parser's 8-digit "#rrggbbaa" alpha
 # path (user/hamUId.ad parse_color). Regression guard for the user-reported
 # "screenshot with a selected area turns the whole screen black" bug: the

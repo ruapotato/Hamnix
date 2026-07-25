@@ -17,6 +17,21 @@ File-sourcing is covered on-device by `scripts/test_hamsh_dualsyntax.sh`
 (case F). All host results below are therefore from the REPL/stdin path,
 which runs the identical lexer, parser and evaluator.
 
+> **STATUS (fixed the same day).** The P0 findings below — §6.1 value/collection
+> exhaustion, §6.2 the `SCOPE_MAX` overrun, and every silent-degradation case in
+> §6.3 — have been FIXED in `user/hamsh.ad`, together with the §1.5 doc bug and
+> P1 #4/#5 (`$?`, `$(…)`). The rule now written into `docs/HAMSH_SPEC.md` §16a is
+> *hamsh never returns a confidently wrong value*: each limit and each undefined
+> operation raises a diagnosable error (stderr line + `$status=1` + `$errstr`,
+> catchable by `try`/`except`). Two further silent-wrong classes were found while
+> re-testing these repros and fixed too: `range()`/comprehensions silently
+> truncated at `COMP_MAX=4096` (this, not `VAL_MAX`, was the real cause of the
+> §6.1 wrong sum), and `s(n-1)` — glued arithmetic lexes as ONE bare word, which
+> reached the evaluator as an undefined name and evaluated to 0, so recursion
+> returned a plausible wrong number. Regression gate:
+> `scripts/test_hamsh_nosilentwrong_host.sh`. Everything below is the review as
+> written, left unedited as the before-state record.
+
 ---
 
 ## 0. Direct answers to the four questions

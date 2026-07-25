@@ -92,6 +92,10 @@ args  = ["-la", "/dev"]  # list
 ```
 
 - Assignment: `name = expr`. Type is inferred. No `var`/`let` required.
+- Integer operators: `+ - * / // % **` and the bitwise set `& | ^ ~`
+  (`/` is Python-3 true division, so `7 / 2` is `3.5`). Operators must be
+  **spaced**: `-` is a legal bare-word character, so `n-1` is one word, not
+  a subtraction (§16a explains the error you get).
 - Interpolation in command position: `$name`.
 - Expression interpolation in command position: `${ expr }`.
 - **List interpolation rule (kills word-splitting):** when a list value
@@ -259,6 +263,10 @@ files = `{ ls *.ad } | lines         # → list of lines via explicit converter
 
 `` `{ … }`` runs a command and captures its stdout as a **string** by default;
 use `lines` (or another converter) for structured forms. No implicit splitting.
+
+`$(cmd)` is accepted as an **alias** for `` `{cmd} `` — identical token,
+identical capture — so bash muscle memory works. Likewise `$?` is an alias for
+`$status` (§16). Both were parse errors before; nothing else changes.
 
 ### 8a. Built-in expression functions
 
@@ -677,6 +685,8 @@ Wire error handling to the kernel's existing Plan 9 **errstr** mechanism — do 
 reinvent `$?` + `set -e`.
 
 - `$errstr` is a native variable holding the last failure string.
+- `$status` holds the last command's numeric exit status; **`$?` is an alias**
+  for it.
 - Every command yields an exit status **and** an errstr.
 - Build structured `try { } except { }` on top of errstr.
 
@@ -688,11 +698,82 @@ try {
 }
 ```
 
+### 16a. The never-a-wrong-answer rule
+
+**hamsh never returns a confidently wrong value.** When the evaluator hits a
+hard limit or an undefined operation it raises a *runtime fault* instead of
+degrading to `0` / `None` / `""`:
+
+- the message is written to **stderr** as `hamsh: runtime error: <what>`,
+- `$errstr` carries it and `$status` becomes `1`,
+- the fault unwinds at the next statement boundary, so `try { } except { }`
+  catches it exactly like a `raise`, and an uncaught one prints
+  `hamsh: uncaught exception: <what>` at the top level,
+- a fault while evaluating a command's arguments **aborts that command** (it
+  never runs with a substituted bogus value), and a fault while evaluating an
+  assignment's RHS **does not bind** the variable.
+
+What raises (each of these used to return a plausible wrong number in
+silence): division / modulo / `divmod` by zero; bitwise `& | ^ ~` on a
+non-integer; recursion past `CALL_DEPTH_MAX`; the value / string / element /
+collection / scope arenas filling up; and an undefined name that carries
+non-identifier characters — `s(n-1)` lexes `n-1` as ONE bare word (`-` is a
+legal word character, §4), so hamsh reports
+`undefined name 'n-1' — glued arithmetic? write \`a - b\` with spaces`
+rather than substituting nil. A plain undefined identifier (`$HOME`,
+`$installer_medium`) keeps the shell's empty-string semantics.
+
+An error raised inside a called `def` propagates out of the *expression* that
+called it — the caller cannot mistake the failed call's nil for a result.
+
+### 16b. Fixed limits (there is no garbage collector)
+
+hamsh runs on fixed-size session arenas. Every one of these raises on
+overflow; none silently truncates:
+
+| Limit | Value | Applies to |
+|---|---|---|
+| `LINE_MAX` | 2048 B | one logical input line |
+| `TOK_MAX` | 4096 | tokens per logical input |
+| `NODE_MAX` | 16384 | AST nodes (session) |
+| `STR_ARENA_MAX` | 32768 B | interned strings (session) |
+| `VAL_MAX` | 16384 | value cells (session) |
+| `LISTELEM_MAX` | 16384 | list/dict element slots |
+| `COMP_MAX` | 4096 | elements per list / `range()` / comprehension |
+| `SCOPE_MAX` | 128 | live variable bindings |
+| `FN_MAX` / `FN_NAME_MAX` | 32 defs / 16 B | user functions |
+| args per call | 16 | `def` parameters and call arguments |
+| `CALL_DEPTH_MAX` | 12 | nested/recursive `def` frames |
+| `ARGV_MAX` / `ENV_MAX` | 64 / 32 | external argv slots / exported vars |
+| `source` file | 16 KiB | script read buffer |
+| `HIST_MAX` | 48 | history ring |
+
+Value cells are **session-lifetime with no GC** (they are only recycled when
+no `def` and no variable is live), so a loop of more than a few thousand
+iterations exhausts `VAL_MAX` and raises. Long-running work belongs in Adder,
+not hamsh — this is a deliberate small-interpreter trade, and the error names
+the arena so the cause is never a mystery.
+
+### 16c. POSIX parameter expansion
+
+`${ … }` is a hamsh **expression**, but the four colon forms every shell user
+knows are recognised first, plus `${#NAME}`:
+
+| Form | Meaning |
+|---|---|
+| `${x:-word}` | value of `x` if set and non-empty, else the literal `word` |
+| `${x:+word}` | `word` if `x` is set and non-empty, else empty |
+| `${x:=word}` | as `:-`, and assigns `word` to `x` |
+| `${x:?msg}` | value of `x`, or raise `msg` when unset/empty |
+| `${#x}` | length of `x`'s string form |
+
+`word` is literal (a `$NAME` word is looked up). Bare `${x-1}` / `${x+1}` are
+**not** parameter expansion — they are arithmetic, as they have always been.
+
 ---
 
 ## 17. Non-goals (do NOT build these)
 
-- **No significant-whitespace blocks** in the interactive grammar.
 - **No Adder.** hamsh shares no grammar, type system, or evaluator with Adder;
   it is its own small dynamically-typed, Python-flavored language.
 - **No separate expression mode / no second language.** One grammar; the

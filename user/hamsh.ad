@@ -256,8 +256,13 @@ def str_arena_init():
 
 def str_intern_n(src: Ptr[uint8], n: uint64) -> uint64:
     # Copy n bytes + NUL into the arena; return the offset. On overflow
-    # return 0 (the empty string) — a soft failure that never corrupts.
+    # the offset is 0 (the empty string) — which never corrupts memory,
+    # but DOES turn every later string into "" without a word of
+    # explanation. Raise so the session says why it went quiet. (The
+    # lexer interns before the evaluator exists; rt_raise only sets a
+    # latch + writes stderr, so it is safe from anywhere.)
     if str_cursor + n + 1 >= STR_ARENA_MAX:
+        rt_raise("string arena exhausted (STR_ARENA_MAX=32768 bytes, no GC)")
         return 0
     off: uint64 = str_cursor
     i: uint64 = 0
@@ -459,6 +464,13 @@ OP_CARET:    int32 = 36   # ^   (set symmetric difference)
 # OP_STAR. int**non-neg-int stays int; a float base or negative exp
 # promotes to float (reusing _ipow/_fpow, same as the pow() builtin).
 OP_POW:      int32 = 37   # **  (power / exponentiation)
+# §Bitwise: unary `~` (integer complement). A bare '~' that is NOT a
+# leading tilde-expansion word (`~`, `~/...` — handled in the word
+# scanner above it) used to fall into the lexer's "unknown char — skip
+# it defensively" arm, so `~5` silently evaluated to 5. It is a real
+# operator now; the tilde-expansion word path is checked FIRST and is
+# unchanged.
+OP_TILDE:    int32 = 38   # ~   (integer bitwise NOT, unary)
 
 # Parallel token arrays. tok_kind drives, the other two carry payload.
 tok_kind: Array[4096, int32]
@@ -1068,6 +1080,33 @@ def lex_line(buf: Ptr[uint8], n: uint64) -> int32:
                 _emit_tok(TK_DOLEXPR, sref, 0)
                 p = close + 1
                 continue
+            # `$(cmd)` — POSIX command substitution. hamsh's native form
+            # is Plan 9's `` `{cmd} ``, and `$(` used to be a hard parse
+            # error, so accepting it is purely additive: it lexes to the
+            # SAME TK_BACKEXP token with the parenthesised slice as its
+            # source. (review P1 #5 — one of the first four things a bash
+            # user trips over.)
+            if p + 1 < n and buf[p + 1] == 40:          # '$('
+                pclose: uint64 = _scan_balanced(buf, n, p + 1, 40, 41)
+                if pclose >= n:
+                    lex_error = 1
+                    p = n
+                    continue
+                pinner: uint64 = p + 2
+                plen: uint64 = pclose - pinner
+                psref: uint64 = str_intern_n(
+                    cast[Ptr[uint8]](cast[uint64](buf) + pinner), plen)
+                _emit_tok(TK_BACKEXP, psref, 0)
+                p = pclose + 1
+                continue
+            # `$?` — the exit status of the last command, spelled the way
+            # every shell user spells it. hamsh's native name is $status
+            # (§16), so this is an ALIAS: it interns "status" and takes the
+            # ordinary $name path. Was a parse error (review P1 #4).
+            if p + 1 < n and buf[p + 1] == 63:          # '$?'
+                _emit_tok(TK_DOLLAR, str_intern_cstr("status"), 0)
+                p = p + 2
+                continue
             # $name
             p = p + 1
             wl: uint64 = 0
@@ -1213,8 +1252,10 @@ def lex_line(buf: Ptr[uint8], n: uint64) -> int32:
                 adv = 2
             else:
                 op = OP_STAR
-        elif c == 94:                        # '^'  (set symmetric difference)
+        elif c == 94:                        # '^'  (set sym-diff / int xor)
             op = OP_CARET
+        elif c == 126:                       # '~'  (int bitwise NOT)
+            op = OP_TILDE
         elif c == 37:
             op = OP_PERCENT
         elif c == 58:
@@ -1833,6 +1874,17 @@ def parse_mul() -> int32:
 
 
 def parse_unary() -> int32:
+    # §Bitwise: unary `~` (integer complement), same precedence as
+    # unary '-'. Emitted as ND_UNOP/OP_TILDE; eval_expr rejects a
+    # non-integer operand with a runtime fault rather than silently
+    # returning the operand unchanged (the old behaviour).
+    if pk_is_op(OP_TILDE) != 0:
+        pk_advance()
+        toperand: int32 = parse_unary()
+        tn: int32 = nd_new(ND_UNOP)
+        nd_i[cast[uint64](tn)] = cast[int64](OP_TILDE)
+        nd_a[cast[uint64](tn)] = toperand
+        return tn
     if pk_is_op(OP_MINUS) != 0:
         pk_advance()
         operand: int32 = parse_unary()
@@ -3581,6 +3633,19 @@ comp_val:   Array[4096, int32]   # dict-comprehension value cell ids
 comp_dn:    uint64 = 0
 
 
+def _comp_push(c: int32):
+    # Append one element to the deferred-collection stack. The old
+    # `if comp_out_n < COMP_MAX:` guards SILENTLY dropped everything past
+    # 4096 — which is why `for i in range(20000)` iterated 4096 times and
+    # printed a confidently wrong sum (review §6.1 blamed VAL_MAX; the
+    # measured cut-off, 4096 iterations, is this cap). Overflow raises now.
+    if comp_out_n >= COMP_MAX:
+        rt_raise("collection too large (COMP_MAX=4096 elements per list/range/comprehension)")
+        return
+    comp_out[comp_out_n] = c
+    comp_out_n = comp_out_n + 1
+
+
 def val_reset():
     val_count = 1
     val_elem_cursor = 0
@@ -3589,7 +3654,13 @@ def val_reset():
 
 def v_new(t: int32) -> int32:
     if val_count >= VAL_MAX:
-        return 0
+        # Value-cell arena exhausted (session-lifetime, no GC). Returning
+        # cell 0 (None) here is what made a long loop silently STOP
+        # accumulating and then print a plausible wrong total (review
+        # §6.1). Raise instead: the fault unwinds at the next statement
+        # boundary with $status=1 and a $errstr that names the limit.
+        return rt_raise(
+            "value arena exhausted (VAL_MAX=16384 cells, no GC) — split the loop or shorten the session")
     n: uint64 = val_count
     val_count = val_count + 1
     val_type[n] = t
@@ -3796,6 +3867,17 @@ def _v_is_float(v: int32) -> int32:
     return 0
 
 
+def _v_is_intlike(v: int32) -> int32:
+    # True for the two value types integer bit-arithmetic accepts: a
+    # real int and a bool (Python's `True & 1`). Deliberately NOT a
+    # string/float/nil — those raise rather than coerce, so a typo can
+    # never produce a quiet 0.
+    t: int32 = val_type[cast[uint64](v)]
+    if t == VT_INT or t == VT_BOOL:
+        return 1
+    return 0
+
+
 def v_bool(x: int32) -> int32:
     n: int32 = v_new(VT_BOOL)
     if x != 0:
@@ -3859,6 +3941,7 @@ def v_list_begin() -> int32:
 
 def v_list_push(listv: int32, elem: int32):
     if val_elem_cursor >= LISTELEM_MAX:
+        rt_raise("list/dict element pool exhausted (LISTELEM_MAX=16384 slots)")
         return
     val_elem[val_elem_cursor] = elem
     val_elem_cursor = val_elem_cursor + 1
@@ -4493,9 +4576,18 @@ def v_render_str_only(v: int32) -> Ptr[uint8]:
 # child process or restore on exit so they need no extra frame here.
 # A binding is (name str ref, value cell id, frame depth).
 
-sc_name:  Array[64, uint64]
-sc_val:   Array[64, int32]
-sc_frame: Array[64, int32]
+# BUG (2026-07-25 review §6.2): these three arrays were Array[64,...]
+# while the only guard tested `sc_count >= SCOPE_MAX` with SCOPE_MAX = 128.
+# The 65th binding therefore wrote sc_name[64] (8 bytes) straight over
+# sc_val[0]/sc_val[1] (two int32s) — silently destroying the FIRST TWO
+# variables of the session, with no error and no status. Reproduced
+# exactly: at 64 bindings `v1=1 v2=2`, at 65 both read back empty.
+# The arrays and the cap must AGREE; they are sized from SCOPE_MAX's
+# literal value here, and scope_set now raises on overflow instead of
+# silently dropping the binding (see rt_raise).
+sc_name:  Array[128, uint64]
+sc_val:   Array[128, int32]
+sc_frame: Array[128, int32]
 sc_count: uint64 = 0
 sc_depth: int32 = 0
 
@@ -4527,6 +4619,9 @@ def scope_set(name: uint64, val: int32):
             sc_val[i] = val
             return
     if sc_count >= SCOPE_MAX:
+        # NEVER silently drop a binding: the script would then read the
+        # variable back as nil and compute a confidently wrong answer.
+        rt_raise("scope: too many variables (SCOPE_MAX=128 bindings)")
         return
     sc_name[sc_count]  = name
     sc_val[sc_count]   = val
@@ -4681,6 +4776,103 @@ eval_errmsg: Array[128, uint8]
 raised_val: int32 = 0
 
 
+# ====================================================================
+# Runtime faults — the "never return a confidently wrong value" rule
+# ====================================================================
+# hamsh used to fail SOFT everywhere below the statement level: an
+# exhausted value arena handed back cell 0 (None), `1/0` handed back 0,
+# an int `&` fell through to 0, a too-deep call returned nil. Every one
+# of those is a WRONG NUMBER with an empty $status and an empty $errstr —
+# the worst failure class a scripting language can have (2026-07-25
+# review §6.1/§6.3: summing 0..19999 printed 5364450 and claimed success).
+#
+# The rule now: an evaluator that hits a hard limit or an undefined
+# operation raises a DIAGNOSABLE error. Expression evaluation has no
+# error channel (eval_expr returns a cell id), so the fault is LATCHED
+# here and converted into the normal EX_ERROR unwind at the next
+# statement boundary (exec_block) — which means try/except catches it,
+# $status becomes 1, $errstr carries the message, and an uncaught fault
+# prints "hamsh: uncaught exception: …" at the top level.
+rt_fault:     int32 = 0
+rt_fault_msg: Array[128, uint8]
+
+
+def rt_raise(msg: Ptr[uint8]) -> int32:
+    # Latch a runtime fault. Returns 0 (nil) so the caller can `return
+    # rt_raise(...)` from a value-producing helper. The FIRST fault wins:
+    # a cascade (e.g. an exhausted arena faulting on every following
+    # allocation) must not overwrite the message that explains it.
+    if rt_fault == 0:
+        rt_fault = 1
+        i: uint64 = 0
+        while msg[i] != 0 and i + 1 < 128:
+            rt_fault_msg[i] = msg[i]
+            i = i + 1
+        rt_fault_msg[i] = 0
+        errstr_set(msg)
+        eval_status = 1
+        # Diagnosable on stderr too — a script redirecting stdout still
+        # sees WHY it stopped.
+        write_str(2, "hamsh: runtime error: ")
+        write_str(2, msg)
+        write_str(2, "\n")
+    return 0
+
+
+_rtname_buf: Array[160, uint8]
+
+
+def rt_raise_name(np: Ptr[uint8]) -> int32:
+    # NameError-with-a-hint: names the offending token AND the usual
+    # cause (glued arithmetic — hamsh requires spaces around operators
+    # because '-' is a legal bare-word character).
+    pre: Ptr[uint8] = "undefined name '"
+    i: uint64 = 0
+    o: uint64 = 0
+    while pre[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = pre[i]
+        o = o + 1
+        i = i + 1
+    i = 0
+    while np[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = np[i]
+        o = o + 1
+        i = i + 1
+    suf: Ptr[uint8] = "' — glued arithmetic? write `a - b` with spaces"
+    i = 0
+    while suf[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = suf[i]
+        o = o + 1
+        i = i + 1
+    _rtname_buf[o] = 0
+    return rt_raise(&_rtname_buf[0])
+
+
+def rt_relatch(msg: Ptr[uint8]):
+    # Re-arm the latch for an error that has ALREADY been reported. Used
+    # when a fault (or a `raise`) unwound a called function's body: that
+    # body's own exec_block converted the latch into EX_ERROR and cleared
+    # it, but the CALLER is mid-expression and would otherwise carry on
+    # with the call's nil result — the very silent-wrong-answer this
+    # whole mechanism exists to stop. No re-print: the first report
+    # already went to stderr.
+    if rt_fault != 0:
+        return
+    rt_fault = 1
+    i: uint64 = 0
+    while msg[i] != 0 and i + 1 < 128:
+        rt_fault_msg[i] = msg[i]
+        i = i + 1
+    rt_fault_msg[i] = 0
+    errstr_set(msg)
+    eval_status = 1
+
+
+def rt_fault_clear():
+    rt_fault = 0
+    rt_fault_msg[0] = 0
+
+
 def eval_err(msg: Ptr[uint8]) -> int32:
     i: uint64 = 0
     while msg[i] != 0 and i + 1 < 128:
@@ -4713,6 +4905,9 @@ fn_count:     uint64 = 0
 # one when the operands' signs differ AND the division is inexact.
 def _floordiv_int(a: int64, b: int64) -> int64:
     if b == 0:
+        # Python raises ZeroDivisionError; hamsh used to hand back 0 —
+        # a silent wrong answer (review §6.3). Raise a runtime fault.
+        rt_raise("integer division or modulo by zero")
         return 0
     q: int64 = a / b
     r: int64 = a - q * b
@@ -4734,6 +4929,7 @@ def _floordiv_int(a: int64, b: int64) -> int64:
 # sign of the dividend. Defined so `a == (a // b) * b + (a % b)`.
 def _floormod_int(a: int64, b: int64) -> int64:
     if b == 0:
+        rt_raise("integer division or modulo by zero")
         return 0
     r: int64 = a % b
     if r != 0:
@@ -4755,6 +4951,7 @@ def _arith(op: int32, a: int64, b: int64) -> int64:
         return a * b
     if op == OP_SLASH:
         if b == 0:
+            rt_raise("division by zero")
             return 0
         return a / b
     if op == OP_FLOORDIV:
@@ -4773,13 +4970,18 @@ def _arith_float(op: int32, a: float64, b: float64) -> float64:
         return a * b
     if op == OP_SLASH:
         if b == 0.0:
+            rt_raise("division by zero")
             return 0.0
         return a / b
     if op == OP_FLOORDIV:
         if b == 0.0:
+            rt_raise("float floor division by zero")
             return 0.0
         return _f_floor(a / b)
     if op == OP_PERCENT:
+        if b == 0.0:
+            rt_raise("float modulo by zero")
+            return 0.0
         return _f_fmod(a, b)
     return 0.0
 
@@ -4895,16 +5097,12 @@ def _v_list_concat(a: int32, b: int32) -> int32:
     na: uint64 = _iter_count(a)
     i: uint64 = 0
     while i < na:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = _iter_get(a, i)
-            comp_out_n = comp_out_n + 1
+        _comp_push(_iter_get(a, i))
         i = i + 1
     nb: uint64 = _iter_count(b)
     j: uint64 = 0
     while j < nb:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = _iter_get(b, j)
-            comp_out_n = comp_out_n + 1
+        _comp_push(_iter_get(b, j))
         j = j + 1
     r: int32 = _list_from_comp(base)
     comp_out_n = base
@@ -4920,9 +5118,7 @@ def _v_list_repeat(a: int32, cnt: int64) -> int32:
     while r < cnt:
         i: uint64 = 0
         while i < na:
-            if comp_out_n < COMP_MAX:
-                comp_out[comp_out_n] = _iter_get(a, i)
-                comp_out_n = comp_out_n + 1
+            _comp_push(_iter_get(a, i))
             i = i + 1
         r = r + 1
     lst: int32 = _list_from_comp(base)
@@ -5057,6 +5253,23 @@ def eval_binop(node: int32) -> int32:
             if v_set_equal(lhs, rhs) != 0:
                 return v_bool(0)
             return v_bool(1)
+    # §Bitwise on INTEGERS: `& | ^` do real bit arithmetic on two ints
+    # (or bools). Before this, only the two-sets case above was
+    # dispatched and everything else fell through to _arith's final
+    # `return 0` — so `6 & 3` printed 0, `6 | 3` printed 0 (review
+    # §6.3). Mixed/unsupported operand types now raise instead of
+    # quietly yielding 0. `-` stays arithmetic (set difference is
+    # dispatched by the two-sets arm above).
+    if op == OP_AMP or op == OP_PIPE or op == OP_CARET:
+        if _v_is_intlike(lhs) != 0 and _v_is_intlike(rhs) != 0:
+            bia: int64 = _val_as_int(lhs)
+            bib: int64 = _val_as_int(rhs)
+            if op == OP_AMP:
+                return v_int(bia & bib)
+            if op == OP_PIPE:
+                return v_int(bia | bib)
+            return v_int(bia ^ bib)
+        return rt_raise("unsupported operand type for bitwise & | ^ (two ints or two sets)")
     # '+' on two lists concatenates them (Python sequence '+'); on anything
     # with a string it does string concatenation.
     if op == OP_PLUS:
@@ -5155,10 +5368,132 @@ def _restore_tokens(saved: uint64):
     tok_count = saved
 
 
+# --- POSIX parameter expansion inside ${ } --------------------------
+# `${ … }` is a hamsh EXPRESSION, not POSIX parameter expansion — so the
+# four forms a bash user reaches for first (`${x:-default}`, `${x:+alt}`,
+# `${x:=default}`, `${x:?msg}`) used to parse as the bare variable `x`
+# followed by leftover tokens that eval_subexpr silently DISCARDED: the
+# whole thing rendered EMPTY with no error (review §4/§6.3). `${#x}` was
+# the same. They are handled here, ahead of the expression path.
+#
+# Only the UNAMBIGUOUS colon forms are claimed. Bare `${x-1}` / `${x+1}`
+# are deliberately NOT parameter expansion: in hamsh they are arithmetic
+# (`x - 1`) and always have been. The recogniser also requires the very
+# first character to be `#` or an identifier start — so every existing
+# `${ expr }` (which conventionally carries surrounding spaces) and every
+# `${x}` / `${a.b()}` / `${f(1)}` is untouched.
+#
+# The replacement WORD is taken literally (it is a shell word, not an
+# expression — `${x:-zz}` must yield the string `zz`, never the value of
+# a variable named zz), with one convenience: a word written `$NAME` is
+# looked up as a variable/env var.
+_pex_name: Array[64, uint8]
+_pex_word: Array[512, uint8]
+_pex_hit:  int32 = 0
+
+
+def _pex_word_value(n: uint64) -> int32:
+    # Materialise the replacement word: `$NAME` -> that variable's value,
+    # anything else -> the literal text.
+    if n >= 2 and _pex_word[0] == 36:            # '$'
+        vn: Array[64, uint8]
+        i: uint64 = 1
+        o: uint64 = 0
+        while i < n and o + 1 < 64:
+            vn[o] = _pex_word[i]
+            o = o + 1
+            i = i + 1
+        vn[o] = 0
+        return eval_var_by_name(str_intern_cstr(&vn[0]))
+    return v_str_ref(str_intern_n(&_pex_word[0], n))
+
+
+def _param_expand(src: Ptr[uint8], slen: uint64) -> int32:
+    # Recognise + evaluate a POSIX parameter expansion. Sets _pex_hit=1
+    # when it handled the slice; leaves it 0 (and returns 0) when the
+    # slice is an ordinary hamsh expression.
+    _pex_hit = 0
+    if slen == 0:
+        return 0
+    # ${#NAME} — length of NAME's string form (0 when unset).
+    if src[0] == 35:                             # '#'
+        i: uint64 = 1
+        if i >= slen or _is_ident_start(src[i]) == 0:
+            return 0
+        o: uint64 = 0
+        while i < slen and _is_ident(src[i]) != 0 and o + 1 < 64:
+            _pex_name[o] = src[i]
+            o = o + 1
+            i = i + 1
+        if i != slen:
+            return 0                             # trailing junk: not ours
+        _pex_name[o] = 0
+        _pex_hit = 1
+        lv: int32 = eval_var_by_name(str_intern_cstr(&_pex_name[0]))
+        return v_int(cast[int64](cstr_len(v_render_str_only(lv))))
+    if _is_ident_start(src[0]) == 0:
+        return 0
+    p: uint64 = 0
+    no: uint64 = 0
+    while p < slen and _is_ident(src[p]) != 0 and no + 1 < 64:
+        _pex_name[no] = src[p]
+        no = no + 1
+        p = p + 1
+    _pex_name[no] = 0
+    # need ':' + one of - + = ?
+    if p + 1 >= slen:
+        return 0
+    if src[p] != 58:                             # ':'
+        return 0
+    opc: uint8 = src[p + 1]
+    if opc != 45 and opc != 43 and opc != 61 and opc != 63:
+        return 0                                 # '-' '+' '=' '?'
+    p = p + 2
+    wo: uint64 = 0
+    while p < slen and wo + 1 < 512:
+        _pex_word[wo] = src[p]
+        wo = wo + 1
+        p = p + 1
+    _pex_word[wo] = 0
+    _pex_hit = 1
+    nref: uint64 = str_intern_cstr(&_pex_name[0])
+    cur: int32 = eval_var_by_name(nref)
+    setp: int32 = 1                              # "set and non-empty"
+    if val_type[cast[uint64](cur)] == VT_NIL:
+        setp = 0
+    elif cstr_len(v_render_str_only(cur)) == 0:
+        setp = 0
+    if opc == 45:                                # ${x:-word}
+        if setp != 0:
+            return cur
+        return _pex_word_value(wo)
+    if opc == 43:                                # ${x:+word}
+        if setp == 0:
+            return v_str_ref(str_intern_cstr(""))
+        return _pex_word_value(wo)
+    if opc == 61:                                # ${x:=word}
+        if setp != 0:
+            return cur
+        dv: int32 = _pex_word_value(wo)
+        scope_set(nref, dv)
+        return dv
+    # ${x:?msg} — a MISSING value is an error, never an empty string.
+    if setp != 0:
+        return cur
+    if wo > 0:
+        return rt_raise(&_pex_word[0])
+    return rt_raise("parameter null or not set")
+
+
 def eval_subexpr(sref: uint64) -> int32:
     # Lex+parse+eval the raw source `sref` as a single expression.
     src: Ptr[uint8] = str_ptr(sref)
     slen: uint64 = str_len(sref)
+    # POSIX parameter expansion (${x:-y} / ${x:+y} / ${x:=y} / ${x:?m} /
+    # ${#x}) is recognised BEFORE the expression path — see _param_expand.
+    pex: int32 = _param_expand(src, slen)
+    if _pex_hit != 0:
+        return pex
     saved_tok: uint64 = _save_tokens()
     saved_pos: uint64 = ps_pos
     lex_line(src, slen)
@@ -5318,6 +5653,23 @@ def eval_var_by_name(nref: uint64) -> int32:
     ev: Ptr[uint8] = env_get(np)
     if cast[uint64](ev) != 0:
         return v_str_cstr(ev)
+    # GLUED-ARITHMETIC TRAP (found while re-testing the review's
+    # recursion case). `s(n-1)` looks like arithmetic but the lexer's
+    # bare-word class includes '-', so `n-1` lexes as ONE word and
+    # reaches here as an undefined NAME — which used to evaluate to nil,
+    # i.e. 0. `def s(n) { if n <= 0 { return 0 } return n + s(n-1) }`
+    # therefore returned n (not the sum) with no error whatsoever: a
+    # textbook confidently-wrong answer. A `$name` token can only ever
+    # hold identifier characters (the lexer's $-scan uses _is_ident), so
+    # a name carrying anything else came from a bare word in EXPRESSION
+    # position and is a mistake, not an unset shell variable. Raise for
+    # those; a plain unset identifier keeps the shell's empty-string
+    # semantics ($HAMNIX_DE_PROG, $installer_medium in the boot rc).
+    bi: uint64 = 0
+    while np[bi] != 0:
+        if _is_ident(np[bi]) == 0:
+            return rt_raise_name(np)
+        bi = bi + 1
     return 0     # nil
 
 
@@ -5964,9 +6316,7 @@ def v_list_extend(listv: int32, srcv: int32):
     sn: uint64 = _iter_count(srcv)
     si: uint64 = 0
     while si < sn:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = _iter_get(srcv, si)
-            comp_out_n = comp_out_n + 1
+        _comp_push(_iter_get(srcv, si))
         si = si + 1
     j: uint64 = sb
     while j < comp_out_n:
@@ -6009,14 +6359,16 @@ def v_list_sort(node: int32, listv: int32):
     cn: uint64 = val_ec[cast[uint64](listv)]
     ci: uint64 = 0
     while ci < cn:
-        if comp_out_n < COMP_MAX:
-            el: int32 = v_list_get(listv, ci)
-            comp_out[comp_out_n] = el
-            if keyname != 0 or keyfnv != 0:
-                sort_key[comp_out_n] = _apply_hof(keyname, keyfnv, el)
-            else:
-                sort_key[comp_out_n] = el
-            comp_out_n = comp_out_n + 1
+        if comp_out_n >= COMP_MAX:
+            rt_raise("collection too large (COMP_MAX=4096 elements per list/range/comprehension)")
+            break
+        el: int32 = v_list_get(listv, ci)
+        comp_out[comp_out_n] = el
+        if keyname != 0 or keyfnv != 0:
+            sort_key[comp_out_n] = _apply_hof(keyname, keyfnv, el)
+        else:
+            sort_key[comp_out_n] = el
+        comp_out_n = comp_out_n + 1
         ci = ci + 1
     x: uint64 = sb
     while x < comp_out_n:
@@ -6116,9 +6468,7 @@ def _tuple_from_kids(node: int32) -> int32:
     nk: uint64 = nd_kn[cast[uint64](node)]
     while i < nk:
         el: int32 = eval_expr(nd_kid_at(node, i))
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = el
-            comp_out_n = comp_out_n + 1
+        _comp_push(el)
         i = i + 1
     lst: int32 = _list_from_comp(base)
     comp_out_n = base
@@ -6155,9 +6505,7 @@ def _comp_run(comp: int32, ci: uint64, is_dict: int32):
                 comp_dn = comp_dn + 1
         else:
             e: int32 = eval_expr(nd_a[cast[uint64](comp)])
-            if comp_out_n < COMP_MAX:
-                comp_out[comp_out_n] = e
-                comp_out_n = comp_out_n + 1
+            _comp_push(e)
         return
     clause: int32 = nd_kid_at(comp, ci)
     if nd_kind[cast[uint64](clause)] == ND_COMPIF:
@@ -6271,9 +6619,7 @@ def eval_slice(cont: int32, sn: int32) -> int32:
     base: uint64 = comp_out_n
     k2: int64 = start
     while (step > 0 and k2 < stop) or (step < 0 and k2 > stop):
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = v_list_get(cont, cast[uint64](k2))
-            comp_out_n = comp_out_n + 1
+        _comp_push(v_list_get(cont, cast[uint64](k2)))
         k2 = k2 + step
     lst: int32 = _list_from_comp(base)
     comp_out_n = base
@@ -6329,6 +6675,8 @@ def _call_user_fn1(nameref: uint64, argval: int32) -> int32:
     rv: int32 = 0
     if ex == EX_RETURN:
         rv = eval_retval
+    if ex == EX_ERROR:
+        rt_relatch(&eval_errmsg[0])
     scope_pop_frame(mark)
     return rv
 
@@ -6380,6 +6728,8 @@ def _invoke_func_node(defnode: int32, argp: Ptr[int32], argc: uint64) -> int32:
         ex: int32 = exec_block(nd_b[dnu])
         if ex == EX_RETURN:
             rv = eval_retval
+        if ex == EX_ERROR:
+            rt_relatch(&eval_errmsg[0])
     call_depth = call_depth - 1
     scope_pop_frame(mark)
     return rv
@@ -6919,6 +7269,7 @@ def eval_call(node: int32) -> int32:
             db: int64 = _val_as_int(eval_expr(nd_kid_at(node, 1)))
             dl: int32 = v_list_begin()
             if db == 0:
+                rt_raise("divmod() by zero")
                 v_list_push(dl, v_int(0))
                 v_list_push(dl, v_int(0))
                 return dl
@@ -6944,10 +7295,11 @@ def eval_call(node: int32) -> int32:
         r: int64 = start
         guard: int64 = 0
         while ((step > 0 and r < stop) or (step < 0 and r > stop)) \
-                and guard < 1000000:
-            if comp_out_n < COMP_MAX:
-                comp_out[comp_out_n] = v_int(r)
-                comp_out_n = comp_out_n + 1
+                and guard < 1000000 and rt_fault == 0:
+            # rt_fault stops the fill as soon as _comp_push overflows —
+            # otherwise a range(20000) kept allocating value cells for
+            # 20000 iterations and exhausted the value arena too.
+            _comp_push(v_int(r))
             r = r + step
             guard = guard + 1
         rl: int32 = _list_from_comp(base)
@@ -6962,9 +7314,7 @@ def eval_call(node: int32) -> int32:
             ei: uint64 = 0
             while ei < en:
                 pr: int32 = _v_pair(v_int(cast[int64](ei)), _iter_get(a, ei))
-                if comp_out_n < COMP_MAX:
-                    comp_out[comp_out_n] = pr
-                    comp_out_n = comp_out_n + 1
+                _comp_push(pr)
                 ei = ei + 1
             el: int32 = _list_from_comp(eb)
             comp_out_n = eb
@@ -6989,9 +7339,7 @@ def eval_call(node: int32) -> int32:
             while zk < nargs and zk < 16:
                 v_list_push(tup, _iter_get(zv[zk], zi))
                 zk = zk + 1
-            if comp_out_n < COMP_MAX:
-                comp_out[comp_out_n] = tup
-                comp_out_n = comp_out_n + 1
+            _comp_push(tup)
             zi = zi + 1
         zres: int32 = _list_from_comp(zb)
         comp_out_n = zb
@@ -7013,9 +7361,7 @@ def eval_call(node: int32) -> int32:
                 mapped: int32 = ev
                 if fnm != 0 or fnv != 0:
                     mapped = _apply_hof(fnm, fnv, ev)
-                if comp_out_n < COMP_MAX:
-                    comp_out[comp_out_n] = mapped
-                    comp_out_n = comp_out_n + 1
+                _comp_push(mapped)
                 mi = mi + 1
             ml: int32 = _list_from_comp(mb)
             comp_out_n = mb
@@ -7097,14 +7443,16 @@ def eval_call(node: int32) -> int32:
             cn: uint64 = _iter_count(a)
             ci: uint64 = 0
             while ci < cn:
-                if comp_out_n < COMP_MAX:
-                    el: int32 = _iter_get(a, ci)
-                    comp_out[comp_out_n] = el
-                    if keyname != 0 or keyfnv != 0:
-                        sort_key[comp_out_n] = _apply_hof(keyname, keyfnv, el)
-                    else:
-                        sort_key[comp_out_n] = el
-                    comp_out_n = comp_out_n + 1
+                if comp_out_n >= COMP_MAX:
+                    rt_raise("collection too large (COMP_MAX=4096 elements per list/range/comprehension)")
+                    break
+                el: int32 = _iter_get(a, ci)
+                comp_out[comp_out_n] = el
+                if keyname != 0 or keyfnv != 0:
+                    sort_key[comp_out_n] = _apply_hof(keyname, keyfnv, el)
+                else:
+                    sort_key[comp_out_n] = el
+                comp_out_n = comp_out_n + 1
                 ci = ci + 1
             # selection sort over comp_out[sb .. comp_out_n), ordering by
             # the parallel sort_key column (elements ride along).
@@ -7147,9 +7495,7 @@ def eval_call(node: int32) -> int32:
             ri: uint64 = rn
             while ri > 0:
                 ri = ri - 1
-                if comp_out_n < COMP_MAX:
-                    comp_out[comp_out_n] = _iter_get(a, ri)
-                    comp_out_n = comp_out_n + 1
+                _comp_push(_iter_get(a, ri))
             rl2: int32 = _list_from_comp(rb)
             comp_out_n = rb
             return rl2
@@ -7165,17 +7511,13 @@ def eval_call(node: int32) -> int32:
                 dbase: uint64 = val_es[cast[uint64](a)]
                 di: uint64 = 0
                 while di < dn:
-                    if comp_out_n < COMP_MAX:
-                        comp_out[comp_out_n] = val_elem[dbase + di * 2]
-                        comp_out_n = comp_out_n + 1
+                    _comp_push(val_elem[dbase + di * 2])
                     di = di + 1
             else:
                 ln2: uint64 = _iter_count(a)
                 li: uint64 = 0
                 while li < ln2:
-                    if comp_out_n < COMP_MAX:
-                        comp_out[comp_out_n] = _iter_get(a, li)
-                        comp_out_n = comp_out_n + 1
+                    _comp_push(_iter_get(a, li))
                     li = li + 1
             ll2: int32 = _list_from_comp(lb2)
             comp_out_n = lb2
@@ -7520,9 +7862,7 @@ def _dict_project(node: int32, nargs: uint64, mode: int32) -> int32:
             item = val_elem[db + i * 2 + 1]
         else:
             item = _v_pair(val_elem[db + i * 2], val_elem[db + i * 2 + 1])
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = item
-            comp_out_n = comp_out_n + 1
+        _comp_push(item)
         i = i + 1
     lst: int32 = _list_from_comp(base)
     comp_out_n = base
@@ -7682,6 +8022,10 @@ def eval_expr(node: int32) -> int32:
             if v_is_truthy(a) != 0:
                 return v_bool(0)
             return v_bool(1)
+        if op == OP_TILDE:
+            if _v_is_intlike(a) == 0:
+                return rt_raise("bad operand type for unary ~ (int required)")
+            return v_int(~_val_as_int(a))
         return a
     if k == ND_LIST:
         # Build via the deferred comp_out stack so a NESTED list literal
@@ -7705,9 +8049,7 @@ def eval_expr(node: int32) -> int32:
         snk: uint64 = nd_kn[nu]
         while si < snk:
             sel: int32 = eval_expr(nd_kid_at(node, si))
-            if comp_out_n < COMP_MAX:
-                comp_out[comp_out_n] = sel
-                comp_out_n = comp_out_n + 1
+            _comp_push(sel)
             si = si + 1
         setv: int32 = v_set_begin()
         sj: uint64 = sbase
@@ -11282,9 +11624,12 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
     if found < 0:
         return 0
     if call_depth >= CALL_DEPTH_MAX:
-        errstr_set("call: recursion too deep")
-        eval_status = 1
-        return 0
+        # Was: set $errstr, return nil — and in EXPRESSION context that
+        # nil silently became 0, so `f(20)` with a recursive f printed a
+        # plausible small number instead of failing (review §6.3). Raise
+        # a real fault so the caller cannot mistake the truncation for a
+        # result.
+        return rt_raise("call: recursion too deep (CALL_DEPTH_MAX=12 frames)")
     defnode: int32 = fn_node[cast[uint64](found)]
     dnu: uint64 = cast[uint64](defnode)
     # evaluate args in the CALLER's scope first (kwargs — the trailing
@@ -11341,6 +11686,11 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
     rv: int32 = 0
     if ex == EX_RETURN:
         rv = eval_retval
+    if ex == EX_ERROR:
+        # The body erred (a raise, or a runtime fault the body's own
+        # exec_block already converted). Do NOT hand the caller a nil
+        # that reads as 0 — re-latch so the caller's expression aborts.
+        rt_relatch(&eval_errmsg[0])
     scope_pop_frame(mark)
     return rv
 
@@ -11360,6 +11710,24 @@ def exec_block(node: int32) -> int32:
             break
         st: int32 = nd_kid_at(node, i)
         ex: int32 = exec_statement(st)
+        # RUNTIME-FAULT BOUNDARY. Expression evaluation has no error
+        # channel, so a hard fault (value arena exhausted, division by
+        # zero, bitwise on a non-int, scope table full, recursion cap)
+        # is LATCHED by rt_raise and converted here — at the first
+        # statement boundary after it happened — into the ordinary
+        # EX_ERROR unwind. That makes every such fault catchable by
+        # try/except, sets $status/$errstr, and (if uncaught) prints at
+        # the top level. Checked BEFORE the ex != EX_NORMAL test so a
+        # fault inside a `return`/`break` expression still surfaces.
+        if rt_fault != 0:
+            # eval_err FIRST (it copies the message into $errstr /
+            # eval_errmsg), THEN drop the latch — rt_fault_clear zeroes
+            # rt_fault_msg, so clearing first would hand eval_err an
+            # empty string and print "uncaught exception: " with no
+            # reason.
+            exf: int32 = eval_err(&rt_fault_msg[0])
+            rt_fault_clear()
+            return exf
         if ex != EX_NORMAL:
             return ex
         i = i + 1
@@ -11649,6 +12017,11 @@ def exec_assign(node: int32) -> int32:
     elif op == OP_MINUSEQ:
         old: int32 = eval_var_by_name(name)
         newv = v_int(_val_as_int(old) - _val_as_int(newv))
+    # A fault while evaluating the RHS means we do NOT have a value.
+    # Binding the nil/partial result would leave the script holding a
+    # wrong number that survives the error report.
+    if rt_fault != 0:
+        return EX_NORMAL
     scope_set(name, newv)
     # `export VAR=value` (nd_c flag): mirror the assigned value into the
     # /env namespace so children inherit it, same as the bare `export`
@@ -11735,21 +12108,15 @@ def _list_slice_assign(cont: int32, sn: int32, rhs: int32) -> int32:
     base: uint64 = comp_out_n
     pi: int64 = 0
     while pi < start:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = v_list_get(cont, cast[uint64](pi))
-            comp_out_n = comp_out_n + 1
+        _comp_push(v_list_get(cont, cast[uint64](pi)))
         pi = pi + 1
     rj: uint64 = 0
     while rj < rn:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = _iter_get(rhs, rj)
-            comp_out_n = comp_out_n + 1
+        _comp_push(_iter_get(rhs, rj))
         rj = rj + 1
     si: int64 = stop
     while si < ln:
-        if comp_out_n < COMP_MAX:
-            comp_out[comp_out_n] = v_list_get(cont, cast[uint64](si))
-            comp_out_n = comp_out_n + 1
+        _comp_push(v_list_get(cont, cast[uint64](si)))
         si = si + 1
     newn: uint64 = comp_out_n - base
     # Relocate cont to the pool top so its element run can be rewritten
@@ -12269,6 +12636,12 @@ def exec_statement(node: int32) -> int32:
     if k == ND_CMD:
         # check for the exit builtin which needs to unwind
         argc: int32 = _argv_build(node)
+        # A runtime fault raised while EVALUATING this command's own
+        # arguments (`echo ${ 1 / 0 }`) must abort the command — running
+        # it would print the bogus substituted value before the error
+        # unwinds. exec_block converts the latch right after we return.
+        if rt_fault != 0:
+            return EX_NORMAL
         if argc >= 1:
             cmd: Ptr[uint8] = cast[Ptr[uint8]](argv_ptr[0])
             if cstr_eq(cmd, "exit") != 0:
@@ -14481,6 +14854,10 @@ def run_source(buf: Ptr[uint8], n: uint64) -> int32:
     # a previous line that erred out mid-recursion must not leave the
     # guard tripped for the next line.
     call_depth = 0
+    # A fault latched by the PREVIOUS line has already been reported and
+    # unwound; start every top-level line with a clean latch so it can
+    # never leak into an unrelated statement.
+    rt_fault_clear()
     _maybe_recycle_arenas()
     if lex_line(buf, n) < 0:
         write_cstr1("hamsh: lexical error (unterminated quote or token-limit exceeded)\n")
