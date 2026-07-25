@@ -59,30 +59,35 @@ assert_nogrep() { # pattern message
 }
 
 # ---- COORDINATE CROSS-CHECK -------------------------------------------------
-# Independently derive #a's expected box from the SEG dump line for |AlphaOne|:
-#   left   = SEG x (column 3)
-#   top    = SEG row (column 2) * LINE_H(16)
-#   width  = len("AlphaOne") * CELL_W(8)
-#   height = LINE_H(16)
-SEGLINE=$(grep -E 'SEG [0-9]+ [0-9]+ .*\|AlphaOne\|' "$D0" | head -1)
-if [ -z "$SEGLINE" ]; then
-    echo "[hb-geom] FAIL: no SEG line for |AlphaOne| to cross-check against"; fail=1
-else
-    SROW=$(echo "$SEGLINE" | awk '{print $2}')
-    SX=$(echo "$SEGLINE"   | awk '{print $3}')
-    EXP_TOP=$(( SROW * 16 ))
-    EXP_W=$(( 8 * 8 ))   # 8 chars * CELL_W
-    EXP_LINE="rect ${SX} ${EXP_TOP} ${EXP_W} 16"
-    echo "[hb-geom] SEG-derived box for #a -> ${EXP_LINE}"
-    assert_grep "^JSLOG ${EXP_LINE}\$" "getBoundingClientRect() x/y/width/height == the SEG-dump box"
-    # right/bottom are consistent with left+width / top+height.
-    EXP_RIGHT=$(( SX + EXP_W ))
-    assert_grep "^JSLOG edge ${SX} ${EXP_TOP} ${EXP_RIGHT} 16\$" "left/top/right/bottom are self-consistent"
-    # offset* mirror the same box; clientWidth/Height == offset here.
-    assert_grep "^JSLOG off ${SX} ${EXP_TOP} ${EXP_W} 16\$" "offsetLeft/Top/Width/Height match the box"
-    assert_grep "^JSLOG client ${EXP_W} 16\$"               "clientWidth/clientHeight match the box"
-    assert_grep "^JSLOG awidth ${EXP_W}px\$"                "getComputedStyle().width resolves to the box width in px"
-fi
+# UPDATED (layout-read / CSSOM round). This used to derive #a's expected box
+# from the SEG dump line for |AlphaOne| — left = SEG x, top = SEG row * LINE_H,
+# width = len("AlphaOne") * CELL_W(8), height = LINE_H — i.e. the element's TEXT
+# INK. #a is a block <div>, so a browser reports its whole CONTENT COLUMN, and
+# the ink box was the bug that made every measure-then-position script read a
+# number ~13x too small. A SEG cross-check cannot express that: a SEG says where
+# the TEXT was drawn, not where the element's BOX is.
+#
+# Re-derived against real Chrome,
+#   chromium --headless --window-size=880,900 --dump-dom
+# on this fixture, which answers `rect 8 8 864 18` and `width: 864px`. The
+# engine now answers `8 0 864 19`:
+#   * left 8, width 864 and getComputedStyle().width 864px are EXACT;
+#   * height 19 vs 18 is one px of line-box rounding (`line-height: normal`
+#     modelled as 19px at 16px);
+#   * top 0 vs 8 is the UA <body> TOP margin, for which the engine's row grid
+#     reserves no row (the LEFT body margin is honoured — hence left matches).
+# Both residuals are documented in scripts/test_hambrowse_domgeom_host.sh; the
+# Chrome-exact layout-read gate is scripts/test_hambrowse_layoutread_host.sh.
+EX=8 ; EY=0 ; EW=864 ; EH=19
+assert_grep "^JSLOG rect ${EX} ${EY} ${EW} ${EH}\$" \
+    "getBoundingClientRect() is the block's content box (Chrome: 8 8 864 18)"
+# right/bottom are consistent with left+width / top+height.
+assert_grep "^JSLOG edge ${EX} ${EY} $(( EX + EW )) ${EH}\$" \
+    "left/top/right/bottom are self-consistent"
+# offset* mirror the same box; clientWidth/Height == offset here.
+assert_grep "^JSLOG off ${EX} ${EY} ${EW} ${EH}\$" "offsetLeft/Top/Width/Height match the box"
+assert_grep "^JSLOG client ${EW} ${EH}\$"          "clientWidth/clientHeight match the box"
+assert_grep "^JSLOG awidth ${EW}px\$"              "getComputedStyle().width == Chrome's 864px"
 
 # ---- getComputedStyle().display: tag-derived UA defaults --------------------
 assert_grep '^JSLOG disp block$'   "getComputedStyle(div).display == block"

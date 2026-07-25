@@ -3018,6 +3018,17 @@ def _block_box_close():
         g_ebox_skx = box_skx_stack[box_sp]
         g_ebox_sky = box_sky_stack[box_sp]
 
+    # A POSITIONED box (absolute / relative / fixed / sticky) is MOVED after
+    # layout by flow.ad's `_apply_positioned` pass, which shifts its segments and
+    # fills but knows nothing about this registry — so the box recorded above is
+    # its STATIC position, not where it ended up. Drop the record rather than
+    # report a stale one: the read-back then falls back to the segment estimate,
+    # which does follow the move. (A `position:absolute; top:6000px` element must
+    # keep reporting itself far off-screen, or IntersectionObserver claims it is
+    # visible — caught by scripts/test_hambrowse_observers_host.sh.)
+    if eslot_c >= 0 and box_sp >= 0 and box_sp < 64 and box_pos_stack[box_sp] != 0:
+        ebox_src[eslot_c] = -1
+        eslot_c = -1
     if eslot_c >= 0 and eslot_c < n_eboxes:
         endrow: int32 = cast[int32](cur_row)
         if row_dirty != 0:
