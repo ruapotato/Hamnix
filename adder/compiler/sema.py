@@ -432,7 +432,11 @@ class Checker:
         if e is None:
             return None
         if isinstance(e, IntLiteral):
-            return ("int", 64, True)          # untyped integer literal
+            # Untyped integer literal. A value that does not fit int64 (a
+            # full-width mask such as 0xFFFFFFFFFFFFFFFF) is unsigned — typing
+            # it signed made every `x > (0xFFFF.. / b)` look like a mixed-sign
+            # comparison.
+            return ("int", 64, e.value < (1 << 63))
         if isinstance(e, FloatLiteral):
             return ("float", 64)
         if isinstance(e, CharLiteral):
