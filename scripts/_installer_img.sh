@@ -43,7 +43,16 @@
 # Directories whose tracked contents end up inside the shipped image. Kept
 # explicit (not "the whole repo") so an unrelated docs/ edit never forces a
 # 6-minute rebuild.
-_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler"
+# `sys` was MISSING here until 2026-07-25 — a hole big enough to drive the
+# original bug straight back through. sys/src/9/port/ is the whole Plan 9
+# device layer (devwsys.ad, devmeminfo.ad, devproc.ad, namec.ad, ...), i.e.
+# some of the most-edited kernel source in the tree, and an edit there did
+# NOT mark the shipped image stale. Found while fixing a devmeminfo.ad read
+# bug: the image built before the fix still looked fresh to this guard.
+# This is exactly why the guard is only half the answer — the other half is
+# the producer-side always-overwrite contract in scripts/_fresh_artifact.sh,
+# which needs no list of directories to be right.
+_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler sys"
 # Plus the BUILD scripts themselves (not the test_*.sh gates — a gate edit
 # does not change a single byte of the shipped image, and forcing a 6-minute
 # rebuild for one would make this guard hated and then disabled).
