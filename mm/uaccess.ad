@@ -339,9 +339,31 @@ def _ua_bytes_to_page_end(uvaddr: uint64) -> uint64:
 def uaccess_fault_in(pml4_phys: uint64, uvaddr: uint64,
                      need_write: int32) -> int32:
     slot: uint64 = current_idx_get()
-    # Not-present first: a 0 from uaccess_resolve is most often a page the
-    # task owns (VMA) but has never faulted in. Try swap-in, then the
-    # demand-zero / file-backed path — the same order do_page_fault uses.
+    # WHY the walk failed decides WHICH resolver applies. uaccess_resolve
+    # returns 0 for two very different reasons, and the hardware #PF handler
+    # distinguishes them with the error code we do not have here:
+    #
+    #   * NOT PRESENT      -> swap-in / demand-zero / file fill
+    #   * PRESENT but RO,
+    #     and we want write -> COW copy (the post-fork state)
+    #
+    # Re-walk WITHOUT the write requirement to tell them apart. A non-zero
+    # result means the page IS present and only the write permission was
+    # missing, so this is a COW (or genuine protection) fault and the
+    # demand-zero path must NOT run: vma_demand_fault materialises a page by
+    # mapping a FRESH ZERO frame, which over a live COW page destroys that
+    # page's contents (the parent's data vanished after a `spawn detached`
+    # while the bytes being copied landed fine — hamdesktop's fmc_cur_path /
+    # ic_label). mm/vma.ad's demand resolver refuses a present leaf too;
+    # ordering it correctly here keeps the intent explicit and cheap.
+    present_phys: uint64 = uaccess_resolve(pml4_phys, uvaddr, 0)
+    if present_phys != 0:
+        if need_write != 0:
+            if cow_handle_write_fault(pml4_phys, uvaddr) == 1:
+                return 1
+        return 0
+    # Not present: a page the task owns (VMA) but has never faulted in. Try
+    # swap-in, then the demand-zero / file-backed path — do_page_fault's order.
     swp_rc: int32 = vma_swap_in_fault(slot, pml4_phys, uvaddr)
     if swp_rc == 1:
         return 1
@@ -350,15 +372,6 @@ def uaccess_fault_in(pml4_phys: uint64, uvaddr: uint64,
     dpf_rc: int32 = vma_demand_fault(slot, pml4_phys, uvaddr)
     if dpf_rc == 1:
         return 1
-    if dpf_rc < 0:
-        return 0
-    # dpf_rc == 0: not a not-present demand fault. For a WRITE, the page
-    # may be present-but-read-only because it is COW-shared post-fork;
-    # resolve it exactly as a write #PF would.
-    if need_write != 0:
-        cow_rc: int32 = cow_handle_write_fault(pml4_phys, uvaddr)
-        if cow_rc == 1:
-            return 1
     return 0
 
 

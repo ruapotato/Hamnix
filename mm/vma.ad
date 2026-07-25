@@ -5051,6 +5051,36 @@ def _vma_demand_fault_inner(slot: uint64, pml4_phys: uint64,
         # not-present fault (shouldn't happen normally).
         return 0
 
+    # ALREADY-PRESENT GUARD (parent loses a page after `spawn detached`).
+    # A demand fault is BY DEFINITION a NOT-PRESENT fault: the whole job of
+    # this resolver is to materialise a page that has no mapping yet, which
+    # it does by alloc_page() + zero-fill + elf_map_one_page. Running it on
+    # a va that ALREADY has a present leaf therefore does not "resolve"
+    # anything — it maps a FRESH ZERO PAGE over a live frame, destroying
+    # that page's contents (and leaking the old frame with a stranded COW
+    # refcount).
+    #
+    # The hardware #PF handler never did this: do_page_fault only routes a
+    # NOT-PRESENT fault here. But mm/uaccess.ad::uaccess_fault_in reaches
+    # this resolver from copy_to_user's kernel-side walk, which cannot see
+    # WHY the walk failed — and a walk for a WRITE fails on a page that is
+    # present but READ-ONLY, i.e. exactly a page COW-shared by a fork. So
+    # after any fork (`spawn detached` — the DE's app/jingle launches) the
+    # very next kernel write into one of the parent's COW pages replaced it
+    # with a zero page: the parent's PRIOR data vanished while the bytes
+    # being copied landed fine. That is the hamdesktop fmc_cur_path /
+    # ic_label corruption (both globals sat on a page the kernel read() into).
+    #
+    # Report NOT-HANDLED (0) for a present leaf so the caller falls through
+    # to the resolver that actually fits — cow_handle_write_fault for a
+    # COW page, or a genuine protection fault for anything else. Covers the
+    # 4 KiB leaf and the 2 MiB huge leaf (checked before the huge routing,
+    # which re-installs a fresh huge frame the same destructive way).
+    if _vma_pte_lookup(pml4_phys, fault_va) != 0:
+        return 0
+    if _vma_huge_pde_lookup(pml4_phys, fault_va) != 0:
+        return 0
+
     # §hugepage: a MAP_HUGETLB VMA resolves the fault with a single 2 MiB
     # huge page (one PS=1 PDE), NOT a 4 KiB page. Route to the dedicated
     # huge handler before the ordinary 4 KiB path.

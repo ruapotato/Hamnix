@@ -1,0 +1,19 @@
+# tests/test_sdp_child.ad — trivial execve target for
+# tests/test_spawn_detached_page.ad's detached spawn. Prints one line and
+# exits, so the parent's page-integrity check is the only variable.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_exit(code: uint64)
+
+# A little .bss of its own so the fresh image really loads + faults pages.
+child_pad: Array[8192, uint8]
+
+
+def main() -> int32:
+    i: uint64 = 0
+    while i < 8192:
+        child_pad[i] = cast[uint8](i % 251 + 1)
+        i = i + 1
+    sys_write(1, "[sdp-child] ran\n", 16)
+    sys_exit(0)
+    return 0

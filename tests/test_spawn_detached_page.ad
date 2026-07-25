@@ -1,0 +1,204 @@
+# tests/test_spawn_detached_page.ad
+#
+# REPRO: after a `spawn detached` (rfork RFPROC|RFFDG|RFNAMEG|RFNOWAIT +
+# execve in the child), a LIVE PARENT loses the prior contents of one of its
+# own user pages — the page's prior data goes all-zero while newly written
+# bytes land fine (hamdesktop's fmc_cur_path / ic_label).
+#
+# SHAPE (exactly the hamdesktop failure):
+#   * A 4 KiB page holds [0..520) PATTERN and [520..1544) RBUF.
+#   * The parent dirties the whole page, then `spawn detached`s a child. The
+#     fork leaves the parent's page PRESENT but READ-ONLY + COW-marked.
+#   * The parent then has the KERNEL write into RBUF (sys_read of a
+#     directory -> copy_to_user), and re-checks PATTERN.
+#   Both an ANONYMOUS-MMAP page and a .bss page are probed, because the two
+#   reach the demand-fault resolver through different VMA shapes.
+#
+# PASS = "[sdp] PASS" (PATTERN intact after the kernel write).
+# FAIL = "[sdp] FAIL ..." — PATTERN read back as zeros.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_rfork(flags: int32) -> int32
+extern def sys_exit(code: uint64)
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+extern def sys_execve_env(path: Ptr[char], argv: Ptr[uint64],
+                          envp: Ptr[uint64]) -> int32
+extern def sys_mmap(addr: uint64, len: uint64, prot: int32,
+                    flags: int32, fd: int32, offset: uint64) -> int64
+
+RFPROC:   int32 = 0x001
+RFFDG:    int32 = 0x004
+RFNAMEG:  int32 = 0x008
+RFNOWAIT: int32 = 0x100
+
+PROT_READ:  int32 = 0x1
+PROT_WRITE: int32 = 0x2
+MAP_PRIVATE:   int32 = 0x02
+MAP_ANONYMOUS: int32 = 0x20
+
+PASSES: uint64 = 4
+
+PAT_LEN:  uint64 = 520
+RBUF_OFF: uint64 = 520
+RBUF_LEN: uint64 = 1024
+
+# .bss probe window (3 pages so a 4 KiB-aligned page fits inside).
+pg: Array[12288, uint8]
+
+_sdp_argv: Array[4, uint64]
+
+
+def strlen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen(s))
+
+
+def write_dec(fd: int32, value: uint64):
+    if value == 0:
+        sys_write(fd, "0", 1)
+        return
+    digits: Array[24, uint8]
+    n: uint64 = 0
+    v: uint64 = value
+    while v != 0:
+        digits[n] = cast[uint8](v % 10) + 48
+        v = v / 10
+        n = n + 1
+    out: Array[24, uint8]
+    i: uint64 = 0
+    while n > 0:
+        n = n - 1
+        out[i] = digits[n]
+        i = i + 1
+    sys_write(fd, &out[0], i)
+
+
+def _pat(i: uint64) -> uint8:
+    return cast[uint8]((i * 31 + 7) % 251 + 1)
+
+
+def _fill_page(win: uint64):
+    p: Ptr[uint8] = cast[Ptr[uint8]](win)
+    i: uint64 = 0
+    while i < PAT_LEN:
+        p[i] = _pat(i)
+        i = i + 1
+    j: uint64 = 0
+    while j < RBUF_LEN:
+        p[RBUF_OFF + j] = 0xEE
+        j = j + 1
+
+
+def _check_page(win: uint64, tag: Ptr[uint8], pass_no: uint64) -> uint64:
+    p: Ptr[uint8] = cast[Ptr[uint8]](win)
+    bad:   uint64 = 0
+    zeros: uint64 = 0
+    i: uint64 = 0
+    while i < PAT_LEN:
+        if p[i] != _pat(i):
+            bad = bad + 1
+            if p[i] == 0:
+                zeros = zeros + 1
+        i = i + 1
+    if bad != 0:
+        write_str(1, "[sdp] FAIL pass ")
+        write_dec(1, pass_no)
+        write_str(1, " ")
+        write_str(1, tag)
+        write_str(1, ": bad=")
+        write_dec(1, bad)
+        write_str(1, " of ")
+        write_dec(1, PAT_LEN)
+        write_str(1, " zero=")
+        write_dec(1, zeros)
+        write_str(1, "\n")
+    return bad
+
+
+def _spin(n: uint64):
+    i: uint64 = 0
+    acc: uint64 = 0
+    while i < n:
+        acc = acc + i
+        i = i + 1
+    if acc == 0xFFFFFFFFFFFFFFFF:
+        write_str(1, "")
+
+
+def _spawn_detached_child():
+    rc: int32 = sys_rfork(RFPROC | RFFDG | RFNAMEG | RFNOWAIT)
+    if rc == 0:
+        cpath: Ptr[char] = "/bin/test_sdp_child"
+        _sdp_argv[0] = cast[uint64](cpath)
+        _sdp_argv[1] = 0
+        sys_execve_env(cpath, &_sdp_argv[0], cast[Ptr[uint64]](0))
+        sys_exit(0)
+    if rc < 0:
+        write_str(1, "[sdp] NOTE: rfork failed\n")
+
+
+def _kernel_read_into(win: uint64) -> int64:
+    fd: int32 = sys_open("/etc")
+    if fd < 0:
+        fd = sys_open("/")
+    if fd < 0:
+        return -1
+    n: int64 = sys_read(fd, cast[Ptr[uint8]](win + RBUF_OFF), RBUF_LEN)
+    sys_close(fd)
+    return n
+
+
+def main() -> int32:
+    write_str(1, "[sdp] start\n")
+
+    bss_win: uint64 = (cast[uint64](&pg[0]) + 4095) & ~cast[uint64](4095)
+    mm_win: uint64 = 0
+    m: int64 = sys_mmap(0, 16384, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+    if m > 0:
+        mm_win = (cast[uint64](m) + 4095) & ~cast[uint64](4095)
+    else:
+        write_str(1, "[sdp] NOTE: mmap probe unavailable\n")
+
+    fails: uint64 = 0
+    p: uint64 = 0
+    while p < PASSES:
+        # Seed BOTH probe pages, then fork: the fork marks every resident
+        # page RO+COW in the parent.
+        _fill_page(bss_win)
+        if mm_win != 0:
+            _fill_page(mm_win)
+
+        _spawn_detached_child()
+        _spin(3000000)
+
+        # Kernel write into each probe page while it is still RO+COW
+        # (we have only READ from them since the fork).
+        if _kernel_read_into(bss_win) < 0:
+            write_str(1, "[sdp] NOTE: kernel read unavailable\n")
+        fails = fails + _check_page(bss_win, "bss", p)
+
+        if mm_win != 0:
+            _kernel_read_into(mm_win)
+            fails = fails + _check_page(mm_win, "mmap", p)
+
+        write_str(1, "[sdp] pass ")
+        write_dec(1, p)
+        write_str(1, " done\n")
+        p = p + 1
+
+    if fails != 0:
+        write_str(1, "[sdp] FAIL total=")
+        write_dec(1, fails)
+        write_str(1, "\n")
+        return 1
+    write_str(1, "[sdp] PASS\n")
+    return 0

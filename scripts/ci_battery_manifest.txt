@@ -2308,6 +2308,16 @@ bash scripts/test_de_office_suite.sh
 # prebuilt build/hamnix-installer.img.
 bash scripts/test_de_desktop_icon_source.sh
 
+# test_spawn_detached_page: a LIVE PARENT must never lose the contents of one
+# of its own user pages across a `spawn detached`. The parent seeds a page
+# (pattern + a kernel-read buffer), rfork(RFPROC|RFFDG|RFNAMEG|RFNOWAIT)s a
+# child that execve's, then has the KERNEL write into that page while it is
+# still RO+COW from the fork. Guards the mm/uaccess.ad demand-vs-COW routing
+# bug: copy_to_user's fault-in ran the demand-zero resolver on a PRESENT
+# read-only COW page, mapping a FRESH ZERO frame over the parent's live one
+# (the hamdesktop fmc_cur_path / ic_label "desktop shows root" corruption).
+bash scripts/test_spawn_detached_page.sh
+
 # test_de_desktop_label_budget_host: the desktop icon LABELS survive the shared
 # 16 KB scene display list. Renders a worst-case full launcher set (MAX_ICONS
 # two-line labels) over a worst-case wallpaper mosaic on the HOST and asserts
