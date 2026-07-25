@@ -28,7 +28,9 @@ from lib.hamsheetcore import hamsheet_init, hamsheet_build_scene, \
     hamsheet_deserialize, hamsheet_clear, hamsheet_set_fname, \
     hamsheet_key_line, hamsheet_take_action, hamsheet_cur_ref, \
     hamsheet_sel_row, hamsheet_sel_col, hamsheet_cell_raw_ptr, \
-    hamsheet_cell_raw_len
+    hamsheet_cell_raw_len, hamsheet_select, hamsheet_set_fmt, \
+    hamsheet_export_csv, hamsheet_import_csv, hamsheet_col_width, \
+    hamsheet_cell_fmt, hamsheet_undo_depth
 
 
 obuf: Array[512, uint8]
@@ -94,7 +96,9 @@ def _render(w: int32, h: int32) -> int32:
 
 
 # ---- host-side persistence (mirrors user/hamsheet.ad) ---------------------
-ser_buf: Array[16384, uint8]
+ser_buf: Array[32768, uint8]
+csv_buf: Array[8192, uint8]
+h1_buf:  Array[512, uint8]
 doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
 
@@ -123,8 +127,8 @@ def _load_doc():
         hamsheet_deserialize(&ser_buf[0], 0)
         return
     total: uint64 = 0
-    while total < 16384:
-        r: int64 = sys_read(fd, &ser_buf[total], 16384 - total)
+    while total < 32768:
+        r: int64 = sys_read(fd, &ser_buf[total], 32768 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
@@ -202,6 +206,31 @@ def _dump_cell(tag: Ptr[uint8], r: uint64, c: uint64):
     hamsheet_cell_display(r, c, &dbuf[0])
     _o_str(&dbuf[0])
     _o_ch(10)
+
+
+# Dump the RAW source text of cell (r,c) as `<tag> <text>`.
+def _dump_raw(tag: Ptr[uint8], r: uint64, c: uint64):
+    _o_str(tag)
+    _o_ch(32)
+    p: Ptr[uint8] = hamsheet_cell_raw_ptr(r, c)
+    n: uint64 = hamsheet_cell_raw_len(r, c)
+    i: uint64 = 0
+    while i < n:
+        _o_ch(p[i])
+        i = i + 1
+    _o_ch(10)
+
+
+hb_n: uint64 = 0
+
+
+def _hb(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        if hb_n < 511:
+            h1_buf[hb_n] = s[i]
+            hb_n = hb_n + 1
+        i = i + 1
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
@@ -317,5 +346,243 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     rl: uint64 = hamsheet_cell_raw_len(0, 1)
     sys_write(1, from_raw, rl)
     _o_str(cast[Ptr[uint8]]("\nB1RAW-END\n"))
+    _o_flush()
+
+    # ================================================================
+    # (8) FORMULA-ENGINE DEPTH: functions, strings, booleans, errors
+    # ================================================================
+    # A1=5, A2=20, A3=30 at this point (A1 was typed in step 7).
+    hamsheet_set_cell(0, 3, cast[Ptr[uint8]]("=IF(A1>10,\"big\",\"small\")"))
+    hamsheet_set_cell(1, 3, cast[Ptr[uint8]]("=ROUND(2/3,2)"))
+    hamsheet_set_cell(2, 3, cast[Ptr[uint8]]("=ABS(0-7)"))
+    hamsheet_set_cell(3, 3, cast[Ptr[uint8]]("=SQRT(16)"))
+    hamsheet_set_cell(4, 3, cast[Ptr[uint8]]("=POWER(2,10)"))
+    hamsheet_set_cell(5, 3, cast[Ptr[uint8]]("=MOD(7,3)"))
+    hamsheet_set_cell(6, 3, cast[Ptr[uint8]]("=2^3+1"))
+    hamsheet_set_cell(7, 3, cast[Ptr[uint8]]("=LEN(\"hello\")"))
+    hamsheet_set_cell(8, 3, cast[Ptr[uint8]]("=LEFT(\"hamnix\",3)&\"-\"&RIGHT(\"hamnix\",2)"))
+    hamsheet_set_cell(9, 3, cast[Ptr[uint8]]("=MID(\"spreadsheet\",7,5)"))
+    hamsheet_set_cell(10, 3, cast[Ptr[uint8]]("=UPPER(\"ok\")"))
+    hamsheet_set_cell(11, 3, cast[Ptr[uint8]]("=AND(1>0,2>1)"))
+    hamsheet_set_cell(12, 3, cast[Ptr[uint8]]("=OR(FALSE,FALSE)"))
+    hamsheet_set_cell(13, 3, cast[Ptr[uint8]]("=NOT(TRUE)"))
+    hamsheet_set_cell(14, 3, cast[Ptr[uint8]]("=CONCAT(\"a\",\"b\",\"c\")"))
+    hamsheet_set_cell(15, 3, cast[Ptr[uint8]]("=1/0"))
+    hamsheet_set_cell(16, 3, cast[Ptr[uint8]]("=FOO(1)"))
+    hamsheet_set_cell(17, 3, cast[Ptr[uint8]]("=IFERROR(1/0,42)"))
+    hamsheet_set_cell(18, 3, cast[Ptr[uint8]]("=COUNTIF(A1:A3,\">10\")"))
+    hamsheet_set_cell(19, 3, cast[Ptr[uint8]]("=SUMIF(A1:A3,\">10\")"))
+    hamsheet_set_cell(20, 3, cast[Ptr[uint8]]("=\"x\"&5"))
+    hamsheet_set_cell(21, 3, cast[Ptr[uint8]]("=3=3"))
+    hamsheet_set_cell(22, 3, cast[Ptr[uint8]]("=A1>=5"))
+    hamsheet_set_cell(23, 3, cast[Ptr[uint8]]("=D24"))
+    hamsheet_set_cell(24, 3, cast[Ptr[uint8]]("=(1+2)*3"))
+    hamsheet_set_cell(25, 3, cast[Ptr[uint8]]("=AVG(A1:A3)>10"))
+    hamsheet_recompute()
+    _dump_cell(cast[Ptr[uint8]]("FN_IF"), 0, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_ROUND"), 1, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_ABS"), 2, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_SQRT"), 3, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_POWER"), 4, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_MOD"), 5, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_CARET"), 6, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_LEN"), 7, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_LEFTRIGHT"), 8, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_MID"), 9, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_UPPER"), 10, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_AND"), 11, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_OR"), 12, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_NOT"), 13, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_CONCAT"), 14, 3)
+    _dump_cell(cast[Ptr[uint8]]("ERR_DIV0"), 15, 3)
+    _dump_cell(cast[Ptr[uint8]]("ERR_NAME"), 16, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_IFERROR"), 17, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_COUNTIF"), 18, 3)
+    _dump_cell(cast[Ptr[uint8]]("FN_SUMIF"), 19, 3)
+    _dump_cell(cast[Ptr[uint8]]("OP_AMP"), 20, 3)
+    _dump_cell(cast[Ptr[uint8]]("OP_EQ"), 21, 3)
+    _dump_cell(cast[Ptr[uint8]]("OP_GE"), 22, 3)
+    _dump_cell(cast[Ptr[uint8]]("ERR_CIRC"), 23, 3)
+    _dump_cell(cast[Ptr[uint8]]("OP_PARENS"), 24, 3)
+    _dump_cell(cast[Ptr[uint8]]("OP_CMPAGG"), 25, 3)
+    _o_flush()
+
+    # ================================================================
+    # (9) ABSOLUTE REFS + FILL-DOWN with reference adjustment
+    # ================================================================
+    hamsheet_set_cell(0, 7, cast[Ptr[uint8]]("10"))       # H1 = rate
+    hamsheet_set_cell(0, 4, cast[Ptr[uint8]]("1"))        # E1
+    hamsheet_set_cell(1, 4, cast[Ptr[uint8]]("2"))        # E2
+    hamsheet_set_cell(2, 4, cast[Ptr[uint8]]("3"))        # E3
+    hamsheet_set_cell(0, 5, cast[Ptr[uint8]]("=E1*$H$1")) # F1
+    hamsheet_select(0, 5, 2, 5)                           # F1:F3
+    _press(4)                                             # Ctrl-D fill down
+    _dump_raw(cast[Ptr[uint8]]("FILL_RAW_F3"), 2, 5)
+    _dump_cell(cast[Ptr[uint8]]("FILL_VAL_F2"), 1, 5)
+    _dump_cell(cast[Ptr[uint8]]("FILL_VAL_F3"), 2, 5)
+
+    # ---- copy / paste with reference adjustment --------------------
+    hamsheet_select(0, 5, 0, 5)
+    _press(3)                                             # Ctrl-C
+    hamsheet_select(4, 5, 4, 5)
+    _press(22)                                            # Ctrl-V
+    _dump_raw(cast[Ptr[uint8]]("PASTE_RAW_F5"), 4, 5)
+    _o_flush()
+
+    # ================================================================
+    # (10) INSERT / DELETE ROW — formulas are RE-POINTED
+    # ================================================================
+    hamsheet_set_cell(9, 1, cast[Ptr[uint8]]("100"))      # B10
+    hamsheet_set_cell(10, 1, cast[Ptr[uint8]]("=B10*2"))  # B11 -> 200
+    _dump_cell(cast[Ptr[uint8]]("ROWOPS_BEFORE"), 10, 1)
+    hamsheet_select(9, 1, 9, 1)
+    _press(14)                                            # Ctrl-N insert row
+    _dump_raw(cast[Ptr[uint8]]("INSROW_RAW"), 11, 1)
+    _dump_cell(cast[Ptr[uint8]]("INSROW_VAL"), 11, 1)
+    hamsheet_select(9, 1, 9, 1)
+    _press(11)                                            # Ctrl-K delete row
+    _dump_raw(cast[Ptr[uint8]]("DELROW_RAW"), 10, 1)
+    _dump_cell(cast[Ptr[uint8]]("DELROW_VAL"), 10, 1)
+    hamsheet_select(9, 1, 9, 1)
+    _press(11)                                            # delete the SOURCE row
+    _dump_cell(cast[Ptr[uint8]]("DELROW_REF"), 9, 1)
+    _press(26)                                            # Ctrl-Z undo
+    _dump_cell(cast[Ptr[uint8]]("UNDO_ROWOPS"), 10, 1)
+    _dump_raw(cast[Ptr[uint8]]("UNDO_ROWOPS_RAW"), 10, 1)
+    _o_flush()
+
+    # ---- undo of a plain typed edit --------------------------------
+    hamsheet_select(0, 2, 0, 2)                           # C1
+    _type(cast[Ptr[uint8]]("77"))
+    _press(13)
+    _dump_cell(cast[Ptr[uint8]]("UNDO_BEFORE"), 0, 2)
+    _press(26)
+    _dump_cell(cast[Ptr[uint8]]("UNDO_AFTER"), 0, 2)
+    _o_flush()
+
+    # ================================================================
+    # (11) NUMBER FORMATS + bold + column width
+    # ================================================================
+    hamsheet_set_cell(0, 6, cast[Ptr[uint8]]("1234.5"))
+    hamsheet_set_fmt(0, 6, 4)                             # currency
+    hamsheet_set_cell(1, 6, cast[Ptr[uint8]]("0.125"))
+    hamsheet_set_fmt(1, 6, 5)                             # percent
+    hamsheet_set_cell(2, 6, cast[Ptr[uint8]]("9876.543"))
+    hamsheet_set_fmt(2, 6, 3)                             # thousands
+    hamsheet_set_cell(3, 6, cast[Ptr[uint8]]("3"))
+    hamsheet_set_fmt(3, 6, 2)                             # 2 decimals
+    hamsheet_recompute()
+    _dump_cell(cast[Ptr[uint8]]("FMT_CURRENCY"), 0, 6)
+    _dump_cell(cast[Ptr[uint8]]("FMT_PERCENT"), 1, 6)
+    _dump_cell(cast[Ptr[uint8]]("FMT_THOUSANDS"), 2, 6)
+    _dump_cell(cast[Ptr[uint8]]("FMT_2DP"), 3, 6)
+    hamsheet_select(0, 6, 0, 6)
+    _press(2)                                             # Ctrl-B bold
+    _o_str(cast[Ptr[uint8]]("FMT_BOLD_BIT "))
+    _o_dec(cast[int64](hamsheet_cell_fmt(0, 6)))          # 4 + 8 = 12
+    _o_ch(10)
+    hamsheet_select(0, 0, 0, 0)
+    _press(23)                                            # Ctrl-W widen
+    _o_str(cast[Ptr[uint8]]("COLW_A "))
+    _o_dec(cast[int64](hamsheet_col_width(0)))            # 80
+    _o_ch(10)
+    _o_flush()
+
+    # ================================================================
+    # (12) SAVE / RE-OPEN: formats, widths and formulas all round-trip
+    # ================================================================
+    _press(19)                                            # Ctrl-S
+    hamsheet_clear()
+    _press(15)                                            # Ctrl-O
+    _dump_cell(cast[Ptr[uint8]]("RT_CURRENCY"), 0, 6)
+    _dump_raw(cast[Ptr[uint8]]("RT_ABSREF"), 2, 5)
+    _dump_cell(cast[Ptr[uint8]]("RT_IF"), 0, 3)
+    _o_str(cast[Ptr[uint8]]("RT_COLW_A "))
+    _o_dec(cast[int64](hamsheet_col_width(0)))            # 80
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("RT_FMT_BITS "))
+    _o_dec(cast[int64](hamsheet_cell_fmt(0, 6)))          # 12
+    _o_ch(10)
+    _o_flush()
+
+    # ================================================================
+    # (13) BACKWARD COMPAT: an old HAMSHEET1 container still loads
+    # ================================================================
+    hb_n = 0
+    _hb(cast[Ptr[uint8]]("HAMSHEET1\n2\n0 0 2\n42\n0 1 5\n=A1*2\n"))
+    hamsheet_deserialize(&h1_buf[0], hb_n)
+    _dump_cell(cast[Ptr[uint8]]("V1_A1"), 0, 0)
+    _dump_cell(cast[Ptr[uint8]]("V1_B1"), 0, 1)
+    _o_flush()
+
+    # ================================================================
+    # (14) CSV EXPORT / IMPORT
+    # ================================================================
+    hamsheet_clear()
+    hamsheet_set_cell(0, 0, cast[Ptr[uint8]]("Item"))
+    hamsheet_set_cell(0, 1, cast[Ptr[uint8]]("Qty"))
+    hamsheet_set_cell(1, 0, cast[Ptr[uint8]]("nut, bolt"))
+    hamsheet_set_cell(1, 1, cast[Ptr[uint8]]("3"))
+    hamsheet_set_cell(2, 0, cast[Ptr[uint8]]("Total"))
+    hamsheet_set_cell(2, 1, cast[Ptr[uint8]]("=SUM(B2:B2)*2"))
+    hamsheet_recompute()
+    csv_n: uint64 = hamsheet_export_csv(&csv_buf[0])
+    _o_str(cast[Ptr[uint8]]("CSV-BEGIN\n"))
+    _o_flush()
+    sys_write(1, &csv_buf[0], csv_n)
+    _o_str(cast[Ptr[uint8]]("CSV-END\n"))
+    _o_flush()
+    hamsheet_import_csv(&csv_buf[0], csv_n)
+    _dump_cell(cast[Ptr[uint8]]("CSVIN_A2"), 1, 0)
+    _dump_cell(cast[Ptr[uint8]]("CSVIN_B3"), 2, 1)
+    _o_flush()
+
+    # ---- (15) a presentable demo sheet for the eye -----------------
+    hamsheet_clear()
+    hamsheet_set_cell(0, 0, cast[Ptr[uint8]]("Item"))
+    hamsheet_set_cell(0, 1, cast[Ptr[uint8]]("Qty"))
+    hamsheet_set_cell(0, 2, cast[Ptr[uint8]]("Price"))
+    hamsheet_set_cell(0, 3, cast[Ptr[uint8]]("Total"))
+    hamsheet_set_cell(0, 4, cast[Ptr[uint8]]("Bulk?"))
+    hamsheet_set_cell(1, 0, cast[Ptr[uint8]]("Widget"))
+    hamsheet_set_cell(1, 1, cast[Ptr[uint8]]("12"))
+    hamsheet_set_cell(1, 2, cast[Ptr[uint8]]("2.5"))
+    hamsheet_set_cell(2, 0, cast[Ptr[uint8]]("Gadget"))
+    hamsheet_set_cell(2, 1, cast[Ptr[uint8]]("3"))
+    hamsheet_set_cell(2, 2, cast[Ptr[uint8]]("19.99"))
+    hamsheet_set_cell(3, 0, cast[Ptr[uint8]]("Doohickey"))
+    hamsheet_set_cell(3, 1, cast[Ptr[uint8]]("40"))
+    hamsheet_set_cell(3, 2, cast[Ptr[uint8]]("0.75"))
+    hamsheet_set_cell(1, 3, cast[Ptr[uint8]]("=B2*C2"))
+    hamsheet_set_cell(1, 4, cast[Ptr[uint8]]("=IF(B2>=10,\"yes\",\"no\")"))
+    hamsheet_select(1, 3, 3, 4)
+    _press(4)                                             # fill down D2:E4
+    hamsheet_set_cell(5, 0, cast[Ptr[uint8]]("Subtotal"))
+    hamsheet_set_cell(5, 3, cast[Ptr[uint8]]("=SUM(D2:D4)"))
+    hamsheet_set_cell(6, 0, cast[Ptr[uint8]]("Tax 8%"))
+    hamsheet_set_cell(6, 3, cast[Ptr[uint8]]("=ROUND(D6*0.08,2)"))
+    hamsheet_set_cell(7, 0, cast[Ptr[uint8]]("Grand total"))
+    hamsheet_set_cell(7, 3, cast[Ptr[uint8]]("=D6+D7"))
+    hamsheet_set_cell(9, 0, cast[Ptr[uint8]]("Big lines"))
+    hamsheet_set_cell(9, 3, cast[Ptr[uint8]]("=COUNTIF(D2:D4,\">20\")"))
+    dr: uint64 = 1
+    while dr <= 7:
+        hamsheet_set_fmt(dr, 2, 4)                        # currency
+        hamsheet_set_fmt(dr, 3, 4)
+        dr = dr + 1
+    hamsheet_select(0, 0, 0, 4)
+    _press(2)                                             # bold the header row
+    hamsheet_select(5, 3, 7, 3)                           # show a live range
+    hamsheet_recompute()
+    _dump_cell(cast[Ptr[uint8]]("DEMO_SUBTOTAL"), 5, 3)
+    _dump_cell(cast[Ptr[uint8]]("DEMO_GRAND"), 7, 3)
+    _dump_cell(cast[Ptr[uint8]]("DEMO_BULK"), 3, 4)
+    _o_flush()
+    _render(W, H)
+    _write_ppm(cast[Ptr[char]](argv[3]))
+    _o_str(cast[Ptr[uint8]]("SCENE2-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("SCENE2-END\n"))
     _o_flush()
     return 0

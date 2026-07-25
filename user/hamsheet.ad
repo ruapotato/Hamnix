@@ -28,7 +28,7 @@ from lib.hamtextbox import htb_evt_parse_m
 from lib.hamsheetcore import hamsheet_init, hamsheet_build_scene, \
     hamsheet_key_line, hamsheet_take_action, hamsheet_serialize, \
     hamsheet_deserialize, hamsheet_mark_saved, hamsheet_set_fname, \
-    hamsheet_hit
+    hamsheet_hit, hamsheet_drag, hamsheet_export_csv, hamsheet_import_csv
 
 
 def _slen(s: Ptr[uint8]) -> uint64:
@@ -106,7 +106,8 @@ def _winpath(out: Ptr[uint8], wid: int32, leaf: Ptr[uint8]):
 DOC_PATH_CAP: uint64 = 192
 doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
-ser_buf: Array[16384, uint8]
+ser_buf: Array[32768, uint8]
+csv_path: Array[200, uint8]
 
 
 def _set_docpath(s: Ptr[uint8]):
@@ -148,8 +149,8 @@ def _load_doc():
     if fd < 0:
         return
     total: uint64 = 0
-    while total < 16384:
-        r: int64 = sys_read(fd, &ser_buf[total], 16384 - total)
+    while total < 32768:
+        r: int64 = sys_read(fd, &ser_buf[total], 32768 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
@@ -157,11 +158,67 @@ def _load_doc():
     hamsheet_deserialize(&ser_buf[0], total)
 
 
+# The CSV sidecar path: the document path with a ".csv" suffix.
+def _make_csvpath():
+    i: uint64 = 0
+    while i < doc_path_len and i < 195:
+        csv_path[i] = doc_path[i]
+        i = i + 1
+    # strip an existing extension
+    cut: uint64 = i
+    k: uint64 = i
+    while k > 0:
+        k = k - 1
+        if csv_path[k] == 46:
+            cut = k
+            break
+        if csv_path[k] == 47:
+            break
+    csv_path[cut] = 46
+    csv_path[cut + 1] = 99
+    csv_path[cut + 2] = 115
+    csv_path[cut + 3] = 118
+    csv_path[cut + 4] = 0
+
+
+def _export_csv():
+    if doc_path_len == 0:
+        return
+    _make_csvpath()
+    fd: int32 = sys_open_write(cast[Ptr[char]](&csv_path[0]))
+    if fd < 0:
+        return
+    n: uint64 = hamsheet_export_csv(&ser_buf[0])
+    sys_write(fd, &ser_buf[0], n)
+    sys_close(fd)
+
+
+def _import_csv():
+    if doc_path_len == 0:
+        return
+    _make_csvpath()
+    fd: int32 = sys_open(cast[Ptr[char]](&csv_path[0]))
+    if fd < 0:
+        return
+    total: uint64 = 0
+    while total < 32768:
+        r: int64 = sys_read(fd, &ser_buf[total], 32768 - total)
+        if r <= 0:
+            break
+        total = total + cast[uint64](r)
+    sys_close(fd)
+    hamsheet_import_csv(&ser_buf[0], total)
+
+
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
     elif act == 2:
         _load_doc()
+    elif act == 3:
+        _export_csv()
+    elif act == 4:
+        _import_csv()
 
 
 # ---- pointer input --------------------------------------------------------
@@ -177,7 +234,13 @@ def _pointer(lx: int64, ly: int64, btn: int64) -> int32:
         if act == 1 or act == 2:
             _dispatch(act)
             changed = 1
+        elif act == 4:
+            _dispatch(3)
+            changed = 1
         elif act == 3:
+            changed = 1
+    elif b1 != 0 and pb1 != 0:                          # button-1 DRAG
+        if hamsheet_drag(lx, ly) != 0:
             changed = 1
     hs_prev_btn = btn
     return changed

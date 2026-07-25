@@ -1,19 +1,28 @@
 # lib/hamsheetcore.ad — PURE, extern-free core for HamSheet, the Hamnix office
-# SPREADSHEET (/bin/hamsheet). The office suite's second app alongside HamWrite:
-# a scrollable grid of cells that hold numbers, text or `=formulas`, with a real
-# recalculating formula engine and a self-describing document file.
+# SPREADSHEET (/bin/hamsheet). The office suite's second app alongside HamWrite.
 #
 #   1. a scrollable GRID (A/B/C… column headers + 1/2/3… row headers) with a
-#      selected cell you move with the arrow keys / Tab / Enter,
-#   2. CELL VALUES: a cell holds a number, free text, or a `=formula`. Formulas
-#      support cell references (A1, B2), arithmetic (+ - * /), parentheses and
-#      the aggregate functions SUM / AVG / MIN / MAX / COUNT over an A1:A5 range
-#      or a comma list. A recalc pass (with a cycle guard) recomputes every
-#      dependent cell on each edit,
-#   3. a real DOCUMENT FILE (HAMSHEET1 container) that round-trips the RAW cell
-#      text — so formulas survive a save->load verbatim,
-#   4. a formula/status bar showing the current cell ref + its raw contents and
-#      the (basic, per-column) column widths.
+#      selected cell you move with the arrow keys / Tab / Enter and a RANGE
+#      SELECTION you extend with Shift+arrows (or a mouse drag),
+#   2. CELL VALUES: a cell holds a number, free text, or a `=formula`. The
+#      formula engine has a real VALUE MODEL — numbers (fixed point), STRINGS,
+#      BOOLEANS and typed ERRORS (#DIV/0! #REF! #NAME? #VALUE! #CIRC! #ERR!) —
+#      relative AND absolute references ($A$1), the operators
+#      + - * / ^ & = <> < <= > >= with correct precedence, and the functions
+#      SUM AVG MIN MAX COUNT COUNTA COUNTIF SUMIF IF AND OR NOT IFERROR
+#      ABS SQRT ROUND INT SIGN POWER MOD LEN UPPER LOWER TRIM
+#      LEFT RIGHT MID CONCAT TRUE FALSE PI,
+#   3. EDITING: in-cell editing with a caret, copy / cut / paste of a RANGE with
+#      relative-reference ADJUSTMENT, fill-down / fill-right, insert & delete
+#      row/column (formulas are re-pointed), and multi-level UNDO,
+#   4. FORMATTING: per-cell number format (general / 0dp / 2dp / thousands /
+#      currency / percent), bold, alignment, and adjustable column widths,
+#   5. a real DOCUMENT FILE (HAMSHEET2 container; HAMSHEET1 still loads) that
+#      round-trips the RAW cell text, the per-cell formats and the column
+#      widths — plus CSV import/export,
+#   6. a formula bar showing the cell reference + its SOURCE while the grid
+#      shows the COMPUTED value, and a status bar with the selection and the
+#      live aggregate of the selected range.
 #
 # Like the other dual-target apps (docs/hamui_dual_target.md) this file imports
 # ONLY lib/hamscene (the pure display-list builder) and performs NO syscalls: it
@@ -36,49 +45,80 @@ from lib.hamscene import hamscene_begin, hamscene_fill, hamscene_stroke, \
 # ---- grid dimensions -------------------------------------------------------
 MAXROWS:  uint64 = 32
 MAXCOLS:  uint64 = 8
-CELLTEXT: uint64 = 40                    # bytes of raw text per cell
+CELLTEXT: uint64 = 64                    # bytes of raw text per cell
 NCELLS:   uint64 = 256                   # MAXROWS * MAXCOLS
 
 # Raw cell text (row-major, CELLTEXT bytes/cell) + its length.
-cell_raw: Array[10240, uint8]            # NCELLS * CELLTEXT
+cell_raw: Array[16384, uint8]            # NCELLS * CELLTEXT
 cell_len: Array[256, uint8]
+cell_fmt: Array[256, uint8]              # number format | bold | align
 
 # Evaluated value cache (rebuilt by hamsheet_recompute).
-#   val_kind: 0 EMPTY  1 NUMBER  2 TEXT  3 ERROR
-val_fp:     Array[256, int64]            # scaled numeric value (kind 1)
+#   val_kind: 0 EMPTY  1 NUMBER  2 TEXT  3 ERROR  4 BOOL
+val_fp:     Array[256, int64]            # scaled numeric value (kind 1/4)
 val_kind:   Array[256, uint8]
+val_err:    Array[256, uint8]            # error code when kind == ERROR
+val_txt:    Array[16384, uint8]          # rendered text when kind == TEXT
+val_txt_len: Array[256, uint8]
 eval_state: Array[256, uint8]            # recompute visit state: 0 none 1 busy 2 done
 
 KIND_EMPTY: uint8 = 0
 KIND_NUM:   uint8 = 1
 KIND_TEXT:  uint8 = 2
 KIND_ERR:   uint8 = 3
+KIND_BOOL:  uint8 = 4
 
-# Per-column widths (pixels) — "basic column widths".
+# Error codes (val_err / err_code).
+ERR_DIV0:   int32 = 1
+ERR_REF:    int32 = 2
+ERR_NAME:   int32 = 3
+ERR_VALUE:  int32 = 4
+ERR_CIRC:   int32 = 5
+ERR_SYNTAX: int32 = 6
+
+# Number-format ids (low 3 bits of cell_fmt).
+NF_GENERAL: uint8 = 0
+NF_INT:     uint8 = 1
+NF_2DP:     uint8 = 2
+NF_THOU:    uint8 = 3
+NF_CURR:    uint8 = 4
+NF_PCT:     uint8 = 5
+NF_COUNT:   uint8 = 6
+FMT_BOLD:   uint8 = 8                    # bit 3
+# bits 4-5: alignment 0 auto, 1 left, 2 centre, 3 right
+
+# Per-column widths (pixels).
 DEF_COLW: int32 = 72
+MIN_COLW: int32 = 32
+MAX_COLW: int32 = 200
 col_w: Array[8, int32]
 
-# Selection + scroll.
+# Selection: the active cell (sel_r/sel_c) plus the range anchor.
 sel_r:    uint64 = 0
 sel_c:    uint64 = 0
+anc_r:    uint64 = 0
+anc_c:    uint64 = 0
 top_row:  uint64 = 0                     # first visible data row
 left_col: uint64 = 0                     # first visible data column
 
 # In-cell edit state.
-EDIT_CAP:  uint64 = 40
+EDIT_CAP:  uint64 = 64
 editing:   int32 = 0
-edit_buf:  Array[40, uint8]
+edit_buf:  Array[64, uint8]
 edit_len:  uint64 = 0
 
 dirty: int32 = 0
 flash: int32 = 0                         # "saved!" ack countdown
+msg_id: int32 = 0                        # transient status message id
 
-# Action requested by a keystroke/click, drained by the driver: 0 none 1 save 2 open.
+# Action requested by a keystroke/click, drained by the driver:
+#   0 none  1 save  2 open  3 export CSV  4 import CSV
 pending_action: int32 = 0
 
-# CSI escape decode (arrow-key navigation): 0 ground, 1 saw ESC, 2 saw ESC '['.
+# CSI escape decode (arrow keys, incl. modifiers): 0 ground, 1 ESC, 2 CSI.
 hs_esc: int32 = 0
-hs_par: int32 = 0
+csi_buf: Array[16, uint8]
+csi_n: uint64 = 0
 
 # Current document filename (display only; the driver owns the real path).
 FNAME_CAP: uint64 = 128
@@ -130,15 +170,71 @@ def _cbase(r: uint64, c: uint64) -> uint64:
     return (r * MAXCOLS + c) * CELLTEXT
 
 
+def _streq(a: Ptr[uint8], b: Ptr[uint8]) -> int32:
+    i: uint64 = 0
+    while a[i] != 0 and b[i] != 0:
+        if a[i] != b[i]:
+            return 0
+        i = i + 1
+    if a[i] == b[i]:
+        return 1
+    return 0
+
+
+def _is_digit(c: uint8) -> int32:
+    if c >= 48 and c <= 57:
+        return 1
+    return 0
+
+
+def _is_alpha(c: uint8) -> int32:
+    if (c >= 65 and c <= 90) or (c >= 97 and c <= 122):
+        return 1
+    return 0
+
+
+def _up(c: uint8) -> uint8:
+    if c >= 97 and c <= 122:
+        return c - 32
+    return c
+
+
+def _lo(c: uint8) -> uint8:
+    if c >= 65 and c <= 90:
+        return c + 32
+    return c
+
+
+def _fmt_nf(f: uint8) -> uint8:
+    return f % 8
+
+
+def _fmt_align(f: uint8) -> uint8:
+    return (f / 16) % 4
+
+
+def _fmt_is_bold(f: uint8) -> int32:
+    if (f / 8) % 2 != 0:
+        return 1
+    return 0
+
+
 # ====================================================================
 # FIXED-POINT ARITHMETIC (all int64; SCALE = 10^6) — seeded from hamcalccore
 # ====================================================================
 SCALE:   int64 = 1000000
 SCALE10: int64 = 100000
 
-# Latched during a formula parse/eval when something goes wrong (bad syntax,
-# div-by-zero, out-of-range ref, or a dependency CYCLE) -> the cell reads ERR.
+# Latched during a formula parse/eval when something goes wrong; err_code says
+# WHICH error so the cell can show #DIV/0! / #REF! / #NAME? / … precisely.
 parse_err: int32 = 0
+err_code:  int32 = 0
+
+
+def _seterr(code: int32):
+    if parse_err == 0:
+        parse_err = 1
+        err_code = code
 
 
 def _fp_mul(a: int64, b: int64) -> int64:
@@ -161,7 +257,7 @@ def _fp_mul(a: int64, b: int64) -> int64:
 
 def _fp_div(a: int64, b: int64) -> int64:
     if b == 0:
-        parse_err = 1
+        _seterr(ERR_DIV0)
         return 0
     sign: int64 = 1
     aa: int64 = a
@@ -185,6 +281,49 @@ def _fp_div(a: int64, b: int64) -> int64:
         f = f / 10
         k = k + 1
     return sign * res
+
+
+def _isqrt(v: int64) -> int64:
+    if v <= 0:
+        return 0
+    x: int64 = v
+    y: int64 = (x + 1) / 2
+    while y < x:
+        x = y
+        y = (x + v / x) / 2
+    return x
+
+
+def _fp_sqrt(v: int64) -> int64:
+    if v < 0:
+        _seterr(ERR_VALUE)
+        return 0
+    if v <= 1000000000000:
+        return _isqrt(v * SCALE)
+    return _isqrt(v) * 1000
+
+
+# Round a scaled value to `dp` decimal places (half away from zero).
+def _fp_round_dp(v: int64, dp: int64) -> int64:
+    step: int64 = SCALE
+    d: int64 = dp
+    while d > 0 and step > 1:
+        step = step / 10
+        d = d - 1
+    while d < 0:
+        step = step * 10
+        d = d + 1
+    if step <= 1:
+        return v
+    neg: int32 = 0
+    a: int64 = v
+    if a < 0:
+        neg = 1
+        a = 0 - a
+    a = ((a + step / 2) / step) * step
+    if neg != 0:
+        return 0 - a
+    return a
 
 
 # Render a scaled value into out (NUL-terminated); trailing zeros trimmed.
@@ -226,35 +365,157 @@ def _render_scaled(v: int64, out: Ptr[uint8]) -> uint64:
     return p
 
 
-# ====================================================================
-# FORMULA PARSER (recursive descent over a cell's raw text)
-# ====================================================================
-# The parser reads directly from a cell's raw bytes via a caller-owned cursor
-# (pos), so it is REENTRANT: evaluating a cell reference recurses into
-# _eval_cell for the target with ITS OWN cursor, while the outer parse resumes
-# from its own local pos. All numbers are scaled int64.
+# Render with a FIXED number of decimals, optional thousands separators and an
+# optional currency prefix / percent suffix.
+def _render_fixed(v: int64, dp: int64, group: int32, prefix: uint8,
+                  suffix: uint8, out: Ptr[uint8]) -> uint64:
+    rv: int64 = _fp_round_dp(v, dp)
+    neg: int32 = 0
+    uv: uint64 = 0
+    if rv < 0:
+        neg = 1
+        uv = cast[uint64](0 - rv)
+    else:
+        uv = cast[uint64](rv)
+    su: uint64 = cast[uint64](SCALE)
+    ip: uint64 = uv / su
+    fp: uint64 = uv % su
+    p: uint64 = 0
+    if neg != 0:
+        out[p] = 45
+        p = p + 1
+    if prefix != 0:
+        out[p] = prefix
+        p = p + 1
+    digs: Array[24, uint8]
+    nd: uint64 = _hs_udec(ip, &digs[0])
+    i: uint64 = 0
+    while i < nd:
+        if group != 0 and i > 0 and (nd - i) % 3 == 0:
+            out[p] = 44                                # ','
+            p = p + 1
+        out[p] = digs[i]
+        p = p + 1
+        i = i + 1
+    if dp > 0:
+        out[p] = 46
+        p = p + 1
+        fd: Array[6, uint8]
+        d: int32 = 5
+        x: uint64 = fp
+        while d >= 0:
+            fd[d] = cast[uint8](x % 10) + 48
+            x = x / 10
+            d = d - 1
+        k: int64 = 0
+        while k < dp and k < 6:
+            out[p] = fd[k]
+            p = p + 1
+            k = k + 1
+    if suffix != 0:
+        out[p] = suffix
+        p = p + 1
+    out[p] = 0
+    return p
 
-def _is_digit(c: uint8) -> int32:
-    if c >= 48 and c <= 57:
-        return 1
+
+# Format a scaled value according to a cell format byte.
+def _render_numfmt(v: int64, fmt: uint8, out: Ptr[uint8]) -> uint64:
+    nf: uint8 = _fmt_nf(fmt)
+    if nf == NF_INT:
+        return _render_fixed(v, 0, 0, 0, 0, out)
+    if nf == NF_2DP:
+        return _render_fixed(v, 2, 0, 0, 0, out)
+    if nf == NF_THOU:
+        return _render_fixed(v, 2, 1, 0, 0, out)
+    if nf == NF_CURR:
+        return _render_fixed(v, 2, 1, 36, 0, out)      # '$'
+    if nf == NF_PCT:
+        return _render_fixed(v * 100, 2, 0, 0, 37, out)  # '%'
+    return _render_scaled(v, out)
+
+
+# Name of a number format (status bar).
+def _numfmt_name(fmt: uint8) -> Ptr[uint8]:
+    nf: uint8 = _fmt_nf(fmt)
+    if nf == NF_INT:
+        return cast[Ptr[uint8]]("0dp")
+    if nf == NF_2DP:
+        return cast[Ptr[uint8]]("0.00")
+    if nf == NF_THOU:
+        return cast[Ptr[uint8]]("#,##0.00")
+    if nf == NF_CURR:
+        return cast[Ptr[uint8]]("$#,##0.00")
+    if nf == NF_PCT:
+        return cast[Ptr[uint8]]("0.00%")
+    return cast[Ptr[uint8]]("General")
+
+
+def _err_text(code: uint8) -> Ptr[uint8]:
+    if code == cast[uint8](ERR_DIV0):
+        return cast[Ptr[uint8]]("#DIV/0!")
+    if code == cast[uint8](ERR_REF):
+        return cast[Ptr[uint8]]("#REF!")
+    if code == cast[uint8](ERR_NAME):
+        return cast[Ptr[uint8]]("#NAME?")
+    if code == cast[uint8](ERR_VALUE):
+        return cast[Ptr[uint8]]("#VALUE!")
+    if code == cast[uint8](ERR_CIRC):
+        return cast[Ptr[uint8]]("#CIRC!")
+    return cast[Ptr[uint8]]("#ERR!")
+
+
+# ====================================================================
+# VALUE MODEL — every expression yields a NUMBER, a STRING or a BOOLEAN
+# ====================================================================
+# Parse functions return the numeric payload as int64 and describe the value
+# through the globals below. Strings live in a bump arena that is reset once per
+# TOP-LEVEL cell evaluation (nested evaluation keeps the outer offsets valid).
+RK_NUM:  int32 = 0
+RK_STR:  int32 = 1
+RK_BOOL: int32 = 2
+
+SARENA_CAP: uint64 = 4096
+sarena:   Array[4096, uint8]
+sarena_n: uint64 = 0
+
+res_kind: int32 = 0
+res_soff: uint64 = 0
+res_slen: uint64 = 0
+
+eval_depth: int32 = 0
+
+
+def _push_str(p: Ptr[uint8], n: uint64) -> uint64:
+    if sarena_n + n + 2 >= SARENA_CAP:
+        _seterr(ERR_VALUE)
+        return sarena_n
+    off: uint64 = sarena_n
+    i: uint64 = 0
+    while i < n:
+        sarena[off + i] = p[i]
+        i = i + 1
+    sarena_n = off + n
+    return off
+
+
+def _ret_str(off: uint64, ln: uint64) -> int64:
+    res_kind = RK_STR
+    res_soff = off
+    res_slen = ln
     return 0
 
 
-def _is_alpha(c: uint8) -> int32:
-    if (c >= 65 and c <= 90) or (c >= 97 and c <= 122):
-        return 1
+def _ret_num(v: int64) -> int64:
+    res_kind = RK_NUM
+    return v
+
+
+def _ret_bool(b: int32) -> int64:
+    res_kind = RK_BOOL
+    if b != 0:
+        return SCALE
     return 0
-
-
-def _up(c: uint8) -> uint8:
-    if c >= 97 and c <= 122:
-        return c - 32
-    return c
-
-
-def _skip_ws(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]):
-    while pos[0] < n and (s[pos[0]] == 32 or s[pos[0]] == 9):
-        pos[0] = pos[0] + 1
 
 
 # Parse a decimal literal at the cursor into a scaled int64.
@@ -275,19 +536,114 @@ def _parse_number(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
     return val
 
 
-# Try to read a cell reference (letters then digits) at the cursor. On success
-# returns 1 and fills *col,*row (0-based); leaves the cursor past the ref. On
-# failure returns 0 and RESTORES the cursor.
-def _parse_cellref(s: Ptr[uint8], n: uint64, pos: Ptr[uint64],
-                   col: Ptr[uint64], row: Ptr[uint64]) -> int32:
+# Coerce a captured value to a NUMBER. Strings that look numeric convert.
+def _numify(v: int64, k: int32, off: uint64, ln: uint64) -> int64:
+    if k != RK_STR:
+        return v
+    if ln == 0:
+        return 0
+    p: uint64 = 0
+    neg: int32 = 0
+    if sarena[off] == 45:
+        neg = 1
+        p = 1
+    elif sarena[off] == 43:
+        p = 1
+    nv: int64 = _parse_number(&sarena[off], ln, &p)
+    if p < ln:
+        _seterr(ERR_VALUE)
+        return 0
+    if neg != 0:
+        return 0 - nv
+    return nv
+
+
+# Coerce a captured value to a STRING (arena offset via *outlen).
+def _strify(v: int64, k: int32, off: uint64, ln: uint64,
+            outlen: Ptr[uint64]) -> uint64:
+    if k == RK_STR:
+        outlen[0] = ln
+        return off
+    tmp: Array[48, uint8]
+    tl: uint64 = 0
+    if k == RK_BOOL:
+        if v != 0:
+            tl = _append_cstr(&tmp[0], 0, cast[Ptr[uint8]]("TRUE"))
+        else:
+            tl = _append_cstr(&tmp[0], 0, cast[Ptr[uint8]]("FALSE"))
+    else:
+        tl = _render_scaled(v, &tmp[0])
+    o: uint64 = _push_str(&tmp[0], tl)
+    outlen[0] = tl
+    return o
+
+
+def _truthy(v: int64, k: int32, off: uint64, ln: uint64) -> int32:
+    if k == RK_STR:
+        _seterr(ERR_VALUE)
+        return 0
+    if v != 0:
+        return 1
+    return 0
+
+
+# Byte compare two arena strings: -1 / 0 / 1 (case-insensitive, like Excel).
+def _scmp(o1: uint64, l1: uint64, o2: uint64, l2: uint64) -> int32:
+    i: uint64 = 0
+    while i < l1 and i < l2:
+        a: uint8 = _up(sarena[o1 + i])
+        b: uint8 = _up(sarena[o2 + i])
+        if a < b:
+            return -1
+        if a > b:
+            return 1
+        i = i + 1
+    if l1 < l2:
+        return -1
+    if l1 > l2:
+        return 1
+    return 0
+
+
+# ====================================================================
+# FORMULA PARSER (recursive descent over a cell's raw text)
+# ====================================================================
+# Precedence, lowest first:
+#   compare (= <> < <= > >=)  ->  concat (&)  ->  add (+ -)  ->  mul (* /)
+#   ->  power (^, right assoc)  ->  unary +/-  ->  primary
+# The parser reads from a caller-owned cursor so it is REENTRANT: evaluating a
+# cell reference recurses into _eval_cell with ITS OWN cursor.
+
+def _skip_ws(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]):
+    while pos[0] < n and (s[pos[0]] == 32 or s[pos[0]] == 9):
+        pos[0] = pos[0] + 1
+
+
+# Try to read a cell reference at the cursor: [$]LETTERS[$]DIGITS. On success
+# returns 1, fills *col,*row (0-based) and *cabs,*rabs with the $ flags, and
+# leaves the cursor past the ref. On failure returns 0 and RESTORES the cursor.
+def _parse_ref_ex(s: Ptr[uint8], n: uint64, pos: Ptr[uint64],
+                  col: Ptr[uint64], row: Ptr[uint64],
+                  cabs: Ptr[int32], rabs: Ptr[int32]) -> int32:
     start: uint64 = pos[0]
+    ca: int32 = 0
+    ra: int32 = 0
+    if pos[0] < n and s[pos[0]] == 36:                 # '$'
+        ca = 1
+        pos[0] = pos[0] + 1
     c: uint64 = 0
     letters: int32 = 0
     while pos[0] < n and _is_alpha(s[pos[0]]) != 0:
         c = c * 26 + cast[uint64](_up(s[pos[0]]) - 65) + 1
         pos[0] = pos[0] + 1
         letters = letters + 1
-    if letters == 0 or pos[0] >= n or _is_digit(s[pos[0]]) == 0:
+    if letters == 0 or letters > 2:
+        pos[0] = start
+        return 0
+    if pos[0] < n and s[pos[0]] == 36:                 # '$'
+        ra = 1
+        pos[0] = pos[0] + 1
+    if pos[0] >= n or _is_digit(s[pos[0]]) == 0:
         pos[0] = start
         return 0
     rr: uint64 = 0
@@ -299,130 +655,283 @@ def _parse_cellref(s: Ptr[uint8], n: uint64, pos: Ptr[uint64],
         return 0
     col[0] = c - 1                                      # A -> 0
     row[0] = rr - 1                                     # 1 -> 0
+    cabs[0] = ca
+    rabs[0] = ra
     return 1
 
 
-# Function id from an UPPERCASED name; -1 if unknown.
+def _parse_cellref(s: Ptr[uint8], n: uint64, pos: Ptr[uint64],
+                   col: Ptr[uint64], row: Ptr[uint64]) -> int32:
+    ca: int32 = 0
+    ra: int32 = 0
+    return _parse_ref_ex(s, n, pos, col, row, &ca, &ra)
+
+
+# Function ids.
+FN_SUM: int32 = 0
+FN_AVG: int32 = 1
+FN_MIN: int32 = 2
+FN_MAX: int32 = 3
+FN_COUNT: int32 = 4
+FN_COUNTA: int32 = 5
+FN_COUNTIF: int32 = 6
+FN_SUMIF: int32 = 7
+FN_IF: int32 = 10
+FN_IFERROR: int32 = 11
+FN_AND: int32 = 12
+FN_OR: int32 = 13
+FN_NOT: int32 = 14
+FN_ABS: int32 = 15
+FN_SQRT: int32 = 16
+FN_ROUND: int32 = 17
+FN_INT: int32 = 18
+FN_SIGN: int32 = 19
+FN_POWER: int32 = 20
+FN_MOD: int32 = 21
+FN_LEN: int32 = 22
+FN_UPPER: int32 = 23
+FN_LOWER: int32 = 24
+FN_TRIM: int32 = 25
+FN_LEFT: int32 = 26
+FN_RIGHT: int32 = 27
+FN_MID: int32 = 28
+FN_CONCAT: int32 = 29
+FN_TRUE: int32 = 30
+FN_FALSE: int32 = 31
+FN_PI: int32 = 32
+
+
 def _fn_id(s: Ptr[uint8], a: uint64, b: uint64) -> int32:
     ln: uint64 = b - a
-    nm: Array[8, uint8]
+    nm: Array[16, uint8]
     i: uint64 = 0
-    while i < ln and i < 7:
+    while i < ln and i < 15:
         nm[i] = _up(s[a + i])
         i = i + 1
     nm[i] = 0
-    if _streq(&nm[0], cast[Ptr[uint8]]("SUM")) != 0:
-        return 0
-    if _streq(&nm[0], cast[Ptr[uint8]]("AVG")) != 0:
-        return 1
-    if _streq(&nm[0], cast[Ptr[uint8]]("MIN")) != 0:
-        return 2
-    if _streq(&nm[0], cast[Ptr[uint8]]("MAX")) != 0:
-        return 3
-    if _streq(&nm[0], cast[Ptr[uint8]]("COUNT")) != 0:
-        return 4
+    p: Ptr[uint8] = &nm[0]
+    if _streq(p, cast[Ptr[uint8]]("SUM")) != 0:
+        return FN_SUM
+    if _streq(p, cast[Ptr[uint8]]("AVG")) != 0:
+        return FN_AVG
+    if _streq(p, cast[Ptr[uint8]]("AVERAGE")) != 0:
+        return FN_AVG
+    if _streq(p, cast[Ptr[uint8]]("MIN")) != 0:
+        return FN_MIN
+    if _streq(p, cast[Ptr[uint8]]("MAX")) != 0:
+        return FN_MAX
+    if _streq(p, cast[Ptr[uint8]]("COUNT")) != 0:
+        return FN_COUNT
+    if _streq(p, cast[Ptr[uint8]]("COUNTA")) != 0:
+        return FN_COUNTA
+    if _streq(p, cast[Ptr[uint8]]("COUNTIF")) != 0:
+        return FN_COUNTIF
+    if _streq(p, cast[Ptr[uint8]]("SUMIF")) != 0:
+        return FN_SUMIF
+    if _streq(p, cast[Ptr[uint8]]("IF")) != 0:
+        return FN_IF
+    if _streq(p, cast[Ptr[uint8]]("IFERROR")) != 0:
+        return FN_IFERROR
+    if _streq(p, cast[Ptr[uint8]]("AND")) != 0:
+        return FN_AND
+    if _streq(p, cast[Ptr[uint8]]("OR")) != 0:
+        return FN_OR
+    if _streq(p, cast[Ptr[uint8]]("NOT")) != 0:
+        return FN_NOT
+    if _streq(p, cast[Ptr[uint8]]("ABS")) != 0:
+        return FN_ABS
+    if _streq(p, cast[Ptr[uint8]]("SQRT")) != 0:
+        return FN_SQRT
+    if _streq(p, cast[Ptr[uint8]]("ROUND")) != 0:
+        return FN_ROUND
+    if _streq(p, cast[Ptr[uint8]]("INT")) != 0:
+        return FN_INT
+    if _streq(p, cast[Ptr[uint8]]("SIGN")) != 0:
+        return FN_SIGN
+    if _streq(p, cast[Ptr[uint8]]("POWER")) != 0:
+        return FN_POWER
+    if _streq(p, cast[Ptr[uint8]]("MOD")) != 0:
+        return FN_MOD
+    if _streq(p, cast[Ptr[uint8]]("LEN")) != 0:
+        return FN_LEN
+    if _streq(p, cast[Ptr[uint8]]("UPPER")) != 0:
+        return FN_UPPER
+    if _streq(p, cast[Ptr[uint8]]("LOWER")) != 0:
+        return FN_LOWER
+    if _streq(p, cast[Ptr[uint8]]("TRIM")) != 0:
+        return FN_TRIM
+    if _streq(p, cast[Ptr[uint8]]("LEFT")) != 0:
+        return FN_LEFT
+    if _streq(p, cast[Ptr[uint8]]("RIGHT")) != 0:
+        return FN_RIGHT
+    if _streq(p, cast[Ptr[uint8]]("MID")) != 0:
+        return FN_MID
+    if _streq(p, cast[Ptr[uint8]]("CONCAT")) != 0:
+        return FN_CONCAT
+    if _streq(p, cast[Ptr[uint8]]("CONCATENATE")) != 0:
+        return FN_CONCAT
+    if _streq(p, cast[Ptr[uint8]]("TRUE")) != 0:
+        return FN_TRUE
+    if _streq(p, cast[Ptr[uint8]]("FALSE")) != 0:
+        return FN_FALSE
+    if _streq(p, cast[Ptr[uint8]]("PI")) != 0:
+        return FN_PI
     return -1
 
 
-def _streq(a: Ptr[uint8], b: Ptr[uint8]) -> int32:
-    i: uint64 = 0
-    while a[i] != 0 and b[i] != 0:
-        if a[i] != b[i]:
-            return 0
-        i = i + 1
-    if a[i] == b[i]:
-        return 1
-    return 0
-
-
-# Numeric value of cell (col,row) for use inside a formula. Evaluates it first
-# (recursing, with the cycle guard). Non-numeric or out-of-range -> not-a-number
-# (ok=0). ok is returned; the value via *out.
+# Numeric value of cell (col,row) for aggregates. Non-numeric -> ok = 0.
 def _ref_num(col: uint64, row: uint64, out: Ptr[int64]) -> int32:
     if row >= MAXROWS or col >= MAXCOLS:
+        _seterr(ERR_REF)
         out[0] = 0
         return 0
     idx: uint64 = _cidx(row, col)
     if eval_state[idx] == 1:                            # cycle: target in progress
-        parse_err = 1
+        _seterr(ERR_CIRC)
         out[0] = 0
         return 0
     _eval_cell(row, col)
-    if val_kind[idx] == KIND_NUM:
+    if val_kind[idx] == KIND_NUM or val_kind[idx] == KIND_BOOL:
         out[0] = val_fp[idx]
         return 1
     if val_kind[idx] == KIND_ERR:
-        parse_err = 1
+        _seterr(cast[int32](val_err[idx]))
     out[0] = 0
     return 0
 
 
-# Aggregate function evaluation. Cursor sits just past the function name; reads
-# '(' args... ')'. Args are ranges (A1:A5), single refs, or expressions.
-def _eval_function(fn: int32, s: Ptr[uint8], n: uint64,
-                   pos: Ptr[uint64]) -> int64:
+# FULL value of a cell reference (number, string, boolean or error).
+def _ref_val(col: uint64, row: uint64) -> int64:
+    if row >= MAXROWS or col >= MAXCOLS:
+        _seterr(ERR_REF)
+        return _ret_num(0)
+    idx: uint64 = _cidx(row, col)
+    if eval_state[idx] == 1:
+        _seterr(ERR_CIRC)
+        return _ret_num(0)
+    _eval_cell(row, col)
+    k: uint8 = val_kind[idx]
+    if k == KIND_NUM:
+        return _ret_num(val_fp[idx])
+    if k == KIND_BOOL:
+        res_kind = RK_BOOL
+        return val_fp[idx]
+    if k == KIND_ERR:
+        _seterr(cast[int32](val_err[idx]))
+        return _ret_num(0)
+    if k == KIND_TEXT:
+        tl: uint64 = cast[uint64](val_txt_len[idx])
+        off: uint64 = _push_str(&val_txt[idx * CELLTEXT], tl)
+        return _ret_str(off, tl)
+    return _ret_num(0)                                  # empty -> 0
+
+
+# ---- ranges ----------------------------------------------------------------
+# Parse `A1:B4` (or a single `A1`) at the cursor into a normalised rectangle.
+def _parse_range(s: Ptr[uint8], n: uint64, pos: Ptr[uint64],
+                 r0: Ptr[uint64], c0: Ptr[uint64],
+                 r1: Ptr[uint64], c1: Ptr[uint64]) -> int32:
+    start: uint64 = pos[0]
+    ca: uint64 = 0
+    ra: uint64 = 0
+    if _parse_cellref(s, n, pos, &ca, &ra) == 0:
+        return 0
+    cb: uint64 = ca
+    rb: uint64 = ra
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 58:                 # ':'
+        pos[0] = pos[0] + 1
+        _skip_ws(s, n, pos)
+        if _parse_cellref(s, n, pos, &cb, &rb) == 0:
+            pos[0] = start
+            return 0
+    if rb < ra:
+        t: uint64 = ra
+        ra = rb
+        rb = t
+    if cb < ca:
+        t2: uint64 = ca
+        ca = cb
+        cb = t2
+    r0[0] = ra
+    c0[0] = ca
+    r1[0] = rb
+    c1[0] = cb
+    return 1
+
+
+# Aggregate function evaluation (SUM/AVG/MIN/MAX/COUNT/COUNTA). Cursor sits just
+# past the function name; reads '(' args… ')'. Args are ranges (A1:A5), single
+# refs, or expressions.
+def _eval_aggregate(fn: int32, s: Ptr[uint8], n: uint64,
+                    pos: Ptr[uint64]) -> int64:
     _skip_ws(s, n, pos)
     if pos[0] >= n or s[pos[0]] != 40:                 # '('
-        parse_err = 1
-        return 0
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
     pos[0] = pos[0] + 1
     fsum: int64 = 0
     fcnt: int64 = 0
+    fall: int64 = 0                                    # COUNTA: non-empty cells
     fmin: int64 = 0
     fmax: int64 = 0
     fhave: int32 = 0
     while True:
         _skip_ws(s, n, pos)
         if pos[0] >= n:
-            parse_err = 1
-            return 0
+            _seterr(ERR_SYNTAX)
+            return _ret_num(0)
         if s[pos[0]] == 41:                            # ')'
             pos[0] = pos[0] + 1
             break
-        # Try a range or single reference first.
         save: uint64 = pos[0]
-        c1: uint64 = 0
-        r1: uint64 = 0
-        if _parse_cellref(s, n, pos, &c1, &r1) != 0:
+        rr0: uint64 = 0
+        cc0: uint64 = 0
+        rr1: uint64 = 0
+        cc1: uint64 = 0
+        used_range: int32 = 0
+        if _parse_range(s, n, pos, &rr0, &cc0, &rr1, &cc1) != 0:
+            after: uint64 = pos[0]
             _skip_ws(s, n, pos)
-            if pos[0] < n and s[pos[0]] == 58:         # ':' -> range
-                pos[0] = pos[0] + 1
-                _skip_ws(s, n, pos)
-                c2: uint64 = 0
-                r2: uint64 = 0
-                if _parse_cellref(s, n, pos, &c2, &r2) == 0:
-                    parse_err = 1
-                    return 0
-                ra: uint64 = r1
-                rb: uint64 = r2
-                if rb < ra:
-                    ra = r2
-                    rb = r1
-                ca: uint64 = c1
-                cb: uint64 = c2
-                if cb < ca:
-                    ca = c2
-                    cb = c1
-                rr: uint64 = ra
-                while rr <= rb:
-                    cc: uint64 = ca
-                    while cc <= cb:
-                        rv: int64 = 0
-                        if _ref_num(cc, rr, &rv) != 0:
-                            fsum = fsum + rv
-                            if fhave == 0 or rv < fmin:
-                                fmin = rv
-                            if fhave == 0 or rv > fmax:
-                                fmax = rv
-                            fhave = 1
-                            fcnt = fcnt + 1
-                        cc = cc + 1
-                    rr = rr + 1
-            else:
-                # single ref: rewind & let the expression parser take it so
-                # arithmetic like SUM(A1+1) still works.
+            # A bare single ref followed by an operator is an EXPRESSION, so
+            # rewind and let the expression parser take it (SUM(A1+1) works).
+            single: int32 = 0
+            if rr0 == rr1 and cc0 == cc1:
+                single = 1
+            opnext: int32 = 0
+            if pos[0] < n and s[pos[0]] != 44 and s[pos[0]] != 41:
+                opnext = 1
+            if single != 0 and opnext != 0:
                 pos[0] = save
-                ev: int64 = _parse_expr(s, n, pos)
+            else:
+                pos[0] = after
+                used_range = 1
+        if used_range != 0:
+            rr: uint64 = rr0
+            while rr <= rr1 and rr < MAXROWS:
+                cc: uint64 = cc0
+                while cc <= cc1 and cc < MAXCOLS:
+                    if val_kind[_cidx(rr, cc)] != KIND_EMPTY or \
+                            cell_len[_cidx(rr, cc)] != 0:
+                        fall = fall + 1
+                    rv: int64 = 0
+                    if _ref_num(cc, rr, &rv) != 0:
+                        fsum = fsum + rv
+                        if fhave == 0 or rv < fmin:
+                            fmin = rv
+                        if fhave == 0 or rv > fmax:
+                            fmax = rv
+                        fhave = 1
+                        fcnt = fcnt + 1
+                    cc = cc + 1
+                rr = rr + 1
+        else:
+            ev: int64 = _parse_value(s, n, pos)
+            ek: int32 = res_kind
+            eo: uint64 = res_soff
+            el: uint64 = res_slen
+            fall = fall + 1
+            if ek != RK_STR:
                 fsum = fsum + ev
                 if fhave == 0 or ev < fmin:
                     fmin = ev
@@ -430,119 +939,845 @@ def _eval_function(fn: int32, s: Ptr[uint8], n: uint64,
                     fmax = ev
                 fhave = 1
                 fcnt = fcnt + 1
-        else:
-            ev2: int64 = _parse_expr(s, n, pos)
-            fsum = fsum + ev2
-            if fhave == 0 or ev2 < fmin:
-                fmin = ev2
-            if fhave == 0 or ev2 > fmax:
-                fmax = ev2
-            fhave = 1
-            fcnt = fcnt + 1
         _skip_ws(s, n, pos)
         if pos[0] < n and s[pos[0]] == 44:             # ',' -> more args
             pos[0] = pos[0] + 1
             continue
+    if fn == FN_COUNT:
+        return _ret_num(fcnt * SCALE)
+    if fn == FN_COUNTA:
+        return _ret_num(fall * SCALE)
     if fhave == 0:
+        if fn == FN_AVG:
+            _seterr(ERR_DIV0)
+        return _ret_num(0)
+    if fn == FN_SUM:
+        return _ret_num(fsum)
+    if fn == FN_AVG:
+        return _ret_num(_fp_div(fsum, fcnt * SCALE))
+    if fn == FN_MIN:
+        return _ret_num(fmin)
+    return _ret_num(fmax)                              # MAX
+
+
+# ---- COUNTIF / SUMIF -------------------------------------------------------
+# A criterion is a value; a STRING criterion may start with a comparison
+# operator (">10", "<=3", "<>ok"). Returns 1 when the candidate matches.
+crit_op:   int32 = 0                                   # 0 =, 1 <>, 2 <, 3 <=, 4 >, 5 >=
+crit_isnum: int32 = 0
+crit_num:  int64 = 0
+crit_off:  uint64 = 0
+crit_len:  uint64 = 0
+
+
+def _crit_prepare(v: int64, k: int32, off: uint64, ln: uint64):
+    crit_op = 0
+    crit_isnum = 0
+    crit_num = 0
+    crit_off = off
+    crit_len = ln
+    if k != RK_STR:
+        crit_isnum = 1
+        crit_num = v
+        return
+    i: uint64 = 0
+    if ln >= 2 and sarena[off] == 60 and sarena[off + 1] == 62:      # <>
+        crit_op = 1
+        i = 2
+    elif ln >= 2 and sarena[off] == 60 and sarena[off + 1] == 61:    # <=
+        crit_op = 3
+        i = 2
+    elif ln >= 2 and sarena[off] == 62 and sarena[off + 1] == 61:    # >=
+        crit_op = 5
+        i = 2
+    elif ln >= 1 and sarena[off] == 60:                              # <
+        crit_op = 2
+        i = 1
+    elif ln >= 1 and sarena[off] == 62:                              # >
+        crit_op = 4
+        i = 1
+    elif ln >= 1 and sarena[off] == 61:                              # =
+        crit_op = 0
+        i = 1
+    crit_off = off + i
+    crit_len = ln - i
+    # numeric tail?
+    if crit_len > 0:
+        p: uint64 = 0
+        neg: int32 = 0
+        if sarena[crit_off] == 45:
+            neg = 1
+            p = 1
+        nv: int64 = _parse_number(&sarena[crit_off], crit_len, &p)
+        if p == crit_len and p > cast[uint64](neg):
+            crit_isnum = 1
+            if neg != 0:
+                nv = 0 - nv
+            crit_num = nv
+
+
+def _crit_match(v: int64, k: int32, off: uint64, ln: uint64) -> int32:
+    cmp: int32 = 0
+    if crit_isnum != 0:
+        if k == RK_STR:
+            return 0
+        if v < crit_num:
+            cmp = -1
+        elif v > crit_num:
+            cmp = 1
+    else:
+        so: uint64 = 0
+        sl: uint64 = 0
+        so = _strify(v, k, off, ln, &sl)
+        cmp = _scmp(so, sl, crit_off, crit_len)
+    if crit_op == 0:
+        if cmp == 0:
+            return 1
         return 0
-    if fn == 0:                                        # SUM
-        return fsum
-    if fn == 1:                                        # AVG
-        return _fp_div(fsum, fcnt * SCALE)
-    if fn == 2:                                        # MIN
-        return fmin
-    if fn == 3:                                        # MAX
-        return fmax
-    return fcnt * SCALE                                # COUNT
+    if crit_op == 1:
+        if cmp != 0:
+            return 1
+        return 0
+    if crit_op == 2:
+        if cmp < 0:
+            return 1
+        return 0
+    if crit_op == 3:
+        if cmp <= 0:
+            return 1
+        return 0
+    if crit_op == 4:
+        if cmp > 0:
+            return 1
+        return 0
+    if cmp >= 0:
+        return 1
+    return 0
 
 
+def _eval_countif(fn: int32, s: Ptr[uint8], n: uint64,
+                  pos: Ptr[uint64]) -> int64:
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 40:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    _skip_ws(s, n, pos)
+    r0: uint64 = 0
+    c0: uint64 = 0
+    r1: uint64 = 0
+    c1: uint64 = 0
+    if _parse_range(s, n, pos, &r0, &c0, &r1, &c1) == 0:
+        _seterr(ERR_VALUE)
+        return _ret_num(0)
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 44:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    cv: int64 = _parse_value(s, n, pos)
+    _crit_prepare(cv, res_kind, res_soff, res_slen)
+    # optional sum-range (SUMIF)
+    sr0: uint64 = r0
+    sc0: uint64 = c0
+    have_sum: int32 = 0
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 44:
+        pos[0] = pos[0] + 1
+        _skip_ws(s, n, pos)
+        xr1: uint64 = 0
+        xc1: uint64 = 0
+        if _parse_range(s, n, pos, &sr0, &sc0, &xr1, &xc1) == 0:
+            _seterr(ERR_VALUE)
+            return _ret_num(0)
+        have_sum = 1
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 41:
+        pos[0] = pos[0] + 1
+    else:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    total: int64 = 0
+    cnt: int64 = 0
+    rr: uint64 = r0
+    while rr <= r1 and rr < MAXROWS:
+        cc: uint64 = c0
+        while cc <= c1 and cc < MAXCOLS:
+            keep: uint64 = sarena_n
+            vv: int64 = _ref_val(cc, rr)
+            hit: int32 = 0
+            if val_kind[_cidx(rr, cc)] != KIND_EMPTY:
+                hit = _crit_match(vv, res_kind, res_soff, res_slen)
+            sarena_n = keep
+            if hit != 0:
+                cnt = cnt + 1
+                if fn == FN_SUMIF:
+                    tr: uint64 = rr
+                    tc: uint64 = cc
+                    if have_sum != 0:
+                        tr = sr0 + (rr - r0)
+                        tc = sc0 + (cc - c0)
+                    sv: int64 = 0
+                    if _ref_num(tc, tr, &sv) != 0:
+                        total = total + sv
+            cc = cc + 1
+        rr = rr + 1
+    if fn == FN_SUMIF:
+        return _ret_num(total)
+    return _ret_num(cnt * SCALE)
+
+
+# ---- scalar / logical / text functions -------------------------------------
+# Read a comma-separated argument list into caller arrays; cursor at '('.
+def _read_args(s: Ptr[uint8], n: uint64, pos: Ptr[uint64], maxa: uint64,
+               av: Ptr[int64], ak: Ptr[int32], ao: Ptr[uint64],
+               al: Ptr[uint64]) -> uint64:
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 40:
+        _seterr(ERR_SYNTAX)
+        return 0
+    pos[0] = pos[0] + 1
+    cnt: uint64 = 0
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 41:
+        pos[0] = pos[0] + 1
+        return 0
+    while True:
+        v: int64 = _parse_value(s, n, pos)
+        if cnt < maxa:
+            av[cnt] = v
+            ak[cnt] = res_kind
+            ao[cnt] = res_soff
+            al[cnt] = res_slen
+            cnt = cnt + 1
+        _skip_ws(s, n, pos)
+        if pos[0] < n and s[pos[0]] == 44:
+            pos[0] = pos[0] + 1
+            continue
+        if pos[0] < n and s[pos[0]] == 41:
+            pos[0] = pos[0] + 1
+            break
+        _seterr(ERR_SYNTAX)
+        break
+    return cnt
+
+
+# IF / IFERROR need LAZY error semantics: a failure inside the branch that is
+# NOT taken must not poison the result. Both branches are parsed (the cursor has
+# to advance) but the error latch is saved/restored around each.
+def _eval_if(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 40:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    cond: int64 = _parse_value(s, n, pos)
+    ck: int32 = res_kind
+    co: uint64 = res_soff
+    cl: uint64 = res_slen
+    take: int32 = _truthy(cond, ck, co, cl)
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 44:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    e0: int32 = parse_err
+    c0: int32 = err_code
+    v1: int64 = _parse_value(s, n, pos)
+    k1: int32 = res_kind
+    o1: uint64 = res_soff
+    l1: uint64 = res_slen
+    e1: int32 = parse_err
+    c1e: int32 = err_code
+    v2: int64 = 0
+    k2: int32 = RK_BOOL
+    o2: uint64 = 0
+    l2: uint64 = 0
+    e2: int32 = e0
+    c2e: int32 = c0
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 44:
+        pos[0] = pos[0] + 1
+        parse_err = e0
+        err_code = c0
+        v2 = _parse_value(s, n, pos)
+        k2 = res_kind
+        o2 = res_soff
+        l2 = res_slen
+        e2 = parse_err
+        c2e = err_code
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 41:
+        pos[0] = pos[0] + 1
+    else:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    if take != 0:
+        parse_err = e1
+        err_code = c1e
+        res_kind = k1
+        res_soff = o1
+        res_slen = l1
+        return v1
+    parse_err = e2
+    err_code = c2e
+    res_kind = k2
+    res_soff = o2
+    res_slen = l2
+    return v2
+
+
+def _eval_iferror(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 40:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    e0: int32 = parse_err
+    c0: int32 = err_code
+    v1: int64 = _parse_value(s, n, pos)
+    k1: int32 = res_kind
+    o1: uint64 = res_soff
+    l1: uint64 = res_slen
+    failed: int32 = 0
+    if parse_err != 0 and e0 == 0:
+        failed = 1
+    _skip_ws(s, n, pos)
+    if pos[0] >= n or s[pos[0]] != 44:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    pos[0] = pos[0] + 1
+    parse_err = e0
+    err_code = c0
+    v2: int64 = _parse_value(s, n, pos)
+    k2: int32 = res_kind
+    o2: uint64 = res_soff
+    l2: uint64 = res_slen
+    e2: int32 = parse_err
+    c2e: int32 = err_code
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 41:
+        pos[0] = pos[0] + 1
+    else:
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
+    if failed != 0:
+        parse_err = e2
+        err_code = c2e
+        return v2
+    parse_err = e0
+    err_code = c0
+    res_kind = k1
+    res_soff = o1
+    res_slen = l1
+    return v1
+
+
+def _eval_scalar_fn(fn: int32, s: Ptr[uint8], n: uint64,
+                    pos: Ptr[uint64]) -> int64:
+    av: Array[6, int64]
+    ak: Array[6, int32]
+    ao: Array[6, uint64]
+    al: Array[6, uint64]
+    na: uint64 = _read_args(s, n, pos, 6, &av[0], &ak[0], &ao[0], &al[0])
+    if fn == FN_TRUE:
+        return _ret_bool(1)
+    if fn == FN_FALSE:
+        return _ret_bool(0)
+    if fn == FN_PI:
+        return _ret_num(3141593)
+    if fn == FN_CONCAT:
+        # Build into a LOCAL buffer first: _strify may itself push onto the
+        # arena, so we must not be mid-append when we call it.
+        acc: Array[128, uint8]
+        tot: uint64 = 0
+        i: uint64 = 0
+        while i < na:
+            sl: uint64 = 0
+            so: uint64 = _strify(av[i], ak[i], ao[i], al[i], &sl)
+            j: uint64 = 0
+            while j < sl:
+                if tot < 127:
+                    acc[tot] = sarena[so + j]
+                    tot = tot + 1
+                j = j + 1
+            i = i + 1
+        return _ret_str(_push_str(&acc[0], tot), tot)
+    if fn == FN_AND or fn == FN_OR:
+        acc: int32 = 0
+        if fn == FN_AND:
+            acc = 1
+        i2: uint64 = 0
+        while i2 < na:
+            t: int32 = _truthy(av[i2], ak[i2], ao[i2], al[i2])
+            if fn == FN_AND:
+                if t == 0:
+                    acc = 0
+            else:
+                if t != 0:
+                    acc = 1
+            i2 = i2 + 1
+        if na == 0:
+            _seterr(ERR_VALUE)
+        return _ret_bool(acc)
+    if fn == FN_NOT:
+        if na < 1:
+            _seterr(ERR_VALUE)
+            return _ret_bool(0)
+        t2: int32 = _truthy(av[0], ak[0], ao[0], al[0])
+        if t2 != 0:
+            return _ret_bool(0)
+        return _ret_bool(1)
+    # ---- text functions ----
+    if fn == FN_LEN:
+        if na < 1:
+            _seterr(ERR_VALUE)
+            return _ret_num(0)
+        l0: uint64 = 0
+        _strify(av[0], ak[0], ao[0], al[0], &l0)
+        return _ret_num(cast[int64](l0) * SCALE)
+    if fn == FN_UPPER or fn == FN_LOWER or fn == FN_TRIM:
+        if na < 1:
+            _seterr(ERR_VALUE)
+            return _ret_str(0, 0)
+        sl1: uint64 = 0
+        so1: uint64 = _strify(av[0], ak[0], ao[0], al[0], &sl1)
+        a0: uint64 = 0
+        b0: uint64 = sl1
+        if fn == FN_TRIM:
+            while a0 < b0 and sarena[so1 + a0] == 32:
+                a0 = a0 + 1
+            while b0 > a0 and sarena[so1 + b0 - 1] == 32:
+                b0 = b0 - 1
+        outb: uint64 = sarena_n
+        cntb: uint64 = 0
+        i3: uint64 = a0
+        while i3 < b0:
+            ch: uint8 = sarena[so1 + i3]
+            if fn == FN_UPPER:
+                ch = _up(ch)
+            elif fn == FN_LOWER:
+                ch = _lo(ch)
+            if sarena_n + 2 < SARENA_CAP:
+                sarena[sarena_n] = ch
+                sarena_n = sarena_n + 1
+                cntb = cntb + 1
+            i3 = i3 + 1
+        return _ret_str(outb, cntb)
+    if fn == FN_LEFT or fn == FN_RIGHT or fn == FN_MID:
+        if na < 2:
+            _seterr(ERR_VALUE)
+            return _ret_str(0, 0)
+        sl2: uint64 = 0
+        so2: uint64 = _strify(av[0], ak[0], ao[0], al[0], &sl2)
+        p1: int64 = _numify(av[1], ak[1], ao[1], al[1]) / SCALE
+        st: uint64 = 0
+        cn: uint64 = 0
+        if fn == FN_LEFT:
+            if p1 < 0:
+                p1 = 0
+            cn = cast[uint64](p1)
+            if cn > sl2:
+                cn = sl2
+        elif fn == FN_RIGHT:
+            if p1 < 0:
+                p1 = 0
+            cn = cast[uint64](p1)
+            if cn > sl2:
+                cn = sl2
+            st = sl2 - cn
+        else:
+            p2: int64 = 0
+            if na >= 3:
+                p2 = _numify(av[2], ak[2], ao[2], al[2]) / SCALE
+            if p1 < 1:
+                _seterr(ERR_VALUE)
+                return _ret_str(0, 0)
+            st = cast[uint64](p1) - 1
+            if st > sl2:
+                st = sl2
+            if p2 < 0:
+                p2 = 0
+            cn = cast[uint64](p2)
+            if st + cn > sl2:
+                cn = sl2 - st
+        outc: uint64 = _push_str(&sarena[so2 + st], cn)
+        return _ret_str(outc, cn)
+    # ---- numeric functions ----
+    if na < 1:
+        _seterr(ERR_VALUE)
+        return _ret_num(0)
+    x: int64 = _numify(av[0], ak[0], ao[0], al[0])
+    if fn == FN_ABS:
+        if x < 0:
+            x = 0 - x
+        return _ret_num(x)
+    if fn == FN_SQRT:
+        return _ret_num(_fp_sqrt(x))
+    if fn == FN_SIGN:
+        if x > 0:
+            return _ret_num(SCALE)
+        if x < 0:
+            return _ret_num(0 - SCALE)
+        return _ret_num(0)
+    if fn == FN_INT:
+        q: int64 = x / SCALE
+        if x < 0 and q * SCALE != x:
+            q = q - 1
+        return _ret_num(q * SCALE)
+    if fn == FN_ROUND:
+        dp: int64 = 0
+        if na >= 2:
+            dp = _numify(av[1], ak[1], ao[1], al[1]) / SCALE
+        return _ret_num(_fp_round_dp(x, dp))
+    if fn == FN_POWER:
+        if na < 2:
+            _seterr(ERR_VALUE)
+            return _ret_num(0)
+        e: int64 = _numify(av[1], ak[1], ao[1], al[1])
+        return _ret_num(_fp_pow(x, e))
+    if fn == FN_MOD:
+        if na < 2:
+            _seterr(ERR_VALUE)
+            return _ret_num(0)
+        m: int64 = _numify(av[1], ak[1], ao[1], al[1])
+        if m == 0:
+            _seterr(ERR_DIV0)
+            return _ret_num(0)
+        rr: int64 = x % m
+        if rr != 0 and ((rr < 0 and m > 0) or (rr > 0 and m < 0)):
+            rr = rr + m
+        return _ret_num(rr)
+    _seterr(ERR_NAME)
+    return _ret_num(0)
+
+
+# a^b for a scaled base and a scaled exponent (integer exponents, plus 0.5).
+def _fp_pow(a: int64, e: int64) -> int64:
+    if e == SCALE / 2:
+        return _fp_sqrt(a)
+    if e % SCALE != 0:
+        _seterr(ERR_VALUE)
+        return 0
+    k: int64 = e / SCALE
+    neg: int32 = 0
+    if k < 0:
+        neg = 1
+        k = 0 - k
+    r: int64 = SCALE
+    i: int64 = 0
+    while i < k and i < 64:
+        r = _fp_mul(r, a)
+        i = i + 1
+    if neg != 0:
+        return _fp_div(SCALE, r)
+    return r
+
+
+# ---- expression grammar ----------------------------------------------------
 def _parse_primary(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
     _skip_ws(s, n, pos)
     if pos[0] >= n:
-        parse_err = 1
-        return 0
+        _seterr(ERR_SYNTAX)
+        return _ret_num(0)
     c: uint8 = s[pos[0]]
     if c == 43:                                        # unary '+'
         pos[0] = pos[0] + 1
-        return _parse_primary(s, n, pos)
+        v0: int64 = _parse_primary(s, n, pos)
+        return _ret_num(_numify(v0, res_kind, res_soff, res_slen))
     if c == 45:                                        # unary '-'
         pos[0] = pos[0] + 1
-        return 0 - _parse_primary(s, n, pos)
+        v1: int64 = _parse_primary(s, n, pos)
+        return _ret_num(0 - _numify(v1, res_kind, res_soff, res_slen))
     if c == 40:                                        # '(' expr ')'
         pos[0] = pos[0] + 1
-        v: int64 = _parse_expr(s, n, pos)
+        v: int64 = _parse_value(s, n, pos)
+        vk: int32 = res_kind
+        vo: uint64 = res_soff
+        vl: uint64 = res_slen
         _skip_ws(s, n, pos)
         if pos[0] < n and s[pos[0]] == 41:
             pos[0] = pos[0] + 1
         else:
-            parse_err = 1
+            _seterr(ERR_SYNTAX)
+        res_kind = vk
+        res_soff = vo
+        res_slen = vl
         return v
+    if c == 34:                                        # '"' string literal
+        pos[0] = pos[0] + 1
+        base: uint64 = sarena_n
+        cnt: uint64 = 0
+        while pos[0] < n:
+            ch: uint8 = s[pos[0]]
+            if ch == 34:
+                if pos[0] + 1 < n and s[pos[0] + 1] == 34:   # "" -> literal "
+                    pos[0] = pos[0] + 2
+                    if sarena_n + 2 < SARENA_CAP:
+                        sarena[sarena_n] = 34
+                        sarena_n = sarena_n + 1
+                        cnt = cnt + 1
+                    continue
+                pos[0] = pos[0] + 1
+                return _ret_str(base, cnt)
+            if sarena_n + 2 < SARENA_CAP:
+                sarena[sarena_n] = ch
+                sarena_n = sarena_n + 1
+                cnt = cnt + 1
+            pos[0] = pos[0] + 1
+        _seterr(ERR_SYNTAX)
+        return _ret_str(base, cnt)
+    if c == 35:                                        # '#' error literal
+        st: uint64 = pos[0]
+        pos[0] = pos[0] + 1
+        while pos[0] < n and s[pos[0]] != 33 and s[pos[0]] != 63:
+            pos[0] = pos[0] + 1
+        if pos[0] < n:
+            pos[0] = pos[0] + 1
+        code: int32 = ERR_SYNTAX
+        if st + 1 < n:
+            ec: uint8 = _up(s[st + 1])
+            if ec == 82:                               # #REF!
+                code = ERR_REF
+            elif ec == 68:                             # #DIV/0!
+                code = ERR_DIV0
+            elif ec == 78:                             # #NAME?
+                code = ERR_NAME
+            elif ec == 86:                             # #VALUE!
+                code = ERR_VALUE
+            elif ec == 67:                             # #CIRC!
+                code = ERR_CIRC
+        _seterr(code)
+        return _ret_num(0)
     if _is_digit(c) != 0 or c == 46:                   # number
-        return _parse_number(s, n, pos)
-    if _is_alpha(c) != 0:
-        # name: a function call (NAME '(') or a cell reference (letters+digits).
+        return _ret_num(_parse_number(s, n, pos))
+    if c == 36 or _is_alpha(c) != 0:                   # '$' or a name / ref
         start: uint64 = pos[0]
+        col: uint64 = 0
+        row: uint64 = 0
+        if _parse_cellref(s, n, pos, &col, &row) != 0:
+            return _ref_val(col, row)
+        if c == 36:
+            _seterr(ERR_SYNTAX)
+            return _ret_num(0)
         while pos[0] < n and _is_alpha(s[pos[0]]) != 0:
             pos[0] = pos[0] + 1
         after: uint64 = pos[0]
-        if pos[0] < n and _is_digit(s[pos[0]]) != 0:
-            # cell reference — rewind & parse it fully.
-            pos[0] = start
-            col: uint64 = 0
-            row: uint64 = 0
-            if _parse_cellref(s, n, pos, &col, &row) == 0:
-                parse_err = 1
-                return 0
-            rv: int64 = 0
-            _ref_num(col, row, &rv)                     # non-numeric ref -> 0
-            return rv
+        fn: int32 = _fn_id(s, start, after)
         _skip_ws(s, n, pos)
-        if pos[0] < n and s[pos[0]] == 40:             # function
-            fn: int32 = _fn_id(s, start, after)
+        if pos[0] < n and s[pos[0]] == 40:             # function call
             if fn < 0:
-                parse_err = 1
-                return 0
-            return _eval_function(fn, s, n, pos)
-        parse_err = 1
-        return 0
-    parse_err = 1
-    return 0
+                _seterr(ERR_NAME)
+                return _ret_num(0)
+            if fn <= FN_COUNTA:
+                return _eval_aggregate(fn, s, n, pos)
+            if fn == FN_COUNTIF or fn == FN_SUMIF:
+                return _eval_countif(fn, s, n, pos)
+            if fn == FN_IF:
+                return _eval_if(s, n, pos)
+            if fn == FN_IFERROR:
+                return _eval_iferror(s, n, pos)
+            return _eval_scalar_fn(fn, s, n, pos)
+        if fn == FN_TRUE:                              # bare TRUE / FALSE
+            return _ret_bool(1)
+        if fn == FN_FALSE:
+            return _ret_bool(0)
+        _seterr(ERR_NAME)
+        return _ret_num(0)
+    _seterr(ERR_SYNTAX)
+    return _ret_num(0)
+
+
+def _parse_power(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+    v: int64 = _parse_primary(s, n, pos)
+    k: int32 = res_kind
+    o: uint64 = res_soff
+    l: uint64 = res_slen
+    _skip_ws(s, n, pos)
+    if pos[0] < n and s[pos[0]] == 94:                 # '^' (right assoc)
+        pos[0] = pos[0] + 1
+        e: int64 = _parse_power(s, n, pos)
+        en: int64 = _numify(e, res_kind, res_soff, res_slen)
+        return _ret_num(_fp_pow(_numify(v, k, o, l), en))
+    res_kind = k
+    res_soff = o
+    res_slen = l
+    return v
 
 
 def _parse_term(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
-    v: int64 = _parse_primary(s, n, pos)
+    v: int64 = _parse_power(s, n, pos)
+    k: int32 = res_kind
+    o: uint64 = res_soff
+    l: uint64 = res_slen
     while True:
         _skip_ws(s, n, pos)
         if pos[0] >= n:
             break
         op: uint8 = s[pos[0]]
-        if op == 42:                                   # '*'
-            pos[0] = pos[0] + 1
-            v = _fp_mul(v, _parse_primary(s, n, pos))
-        elif op == 47:                                 # '/'
-            pos[0] = pos[0] + 1
-            v = _fp_div(v, _parse_primary(s, n, pos))
-        else:
+        if op != 42 and op != 47:
             break
+        pos[0] = pos[0] + 1
+        lv: int64 = _numify(v, k, o, l)
+        rv: int64 = _parse_power(s, n, pos)
+        rn: int64 = _numify(rv, res_kind, res_soff, res_slen)
+        if op == 42:
+            v = _fp_mul(lv, rn)
+        else:
+            v = _fp_div(lv, rn)
+        k = RK_NUM
+    res_kind = k
+    res_soff = o
+    res_slen = l
     return v
 
 
-def _parse_expr(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+def _parse_add(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
     v: int64 = _parse_term(s, n, pos)
+    k: int32 = res_kind
+    o: uint64 = res_soff
+    l: uint64 = res_slen
     while True:
         _skip_ws(s, n, pos)
         if pos[0] >= n:
             break
         op: uint8 = s[pos[0]]
-        if op == 43:                                   # '+'
-            pos[0] = pos[0] + 1
-            v = v + _parse_term(s, n, pos)
-        elif op == 45:                                 # '-'
-            pos[0] = pos[0] + 1
-            v = v - _parse_term(s, n, pos)
-        else:
+        if op != 43 and op != 45:
             break
+        pos[0] = pos[0] + 1
+        lv: int64 = _numify(v, k, o, l)
+        rv: int64 = _parse_term(s, n, pos)
+        rn: int64 = _numify(rv, res_kind, res_soff, res_slen)
+        if op == 43:
+            v = lv + rn
+        else:
+            v = lv - rn
+        k = RK_NUM
+    res_kind = k
+    res_soff = o
+    res_slen = l
     return v
+
+
+def _parse_concat(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+    v: int64 = _parse_add(s, n, pos)
+    k: int32 = res_kind
+    o: uint64 = res_soff
+    l: uint64 = res_slen
+    while True:
+        _skip_ws(s, n, pos)
+        if pos[0] >= n or s[pos[0]] != 38:             # '&'
+            break
+        pos[0] = pos[0] + 1
+        ll: uint64 = 0
+        lo: uint64 = _strify(v, k, o, l, &ll)
+        rv: int64 = _parse_add(s, n, pos)
+        rl: uint64 = 0
+        ro: uint64 = _strify(rv, res_kind, res_soff, res_slen, &rl)
+        base: uint64 = sarena_n
+        i: uint64 = 0
+        cnt: uint64 = 0
+        while i < ll:
+            if sarena_n + 2 < SARENA_CAP:
+                sarena[sarena_n] = sarena[lo + i]
+                sarena_n = sarena_n + 1
+                cnt = cnt + 1
+            i = i + 1
+        j: uint64 = 0
+        while j < rl:
+            if sarena_n + 2 < SARENA_CAP:
+                sarena[sarena_n] = sarena[ro + j]
+                sarena_n = sarena_n + 1
+                cnt = cnt + 1
+            j = j + 1
+        v = 0
+        k = RK_STR
+        o = base
+        l = cnt
+    res_kind = k
+    res_soff = o
+    res_slen = l
+    return v
+
+
+# Comparison: = <> < <= > >=  (result is a BOOLEAN)
+def _parse_value(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> int64:
+    v: int64 = _parse_concat(s, n, pos)
+    k: int32 = res_kind
+    o: uint64 = res_soff
+    l: uint64 = res_slen
+    _skip_ws(s, n, pos)
+    if pos[0] >= n:
+        res_kind = k
+        res_soff = o
+        res_slen = l
+        return v
+    c0: uint8 = s[pos[0]]
+    op: int32 = -1
+    if c0 == 61:                                       # '='
+        op = 0
+        pos[0] = pos[0] + 1
+    elif c0 == 60:
+        if pos[0] + 1 < n and s[pos[0] + 1] == 62:     # '<>'
+            op = 1
+            pos[0] = pos[0] + 2
+        elif pos[0] + 1 < n and s[pos[0] + 1] == 61:   # '<='
+            op = 3
+            pos[0] = pos[0] + 2
+        else:
+            op = 2
+            pos[0] = pos[0] + 1
+    elif c0 == 62:
+        if pos[0] + 1 < n and s[pos[0] + 1] == 61:     # '>='
+            op = 5
+            pos[0] = pos[0] + 2
+        else:
+            op = 4
+            pos[0] = pos[0] + 1
+    if op < 0:
+        res_kind = k
+        res_soff = o
+        res_slen = l
+        return v
+    rv: int64 = _parse_concat(s, n, pos)
+    rk: int32 = res_kind
+    ro: uint64 = res_soff
+    rl: uint64 = res_slen
+    cmp: int32 = 0
+    if k == RK_STR or rk == RK_STR:
+        ll: uint64 = 0
+        lo: uint64 = _strify(v, k, o, l, &ll)
+        rl2: uint64 = 0
+        ro2: uint64 = _strify(rv, rk, ro, rl, &rl2)
+        cmp = _scmp(lo, ll, ro2, rl2)
+    else:
+        if v < rv:
+            cmp = -1
+        elif v > rv:
+            cmp = 1
+    if op == 0:
+        if cmp == 0:
+            return _ret_bool(1)
+        return _ret_bool(0)
+    if op == 1:
+        if cmp != 0:
+            return _ret_bool(1)
+        return _ret_bool(0)
+    if op == 2:
+        if cmp < 0:
+            return _ret_bool(1)
+        return _ret_bool(0)
+    if op == 3:
+        if cmp <= 0:
+            return _ret_bool(1)
+        return _ret_bool(0)
+    if op == 4:
+        if cmp > 0:
+            return _ret_bool(1)
+        return _ret_bool(0)
+    if cmp >= 0:
+        return _ret_bool(1)
+    return _ret_bool(0)
 
 
 # ====================================================================
@@ -567,12 +1802,26 @@ def _looks_numeric(base: uint64, ln: uint64) -> int32:
     return seen
 
 
-def _eval_cell(r: uint64, c: uint64):
+def _set_text_val(idx: uint64, p: Ptr[uint8], ln: uint64):
+    n: uint64 = ln
+    if n > CELLTEXT - 1:
+        n = CELLTEXT - 1
+    i: uint64 = 0
+    while i < n:
+        val_txt[idx * CELLTEXT + i] = p[i]
+        i = i + 1
+    val_txt_len[idx] = cast[uint8](n)
+    val_kind[idx] = KIND_TEXT
+    val_fp[idx] = 0
+
+
+def _eval_cell_inner(r: uint64, c: uint64):
     idx: uint64 = _cidx(r, c)
     if eval_state[idx] == 2:
         return
     if eval_state[idx] == 1:                            # cycle
         val_kind[idx] = KIND_ERR
+        val_err[idx] = cast[uint8](ERR_CIRC)
         val_fp[idx] = 0
         eval_state[idx] = 2
         return
@@ -586,12 +1835,26 @@ def _eval_cell(r: uint64, c: uint64):
         return
     if cell_raw[base] == 61:                            # '=' formula
         parse_err = 0
+        err_code = 0
+        res_kind = RK_NUM
         pos: uint64 = 1
-        v: int64 = _parse_expr(&cell_raw[base], ln, &pos)
+        v: int64 = _parse_value(&cell_raw[base], ln, &pos)
+        k: int32 = res_kind
+        off: uint64 = res_soff
+        sl: uint64 = res_slen
         _skip_ws(&cell_raw[base], ln, &pos)
         if parse_err != 0 or pos < ln:
+            code: int32 = err_code
+            if code == 0:
+                code = ERR_SYNTAX
             val_kind[idx] = KIND_ERR
+            val_err[idx] = cast[uint8](code)
             val_fp[idx] = 0
+        elif k == RK_STR:
+            _set_text_val(idx, &sarena[off], sl)
+        elif k == RK_BOOL:
+            val_kind[idx] = KIND_BOOL
+            val_fp[idx] = v
         else:
             val_kind[idx] = KIND_NUM
             val_fp[idx] = v
@@ -612,9 +1875,16 @@ def _eval_cell(r: uint64, c: uint64):
         val_fp[idx] = nv
         eval_state[idx] = 2
         return
-    val_kind[idx] = KIND_TEXT
-    val_fp[idx] = 0
+    _set_text_val(idx, &cell_raw[base], ln)
     eval_state[idx] = 2
+
+
+def _eval_cell(r: uint64, c: uint64):
+    if eval_depth == 0:
+        sarena_n = 0
+    eval_depth = eval_depth + 1
+    _eval_cell_inner(r, c)
+    eval_depth = eval_depth - 1
 
 
 # PUBLIC: recompute the whole sheet (reset caches, then evaluate every cell).
@@ -623,6 +1893,7 @@ def hamsheet_recompute():
     while i < NCELLS:
         eval_state[i] = 0
         i = i + 1
+    eval_depth = 0
     r: uint64 = 0
     while r < MAXROWS:
         c: uint64 = 0
@@ -632,18 +1903,111 @@ def hamsheet_recompute():
         r = r + 1
 
 
-# ---- cell accessors --------------------------------------------------------
-def hamsheet_set_cell(r: uint64, c: uint64, s: Ptr[uint8]):
+# ====================================================================
+# UNDO JOURNAL — every mutation records the PREVIOUS cell contents
+# ====================================================================
+UNDO_CAP: uint64 = 384
+u_idx: Array[384, int32]
+u_len: Array[384, uint8]
+u_fmt: Array[384, uint8]
+u_grp: Array[384, uint8]
+u_txt: Array[24576, uint8]                              # UNDO_CAP * CELLTEXT
+undo_n: uint64 = 0
+u_next_grp: int32 = 1
+u_recording: int32 = 1
+
+
+def _undo_begin():
+    u_next_grp = 1
+
+
+def _undo_drop_oldest():
+    if undo_n == 0:
+        return
+    i: uint64 = 1
+    while i < undo_n:
+        u_idx[i - 1] = u_idx[i]
+        u_len[i - 1] = u_len[i]
+        u_fmt[i - 1] = u_fmt[i]
+        u_grp[i - 1] = u_grp[i]
+        j: uint64 = 0
+        while j < CELLTEXT:
+            u_txt[(i - 1) * CELLTEXT + j] = u_txt[i * CELLTEXT + j]
+            j = j + 1
+        i = i + 1
+    undo_n = undo_n - 1
+    if undo_n > 0:
+        u_grp[0] = 1
+
+
+def _undo_record(idx: uint64):
+    if u_recording == 0:
+        return
+    if undo_n >= UNDO_CAP:
+        _undo_drop_oldest()
+    e: uint64 = undo_n
+    u_idx[e] = cast[int32](idx)
+    u_len[e] = cell_len[idx]
+    u_fmt[e] = cell_fmt[idx]
+    u_grp[e] = cast[uint8](u_next_grp)
+    u_next_grp = 0
+    base: uint64 = idx * CELLTEXT
+    j: uint64 = 0
+    while j < CELLTEXT:
+        u_txt[e * CELLTEXT + j] = cell_raw[base + j]
+        j = j + 1
+    undo_n = undo_n + 1
+
+
+# PUBLIC: undo the last edit GROUP. Returns 1 if anything was restored.
+def hamsheet_undo() -> int32:
+    if undo_n == 0:
+        return 0
+    done: int32 = 0
+    while undo_n > 0 and done == 0:
+        undo_n = undo_n - 1
+        e: uint64 = undo_n
+        idx: uint64 = cast[uint64](u_idx[e])
+        base: uint64 = idx * CELLTEXT
+        j: uint64 = 0
+        while j < CELLTEXT:
+            cell_raw[base + j] = u_txt[e * CELLTEXT + j]
+            j = j + 1
+        cell_len[idx] = u_len[e]
+        cell_fmt[idx] = u_fmt[e]
+        if u_grp[e] != 0:
+            done = 1
+    dirty = 1
+    u_next_grp = 1
+    hamsheet_recompute()
+    return 1
+
+
+def hamsheet_undo_depth() -> uint64:
+    return undo_n
+
+
+# ---- raw cell writes (all mutations funnel through here) -------------------
+def _put_cell(r: uint64, c: uint64, s: Ptr[uint8], ln: uint64):
     if r >= MAXROWS or c >= MAXCOLS:
         return
     idx: uint64 = _cidx(r, c)
+    _undo_record(idx)
     base: uint64 = _cbase(r, c)
+    n: uint64 = ln
+    if n > CELLTEXT - 1:
+        n = CELLTEXT - 1
     i: uint64 = 0
-    while s[i] != 0 and i < CELLTEXT - 1:
+    while i < n:
         cell_raw[base + i] = s[i]
         i = i + 1
-    cell_len[idx] = cast[uint8](i)
+    cell_len[idx] = cast[uint8](n)
     dirty = 1
+
+
+def hamsheet_set_cell(r: uint64, c: uint64, s: Ptr[uint8]):
+    _undo_begin()
+    _put_cell(r, c, s, _hs_slen(s))
     hamsheet_recompute()
 
 
@@ -659,8 +2023,22 @@ def hamsheet_cell_kind(r: uint64, c: uint64) -> uint8:
     return val_kind[_cidx(r, c)]
 
 
+def hamsheet_cell_err(r: uint64, c: uint64) -> uint8:
+    return val_err[_cidx(r, c)]
+
+
 def hamsheet_cell_value_fp(r: uint64, c: uint64) -> int64:
     return val_fp[_cidx(r, c)]
+
+
+def hamsheet_cell_fmt(r: uint64, c: uint64) -> uint8:
+    return cell_fmt[_cidx(r, c)]
+
+
+def hamsheet_col_width(c: uint64) -> int32:
+    if c >= MAXCOLS:
+        return 0
+    return col_w[c]
 
 
 # Display string for a cell into out (NUL-terminated); returns length.
@@ -671,20 +2049,22 @@ def hamsheet_cell_display(r: uint64, c: uint64, out: Ptr[uint8]) -> uint64:
         out[0] = 0
         return 0
     if k == KIND_ERR:
-        out[0] = 35                                    # '#'
-        out[1] = 69
-        out[2] = 82
-        out[3] = 82
-        out[4] = 0
-        return 4
+        p: uint64 = _append_cstr(out, 0, _err_text(val_err[idx]))
+        out[p] = 0
+        return p
+    if k == KIND_BOOL:
+        lit: Ptr[uint8] = cast[Ptr[uint8]]("FALSE")
+        if val_fp[idx] != 0:
+            lit = cast[Ptr[uint8]]("TRUE")
+        p2: uint64 = _append_cstr(out, 0, lit)
+        out[p2] = 0
+        return p2
     if k == KIND_NUM:
-        return _render_scaled(val_fp[idx], out)
-    # text: copy the raw bytes
-    base: uint64 = _cbase(r, c)
-    ln: uint64 = cast[uint64](cell_len[idx])
+        return _render_numfmt(val_fp[idx], cell_fmt[idx], out)
+    ln: uint64 = cast[uint64](val_txt_len[idx])
     i: uint64 = 0
     while i < ln:
-        out[i] = cell_raw[base + i]
+        out[i] = val_txt[idx * CELLTEXT + i]
         i = i + 1
     out[i] = 0
     return ln
@@ -709,7 +2089,6 @@ def hamsheet_col_label(c: uint64, out: Ptr[uint8]) -> uint64:
     return i
 
 
-# Current cell reference (e.g. "B3") into out; returns length.
 def hamsheet_cur_ref(out: Ptr[uint8]) -> uint64:
     p: uint64 = hamsheet_col_label(sel_c, out)
     p = p + _hs_udec(sel_r + 1, &out[p])
@@ -723,6 +2102,50 @@ def hamsheet_sel_row() -> uint64:
 
 def hamsheet_sel_col() -> uint64:
     return sel_c
+
+
+# ---- selection rectangle ---------------------------------------------------
+def _sel_r0() -> uint64:
+    if anc_r < sel_r:
+        return anc_r
+    return sel_r
+
+
+def _sel_r1() -> uint64:
+    if anc_r > sel_r:
+        return anc_r
+    return sel_r
+
+
+def _sel_c0() -> uint64:
+    if anc_c < sel_c:
+        return anc_c
+    return sel_c
+
+
+def _sel_c1() -> uint64:
+    if anc_c > sel_c:
+        return anc_c
+    return sel_c
+
+
+def hamsheet_sel_rows() -> uint64:
+    return _sel_r1() - _sel_r0() + 1
+
+
+def hamsheet_sel_cols() -> uint64:
+    return _sel_c1() - _sel_c0() + 1
+
+
+# PUBLIC: set the selection rectangle (anchor + active cell).
+def hamsheet_select(ar: uint64, ac: uint64, sr: uint64, sc: uint64):
+    if ar >= MAXROWS or sr >= MAXROWS or ac >= MAXCOLS or sc >= MAXCOLS:
+        return
+    anc_r = ar
+    anc_c = ac
+    sel_r = sr
+    sel_c = sc
+    _ensure_visible()
 
 
 def hamsheet_dirty() -> int32:
@@ -757,17 +2180,24 @@ def hamsheet_clear():
     i: uint64 = 0
     while i < NCELLS:
         cell_len[i] = 0
+        cell_fmt[i] = 0
         val_kind[i] = KIND_EMPTY
+        val_err[i] = 0
+        val_txt_len[i] = 0
         val_fp[i] = 0
         eval_state[i] = 0
         i = i + 1
     sel_r = 0
     sel_c = 0
+    anc_r = 0
+    anc_c = 0
     top_row = 0
     left_col = 0
     editing = 0
     edit_len = 0
     dirty = 0
+    undo_n = 0
+    u_next_grp = 1
 
 
 def hamsheet_init():
@@ -779,15 +2209,389 @@ def hamsheet_init():
 
 
 # ====================================================================
+# REFERENCE REWRITING — what makes copy/fill and insert/delete feel real
+# ====================================================================
+# Rewrites every cell reference inside a formula's raw text.
+#   mode 0: SHIFT relative refs by (a = drow, b = dcol)   [copy / fill]
+#   mode 1: ROW pivot   — refs with row >= a move by b; the deleted row -> #REF!
+#   mode 2: COLUMN pivot — same for columns
+# String literals are skipped, absolute ($) components are honoured, and refs
+# that fall off the sheet become the literal #REF! (exactly like Excel).
+def _emit_ref(out: Ptr[uint8], p: uint64, col: uint64, row: uint64,
+              cabs: int32, rabs: int32) -> uint64:
+    q: uint64 = p
+    if cabs != 0:
+        out[q] = 36
+        q = q + 1
+    lbl: Array[8, uint8]
+    n: uint64 = hamsheet_col_label(col, &lbl[0])
+    i: uint64 = 0
+    while i < n:
+        out[q] = lbl[i]
+        q = q + 1
+        i = i + 1
+    if rabs != 0:
+        out[q] = 36
+        q = q + 1
+    q = q + _hs_udec(row + 1, &out[q])
+    return q
+
+
+def _rewrite_refs(src: Ptr[uint8], sn: uint64, mode: int32, a: int64,
+                  b: int64, out: Ptr[uint8]) -> uint64:
+    p: uint64 = 0
+    i: uint64 = 0
+    prev_name: int32 = 0
+    while i < sn:
+        ch: uint8 = src[i]
+        if ch == 34:                                   # string literal
+            out[p] = ch
+            p = p + 1
+            i = i + 1
+            while i < sn:
+                out[p] = src[i]
+                p = p + 1
+                if src[i] == 34:
+                    i = i + 1
+                    break
+                i = i + 1
+            prev_name = 0
+            continue
+        if prev_name == 0 and (ch == 36 or _is_alpha(ch) != 0):
+            pos: uint64 = i
+            col: uint64 = 0
+            row: uint64 = 0
+            ca: int32 = 0
+            ra: int32 = 0
+            if _parse_ref_ex(src, sn, &pos, &col, &row, &ca, &ra) != 0:
+                # a name immediately followed by '(' is a FUNCTION, not a ref
+                nc: int64 = cast[int64](col)
+                nr: int64 = cast[int64](row)
+                bad: int32 = 0
+                if mode == 0:
+                    if ra == 0:
+                        nr = nr + a
+                    if ca == 0:
+                        nc = nc + b
+                elif mode == 1:
+                    if nr == a and b < 0:
+                        bad = 1
+                    elif nr >= a:
+                        nr = nr + b
+                else:
+                    if nc == a and b < 0:
+                        bad = 1
+                    elif nc >= a:
+                        nc = nc + b
+                if nr < 0 or nc < 0 or nr >= cast[int64](MAXROWS) or \
+                        nc >= cast[int64](MAXCOLS):
+                    bad = 1
+                if bad != 0:
+                    p = _append_cstr(out, p, cast[Ptr[uint8]]("#REF!"))
+                else:
+                    p = _emit_ref(out, p, cast[uint64](nc), cast[uint64](nr),
+                                  ca, ra)
+                i = pos
+                prev_name = 1
+                continue
+        out[p] = ch
+        p = p + 1
+        if _is_alpha(ch) != 0 or _is_digit(ch) != 0 or ch == 36:
+            prev_name = 1
+        else:
+            prev_name = 0
+        i = i + 1
+    return p
+
+
+# ---- clipboard -------------------------------------------------------------
+clip_raw: Array[16384, uint8]
+clip_len: Array[256, uint8]
+clip_fmt: Array[256, uint8]
+clip_rows: uint64 = 0
+clip_cols: uint64 = 0
+clip_r0: uint64 = 0
+clip_c0: uint64 = 0
+clip_full: int32 = 0
+
+rw_buf: Array[256, uint8]
+
+
+def _copy_range(cut: int32):
+    r0: uint64 = _sel_r0()
+    c0: uint64 = _sel_c0()
+    r1: uint64 = _sel_r1()
+    c1: uint64 = _sel_c1()
+    clip_rows = r1 - r0 + 1
+    clip_cols = c1 - c0 + 1
+    clip_r0 = r0
+    clip_c0 = c0
+    clip_full = 1
+    if cut != 0:
+        _undo_begin()
+    rr: uint64 = 0
+    while rr < clip_rows:
+        cc: uint64 = 0
+        while cc < clip_cols:
+            src: uint64 = _cidx(r0 + rr, c0 + cc)
+            dst: uint64 = rr * MAXCOLS + cc
+            ln: uint64 = cast[uint64](cell_len[src])
+            j: uint64 = 0
+            while j < ln:
+                clip_raw[dst * CELLTEXT + j] = cell_raw[src * CELLTEXT + j]
+                j = j + 1
+            clip_len[dst] = cast[uint8](ln)
+            clip_fmt[dst] = cell_fmt[src]
+            if cut != 0 and ln != 0:
+                _undo_record(src)
+                cell_len[src] = 0
+            cc = cc + 1
+        rr = rr + 1
+    if cut != 0:
+        dirty = 1
+        hamsheet_recompute()
+
+
+def _paste_range():
+    if clip_full == 0:
+        return
+    dr: int64 = cast[int64](sel_r) - cast[int64](clip_r0)
+    dc: int64 = cast[int64](sel_c) - cast[int64](clip_c0)
+    _undo_begin()
+    rr: uint64 = 0
+    while rr < clip_rows:
+        cc: uint64 = 0
+        while cc < clip_cols:
+            tr: uint64 = sel_r + rr
+            tc: uint64 = sel_c + cc
+            if tr < MAXROWS and tc < MAXCOLS:
+                sidx: uint64 = rr * MAXCOLS + cc
+                ln: uint64 = cast[uint64](clip_len[sidx])
+                nl: uint64 = 0
+                if ln > 0 and clip_raw[sidx * CELLTEXT] == 61:
+                    nl = _rewrite_refs(&clip_raw[sidx * CELLTEXT], ln, 0,
+                                       dr, dc, &rw_buf[0])
+                    _put_cell(tr, tc, &rw_buf[0], nl)
+                else:
+                    _put_cell(tr, tc, &clip_raw[sidx * CELLTEXT], ln)
+                cell_fmt[_cidx(tr, tc)] = clip_fmt[sidx]
+            cc = cc + 1
+        rr = rr + 1
+    dirty = 1
+    hamsheet_recompute()
+
+
+# Fill the selection DOWN from its first row (or RIGHT from its first column),
+# adjusting relative references — the classic spreadsheet gesture.
+def _fill(down: int32):
+    r0: uint64 = _sel_r0()
+    c0: uint64 = _sel_c0()
+    r1: uint64 = _sel_r1()
+    c1: uint64 = _sel_c1()
+    _undo_begin()
+    if down != 0:
+        cc: uint64 = c0
+        while cc <= c1:
+            sidx: uint64 = _cidx(r0, cc)
+            ln: uint64 = cast[uint64](cell_len[sidx])
+            rr: uint64 = r0 + 1
+            while rr <= r1:
+                dr: int64 = cast[int64](rr) - cast[int64](r0)
+                if ln > 0 and cell_raw[sidx * CELLTEXT] == 61:
+                    nl: uint64 = _rewrite_refs(&cell_raw[sidx * CELLTEXT], ln,
+                                               0, dr, 0, &rw_buf[0])
+                    _put_cell(rr, cc, &rw_buf[0], nl)
+                else:
+                    _put_cell(rr, cc, &cell_raw[sidx * CELLTEXT], ln)
+                cell_fmt[_cidx(rr, cc)] = cell_fmt[sidx]
+                rr = rr + 1
+            cc = cc + 1
+    else:
+        rr2: uint64 = r0
+        while rr2 <= r1:
+            sidx2: uint64 = _cidx(rr2, c0)
+            ln2: uint64 = cast[uint64](cell_len[sidx2])
+            cc2: uint64 = c0 + 1
+            while cc2 <= c1:
+                dc: int64 = cast[int64](cc2) - cast[int64](c0)
+                if ln2 > 0 and cell_raw[sidx2 * CELLTEXT] == 61:
+                    nl2: uint64 = _rewrite_refs(&cell_raw[sidx2 * CELLTEXT],
+                                                ln2, 0, 0, dc, &rw_buf[0])
+                    _put_cell(rr2, cc2, &rw_buf[0], nl2)
+                else:
+                    _put_cell(rr2, cc2, &cell_raw[sidx2 * CELLTEXT], ln2)
+                cell_fmt[_cidx(rr2, cc2)] = cell_fmt[sidx2]
+                cc2 = cc2 + 1
+            rr2 = rr2 + 1
+    dirty = 1
+    hamsheet_recompute()
+
+
+# ---- insert / delete rows & columns ---------------------------------------
+def _repoint_all(mode: int32, pivot: int64, delta: int64):
+    i: uint64 = 0
+    while i < NCELLS:
+        ln: uint64 = cast[uint64](cell_len[i])
+        if ln > 0 and cell_raw[i * CELLTEXT] == 61:
+            nl: uint64 = _rewrite_refs(&cell_raw[i * CELLTEXT], ln, mode,
+                                       pivot, delta, &rw_buf[0])
+            _undo_record(i)
+            n: uint64 = nl
+            if n > CELLTEXT - 1:
+                n = CELLTEXT - 1
+            j: uint64 = 0
+            while j < n:
+                cell_raw[i * CELLTEXT + j] = rw_buf[j]
+                j = j + 1
+            cell_len[i] = cast[uint8](n)
+        i = i + 1
+
+
+def _move_cell(dst: uint64, src: uint64):
+    _undo_record(dst)
+    j: uint64 = 0
+    while j < CELLTEXT:
+        cell_raw[dst * CELLTEXT + j] = cell_raw[src * CELLTEXT + j]
+        j = j + 1
+    cell_len[dst] = cell_len[src]
+    cell_fmt[dst] = cell_fmt[src]
+
+
+def _blank_cell(idx: uint64):
+    _undo_record(idx)
+    cell_len[idx] = 0
+    cell_fmt[idx] = 0
+
+
+def _insert_row(at: uint64):
+    _undo_begin()
+    r: uint64 = MAXROWS - 1
+    while r > at:
+        c: uint64 = 0
+        while c < MAXCOLS:
+            _move_cell(_cidx(r, c), _cidx(r - 1, c))
+            c = c + 1
+        r = r - 1
+    c2: uint64 = 0
+    while c2 < MAXCOLS:
+        _blank_cell(_cidx(at, c2))
+        c2 = c2 + 1
+    _repoint_all(1, cast[int64](at), 1)
+    dirty = 1
+    hamsheet_recompute()
+
+
+def _delete_row(at: uint64):
+    _undo_begin()
+    r: uint64 = at
+    while r + 1 < MAXROWS:
+        c: uint64 = 0
+        while c < MAXCOLS:
+            _move_cell(_cidx(r, c), _cidx(r + 1, c))
+            c = c + 1
+        r = r + 1
+    c3: uint64 = 0
+    while c3 < MAXCOLS:
+        _blank_cell(_cidx(MAXROWS - 1, c3))
+        c3 = c3 + 1
+    _repoint_all(1, cast[int64](at), -1)
+    dirty = 1
+    hamsheet_recompute()
+
+
+def _insert_col(at: uint64):
+    _undo_begin()
+    c: uint64 = MAXCOLS - 1
+    while c > at:
+        r: uint64 = 0
+        while r < MAXROWS:
+            _move_cell(_cidx(r, c), _cidx(r, c - 1))
+            r = r + 1
+        c = c - 1
+    r2: uint64 = 0
+    while r2 < MAXROWS:
+        _blank_cell(_cidx(r2, at))
+        r2 = r2 + 1
+    _repoint_all(2, cast[int64](at), 1)
+    dirty = 1
+    hamsheet_recompute()
+
+
+def _delete_col(at: uint64):
+    _undo_begin()
+    c: uint64 = at
+    while c + 1 < MAXCOLS:
+        r: uint64 = 0
+        while r < MAXROWS:
+            _move_cell(_cidx(r, c), _cidx(r, c + 1))
+            r = r + 1
+        c = c + 1
+    r3: uint64 = 0
+    while r3 < MAXROWS:
+        _blank_cell(_cidx(r3, MAXCOLS - 1))
+        r3 = r3 + 1
+    _repoint_all(2, cast[int64](at), -1)
+    dirty = 1
+    hamsheet_recompute()
+
+
+# ---- formatting over the selection ----------------------------------------
+def _fmt_apply(what: int32):
+    r0: uint64 = _sel_r0()
+    c0: uint64 = _sel_c0()
+    r1: uint64 = _sel_r1()
+    c1: uint64 = _sel_c1()
+    cur: uint8 = cell_fmt[_cidx(r0, c0)]
+    nf: uint8 = (_fmt_nf(cur) + 1) % NF_COUNT
+    al: uint8 = (_fmt_align(cur) + 1) % 4
+    bold: int32 = 1
+    if _fmt_is_bold(cur) != 0:
+        bold = 0
+    _undo_begin()
+    r: uint64 = r0
+    while r <= r1:
+        c: uint64 = c0
+        while c <= c1:
+            idx: uint64 = _cidx(r, c)
+            _undo_record(idx)
+            f: uint8 = cell_fmt[idx]
+            if what == 0:                              # cycle number format
+                f = (f - _fmt_nf(f)) + nf
+            elif what == 1:                            # bold toggle
+                if bold != 0:
+                    if _fmt_is_bold(f) == 0:
+                        f = f + FMT_BOLD
+                else:
+                    if _fmt_is_bold(f) != 0:
+                        f = f - FMT_BOLD
+            else:                                      # cycle alignment
+                fb: uint8 = f - _fmt_align(f) * 16
+                f = fb + al * 16
+            cell_fmt[idx] = f
+            c = c + 1
+        r = r + 1
+    dirty = 1
+
+
+def hamsheet_set_fmt(r: uint64, c: uint64, f: uint8):
+    if r < MAXROWS and c < MAXCOLS:
+        cell_fmt[_cidx(r, c)] = f
+        dirty = 1
+
+
+# ====================================================================
 # EDITING + KEYBOARD
 # ====================================================================
 def _commit_edit():
     if editing == 0:
         return
+    msg_id = 0
     edit_buf[edit_len] = 0
-    hamsheet_set_cell(sel_r, sel_c, &edit_buf[0])
+    _undo_begin()
+    _put_cell(sel_r, sel_c, &edit_buf[0], edit_len)
     editing = 0
     edit_len = 0
+    hamsheet_recompute()
 
 
 def _cancel_edit():
@@ -800,7 +2604,21 @@ def _begin_edit_empty():
     edit_len = 0
 
 
-def _move(dr: int64, dc: int64):
+# F2 / typing over a cell: start editing from its CURRENT source text.
+def _begin_edit_existing():
+    editing = 1
+    edit_len = 0
+    idx: uint64 = _cidx(sel_r, sel_c)
+    base: uint64 = _cbase(sel_r, sel_c)
+    ln: uint64 = cast[uint64](cell_len[idx])
+    i: uint64 = 0
+    while i < ln and i < EDIT_CAP - 1:
+        edit_buf[i] = cell_raw[base + i]
+        i = i + 1
+    edit_len = i
+
+
+def _move(dr: int64, dc: int64, extend: int32):
     nr: int64 = cast[int64](sel_r) + dr
     nc: int64 = cast[int64](sel_c) + dc
     if nr < 0:
@@ -813,34 +2631,124 @@ def _move(dr: int64, dc: int64):
         nc = cast[int64](MAXCOLS) - 1
     sel_r = cast[uint64](nr)
     sel_c = cast[uint64](nc)
+    msg_id = 0
+    if extend == 0:
+        anc_r = sel_r
+        anc_c = sel_c
     _ensure_visible()
 
 
-def _clear_cell():
-    idx: uint64 = _cidx(sel_r, sel_c)
-    if cell_len[idx] != 0:
-        cell_len[idx] = 0
+def _clear_selection():
+    r0: uint64 = _sel_r0()
+    c0: uint64 = _sel_c0()
+    r1: uint64 = _sel_r1()
+    c1: uint64 = _sel_c1()
+    _undo_begin()
+    any: int32 = 0
+    r: uint64 = r0
+    while r <= r1:
+        c: uint64 = c0
+        while c <= c1:
+            idx: uint64 = _cidx(r, c)
+            if cell_len[idx] != 0:
+                _undo_record(idx)
+                cell_len[idx] = 0
+                any = 1
+            c = c + 1
+        r = r + 1
+    if any != 0:
         dirty = 1
         hamsheet_recompute()
 
 
-# Arrow / navigation final byte. Commits any active edit first, then moves.
-def _hs_nav(fin: int32) -> int32:
-    if editing != 0:
+def _widen(d: int32):
+    c0: uint64 = _sel_c0()
+    c1: uint64 = _sel_c1()
+    c: uint64 = c0
+    while c <= c1 and c < MAXCOLS:
+        w: int32 = col_w[c] + d
+        if w < MIN_COLW:
+            w = MIN_COLW
+        if w > MAX_COLW:
+            w = MAX_COLW
+        col_w[c] = w
+        c = c + 1
+    dirty = 1
+
+
+# Navigation final byte + shift flag. Commits any active edit first, then moves.
+def _hs_nav(fin: int32, shift: int32) -> int32:
+    if editing != 0 and fin != 51:
         _commit_edit()
+    vr: int64 = cast[int64](_vis_rows())
     if fin == 68:                                      # Left
-        _move(0, -1)
+        _move(0, -1, shift)
     elif fin == 67:                                    # Right
-        _move(0, 1)
+        _move(0, 1, shift)
     elif fin == 65:                                    # Up
-        _move(-1, 0)
+        _move(-1, 0, shift)
     elif fin == 66:                                    # Down
-        _move(1, 0)
+        _move(1, 0, shift)
+    elif fin == 72:                                    # Home -> column A
+        _move(0, 0 - cast[int64](sel_c), shift)
+    elif fin == 70:                                    # End -> last column
+        _move(0, cast[int64](MAXCOLS) - 1 - cast[int64](sel_c), shift)
+    elif fin == 53:                                    # PageUp
+        _move(0 - vr, 0, shift)
+    elif fin == 54:                                    # PageDown
+        _move(vr, 0, shift)
     elif fin == 51:                                    # Delete (CSI 3~)
-        _clear_cell()
+        if editing != 0:
+            _cancel_edit()
+        else:
+            _clear_selection()
     else:
         return 0
     return 1
+
+
+# Decode a completed CSI sequence: params are in csi_buf[0..csi_n).
+def _csi_dispatch(fin: int32) -> int32:
+    shift: int32 = 0
+    p1: int32 = 0
+    p2: int32 = 0
+    seen: int32 = 0
+    i: uint64 = 0
+    cur: int32 = 0
+    while i < csi_n:
+        ch: uint8 = csi_buf[i]
+        if ch >= 48 and ch <= 57:
+            cur = cur * 10 + cast[int32](ch) - 48
+        elif ch == 59:                                 # ';'
+            if seen == 0:
+                p1 = cur
+            else:
+                p2 = cur
+            seen = seen + 1
+            cur = 0
+        i = i + 1
+    if seen == 0:
+        p1 = cur
+    else:
+        p2 = cur
+    if p2 > 1 and (p2 - 1) % 2 == 1:
+        shift = 1
+    f: int32 = fin
+    if fin == 126:                                     # '~' final: 3~ 5~ 6~
+        f = 0
+        if p1 == 3:
+            f = 51
+        elif p1 == 5:
+            f = 53
+        elif p1 == 6:
+            f = 54
+        elif p1 == 1 or p1 == 7:
+            f = 72
+        elif p1 == 4 or p1 == 8:
+            f = 70
+        if f == 0:
+            return 0
+    return _hs_nav(f, shift)
 
 
 # Apply one key (ASCII/decoded). Returns 1 if state changed (redraw needed).
@@ -848,52 +2756,108 @@ def hamsheet_key(code: int32) -> int32:
     if hs_esc == 1:
         if code == 91:                                 # '['
             hs_esc = 2
+            csi_n = 0
         else:
             hs_esc = 0
         return 0
     if hs_esc == 2:
-        if code >= 48 and code <= 57:
-            hs_par = code
+        if (code >= 48 and code <= 63) and csi_n < 15:  # parameter bytes
+            csi_buf[csi_n] = cast[uint8](code)
+            csi_n = csi_n + 1
             return 0
         hs_esc = 0
-        fin: int32 = code
-        if code == 126:                                # '~' final
-            p: int32 = hs_par
-            hs_par = 0
-            if p == 51:
-                fin = 51
-            else:
-                return 0
-        return _hs_nav(fin)
+        return _csi_dispatch(code)
     if code == 27:                                     # ESC
         if editing != 0:
             _cancel_edit()
             return 1
         hs_esc = 1
         return 0
-    if code == 19:                                     # Ctrl-S -> Save
+    if code == 1:                                      # Ctrl-A select all
+        anc_r = 0
+        anc_c = 0
+        sel_r = MAXROWS - 1
+        sel_c = MAXCOLS - 1
+        _ensure_visible()
+        return 1
+    if code == 2:                                      # Ctrl-B bold
+        _fmt_apply(1)
+        return 1
+    if code == 3:                                      # Ctrl-C copy
+        _copy_range(0)
+        msg_id = 1
+        return 1
+    if code == 4:                                      # Ctrl-D fill down
+        _fill(1)
+        return 1
+    if code == 5:                                      # Ctrl-E export CSV
+        pending_action = 3
+        msg_id = 3
+        return 1
+    if code == 6:                                      # Ctrl-F number format
+        _fmt_apply(0)
+        return 1
+    if code == 7:                                      # Ctrl-G import CSV
+        pending_action = 4
+        msg_id = 4
+        return 1
+    if code == 11:                                     # Ctrl-K delete row
+        _delete_row(_sel_r0())
+        return 1
+    if code == 12:                                     # Ctrl-L alignment
+        _fmt_apply(2)
+        return 1
+    if code == 14:                                     # Ctrl-N insert row
+        _insert_row(_sel_r0())
+        return 1
+    if code == 15:                                     # Ctrl-O open
+        pending_action = 2
+        return 1
+    if code == 16:                                     # Ctrl-P insert column
+        _insert_col(_sel_c0())
+        return 1
+    if code == 17:                                     # Ctrl-Q delete column
+        _delete_col(_sel_c0())
+        return 1
+    if code == 18:                                     # Ctrl-R fill right
+        _fill(0)
+        return 1
+    if code == 19:                                     # Ctrl-S save
         if editing != 0:
             _commit_edit()
         pending_action = 1
         return 1
-    if code == 15:                                     # Ctrl-O -> Open
-        pending_action = 2
+    if code == 20:                                     # Ctrl-T narrow column
+        _widen(-8)
         return 1
+    if code == 22:                                     # Ctrl-V paste
+        _paste_range()
+        msg_id = 2
+        return 1
+    if code == 23:                                     # Ctrl-W widen column
+        _widen(8)
+        return 1
+    if code == 24:                                     # Ctrl-X cut
+        _copy_range(1)
+        msg_id = 1
+        return 1
+    if code == 26:                                     # Ctrl-Z undo
+        return hamsheet_undo()
     if code == 9:                                      # Tab -> commit + right
         _commit_edit()
-        _move(0, 1)
+        _move(0, 1, 0)
         return 1
     if code == 13 or code == 10:                       # Enter -> commit + down
         if editing != 0:
             _commit_edit()
-        _move(1, 0)
+        _move(1, 0, 0)
         return 1
     if code == 8 or code == 127:                       # Backspace
         if editing != 0:
             if edit_len > 0:
                 edit_len = edit_len - 1
             return 1
-        _clear_cell()
+        _clear_selection()
         return 1
     if code >= 32 and code <= 126:                     # printable -> edit
         if editing == 0:
@@ -930,20 +2894,32 @@ def hamsheet_key_line(s: Ptr[uint8], n: uint64) -> int32:
 
 
 # ====================================================================
-# DOCUMENT SERIALISATION (round-trips RAW cell text -> formulas survive)
+# DOCUMENT SERIALISATION (round-trips RAW cell text, formats + column widths)
 # ====================================================================
 # Format (self-describing container):
-#   "HAMSHEET1\n"
-#   "<count>\n"                          number of non-empty cells
-#   for each: "<row> <col> <len>\n" then <len> raw bytes then "\n"
+#   "HAMSHEET2\n"
+#   "W <w0> <w1> … <w7>\n"                column widths
+#   "<count>\n"                           number of non-empty cells
+#   for each: "<row> <col> <len> <fmt>\n" then <len> raw bytes then "\n"
+# The older HAMSHEET1 container (no widths, no per-cell format) still loads.
 def hamsheet_serialize(out: Ptr[uint8]) -> uint64:
-    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMSHEET1"))
+    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMSHEET2"))
+    out[p] = 10
+    p = p + 1
+    out[p] = 87                                        # 'W'
+    p = p + 1
+    w: uint64 = 0
+    while w < MAXCOLS:
+        out[p] = 32
+        p = p + 1
+        p = p + _hs_udec(cast[uint64](col_w[w]), &out[p])
+        w = w + 1
     out[p] = 10
     p = p + 1
     count: uint64 = 0
     i: uint64 = 0
     while i < NCELLS:
-        if cell_len[i] != 0:
+        if cell_len[i] != 0 or cell_fmt[i] != 0:
             count = count + 1
         i = i + 1
     p = p + _hs_udec(count, &out[p])
@@ -955,7 +2931,7 @@ def hamsheet_serialize(out: Ptr[uint8]) -> uint64:
         while c < MAXCOLS:
             idx: uint64 = _cidx(r, c)
             ln: uint64 = cast[uint64](cell_len[idx])
-            if ln != 0:
+            if ln != 0 or cell_fmt[idx] != 0:
                 p = p + _hs_udec(r, &out[p])
                 out[p] = 32
                 p = p + 1
@@ -963,6 +2939,9 @@ def hamsheet_serialize(out: Ptr[uint8]) -> uint64:
                 out[p] = 32
                 p = p + 1
                 p = p + _hs_udec(ln, &out[p])
+                out[p] = 32
+                p = p + 1
+                p = p + _hs_udec(cast[uint64](cell_fmt[idx]), &out[p])
                 out[p] = 10
                 p = p + 1
                 base: uint64 = _cbase(r, c)
@@ -986,31 +2965,56 @@ def _parse_uint(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]) -> uint64:
     return v
 
 
-# Parse a HAMSHEET1 container back into the grid. A buffer that does NOT begin
-# with the magic leaves the sheet empty (defensive).
+def _skip_sp(s: Ptr[uint8], n: uint64, pos: Ptr[uint64]):
+    while pos[0] < n and s[pos[0]] == 32:
+        pos[0] = pos[0] + 1
+
+
+# Parse a HAMSHEET1/HAMSHEET2 container back into the grid. A buffer that does
+# NOT begin with the magic leaves the sheet empty (defensive).
 def hamsheet_deserialize(s: Ptr[uint8], n: uint64):
     hamsheet_clear()
-    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMSHEET1")
+    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMSHEET")
     k: uint64 = 0
     while magic[k] != 0:
         if k >= n or s[k] != magic[k]:
             return
         k = k + 1
-    pos: uint64 = k
+    if k >= n:
+        return
+    ver: uint8 = s[k]
+    if ver != 49 and ver != 50:                        # '1' / '2'
+        return
+    pos: uint64 = k + 1
     if pos < n and s[pos] == 10:
         pos = pos + 1
+    if ver == 50 and pos < n and s[pos] == 87:         # 'W' widths line
+        pos = pos + 1
+        w: uint64 = 0
+        while w < MAXCOLS:
+            _skip_sp(s, n, &pos)
+            wv: uint64 = _parse_uint(s, n, &pos)
+            if wv >= cast[uint64](MIN_COLW) and wv <= cast[uint64](MAX_COLW):
+                col_w[w] = cast[int32](wv)
+            w = w + 1
+        while pos < n and s[pos] != 10:
+            pos = pos + 1
+        if pos < n:
+            pos = pos + 1
     count: uint64 = _parse_uint(s, n, &pos)
     if pos < n and s[pos] == 10:
         pos = pos + 1
     e: uint64 = 0
     while e < count and pos < n:
         r: uint64 = _parse_uint(s, n, &pos)
-        if pos < n and s[pos] == 32:
-            pos = pos + 1
+        _skip_sp(s, n, &pos)
         c: uint64 = _parse_uint(s, n, &pos)
-        if pos < n and s[pos] == 32:
-            pos = pos + 1
+        _skip_sp(s, n, &pos)
         ln: uint64 = _parse_uint(s, n, &pos)
+        fm: uint64 = 0
+        if ver == 50:
+            _skip_sp(s, n, &pos)
+            fm = _parse_uint(s, n, &pos)
         if pos < n and s[pos] == 10:
             pos = pos + 1
         if r < MAXROWS and c < MAXCOLS and ln < CELLTEXT:
@@ -1022,8 +3026,8 @@ def hamsheet_deserialize(s: Ptr[uint8], n: uint64):
                 j = j + 1
                 pos = pos + 1
             cell_len[idx] = cast[uint8](j)
+            cell_fmt[idx] = cast[uint8](fm % 256)
         else:
-            # skip the raw bytes of a cell we can't place
             j2: uint64 = 0
             while j2 < ln and pos < n:
                 j2 = j2 + 1
@@ -1032,6 +3036,140 @@ def hamsheet_deserialize(s: Ptr[uint8], n: uint64):
             pos = pos + 1
         e = e + 1
     dirty = 0
+    undo_n = 0
+    hamsheet_recompute()
+
+
+# ====================================================================
+# CSV IMPORT / EXPORT — the universal spreadsheet interchange
+# ====================================================================
+csv_disp: Array[64, uint8]
+
+
+def _last_row() -> int64:
+    r: int64 = cast[int64](MAXROWS) - 1
+    while r >= 0:
+        c: uint64 = 0
+        while c < MAXCOLS:
+            if cell_len[_cidx(cast[uint64](r), c)] != 0:
+                return r
+            c = c + 1
+        r = r - 1
+    return -1
+
+
+def _last_col() -> int64:
+    c: int64 = cast[int64](MAXCOLS) - 1
+    while c >= 0:
+        r: uint64 = 0
+        while r < MAXROWS:
+            if cell_len[_cidx(r, cast[uint64](c))] != 0:
+                return c
+            r = r + 1
+        c = c - 1
+    return -1
+
+
+# Export the COMPUTED values as RFC-4180-ish CSV. Returns the byte count.
+def hamsheet_export_csv(out: Ptr[uint8]) -> uint64:
+    lr: int64 = _last_row()
+    lc: int64 = _last_col()
+    p: uint64 = 0
+    if lr < 0 or lc < 0:
+        return 0
+    r: int64 = 0
+    while r <= lr:
+        c: int64 = 0
+        while c <= lc:
+            if c > 0:
+                out[p] = 44
+                p = p + 1
+            dl: uint64 = hamsheet_cell_display(cast[uint64](r),
+                                               cast[uint64](c), &csv_disp[0])
+            needq: int32 = 0
+            i: uint64 = 0
+            while i < dl:
+                ch: uint8 = csv_disp[i]
+                if ch == 44 or ch == 34 or ch == 10:
+                    needq = 1
+                i = i + 1
+            if needq != 0:
+                out[p] = 34
+                p = p + 1
+            j: uint64 = 0
+            while j < dl:
+                if csv_disp[j] == 34:
+                    out[p] = 34
+                    p = p + 1
+                out[p] = csv_disp[j]
+                p = p + 1
+                j = j + 1
+            if needq != 0:
+                out[p] = 34
+                p = p + 1
+            c = c + 1
+        out[p] = 10
+        p = p + 1
+        r = r + 1
+    return p
+
+
+# Import CSV into the grid (raw text: "=…" fields still become formulas).
+csv_field: Array[64, uint8]
+
+
+def hamsheet_import_csv(s: Ptr[uint8], n: uint64):
+    hamsheet_clear()
+    pos: uint64 = 0
+    r: uint64 = 0
+    while pos < n and r < MAXROWS:
+        c: uint64 = 0
+        rowdone: int32 = 0
+        while rowdone == 0 and pos <= n:
+            fl: uint64 = 0
+            if pos < n and s[pos] == 34:               # quoted field
+                pos = pos + 1
+                while pos < n:
+                    if s[pos] == 34:
+                        if pos + 1 < n and s[pos + 1] == 34:
+                            if fl < 63:
+                                csv_field[fl] = 34
+                                fl = fl + 1
+                            pos = pos + 2
+                            continue
+                        pos = pos + 1
+                        break
+                    if fl < 63:
+                        csv_field[fl] = s[pos]
+                        fl = fl + 1
+                    pos = pos + 1
+            else:
+                while pos < n and s[pos] != 44 and s[pos] != 10 and \
+                        s[pos] != 13:
+                    if fl < 63:
+                        csv_field[fl] = s[pos]
+                        fl = fl + 1
+                    pos = pos + 1
+            if fl > 0 and c < MAXCOLS:
+                idx: uint64 = _cidx(r, c)
+                base: uint64 = _cbase(r, c)
+                j: uint64 = 0
+                while j < fl:
+                    cell_raw[base + j] = csv_field[j]
+                    j = j + 1
+                cell_len[idx] = cast[uint8](fl)
+            c = c + 1
+            if pos < n and s[pos] == 44:
+                pos = pos + 1
+                continue
+            while pos < n and s[pos] == 13:
+                pos = pos + 1
+            if pos < n and s[pos] == 10:
+                pos = pos + 1
+            rowdone = 1
+        r = r + 1
+    dirty = 1
+    undo_n = 0
     hamsheet_recompute()
 
 
@@ -1041,8 +3179,10 @@ def hamsheet_deserialize(s: Ptr[uint8], n: uint64):
 WIN_W: int32 = 600
 WIN_H: int32 = 384
 BAR_H: int32 = 22            # title bar
-FB_Y:  int32 = 22           # formula/status bar
+FB_Y:  int32 = 22            # formula/status bar
 FB_H:  int32 = 24
+CSV_X:  int32 = 414
+CSV_W:  int32 = 44
 OPEN_X: int32 = 476
 OPEN_W: int32 = 52
 SAVE_X: int32 = 532
@@ -1053,18 +3193,19 @@ ROWHDR_W: int32 = 34        # left row-number gutter width
 COLHDR_H: int32 = 18        # column-header strip height
 CELL_H:   int32 = 18
 CELLS_Y:  int32 = 64        # GRID_Y + COLHDR_H
+STATUS_H: int32 = 18        # bottom status strip
 
-disp_buf: Array[48, uint8]
+disp_buf: Array[80, uint8]
 lbl_buf:  Array[8, uint8]
 ref_buf:  Array[16, uint8]
+stat_buf: Array[160, uint8]
 
 
 def _vis_rows() -> uint64:
-    return cast[uint64]((WIN_H - CELLS_Y) / CELL_H)
+    return cast[uint64]((WIN_H - CELLS_Y - STATUS_H) / CELL_H)
 
 
 def _vis_cols() -> uint64:
-    # count columns that fit from left_col given per-column widths
     x: int32 = ROWHDR_W
     c: uint64 = left_col
     n: uint64 = 0
@@ -1086,7 +3227,6 @@ def _ensure_visible():
     if sel_c < left_col:
         left_col = sel_c
     else:
-        # widen the window until the selected column is inside it
         while sel_c >= left_col + _vis_cols():
             left_col = left_col + 1
 
@@ -1101,33 +3241,89 @@ def _col_x(c: uint64) -> int32:
     return x
 
 
-def _draw_clipped(x: int32, y: int32, w: int32, s: Ptr[uint8], ln: uint64,
-                  color: Ptr[uint8], right: int32):
+# align: 0 left, 1 right, 2 centre
+def _draw_cliptext(x: int32, y: int32, w: int32, s: Ptr[uint8], ln: uint64,
+                   color: Ptr[uint8], align: int32, bold: int32):
     maxc: int32 = (w - 6) / 8
     if maxc < 0:
         maxc = 0
     show: uint64 = ln
     if show > cast[uint64](maxc):
         show = cast[uint64](maxc)
-    # NUL-terminate a temporary copy
-    tmp: Array[48, uint8]
+    tmp: Array[80, uint8]
     i: uint64 = 0
-    while i < show and i < 47:
+    while i < show and i < 79:
         tmp[i] = s[i]
         i = i + 1
     tmp[i] = 0
     tx: int32 = x + 3
-    if right != 0:
+    if align == 1:
         tx = x + w - 3 - cast[int32](show) * 8
-        if tx < x + 3:
-            tx = x + 3
-    hamscene_glyphs(tx, y, &tmp[0], color)
+    elif align == 2:
+        tx = x + (w - cast[int32](show) * 8) / 2
+    if tx < x + 3:
+        tx = x + 3
+    if bold != 0:
+        hamscene_glyphs_bold(tx, y, &tmp[0], color)
+    else:
+        hamscene_glyphs(tx, y, &tmp[0], color)
 
 
 def _toolbtn(x: int32, w: int32, label: Ptr[uint8]):
     hamscene_fill(x, FB_Y + 2, w, FB_H - 4, cast[Ptr[uint8]]("#e6e8ec"))
     hamscene_stroke(x, FB_Y + 2, w, FB_H - 4, 1, cast[Ptr[uint8]]("#a8b0ba"))
     hamscene_glyphs_bold(x + 8, FB_Y + 6, label, cast[Ptr[uint8]]("#202020"))
+
+
+# Build the bottom status strip text: selection, format, live aggregate.
+def _build_status() -> uint64:
+    p: uint64 = 0
+    r0: uint64 = _sel_r0()
+    c0: uint64 = _sel_c0()
+    r1: uint64 = _sel_r1()
+    c1: uint64 = _sel_c1()
+    p = p + hamsheet_col_label(c0, &stat_buf[p])
+    p = p + _hs_udec(r0 + 1, &stat_buf[p])
+    if r0 != r1 or c0 != c1:
+        stat_buf[p] = 58                               # ':'
+        p = p + 1
+        p = p + hamsheet_col_label(c1, &stat_buf[p])
+        p = p + _hs_udec(r1 + 1, &stat_buf[p])
+    p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("  "))
+    p = _append_cstr(&stat_buf[0], p, _numfmt_name(cell_fmt[_cidx(r0, c0)]))
+    # live aggregate over the selection
+    tot: int64 = 0
+    cnt: int64 = 0
+    r: uint64 = r0
+    while r <= r1:
+        c: uint64 = c0
+        while c <= c1:
+            k: uint8 = val_kind[_cidx(r, c)]
+            if k == KIND_NUM or k == KIND_BOOL:
+                tot = tot + val_fp[_cidx(r, c)]
+                cnt = cnt + 1
+            c = c + 1
+        r = r + 1
+    if cnt > 0:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Sum "))
+        p = p + _render_scaled(tot, &stat_buf[p])
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("  Avg "))
+        p = p + _render_scaled(_fp_round_dp(_fp_div(tot, cnt * SCALE), 2),
+                               &stat_buf[p])
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("  Count "))
+        p = p + _hs_udec(cast[uint64](cnt), &stat_buf[p])
+    if msg_id == 1:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   [copied]"))
+    elif msg_id == 2:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   [pasted]"))
+    elif msg_id == 3:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   [csv out]"))
+    elif msg_id == 4:
+        p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   [csv in]"))
+    if p > 52:                                         # keep clear of the hints
+        p = 52
+    stat_buf[p] = 0
+    return p
 
 
 def hamsheet_build_scene():
@@ -1152,42 +3348,60 @@ def hamsheet_build_scene():
         stat = cast[Ptr[uint8]]("* modified")
     hamscene_glyphs(WIN_W - 92, 5, stat, cast[Ptr[uint8]]("#eef8f1"))
 
-    # ---- formula / status bar --------------------------------------------
+    # ---- formula bar ------------------------------------------------------
     hamscene_fill(0, FB_Y, WIN_W, FB_H, cast[Ptr[uint8]]("#eef0f3"))
     hamscene_stroke(0, FB_Y + FB_H - 1, WIN_W, 1, 1, cast[Ptr[uint8]]("#b4b8bf"))
-    # current-cell reference box
     hamscene_fill(6, FB_Y + 3, 44, FB_H - 6, cast[Ptr[uint8]]("#ffffff"))
     hamscene_stroke(6, FB_Y + 3, 44, FB_H - 6, 1, cast[Ptr[uint8]]("#b4b8bf"))
-    rl: uint64 = hamsheet_cur_ref(&ref_buf[0])
+    hamsheet_cur_ref(&ref_buf[0])
     hamscene_glyphs_bold(12, FB_Y + 6, &ref_buf[0], cast[Ptr[uint8]]("#245f40"))
-    # contents: the edit buffer while editing, else the selected cell's raw text
+    hamscene_glyphs_bold(56, FB_Y + 6, cast[Ptr[uint8]]("fx"),
+                         cast[Ptr[uint8]]("#6b7480"))
+    hamscene_fill(76, FB_Y + 3, 330, FB_H - 6, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_stroke(76, FB_Y + 3, 330, FB_H - 6, 1, cast[Ptr[uint8]]("#b4b8bf"))
+    # SOURCE text of the cell (the grid shows the computed value)
+    src_n: uint64 = 0
     if editing != 0:
         edit_buf[edit_len] = 0
-        hamscene_glyphs(60, FB_Y + 6, &edit_buf[0], cast[Ptr[uint8]]("#202020"))
+        src_n = edit_len
+        i0: uint64 = 0
+        while i0 < edit_len and i0 < 79:
+            disp_buf[i0] = edit_buf[i0]
+            i0 = i0 + 1
+        disp_buf[i0] = 0
     else:
         base: uint64 = _cbase(sel_r, sel_c)
         cl: uint64 = hamsheet_cell_raw_len(sel_r, sel_c)
-        i0: uint64 = 0
-        while i0 < cl and i0 < 47:
-            disp_buf[i0] = cell_raw[base + i0]
-            i0 = i0 + 1
-        disp_buf[i0] = 0
-        hamscene_glyphs(60, FB_Y + 6, &disp_buf[0], cast[Ptr[uint8]]("#202020"))
+        i1: uint64 = 0
+        while i1 < cl and i1 < 79:
+            disp_buf[i1] = cell_raw[base + i1]
+            i1 = i1 + 1
+        disp_buf[i1] = 0
+        src_n = cl
+    hamscene_glyphs(80, FB_Y + 6, &disp_buf[0], cast[Ptr[uint8]]("#202020"))
+    if editing != 0:                                   # caret
+        cx0: int32 = 80 + cast[int32](src_n) * 8
+        if cx0 > 400:
+            cx0 = 400
+        hamscene_fill(cx0, FB_Y + 5, 2, 13, cast[Ptr[uint8]]("#2f7d54"))
+    _toolbtn(CSV_X, CSV_W, cast[Ptr[uint8]]("CSV"))
     _toolbtn(OPEN_X, OPEN_W, cast[Ptr[uint8]]("Open"))
     _toolbtn(SAVE_X, SAVE_W, cast[Ptr[uint8]]("Save"))
 
     # ---- grid: corner + headers ------------------------------------------
     vr: uint64 = _vis_rows()
     vc: uint64 = _vis_cols()
-    # corner box
+    sr0: uint64 = _sel_r0()
+    sc0: uint64 = _sel_c0()
+    sr1: uint64 = _sel_r1()
+    sc1: uint64 = _sel_c1()
     hamscene_fill(0, GRID_Y, ROWHDR_W, COLHDR_H, cast[Ptr[uint8]]("#d3d8de"))
-    # column headers
     c: uint64 = left_col
     while c < left_col + vc and c < MAXCOLS:
         cx: int32 = _col_x(c)
         cw: int32 = col_w[c]
         hc: Ptr[uint8] = cast[Ptr[uint8]]("#d3d8de")
-        if c == sel_c:
+        if c >= sc0 and c <= sc1:
             hc = cast[Ptr[uint8]]("#bcd6c4")
         hamscene_fill(cx, GRID_Y, cw, COLHDR_H, hc)
         hamscene_stroke(cx, GRID_Y, cw, COLHDR_H, 1, cast[Ptr[uint8]]("#b4b8bf"))
@@ -1201,9 +3415,8 @@ def hamsheet_build_scene():
     while rr < vr and top_row + rr < MAXROWS:
         row: uint64 = top_row + rr
         ry: int32 = CELLS_Y + cast[int32](rr) * CELL_H
-        # row-number gutter
         rhc: Ptr[uint8] = cast[Ptr[uint8]]("#d3d8de")
-        if row == sel_r:
+        if row >= sr0 and row <= sr1:
             rhc = cast[Ptr[uint8]]("#bcd6c4")
         hamscene_fill(0, ry, ROWHDR_W, CELL_H, rhc)
         hamscene_stroke(0, ry, ROWHDR_W, CELL_H, 1, cast[Ptr[uint8]]("#b4b8bf"))
@@ -1211,33 +3424,60 @@ def hamsheet_build_scene():
         lbl_buf[rnl] = 0
         hamscene_glyphs(ROWHDR_W - 4 - cast[int32](rnl) * 8, ry + 1,
                         &lbl_buf[0], cast[Ptr[uint8]]("#33383e"))
-        # data cells
         cc: uint64 = left_col
         while cc < left_col + vc and cc < MAXCOLS:
             cx2: int32 = _col_x(cc)
             cw2: int32 = col_w[cc]
-            selected: int32 = 0
+            idx: uint64 = _cidx(row, cc)
+            active: int32 = 0
             if row == sel_r and cc == sel_c:
-                selected = 1
+                active = 1
+            inrange: int32 = 0
+            if row >= sr0 and row <= sr1 and cc >= sc0 and cc <= sc1:
+                inrange = 1
             cellbg: Ptr[uint8] = cast[Ptr[uint8]]("#ffffff")
-            if selected != 0:
+            if active != 0:
                 cellbg = cast[Ptr[uint8]]("#eaf3ec")
+            elif inrange != 0:
+                cellbg = cast[Ptr[uint8]]("#dceee2")
             hamscene_fill(cx2, ry, cw2, CELL_H, cellbg)
             hamscene_stroke(cx2, ry, cw2, CELL_H, 1, cast[Ptr[uint8]]("#d7dbe0"))
-            k: uint8 = val_kind[_cidx(row, cc)]
-            if k != KIND_EMPTY:
-                dl: uint64 = hamsheet_cell_display(row, cc, &disp_buf[0])
-                col: Ptr[uint8] = cast[Ptr[uint8]]("#202020")
-                rightj: int32 = 0
-                if k == KIND_NUM:
-                    rightj = 1
-                elif k == KIND_ERR:
-                    col = cast[Ptr[uint8]]("#b02020")
-                _draw_clipped(cx2, ry + 1, cw2, &disp_buf[0], dl, col, rightj)
+            if active != 0 and editing != 0:
+                edit_buf[edit_len] = 0
+                _draw_cliptext(cx2, ry + 1, cw2, &edit_buf[0], edit_len,
+                               cast[Ptr[uint8]]("#202020"), 0, 0)
+                ecx: int32 = cx2 + 3 + cast[int32](edit_len) * 8
+                if ecx > cx2 + cw2 - 3:
+                    ecx = cx2 + cw2 - 3
+                hamscene_fill(ecx, ry + 2, 2, CELL_H - 4,
+                              cast[Ptr[uint8]]("#2f7d54"))
+            else:
+                k: uint8 = val_kind[idx]
+                if k != KIND_EMPTY:
+                    dl: uint64 = hamsheet_cell_display(row, cc, &disp_buf[0])
+                    col: Ptr[uint8] = cast[Ptr[uint8]]("#202020")
+                    fmt: uint8 = cell_fmt[idx]
+                    al: uint8 = _fmt_align(fmt)
+                    justify: int32 = 0
+                    if k == KIND_NUM:
+                        justify = 1
+                    elif k == KIND_BOOL:
+                        justify = 2
+                    elif k == KIND_ERR:
+                        col = cast[Ptr[uint8]]("#b02020")
+                        justify = 1
+                    if al == 1:
+                        justify = 0
+                    elif al == 2:
+                        justify = 2
+                    elif al == 3:
+                        justify = 1
+                    _draw_cliptext(cx2, ry + 1, cw2, &disp_buf[0], dl, col,
+                                   justify, _fmt_is_bold(fmt))
             cc = cc + 1
         rr = rr + 1
 
-    # selected-cell highlight border (drawn last so it sits above gridlines)
+    # active-cell highlight border (drawn last so it sits above gridlines)
     if sel_r >= top_row and sel_r < top_row + vr and \
             sel_c >= left_col and sel_c < left_col + vc:
         sx: int32 = _col_x(sel_c)
@@ -1245,34 +3485,101 @@ def hamsheet_build_scene():
         hamscene_stroke(sx, sy, col_w[sel_c], CELL_H, 2,
                         cast[Ptr[uint8]]("#2f7d54"))
 
+    # ---- status strip -----------------------------------------------------
+    sy2: int32 = WIN_H - STATUS_H
+    hamscene_fill(0, sy2, WIN_W, STATUS_H, cast[Ptr[uint8]]("#e8eaee"))
+    hamscene_stroke(0, sy2, WIN_W, 1, 1, cast[Ptr[uint8]]("#b4b8bf"))
+    _build_status()
+    hamscene_glyphs(6, sy2 + 2, &stat_buf[0], cast[Ptr[uint8]]("#3a4048"))
+    hamscene_glyphs(WIN_W - 172, sy2 + 2,
+                    cast[Ptr[uint8]]("^Z undo ^C/^V ^D fill"),
+                    cast[Ptr[uint8]]("#6b7480"))
+
 
 # ---- pointer hit-testing ---------------------------------------------------
-# Returns: 1 save, 2 open, 3 redraw-only (cell selected), 0 nothing.
+# Returns: 1 save, 2 open, 3 redraw-only (cell selected), 4 export CSV, 0 none.
 def hamsheet_hit(x: int64, y: int64) -> int32:
     if y >= cast[int64](FB_Y) and y < cast[int64](FB_Y + FB_H):
+        if x >= cast[int64](CSV_X) and x < cast[int64](CSV_X + CSV_W):
+            return 4
         if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
             return 2
         if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
             return 1
         return 0
-    if y >= cast[int64](CELLS_Y) and x >= cast[int64](ROWHDR_W):
-        vr: uint64 = _vis_rows()
-        vc: uint64 = _vis_cols()
-        rr: uint64 = cast[uint64]((y - cast[int64](CELLS_Y)) / cast[int64](CELL_H))
-        if rr >= vr:
-            return 0
-        row: uint64 = top_row + rr
-        if row >= MAXROWS:
-            return 0
+    vr: uint64 = _vis_rows()
+    vc: uint64 = _vis_cols()
+    # column header -> select the whole column
+    if y >= cast[int64](GRID_Y) and y < cast[int64](GRID_Y + COLHDR_H) and \
+            x >= cast[int64](ROWHDR_W):
         c: uint64 = left_col
         while c < left_col + vc and c < MAXCOLS:
             cx: int64 = cast[int64](_col_x(c))
             if x >= cx and x < cx + cast[int64](col_w[c]):
                 if editing != 0:
                     _commit_edit()
-                sel_r = row
+                anc_r = 0
+                anc_c = c
+                sel_r = MAXROWS - 1
                 sel_c = c
                 _ensure_visible()
                 return 3
             c = c + 1
+        return 0
+    if y >= cast[int64](CELLS_Y):
+        rr: uint64 = cast[uint64]((y - cast[int64](CELLS_Y)) / cast[int64](CELL_H))
+        if rr >= vr:
+            return 0
+        row: uint64 = top_row + rr
+        if row >= MAXROWS:
+            return 0
+        if x < cast[int64](ROWHDR_W):                  # row header -> whole row
+            if editing != 0:
+                _commit_edit()
+            anc_r = row
+            anc_c = 0
+            sel_r = row
+            sel_c = MAXCOLS - 1
+            _ensure_visible()
+            return 3
+        c2: uint64 = left_col
+        while c2 < left_col + vc and c2 < MAXCOLS:
+            cx2: int64 = cast[int64](_col_x(c2))
+            if x >= cx2 and x < cx2 + cast[int64](col_w[c2]):
+                if editing != 0:
+                    _commit_edit()
+                sel_r = row
+                sel_c = c2
+                anc_r = row
+                anc_c = c2
+                msg_id = 0
+                _ensure_visible()
+                return 3
+            c2 = c2 + 1
+    return 0
+
+
+# Drag with button 1 held: EXTEND the selection to the cell under the pointer.
+def hamsheet_drag(x: int64, y: int64) -> int32:
+    if y < cast[int64](CELLS_Y) or x < cast[int64](ROWHDR_W):
+        return 0
+    vr: uint64 = _vis_rows()
+    vc: uint64 = _vis_cols()
+    rr: uint64 = cast[uint64]((y - cast[int64](CELLS_Y)) / cast[int64](CELL_H))
+    if rr >= vr:
+        return 0
+    row: uint64 = top_row + rr
+    if row >= MAXROWS:
+        return 0
+    c: uint64 = left_col
+    while c < left_col + vc and c < MAXCOLS:
+        cx: int64 = cast[int64](_col_x(c))
+        if x >= cx and x < cx + cast[int64](col_w[c]):
+            if row == sel_r and c == sel_c:
+                return 0
+            sel_r = row
+            sel_c = c
+            _ensure_visible()
+            return 1
+        c = c + 1
     return 0
