@@ -202,7 +202,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         # reason: 1=unsupported expr 2=unsupported stmt 3=CODE_CAP overflow
         # 4=GDATA_CAP overflow 5=fixup table full 6=symbol table full
         # 7=unresolved call 8=unknown name/type 0/9=uncategorised.
-        emit("[adder_cc] FAIL: codegen error reason=")
+        emit("[adder_cc] FAIL: ")
+        emit(cg_err_text())
+        emit(" reason=")
         put_u32(cg_err_reason)
         emit(" line=")
         put_u32(cg_err_line())

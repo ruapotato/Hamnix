@@ -1469,7 +1469,7 @@ def xhci_init_ex(force_bare_metal: int32) -> int32:
     printk2("[xhci] max_slots=%d max_ports=%d\n",
             cast[uint64](xhci.max_slots),
             cast[uint64](xhci.max_ports))
-    printk2("[xhci] max_scratch=%d\n", cast[uint64](xhci.max_scratch))
+    printk1("[xhci] max_scratch=%d\n", cast[uint64](xhci.max_scratch))
 
     # HCCPARAMS1.AC64 (bit 0): 1 = controller can DMA to 64-bit addresses,
     # 0 = it is limited to the low 4 GiB. Our DMA rings come from

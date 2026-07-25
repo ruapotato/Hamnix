@@ -1,0 +1,14 @@
+# Three independent errors in one program. gcc reports all three with carets;
+# so must Adder.
+def add3(a: int32, b: int32, c: int32) -> int32:
+    return a + b + c
+
+
+def take_ptr(p: Ptr[uint8]) -> int32:
+    return cast[int32](p[0])
+
+
+def main() -> int32:
+    lim: uint8 = 300
+    n: int32 = 7
+    return add3(1, 2) + take_ptr(n)

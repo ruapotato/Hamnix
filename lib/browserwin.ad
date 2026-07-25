@@ -289,10 +289,10 @@ def _bw_icon_btn(cx: int32, cy: int32, glyph: Ptr[uint8], gw: int32,
                  enabled: int32):
     if enabled != 0:
         htmlpaint_text_ttf(cx - gw, cy + 6, FACE_TT_SANS_BOLD, 17,
-                           glyph, 1, 60, 64, 67, 255)
+                           glyph, 1, 60, 64, 67)
     else:
         htmlpaint_text_ttf(cx - gw, cy + 6, FACE_TT_SANS_BOLD, 17,
-                           glyph, 1, 189, 193, 198, 255)
+                           glyph, 1, 189, 193, 198)
 
 
 # Reload icon: a two-thirds ring with an arrowhead, drawn from primitives.
@@ -333,7 +333,7 @@ def _bw_engine_chip(x: int32, cy: int32) -> int32:
     htmlpaint_fill_round_rect_a(x, cy - 8, 16, 16, 4,
                                 se_col_r(e), se_col_g(e), se_col_b(e), 255)
     htmlpaint_text_ttf(x + 4, cy + 5, FACE_TT_SANS_BOLD, 12,
-                       se_letter(e), 1, 255, 255, 255, 255)
+                       se_letter(e), 1, 255, 255, 255)
     return x + 16
 
 
@@ -364,7 +364,7 @@ def _bw_text_lines(x: int32, y: int32, bw: int32, bh: int32,
                 n = n - 1
             if n > 0:
                 htmlpaint_text_ttf(x + 4, cy, FACE_TT_MONO, px,
-                                   &scratch[0], n, r, g, b, 255)
+                                   &scratch[0], n, r, g, b)
             cy = cy + lh
             line_start = i + 1
         i = i + 1
@@ -393,10 +393,10 @@ def _bw_tab(x: int32, tw: int32, title: Ptr[uint8], tlen: int32,
         n = n - 1
     if n > 0:
         htmlpaint_text_ttf(x + 26, 22, FACE_TT_SANS, 12, title, n,
-                           60, 64, 67, 255)
+                           60, 64, 67)
     # close (×) glyph on the right of the tab
     htmlpaint_text_ttf(x + tw - 16, 22, FACE_TT_SANS, 12,
-                       cast[Ptr[uint8]]("x"), 1, 120, 124, 128, 255)
+                       cast[Ptr[uint8]]("x"), 1, 120, 124, 128)
 
 
 # Per-tab width for the strip in a window of width win_w.
@@ -496,9 +496,9 @@ def _bw_menu_row(mx: int32, my: int32, row: int32, icon: Ptr[uint8],
                  label: Ptr[uint8], llen: int32):
     ry: int32 = my + 6 + row * BW_MENU_RH
     htmlpaint_text_ttf(mx + 14, ry + 20, FACE_TT_SANS, 13, icon, 1,
-                       95, 99, 104, 255)
+                       95, 99, 104)
     htmlpaint_text_ttf(mx + 40, ry + 20, FACE_TT_SANS, 13, label, llen,
-                       32, 33, 36, 255)
+                       32, 33, 36)
 
 
 def _bw_paint_menu(win_w: int32):
@@ -524,16 +524,16 @@ def _bw_paint_menu(win_w: int32):
     zy: int32 = my + 6 + 5 * BW_MENU_RH
     htmlpaint_fill_rect(mx + 8, zy + 4, BW_MENU_W - 16, 1, 235, 236, 238)
     htmlpaint_text_ttf(mx + 14, zy + 21, FACE_TT_SANS, 13,
-                       cast[Ptr[uint8]]("Zoom"), 4, 32, 33, 36, 255)
+                       cast[Ptr[uint8]]("Zoom"), 4, 32, 33, 36)
     htmlpaint_text_ttf(mx + BW_MENU_W - 96, zy + 21, FACE_TT_SANS_BOLD, 15,
-                       cast[Ptr[uint8]]("-"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("-"), 1, 95, 99, 104)
     zb: Array[8, uint8]
     zn: int32 = _bw_itoa(_bw_zoom, &zb[0])
     zb[zn] = 37                          # '%'
     htmlpaint_text_ttf(mx + BW_MENU_W - 78, zy + 21, FACE_TT_SANS, 13,
-                       &zb[0], zn + 1, 32, 33, 36, 255)
+                       &zb[0], zn + 1, 32, 33, 36)
     htmlpaint_text_ttf(mx + BW_MENU_W - 26, zy + 21, FACE_TT_SANS_BOLD, 15,
-                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104)
     _bw_menu_row(mx, my, 6, cast[Ptr[uint8]]("P"),
                  cast[Ptr[uint8]]("Print"), 5)
     _bw_menu_row(mx, my, 7, cast[Ptr[uint8]]("F"),
@@ -542,7 +542,7 @@ def _bw_paint_menu(win_w: int32):
     hy: int32 = my + 6 + 8 * BW_MENU_RH
     htmlpaint_fill_rect(mx + 8, hy + 3, BW_MENU_W - 16, 1, 235, 236, 238)
     htmlpaint_text_ttf(mx + 14, hy + 21, FACE_TT_SANS_BOLD, 11,
-                       cast[Ptr[uint8]]("Search engine"), 13, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("Search engine"), 13, 95, 99, 104)
     e: int32 = 0
     cur: int32 = se_current()
     while e < se_count():
@@ -550,27 +550,27 @@ def _bw_paint_menu(win_w: int32):
         htmlpaint_fill_round_rect_a(mx + 14, ry + 8, 14, 14, 4,
                                     se_col_r(e), se_col_g(e), se_col_b(e), 255)
         htmlpaint_text_ttf(mx + 18, ry + 19, FACE_TT_SANS_BOLD, 10,
-                           se_letter(e), 1, 255, 255, 255, 255)
+                           se_letter(e), 1, 255, 255, 255)
         htmlpaint_text_ttf(mx + 40, ry + 20, FACE_TT_SANS, 13,
-                           se_name_ptr(e), se_name_len(e), 32, 33, 36, 255)
+                           se_name_ptr(e), se_name_len(e), 32, 33, 36)
         if e == cur:
             htmlpaint_text_ttf(mx + BW_MENU_W - 26, ry + 20, FACE_TT_SANS_BOLD,
-                               13, cast[Ptr[uint8]]("v"), 1, 26, 115, 232, 255)
+                               13, cast[Ptr[uint8]]("v"), 1, 26, 115, 232)
         e = e + 1
     # ad-block toggle
     ay: int32 = my + 6 + (9 + se_count()) * BW_MENU_RH
     htmlpaint_fill_rect(mx + 8, ay + 3, BW_MENU_W - 16, 1, 235, 236, 238)
     htmlpaint_text_ttf(mx + 14, ay + 20, FACE_TT_SANS, 13,
-                       cast[Ptr[uint8]]("O"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("O"), 1, 95, 99, 104)
     htmlpaint_text_ttf(mx + 40, ay + 20, FACE_TT_SANS, 13,
-                       cast[Ptr[uint8]]("Ad block"), 8, 32, 33, 36, 255)
+                       cast[Ptr[uint8]]("Ad block"), 8, 32, 33, 36)
     _bw_toggle(mx + BW_MENU_W - 52, ay + 8, adblock_enabled())
     # dev tools
     dy: int32 = my + 6 + (10 + se_count()) * BW_MENU_RH
     htmlpaint_text_ttf(mx + 14, dy + 20, FACE_TT_SANS, 13,
-                       cast[Ptr[uint8]]("<"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("<"), 1, 95, 99, 104)
     htmlpaint_text_ttf(mx + 40, dy + 20, FACE_TT_SANS, 13,
-                       cast[Ptr[uint8]]("Dev tools"), 9, 32, 33, 36, 255)
+                       cast[Ptr[uint8]]("Dev tools"), 9, 32, 33, 36)
     _bw_toggle(mx + BW_MENU_W - 52, dy + 8, _bw_dt_open)
     # settings
     _bw_menu_row(mx, my, 11 + se_count(), cast[Ptr[uint8]]("S"),
@@ -625,21 +625,21 @@ def _bw_paint_devtools(win_w: int32, win_h: int32):
     htmlpaint_fill_rect(0, dy, win_w, 26, 241, 243, 244)
     htmlpaint_fill_rect(0, dy + 26, win_w, 1, 218, 220, 224)
     htmlpaint_text_ttf(14, dy + 18, FACE_TT_SANS_BOLD, 12,
-                       cast[Ptr[uint8]]("Elements"), 8, 26, 115, 232, 255)
+                       cast[Ptr[uint8]]("Elements"), 8, 26, 115, 232)
     htmlpaint_fill_rect(12, dy + 25, 66, 2, 26, 115, 232)
     htmlpaint_text_ttf(96, dy + 18, FACE_TT_SANS, 12,
-                       cast[Ptr[uint8]]("Console"), 7, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("Console"), 7, 95, 99, 104)
     htmlpaint_text_ttf(win_w - 24, dy + 18, FACE_TT_SANS_BOLD, 13,
-                       cast[Ptr[uint8]]("x"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("x"), 1, 95, 99, 104)
     # split: Elements (left) / Console (right)
     split: int32 = win_w * 58 / 100
     htmlpaint_fill_rect(split, dy + 27, 1, dh - 27, 218, 220, 224)
     htmlpaint_text_ttf(14, dy + 44, FACE_TT_SANS_BOLD, 11,
-                       cast[Ptr[uint8]]("DOM"), 3, 128, 132, 136, 255)
+                       cast[Ptr[uint8]]("DOM"), 3, 128, 132, 136)
     _bw_text_lines(10, dy + 50, split - 10, dh - 54,
                    _bw_dom_ptr, _bw_dom_len, 12, 32, 33, 36)
     htmlpaint_text_ttf(split + 14, dy + 44, FACE_TT_SANS_BOLD, 11,
-                       cast[Ptr[uint8]]("Console"), 7, 128, 132, 136, 255)
+                       cast[Ptr[uint8]]("Console"), 7, 128, 132, 136)
     _bw_text_lines(split + 8, dy + 50, win_w - split - 8, dh - 54,
                    _bw_con_ptr, _bw_con_len, 12, 40, 90, 60)
 
@@ -682,7 +682,7 @@ def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
     # "+" new-tab button
     ntx: int32 = 8 + _bw_ntabs * tw + 4
     htmlpaint_text_ttf(ntx + 6, 22, FACE_TT_SANS_BOLD, 16,
-                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104, 255)
+                       cast[Ptr[uint8]]("+"), 1, 95, 99, 104)
 
     # 4. TOOLBAR background + thin bottom separator.
     htmlpaint_fill_rect(0, ADDR_Y, w, ADDR_H, 255, 255, 255)
@@ -742,7 +742,7 @@ def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
         tx0: int32 = chip_r + 8
         if search_len == 0:
             htmlpaint_text_ttf(tx0, tcy + 5, FACE_TT_SANS, BW_ADDR_PX,
-                               cast[Ptr[uint8]]("Search"), 6, 150, 150, 150, 255)
+                               cast[Ptr[uint8]]("Search"), 6, 150, 150, 150)
             if search_focus != 0:
                 htmlpaint_fill_rect(tx0, pill_y + 3, 1, pill_h - 6, 32, 33, 36)
         else:
@@ -756,9 +756,9 @@ def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
     _bw_shield(abx + 12, tcy, adblock_enabled(), adblock_blocked_count())
     mnx: int32 = browserwin_menu_x(w)
     htmlpaint_text_ttf(mnx + 12, tcy + 6, FACE_TT_SANS_BOLD, 18,
-                       cast[Ptr[uint8]](":"), 1, 60, 64, 67, 255)
+                       cast[Ptr[uint8]](":"), 1, 60, 64, 67)
     htmlpaint_text_ttf(mnx + 12, tcy - 2, FACE_TT_SANS_BOLD, 18,
-                       cast[Ptr[uint8]](":"), 1, 60, 64, 67, 255)
+                       cast[Ptr[uint8]](":"), 1, 60, 64, 67)
 
     # 5. scrollbar when the document overflows the viewport.
     ms: int32 = doc_h_px - ch
@@ -782,7 +782,7 @@ def browserwin_paint(dst: Ptr[uint8], dst_w: int32, dst_h: int32,
     htmlpaint_fill_rect(0, h - STATUS_H, w, STATUS_H, 248, 249, 250)
     if status_len > 0:
         htmlpaint_text_ttf(8, h - 5, FACE_TT_SANS, 11, status,
-                           cast[int32](status_len), 95, 99, 104, 255)
+                           cast[int32](status_len), 95, 99, 104)
 
     # 8. application menu overlay (drawn last so it floats above everything).
     if _bw_menu_open != 0:
@@ -798,14 +798,14 @@ def _bw_shield(cx: int32, cy: int32, on: int32, blocked: int32):
         htmlpaint_fill_round_rect_a(cx - 8, cy - 9, 16, 14, 4, 26, 115, 232, 255)
         htmlpaint_fill_round_rect_a(cx - 4, cy + 3, 8, 6, 3, 26, 115, 232, 255)
         htmlpaint_text_ttf(cx - 4, cy + 4, FACE_TT_SANS_BOLD, 11,
-                           cast[Ptr[uint8]]("v"), 1, 255, 255, 255, 255)
+                           cast[Ptr[uint8]]("v"), 1, 255, 255, 255)
         if blocked > 0:
             b: Array[8, uint8]
             n: int32 = _bw_itoa(blocked, &b[0])
             htmlpaint_fill_round_rect_a(cx + 4, cy - 12, 14, 12, 6,
                                         234, 67, 53, 255)
             htmlpaint_text_ttf(cx + 8, cy - 3, FACE_TT_SANS_BOLD, 9,
-                               &b[0], n, 255, 255, 255, 255)
+                               &b[0], n, 255, 255, 255)
     else:
         htmlpaint_stroke_round_rect_a(cx - 8, cy - 9, 16, 14, 4,
                                       154, 160, 166, 255)

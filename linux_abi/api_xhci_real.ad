@@ -2551,7 +2551,7 @@ def _xr_bot_datain_diag(slot: uint32, db_base: uint64, dci_in: uint32,
         _xr_dbg_di_in_ctxd1 = ep_d1
         printk2("[xhci-real] BOT diag IN-EP out-ctx state=%d (1=Run 2=Halt 3=Stop 4=Err) d1=%p\n",
                 cast[uint64](ep_d0 & 0x7), cast[uint64](ep_d1))
-        printk2("[xhci-real] BOT diag IN-EP out-ctx TRdeq=%p (DCS=b0)\n",
+        printk1("[xhci-real] BOT diag IN-EP out-ctx TRdeq=%p (DCS=b0)\n",
                 ep_deq)
     printk2("[xhci-real] BOT diag IN ring enqueue=%p cyc=%d\n",
             _xr_bulk_in_ring, cast[uint64](_xr_bulk_in_cyc))

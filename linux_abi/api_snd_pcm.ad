@@ -91,7 +91,7 @@ def _snd_pcm_new(card: uint64, id: Ptr[char], device: int32,
     pcm: uint64 = kzalloc(8192)
     if pcm == 0:
         return -12                              # -ENOMEM
-    rpcm[0] = pcm
+    cast[Ptr[uint64]](rpcm)[0] = pcm
     return 0
 
 

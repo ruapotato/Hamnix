@@ -35,6 +35,7 @@ it; if a Python feature you'd expect is missing, it's deliberate (see
 ## Table of Contents
 - [Lexical Grammar](#lexical-grammar)
 - [Types](#types)
+- [Static Type Checking](#static-type-checking)
 - [Variables](#variables)
 - [Functions](#functions)
 - [Function Pointers](#function-pointers)
@@ -225,6 +226,78 @@ ticks: Percpu[uint64]
 Production .ad files use `Ptr[T]`, `Array[N, T]`, `Fn[R, A...]`, and
 `Percpu[T]`. These are the only compound types the codegen
 implements.
+
+---
+
+## Static Type Checking
+
+Type annotations are **contracts, checked before codegen**, not codegen
+hints. The pipeline is
+
+```
+parse  ->  affine-check (Own[T])  ->  SEMA (type check)  ->  codegen
+```
+
+and the sema pass lives in `adder/compiler/sema.py`. It reports **every**
+problem it finds in one compile — with `file:line:col`, the source line and
+a caret — rather than aborting on the first:
+
+```
+$ adder compile t.ad
+t.ad:12:18: error: integer literal 300 is not representable in 'uint8' (initialising 'lim') [lit-range]
+   12 |     lim: uint8 = 300
+      |                  ^~~
+      note: value must lie in [-128, 255]
+t.ad:14:12: error: too few arguments to 'add3': 2 given, 3 expected (missing 'c') [arity]
+   14 |     return add3(1, 2) + take_ptr(n)
+      |            ^~~~
+      note: declared as add3(a: int32, b: int32, c: int32) -> int32
+t.ad:14:34: error: 'int32' used where 'Ptr[uint8]' is required (argument 1 ('p') of 'take_ptr') [ptr-int]
+   14 |     return add3(1, 2) + take_ptr(n)
+      |                                  ^
+      note: add an explicit cast[Ptr[uint8]](...)
+Error: 3 type errors (set ADDER_SEMA=0 to bypass the type checker)
+```
+
+Every diagnostic belongs to a named **class** (printed in brackets) with a
+severity, so a class can be tightened or loosened without a code change.
+
+| Class | Default | What it catches |
+|---|---|---|
+| `arity` | **error** | wrong number of arguments at a direct call |
+| `kwarg` | **error** | unknown / duplicated keyword argument |
+| `lit-range` | **error** | integer literal with no representation in the target type (`uint8 = 300`). `-1` into an unsigned type is legal — it names a valid bit pattern |
+| `ptr-int` | **error** | an integer used where a `Ptr[T]` is declared — the callee will dereference it |
+| `ptr-ptr` | warning | `Ptr[A]` assigned from `Ptr[B]`. The 8-bit types (`uint8`/`int8`/`char`) are one type for this purpose |
+| `int-from-ptr` | warning | a pointer stored in an integer — lossless on x86_64, and an established idiom here |
+| `int-float` | warning | integer/float mixed without a `cast` |
+| `cmp-sign` | warning | `<`/`<=`/`>`/`>=` between a signed and an unsigned operand of the same width. The backend picks ONE comparison for the whole expression — this is the shape behind the `icmp slt`/`ult` kernel miscompile |
+| `ret-value` | warning | bare `return` from a value-returning function, or a value returned from `-> None` |
+| `deref` | warning | indexing something that is neither a pointer, an array nor a slice |
+| `narrowing` | off | assignment narrows an integer without a cast (~11k sites in-tree) |
+| `not-callable` | off | call to a name with no visible declaration |
+
+Environment knobs:
+
+* `ADDER_SEMA=0` — skip the pass entirely.
+* `ADDER_SEMA_STRICT=1` — promote every warning class to an error.
+* `ADDER_SEMA_ALL=1` — additionally enable the `off` classes.
+* `ADDER_SEMA_<CLASS>=error|warning|off` — per class, `-` spelled `_`
+  (`ADDER_SEMA_PTR_PTR=error`).
+
+`python3 scripts/sema_scan.py` runs the checker over the whole tree and
+prints per-class site counts; that measurement is what sets the defaults
+above.
+
+The pass is **pure analysis** — it never mutates the AST, so codegen output
+is byte-identical with it on or off.
+
+**Native compiler.** The self-hosted compiler
+(`adder/compiler/codegen.ad`), which is the default toolchain, carries the
+arity check natively (`arity_check_direct_call`, failure reason 12) because
+a wrong-arity call is not a style problem: the callee reads an argument
+register the caller never wrote, so the program returns a different answer
+on every run. The remaining classes are seed-side today.
 
 ---
 

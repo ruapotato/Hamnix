@@ -117,16 +117,16 @@ def umseal_selftest() -> int32:
     # Each unsealed control gets ONE op (madvise / munmap / mprotect) so no
     # region experiences two state-mutating ops in sequence — that keeps the
     # boot-task teardown path pristine (a single-chunk eager VMA frees whole).
-    sealed_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon)
+    sealed_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon, -1, 0)
     if sealed_b < 0:
         printk1("[MSEAL] FAIL mmap sealed region rc=%d\n",
                 cast[uint64](sealed_b))
         return 0
     sealed_base: uint64 = cast[uint64](sealed_b)
 
-    unA_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon)
-    unB_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon)
-    unC_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon)
+    unA_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon, -1, 0)
+    unB_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon, -1, 0)
+    unC_b: int64 = vma_alloc(slot, 0, MSEAL_TEST_LEN, prot_rw, flags_anon, -1, 0)
     if unA_b < 0 or unB_b < 0 or unC_b < 0:
         printk0("[MSEAL] FAIL mmap unsealed control regions\n")
         return 0

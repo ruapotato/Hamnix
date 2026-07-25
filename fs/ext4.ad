@@ -4602,7 +4602,7 @@ def _ext4_htins_do_split(dir_inum: uint64, dir_gen: uint32,
 
     # Rebuild both leaves from the sorted map. Pack lower half into a
     # fresh empty old-image, upper half into the new leaf.
-    _ext4_zero(new_, ext4_block_size)
+    _ext4_zero(cast[Ptr[uint8]](new_), ext4_block_size)
     # Scratch copy of the old leaf's bytes so we can rebuild over `old`
     # while still reading the originals: copy old -> new first as a
     # staging area is awkward; instead pack from a saved source. Use

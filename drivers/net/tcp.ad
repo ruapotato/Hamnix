@@ -2720,7 +2720,7 @@ def tcp_loopback_smoke_test():
 
     # Verify the client side is ESTABLISHED.
     if tcp_slot_state[cast[uint64](cslot)] != TCP_ESTABLISHED:
-        printk1("[tcp-loopback] FAIL: client slot=%d not ESTABLISHED (state=%d)\n",
+        printk2("[tcp-loopback] FAIL: client slot=%d not ESTABLISHED (state=%d)\n",
                 cast[uint64](cslot),
                 cast[uint64](tcp_slot_state[cast[uint64](cslot)]))
         tcp_close(cslot)

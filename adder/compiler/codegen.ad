@@ -824,6 +824,10 @@ cg_entry_off: uint32 = 0
 #       function's locals exceed the -128 disp8 reach)
 #   11 = unsupported inline asm (asm_volatile line/operand not in the
 #       bounded kernel instruction set this emitter assembles)
+#   12 = WRONG ARGUMENT COUNT at a direct call to an in-unit `def` (the
+#       arity check — see arity_check_direct_call). Before this existed
+#       `f(1)` for a two-parameter `f` compiled clean and the callee read
+#       whatever the caller happened to leave in the second arg register.
 cg_err_reason: uint32 = 0
 cg_err_node: uint32 = 0     # offending AST node id (for nd_line lookup)
 
@@ -835,6 +839,38 @@ def cg_fail(reason: uint32, node: uint32):
         cg_err_reason = reason
         cg_err_node = node
     cg_err = 1
+
+
+# Human-readable text for cg_err_reason. The review of the shipping
+# compiler called out `codegen error reason=7` — a bare number whose legend
+# lived only in a source comment — as unacceptable for a real toolchain, so
+# the drivers print this alongside the code.
+def cg_err_text() -> Ptr[char]:
+    if cg_err_reason == 1:
+        return "unsupported expression"
+    if cg_err_reason == 2:
+        return "unsupported statement"
+    if cg_err_reason == 3:
+        return "code section overflow (function/program too large)"
+    if cg_err_reason == 4:
+        return "data section overflow"
+    if cg_err_reason == 5:
+        return "fixup table full"
+    if cg_err_reason == 6:
+        return "symbol table full (too many functions/globals/locals)"
+    if cg_err_reason == 7:
+        return "unresolved call (unknown callee)"
+    if cg_err_reason == 8:
+        return "unknown name or type"
+    if cg_err_reason == 9:
+        return "unsupported construct"
+    if cg_err_reason == 10:
+        return "stack frame too large for disp8 addressing"
+    if cg_err_reason == 11:
+        return "unsupported inline asm"
+    if cg_err_reason == 12:
+        return "wrong number of arguments in call"
+    return "unknown"
 
 
 # Source line of the codegen-failure node (0 if none / unknown). Lets the
@@ -12851,6 +12887,46 @@ def tail_param_count() -> uint32:
     return n
 
 
+# ---------------------------------------------------------------------
+# ARITY CHECK (the native half of the type checker)
+# ---------------------------------------------------------------------
+# The seed compiler grew a full semantic-analysis pass (adder/compiler/
+# sema.py). This is the one check that MUST also exist in the self-hosted
+# compiler, because native is the DEFAULT shipping toolchain and wrong
+# arity is not a style problem: the callee reads an argument register the
+# caller never wrote, so the program returns a different answer on every
+# run.
+#
+# Scope is deliberately narrow so it cannot misfire:
+#   * DIRECT calls only — a call through a function-pointer value has no
+#     signature to check;
+#   * in-unit `def`s only (find_prog_function) — `extern def` symbols are
+#     resolved by ld and are not this pass's business;
+#   * only when kwarg/default normalization did NOT apply, because that
+#     path already validated and filled every slot.
+# `nd_b[param] != 0` means the parameter has a default, so the minimum
+# legal positional count is the number of parameters WITHOUT one.
+# Byte-inert: it emits nothing, and every call in the corpus passes it.
+def arity_check_direct_call(node: uint32, fnnode: uint32, argc: uint32) -> uint32:
+    nparams: uint32 = nd_aux[fnnode]
+    if argc > nparams:
+        cg_fail(12, node)
+        return 1
+    if argc == nparams:
+        return 0
+    # Under-supply: legal only if EVERY unfilled slot declares a default.
+    p: uint32 = nd_a[fnnode]
+    i: uint32 = 0
+    while p != 0:
+        if i >= argc:
+            if nd_b[p] == 0:
+                cg_fail(12, node)
+                return 1
+        p = nd_next[p]
+        i = i + 1
+    return 0
+
+
 def gen_call(node: uint32):
     callee: uint32 = nd_a[node]
     if nd_kind[callee] != ND_IDENT:
@@ -12957,6 +13033,17 @@ def gen_call(node: uint32):
     # (name in defined/extern funcs AND not shadowed by a local).
     icall_off: int32 = 0
     is_local_call: uint32 = lookup_local(nd_name_off[callee], nd_name_len[callee], &icall_off)
+
+    # ARITY CHECK. Only for a DIRECT call (name not shadowed by a local
+    # function-pointer) to an in-unit `def`, and only on the un-normalized
+    # path — kwargs/defaults were already resolved above.
+    if use_norm == 0:
+        if is_local_call == 0:
+            afn: uint32 = find_prog_function(nd_name_off[callee], nd_name_len[callee])
+            if afn != 0:
+                if arity_check_direct_call(node, afn, argc) != 0:
+                    return
+
     # A call is INDIRECT (through a function-pointer VALUE) when the callee name
     # is NOT a direct symbol — i.e. neither an in-unit Adder function nor a
     # declared `extern def` (an ld-resolved cross-object function). A LOCAL

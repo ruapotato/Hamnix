@@ -1,0 +1,8 @@
+# Incompatible pointer assignment: Ptr[uint64] from Ptr[uint8], no cast.
+def g() -> Ptr[uint8]:
+    return cast[Ptr[uint8]](0)
+
+
+def main() -> int32:
+    p: Ptr[uint64] = g()
+    return cast[int32](cast[uint64](p))

@@ -1404,8 +1404,11 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     else:
         start = gen_program_with_globals(prog)
     if cg_err != 0:
-        drv_err("[host_ac] FAIL: codegen error reason=")
+        drv_err("[host_ac] FAIL: ")
+        drv_err(cg_err_text())
+        drv_err(" (reason=")
         drv_err_u32(cg_err_reason)
+        drv_err(")")
         drv_err(" line=")
         drv_err_u32(cg_err_line())
         drv_err(" kind=")

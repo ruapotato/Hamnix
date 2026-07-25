@@ -1,0 +1,8 @@
+# Wrong ARITY. Before the sema pass this compiled clean and `main` returned a
+# different value on every run — `b` was whatever the caller left in %esi.
+def f(a: int32, b: int32) -> int32:
+    return a + b
+
+
+def main() -> int32:
+    return f(1)

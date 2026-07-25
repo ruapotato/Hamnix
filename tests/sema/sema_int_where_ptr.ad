@@ -1,0 +1,8 @@
+# An int32 passed where a Ptr[uint8] is declared.
+def f(p: Ptr[uint8]) -> int32:
+    return cast[int32](p[0])
+
+
+def main() -> int32:
+    x: int32 = 5
+    return f(x)

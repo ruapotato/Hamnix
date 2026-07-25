@@ -590,6 +590,41 @@ def _run_affine_check(program) -> None:
         sys.exit(1)
 
 
+def _run_sema(program) -> None:
+    """Static type checking (adder/compiler/sema.py).
+
+    Runs between the affine check and codegen. Reports EVERY problem it
+    finds — arity, argument/assignment/return type compatibility, pointer
+    compatibility, integer-literal range, mixed-signedness comparisons —
+    with file:line:col, the source line and a caret, then exits non-zero if
+    any of them is `error` severity under the current policy.
+
+    Pure analysis: it never mutates the AST, so codegen output (and the
+    seed<->native byte-identity oracle) is unaffected by construction.
+    `ADDER_SEMA=0` disables it entirely; `ADDER_SEMA_STRICT=1` promotes
+    every warning class to an error. See sema.severity_policy().
+    """
+    if os.environ.get("ADDER_SEMA") == "0":
+        return
+    from .sema import check_program, render
+    try:
+        diagnostics, _counts = check_program(program)
+    except Exception as exc:                                  # noqa: BLE001
+        # The checker is advisory: an internal failure inside it must never
+        # be the reason a previously-compiling program stops compiling.
+        print(f"warning: sema pass skipped ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+        return
+    for d in diagnostics:
+        print(render(d), file=sys.stderr)
+    n_err = sum(1 for d in diagnostics if d.severity == "error")
+    if n_err:
+        print(f"Error: {n_err} type error{'' if n_err == 1 else 's'} "
+              f"(set ADDER_SEMA=0 to bypass the type checker)",
+              file=sys.stderr)
+        sys.exit(1)
+
+
 def compile_source(source: str, filename: str = "<stdin>",
                    target: str = DEFAULT_TARGET, opt_level: int = 0,
                    check_bounds: bool = False) -> str:
@@ -599,6 +634,7 @@ def compile_source(source: str, filename: str = "<stdin>",
     try:
         program = parse(source, filename)
         _run_affine_check(program)
+        _run_sema(program)
         return generate(program)
     except (LexerError, ParseError, CodeGenError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -628,6 +664,7 @@ def compile_with_imports(main_file: Path, target: str = DEFAULT_TARGET,
     # Generate assembly
     try:
         _run_affine_check(merged_program)
+        _run_sema(merged_program)
         return generate(merged_program)
     except CodeGenError as e:
         print(f"Error: {e}", file=sys.stderr)

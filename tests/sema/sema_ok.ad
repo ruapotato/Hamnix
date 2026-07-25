@@ -1,0 +1,17 @@
+# A well-typed program: must still compile and run, and must produce ZERO
+# diagnostics (the checker has to be silent on correct code).
+def add3(a: int32, b: int32, c: int32) -> int32:
+    return a + b + c
+
+
+def first_byte(p: Ptr[uint8]) -> int32:
+    return cast[int32](p[0])
+
+
+def main() -> int32:
+    buf: Array[4, uint8]
+    buf[0] = 36
+    lim: uint8 = 255
+    neg: uint8 = -1
+    n: int32 = add3(1, 2, 3)
+    return n + first_byte(&buf[0]) + cast[int32](lim) - cast[int32](neg)

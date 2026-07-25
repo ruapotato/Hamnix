@@ -384,6 +384,16 @@ bash scripts/test_adder_cast_ptr.sh
 # via &x, use-after-move rejected, double-drop rejected, seed<->native objdiff
 # lockstep, Own[T]===T byte-inertness, @unsafe opt-out. Host-only (no QEMU).
 bash scripts/test_adder_own_move.sh
+# STATIC TYPE CHECKER (adder/compiler/sema.py). Until this landed the pipeline
+# was parse -> affine-check -> codegen with no semantic analysis, so Adder had
+# LESS static checking than C: wrong ARITY compiled (and returned a different
+# answer every run), `uint8 = 300` truncated silently, `Ptr[uint64] = Ptr[uint8]`
+# needed no cast, and an int passed where a Ptr was declared was accepted. Gates:
+# all four rejected with file:line:col + caret, a three-error program reports all
+# THREE (gcc parity), the warning tier does not block a build, well-typed code is
+# silent and still runs, ADDER_SEMA=0 bypasses, and codegen is byte-identical
+# with the checker on and off. Host-only (no QEMU).
+bash scripts/test_adder_sema.sh
 # App-ergonomics sugar (roadmap item 7): DEFAULT PARAMETER VALUES + KEYWORD
 # ARGUMENTS. A direct call to an in-unit `def` may omit trailing args (filled
 # from the parameter's declared default) and/or pass args by name; both desugar

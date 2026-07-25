@@ -8217,8 +8217,8 @@ def seccomp_check_entry(nr: uint64,
     if action == SECCOMP_RET_ERRNO:
         # `data` is the errno value. Linux caps it at 4095; we just
         # propagate it. The kernel returns -data in the syscall rc.
-        printk2("seccomp_bpf: pid=%d nr=%d -> ERRNO %d\n",
-                cast[int32](nr), cast[int32](data), cast[int32](data))
+        printk3("seccomp_bpf: pid=%d nr=%d -> ERRNO %d\n",
+                 cast[uint64](nr), cast[uint64](data), cast[uint64](data))
         # Defensive: a 0 errno would be "allow"; promote to EPERM (1).
         e: uint32 = data
         if e == 0:
@@ -14541,7 +14541,7 @@ def uabi_fills_selftest() -> int32:
     # openat2: a size < min(open_how) is -EINVAL.
     bad_oh: Array[24, uint8]
     oa2_bad: int64 = _uabi_test_dispatch(SYS_openat2, AT_FDCWD_U64,
-                                          cast[uint64](&bad_oh[0]), 4)
+                                          cast[uint64](&bad_oh[0]), 4, 0)
     if oa2_bad != ELINUX_INVAL:
         printk1("[UABI_FILLS] FAIL openat2 EINVAL got=%d\n",
                 cast[uint64](oa2_bad))
@@ -14554,7 +14554,7 @@ def uabi_fills_selftest() -> int32:
         oh_buf[j_oh] = 0
         j_oh = j_oh + 1
     oa2_null: int64 = _uabi_test_dispatch(SYS_openat2, AT_FDCWD_U64,
-                                           0, cast[uint64](&oh_buf[0]))
+                                           0, cast[uint64](&oh_buf[0]), 0)
     if oa2_null != ELINUX_EFAULT:
         printk1("[UABI_FILLS] FAIL openat2 EFAULT got=%d\n",
                 cast[uint64](oa2_null))
@@ -14564,7 +14564,7 @@ def uabi_fills_selftest() -> int32:
 
     # memfd_secret: an unknown flag bit is -EINVAL.
     mfs_bad: int64 = _uabi_test_dispatch(SYS_memfd_secret, 0xDEADBEEF,
-                                          0, 0)
+                                          0, 0, 0)
     if mfs_bad != ELINUX_INVAL:
         printk1("[UABI_FILLS] FAIL memfd_secret EINVAL got=%d\n",
                 cast[uint64](mfs_bad))
@@ -14574,7 +14574,7 @@ def uabi_fills_selftest() -> int32:
 
     # mount_setattr: a NULL attr pointer is -EFAULT.
     msa_null: int64 = _uabi_test_dispatch(SYS_mount_setattr, AT_FDCWD_U64,
-                                           0, 0)
+                                           0, 0, 0)
     if msa_null != ELINUX_EFAULT:
         printk1("[UABI_FILLS] FAIL mount_setattr EFAULT got=%d\n",
                 cast[uint64](msa_null))
@@ -14598,21 +14598,21 @@ def uabi_fills_selftest() -> int32:
     printk0("[UABI_FILLS] mount_setattr gate OK (EFAULT/EINVAL)\n")
 
     # fsopen: a NULL fstype pointer is -EFAULT.
-    fso_null: int64 = _uabi_test_dispatch(SYS_fsopen, 0, 0, 0)
+    fso_null: int64 = _uabi_test_dispatch(SYS_fsopen, 0, 0, 0, 0)
     if fso_null != ELINUX_EFAULT:
         printk1("[UABI_FILLS] FAIL fsopen EFAULT got=%d\n",
                 cast[uint64](fso_null))
         _uabi_fills_restore_fds(boot_task, &fd_save[0])
         return 1
     # fsconfig: an invalid fd is -EBADF.
-    fsc_bad: int64 = _uabi_test_dispatch(SYS_fsconfig, 999, 0, 0)
+    fsc_bad: int64 = _uabi_test_dispatch(SYS_fsconfig, 999, 0, 0, 0)
     if fsc_bad != cast[int64](-9):
         printk1("[UABI_FILLS] FAIL fsconfig EBADF got=%d\n",
                 cast[uint64](fsc_bad))
         _uabi_fills_restore_fds(boot_task, &fd_save[0])
         return 1
     # fsmount: an invalid fd is -EBADF.
-    fsm_bad: int64 = _uabi_test_dispatch(SYS_fsmount, 999, 0, 0)
+    fsm_bad: int64 = _uabi_test_dispatch(SYS_fsmount, 999, 0, 0, 0)
     if fsm_bad != cast[int64](-9):
         printk1("[UABI_FILLS] FAIL fsmount EBADF got=%d\n",
                 cast[uint64](fsm_bad))
