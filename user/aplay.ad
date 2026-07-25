@@ -187,12 +187,18 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # Each sys_write may be SHORT (the ring filled and the kernel copied only
     # part of the chunk), so push every byte in a retry loop — dropping the
     # remainder would silently truncate the clip.
-    buf: Array[1024, uint8]
+    # 32 KiB per read, not 1 KiB. The boot jingle is a 1.4 MB WAV and aplay is
+    # spawned at the exact moment the desktop is doing its heaviest work, so
+    # the producer is competing for CPU with the whole DE coming up. At 1 KiB
+    # a chunk that is 1400 read syscalls plus 1400 write syscalls to feed 7.4 s
+    # of audio; the syscall overhead alone was enough to let the DMA engine
+    # outrun it on a first boot. 32 KiB cuts that by 32x for one page of BSS.
+    buf: Array[32768, uint8]
     if fl > skip:
         push(audfd, &hdr[skip], fl - skip)
 
     while True:
-        n: int64 = sys_read(infd, &buf[0], 1024)
+        n: int64 = sys_read(infd, &buf[0], 32768)
         if n <= 0:
             break
         push(audfd, &buf[0], cast[uint64](n))

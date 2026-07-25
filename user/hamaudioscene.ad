@@ -92,6 +92,26 @@ feed_frame: uint64 = 0        # next sample-frame to hand to the driver
 base_frame: uint64 = 0        # frame the current stream started at (seek base)
 audfd_g: int32 = -1           # persistent /dev/audio fd (streaming appends)
 stream_done: int32 = 0        # all of the track has been handed to the driver
+# The frame the stream actually ENDS at. Normally the whole track, but if the
+# decoder runs out of input early (a truncated/odd file, or a header scan that
+# over-counted) it is wherever the decoder stopped. Ending on this instead of
+# on the header-scan total is what stops the player sitting forever at 99 %
+# waiting for a hardware cursor that can never get there.
+stream_end_frame: uint64 = 0
+
+# Decode LEAD. The decoder is pumped to stay this far ahead of the bytes handed
+# to the driver, so a slow tick eats the lead instead of starving the ring. Two
+# seconds costs ~380 KiB of the decoder's 20 s PCM ring and buys the software
+# MP3 decoder a whole scheduling hiccup of slack under desktop load — the root
+# of "it got stuck ~35 s in".
+DECODE_LEAD_FRAMES: uint64 = 96000
+# Hard cap on MPEG frames decoded per UI tick. The old inner loop could run 64
+# pumps of 4 frames PER 16 KiB chunk — up to ~1000 MPEG frames, seconds of work
+# in one tick. A tick that long overshoots a whole DMA ring lap, which used to
+# desynchronise the driver's play cursor permanently. 32 frames is 37 k sample
+# frames (~0.77 s of audio) per 16 ms tick: 48x realtime, plenty to catch up,
+# and bounded.
+PUMP_BUDGET_FRAMES: uint64 = 32
 
 # Pending seek that needs the mp3 decoder rewound + pumped forward; done a
 # bounded slice per UI tick so the window stays responsive. -1 == none.
@@ -352,6 +372,7 @@ def _start_stream_at(from_frame: uint64):
     feed_frame = from_frame
     base_frame = from_frame
     stream_done = 0
+    stream_end_frame = total
     hda_pos = 0
     hda_space = 0
 
@@ -361,6 +382,8 @@ def _start_stream_at(from_frame: uint64):
 def _feed():
     if audfd_g < 0:
         return
+    if seek_active != 0:
+        return                             # _pump_seek owns the decoder
     total: uint64 = _src_total_frames()
     fb: uint64 = _src_frame_bytes()
     if fb == 0 or total == 0:
@@ -368,6 +391,28 @@ def _feed():
     if feed_frame >= total:
         stream_done = 1
         return
+    # Keep the DECODER ahead of the feed cursor before touching the ring. The
+    # old code only ever decoded to exactly the bytes it was about to push, so
+    # the decoder had ZERO lead: the very first tick that ran slow left the
+    # driver with nothing to play. Building (and holding) a couple of seconds
+    # of decoded lead is the difference between a hiccup and a dropout.
+    pumped: uint64 = 0
+    if src_is_mp3 != 0:
+        while pumped < PUMP_BUDGET_FRAMES \
+                and mp3decode_frames_decoded() < feed_frame + DECODE_LEAD_FRAMES:
+            n: uint64 = mp3decode_pump(4)
+            if n == 0:
+                # End of the encoded input. The track ENDS here, wherever the
+                # header scan said it should. Recording it (instead of silently
+                # breaking out of the feed loop, which is what used to happen)
+                # is what stops a short/odd file freezing the transport.
+                stream_end_frame = mp3decode_frames_decoded()
+                if feed_frame >= stream_end_frame:
+                    stream_done = 1
+                pumped = PUMP_BUDGET_FRAMES
+            else:
+                pumped = pumped + n
+
     budget: uint64 = 65536                 # max bytes pushed per UI tick
     space: uint64 = hda_space
     while space > 0 and budget > 0 and feed_frame < total:
@@ -383,13 +428,21 @@ def _feed():
             wf = total - feed_frame
         got: uint64 = 0
         if src_is_mp3 != 0:
-            # Decode just far enough ahead of the feed cursor.
-            guard: uint64 = 0
-            while mp3decode_frames_decoded() < feed_frame + wf and guard < 64:
-                if mp3decode_pump(4) == 0:
-                    break
-                guard = guard + 1
             got = mp3decode_read(&feed_buf[0], feed_frame, wf)
+            if got == 0:
+                # Nothing readable at the feed cursor. Either the decoder has
+                # not reached it yet (we are out of pump budget for this tick —
+                # try again next tick) or the window has been evicted from the
+                # decoder's ring, in which case SKIP FORWARD to the live edge.
+                # Never just give up: leaving feed_frame parked is precisely
+                # how the player wedged with the ring looping its last lap.
+                dec: uint64 = mp3decode_frames_decoded()
+                ring: uint64 = mp3decode_ring_frames()
+                if dec > ring and feed_frame < dec - ring:
+                    feed_frame = dec - ring
+                    got = mp3decode_read(&feed_buf[0], feed_frame, wf)
+                if got == 0:
+                    break
         else:
             avail: uint64 = 0
             dl: uint64 = _src_len()
@@ -416,6 +469,9 @@ def _feed():
         space = space - cast[uint64](w)
         budget = budget - cast[uint64](w)
     if feed_frame >= total:
+        stream_done = 1
+        stream_end_frame = total
+    if stream_end_frame > 0 and feed_frame >= stream_end_frame:
         stream_done = 1
 
 
@@ -837,8 +893,16 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             # The track ends when everything has been handed to the driver AND
             # the hardware cursor has played it all out — NOT when a wall clock
             # says so.
+            # End on the frame the stream ACTUALLY ends at, which is the whole
+            # track normally but wherever the decoder ran out of input if the
+            # file is short of what its header scan promised. Waiting on the
+            # header-scan total in that case left the transport pinned at the
+            # end forever with the ring cycling.
+            end_at: uint64 = stream_end_frame
+            if end_at == 0:
+                end_at = _src_total_frames()
             ended: int32 = 0
-            if stream_done != 0 and _pos_frame() + 1 >= _src_total_frames():
+            if stream_done != 0 and _pos_frame() + 1 >= end_at:
                 ended = 1
             if ended != 0:
                 # Reached the end. VLC-style follow-on, driven by the transport
