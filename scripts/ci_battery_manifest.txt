@@ -79,6 +79,18 @@ bash scripts/test_hamaudiobook_host.sh
 # attribute byte-exact; and scrolling a 41-row document. Renders PNGs a human
 # can look at. Native x86_64-adder-user build still compiles.
 bash scripts/test_hamwrite_host.sh
+# QEMU-free host gate for the SHARED Save/Open dialog (lib/filepick.ad) that
+# HamWrite, HamSheet, HamSlides and hamedit all raise, so every app's save
+# window is the same GTK-shaped chooser and is genuinely backed by the FILE
+# BROWSER (a thin shell over lib/hamfmcore.ad, the file manager's own browse
+# core). Drives a full Save-As + Open session: the centred modal panel over a
+# live document, folder navigation through the browse core, the filename entry,
+# the live Save/Cancel buttons, the overwrite warning, absolute-path commits,
+# and the Cancel/Esc no-result paths. Asserts hameditscene's full-window
+# renderer still paints from the window origin, that the dialog itself does no
+# file I/O, and that all four apps really route through the one component.
+# Renders PNGs a human can look at. Native builds of all four still compile.
+bash scripts/test_filepick_host.sh
 # QEMU-free host gate for hamSDL, the SDL2-flavored native game library
 # (lib/hamsdl.ad core + lib/hamsdl_dev.ad device + lib/hamsdl_host.ad host) and
 # its demo game (lib/sdlpong.ad, a one-paddle bounce). Compiles the demo's host
@@ -2309,6 +2321,8 @@ HAMNIX_SKIP_BUILD=1 bash scripts/test_de_visual_gate.sh
 bash scripts/test_hamwrite_host.sh
 bash scripts/test_hamsheet_host.sh
 bash scripts/test_hamslides_host.sh
+# ...and the ONE Save/Open dialog all three (plus hamedit) raise.
+bash scripts/test_filepick_host.sh
 
 # test_de_office_suite: the office suite actually SHIPS on the desktop. Boots
 # the live image under OVMF/KVM and asserts /etc/hamde/apps + ~/Desktop carry

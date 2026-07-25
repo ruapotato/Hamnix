@@ -21,10 +21,13 @@ cd "$(dirname "$0")/.." || exit 1
 
 OUT="build/host"
 BIN="$OUT/hamslides_host"
-DOC="$OUT/hamslides_scratch.hamslides"
-V1="$OUT/hamslides_legacy_v1.hamslides"
+# ABSOLUTE scratch paths: the shared file dialog is backed by the real browse
+# core (lib/hamfmcore.ad), which rejects relative directories.
+DOC="$PWD/$OUT/hamslides_scratch.hamslides"
+ALT="$PWD/$OUT/renamed.hamslides"
+V1="$PWD/$OUT/hamslides_legacy_v1.hamslides"
 mkdir -p "$OUT"
-rm -f "$DOC"
+rm -f "$DOC" "$ALT"
 fail=0
 
 echo "[hamslides-host] compiling core+harness for x86_64-linux ..."
@@ -51,11 +54,12 @@ echo "[hamslides-host] PASS native hamslides still compiles"
 
 DUMP="$OUT/hsl_dump.txt"
 if ! "$BIN" "$DOC" "$OUT/hsl_edit.ppm" "$OUT/hsl_present.ppm" \
-        "$OUT/hsl_title.ppm" "$OUT/hsl_picture.ppm" "$V1" >"$DUMP" 2>&1; then
+        "$OUT/hsl_title.ppm" "$OUT/hsl_picture.ppm" "$V1" \
+        "$OUT/hsl_savedlg.ppm" "$OUT/hsl_bodyfocus.ppm" >"$DUMP" 2>&1; then
     echo "[hamslides-host] FAIL: host harness exited non-zero"; tail -40 "$DUMP"; exit 1
 fi
 
-for f in edit present title picture; do
+for f in edit present title picture savedlg bodyfocus; do
     if python3 scripts/ppm_to_png.py "$OUT/hsl_$f.ppm" "$OUT/hsl_$f.png" 2>"$OUT/hsl_png.log"; then
         echo "[hamslides-host] PASS rendered $OUT/hsl_$f.png"
     else
@@ -74,6 +78,25 @@ scene() { sed -n "/^$1-SCENE-BEGIN\$/,/^$1-SCENE-END\$/p" "$DUMP"; }
 assert_scene() {
     if scene "$1" | grep -Eq -- "$2"; then echo "[hamslides-host] PASS $3";
     else echo "[hamslides-host] FAIL $3 (missing in $1 scene: $2)"; fail=1; fi
+}
+# The Save-dialog / body-focus dumps bracket with plain <NAME>-BEGIN/END.
+section() {
+    awk -v b="^$1-BEGIN\$" -v e="^$1-END\$" \
+        '$0 ~ b {f=1;next} $0 ~ e {f=0} f' "$DUMP"
+}
+assert_in() {
+    if grep -Eq -- "$2" <<<"$(section "$1")"; then
+        echo "[hamslides-host] PASS $3"
+    else
+        echo "[hamslides-host] FAIL $3 (missing in $1: $2)"; fail=1
+    fi
+}
+refute_in() {
+    if grep -Eq -- "$2" <<<"$(section "$1")"; then
+        echo "[hamslides-host] FAIL $3 (unexpected in $1: $2)"; fail=1
+    else
+        echo "[hamslides-host] PASS $3"
+    fi
 }
 refute_scene() {
     if scene "$1" | grep -Eq -- "$2"; then
@@ -211,6 +234,70 @@ assert_grep '^V1_S0_B0 old format loads'        "legacy bullet parsed"
 assert_grep '^V1_S1_TITLE Second v1'            "legacy second slide parsed"
 assert_grep '^V1_S1_NBUL 1'                     "legacy bullet count parsed"
 assert_grep '^V1_S0_LAYOUT 0'                   "legacy slides default to Title+Content"
+
+# --- SAVE AS / OPEN through the SHARED file dialog (lib/filepick.ad) -------
+# HamSlides had NO Save As at all: the deck could only be written back to the
+# path it was opened with. File > Save As... / Open... (and the toolbar Open
+# button) now ask the DRIVER for the shared, file-browser-backed chooser.
+assert_grep '^SAVEAS_ACTION 11'                 "File > Save As... asks for the SHARED file dialog"
+assert_grep '^OPEN_ACTION 12'                   "File > Open... asks for the SHARED file dialog"
+assert_grep '^TOOLBAR_OPEN_ACTION 12'           "the toolbar Open button raises the same dialog"
+assert_grep '^CTRLW_DIALOG_ACTIVE 2'            "Ctrl-W raises Save As from the keyboard"
+assert_grep '^CTRLW_DIALOG_CANCELLED 0'         "Ctrl-C cancels the dialog without committing"
+assert_grep '^DIALOG_ACTIVE 2'                  "the shared Save dialog opened in SAVE mode"
+assert_grep '^DIALOG_SEED hamslides_scratch.hamslides' \
+                                                "the dialog seeds the current deck basename"
+assert_grep '^DIALOG_NAME renamed.hamslides'    "the dialog's Name field accepts a typed filename"
+assert_grep '^DIALOG_AFTER 0'                   "Enter closes the shared dialog"
+assert_grep '^DIALOG_RESULT 1'                  "the dialog handed the driver a committed pick"
+assert_grep '^DIALOG_MODE 2'                    "the pick came back tagged SAVE"
+assert_grep '^DIALOG_PATH /.*/renamed\.hamslides$' \
+                                                "the pick is an ABSOLUTE path under the browsed dir"
+assert_grep '^SAVEAS_NAME renamed.hamslides'    "the deck is renamed to the typed name"
+assert_grep '^SAVEAS_LEN [1-9][0-9][0-9]'       "Save As wrote the container under the new name"
+assert_grep '^SAVEAS_NSLIDES_CLEARED 1'         "deck cleared before the Save-As round trip"
+assert_grep '^SAVEAS_NSLIDES_REOPEN 3'          "the Save-As file re-opens with all three slides"
+assert_grep '^SAVEAS_S0_TITLE Welcome to HamSlides' \
+                                                "the Save-As file round-trips the deck contents"
+# The dialog is the SHARED component — same chrome as HamWrite/HamSheet.
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save As"'  "shared dialog draws its title bar"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save in: .*"' \
+                                                "shared dialog draws the file-browser breadcrumb"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Name: hamslides_scratch.hamslides_"' \
+                                                "shared dialog draws the Name entry"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save"'     "shared dialog draws its Save button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Cancel"'   "shared dialog draws its Cancel button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Talks"'    "shared dialog lists a real directory entry"
+assert_in SAVEDLG '^fill 0 0 720 500 #00000033'     "the dialog dims the deck behind it (modal scrim)"
+if [ -s "$ALT" ]; then echo "[hamslides-host] PASS $ALT written by Save As";
+else echo "[hamslides-host] FAIL Save As did not write $ALT"; fail=1; fi
+if head -c 10 "$ALT" | grep -qx 'HAMSLIDES2'; then
+    echo "[hamslides-host] PASS Save-As file carries the HAMSLIDES2 magic";
+else echo "[hamslides-host] FAIL Save-As file missing HAMSLIDES2 magic"; fail=1; fi
+
+# --- BODY FOCUS: clicking the main slide area edits the body ---------------
+# The big content canvas used to swallow every click on a slide with an empty
+# body, so there was no mouse route into the content at all.
+assert_grep '^BLANK_NBUL 0'                     "the fresh slide starts with an empty body"
+assert_in BLANKBODY 'glyphs [0-9]+ [0-9]+ "Click here to add content"' \
+                                                "an empty body draws the content placeholder hint"
+assert_in BLANKBODY '^rect [0-9]+ [0-9]+ [0-9]+ [0-9]+ #' \
+                                                "an empty body draws the placeholder frame"
+assert_grep '^BODY_HIT 3'                       "a click in the content canvas is handled"
+assert_grep '^FOCUS_AFTER_BODY_CLICK 1'         "clicking the body focuses the FIRST BULLET (not title/notes)"
+assert_grep '^NBUL_AFTER_BODY_CLICK 1'          "the click created the first bullet on demand"
+assert_grep '^BODY_NBUL 1'                      "typing stayed in the one bullet"
+assert_grep '^BODY_B0 Typed straight into the body' \
+                                                "typed text became BODY/bullet content"
+assert_grep '^BODY_TITLE Blank Slide'           "the slide title was left untouched"
+assert_in BODYFOCUS 'glyphs [0-9]+ [0-9]+ "Typed straight into the body"' \
+                                                "the typed body text renders on the slide"
+assert_in BODYFOCUS '^fill 174 154 506 24 #eef0ff' \
+                                                "the focused body row carries the focus highlight"
+assert_in BODYFOCUS 'glyphs [0-9]+ [0-9]+ "Blank Slide"' \
+                                                "the title still renders alongside the body text"
+refute_in BODYFOCUS 'glyphs [0-9]+ [0-9]+ "Click here to add content"' \
+                                                "the placeholder hint is gone once the body has content"
 
 # --- the document file really exists on disk with the magic ----------------
 if [ -s "$DOC" ]; then echo "[hamslides-host] PASS $DOC written on disk";

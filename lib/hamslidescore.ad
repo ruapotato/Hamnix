@@ -92,8 +92,15 @@ dirty: int32 = 0
 flash: int32 = 0                          # "saved!" ack countdown
 
 # Action requested by a keystroke/click, drained by the driver:
-#   0 none, 1 save, 2 open, 3 quit.
+#   0 none, 1 save, 2 open, 3 quit, 11 Save As..., 12 Open...
 pending_action: int32 = 0
+
+# Actions that need the DRIVER to raise the SHARED file dialog (lib/filepick.ad)
+# — the core stays extern-free and never touches the picker itself: it only
+# names the action and the driver decides. Numbered to match HamWrite/HamSheet
+# so the whole office suite speaks one action vocabulary.
+ACT_SAVE_AS: int32 = 11
+ACT_OPEN:    int32 = 12
 
 # CSI escape decode (arrow/page navigation): 0 ground, 1 saw ESC, 2 saw ESC '['.
 hs_esc: int32 = 0
@@ -1017,6 +1024,38 @@ def _outdent_bullet() -> int32:
     return 1
 
 
+# ---- entering the BODY (content) region ------------------------------------
+# The main slide area is where a presentation actually lives, but it used to be
+# unreachable with the mouse: hamslides_hit() only tested the boxes of bullets
+# that ALREADY existed, so on a blank slide (nbul == 0) every click in the body
+# fell through and did nothing, and Tab/Down from the title skipped the body
+# entirely and landed in the speaker notes. The only way in was Enter from the
+# title. Clicking the body now focuses it, creating the first bullet on demand,
+# and `y` picks which bullet row the click landed on.
+def hamslides_focus_body(y: int64) -> int32:
+    nb: uint64 = _nbul(cur)
+    if nb == 0:
+        if _insert_bullet(0, 0) == 0:
+            return 0
+        focus_row = 1
+        caret = 0
+        return 1
+    bx: int32 = 0
+    by: int32 = 0
+    bw: int32 = 0
+    _bul_box(0, &bx, &by, &bw)
+    idx: int64 = 0
+    if y > cast[int64](by):
+        idx = (y - cast[int64](by)) / cast[int64](BULLET_LINE)
+    if idx < 0:
+        idx = 0
+    if idx > cast[int64](nb) - 1:
+        idx = cast[int64](nb) - 1
+    focus_row = cast[uint64](idx) + 1
+    caret = _focus_len()
+    return 1
+
+
 # ---- focus movement --------------------------------------------------------
 def _focus_down():
     nb: uint64 = _nbul(cur)
@@ -1026,6 +1065,13 @@ def _focus_down():
         focus_row = focus_row + 1
         caret = _focus_len()
         return
+    # From the title of a slide that has no bullets yet, step INTO the body by
+    # creating its first bullet rather than skipping straight to the notes.
+    if focus_row == 0 and nb == 0:
+        if _insert_bullet(0, 0) != 0:
+            focus_row = 1
+            caret = 0
+            return
     focus_row = FOCUS_NOTES
     caret = _focus_len()
 
@@ -1270,6 +1316,9 @@ def hamslides_key(code: int32) -> int32:
         return 1
     if code == 15:                                     # Ctrl-O -> Open
         pending_action = 2
+        return 1
+    if code == 23:                                     # Ctrl-W -> Save As...
+        pending_action = ACT_SAVE_AS
         return 1
     if code == 17:                                     # Ctrl-Q -> Quit
         pending_action = 3
@@ -1899,7 +1948,7 @@ def _draw_thumb(s: uint64, tx: int32, ty: int32, selected: int32):
 # ====================================================================
 def _menu_count(m: int32) -> uint64:
     if m == 1:
-        return 4                                        # File
+        return 5                                        # File
     if m == 2:
         return 4                                        # Edit
     if m == 3:
@@ -1955,6 +2004,8 @@ def _menu_item(m: int32, i: uint64) -> Ptr[uint8]:
             return cast[Ptr[uint8]]("Open...")
         if i == 2:
             return cast[Ptr[uint8]]("Save")
+        if i == 3:
+            return cast[Ptr[uint8]]("Save As...")
         return cast[Ptr[uint8]]("Quit")
     if m == 2:
         if i == 0:
@@ -1994,6 +2045,8 @@ def _menu_accel(m: int32, i: uint64) -> Ptr[uint8]:
         if i == 2:
             return cast[Ptr[uint8]]("^S")
         if i == 3:
+            return cast[Ptr[uint8]]("^W")
+        if i == 4:
             return cast[Ptr[uint8]]("^Q")
         return cast[Ptr[uint8]]("")
     if m == 2:
@@ -2026,7 +2079,7 @@ def _menu_item_active(m: int32, i: uint64) -> int32:
 
 
 # Run a menu item. Returns the hamslides_hit action code: 1 save, 2 open,
-# 3 redraw-only, 4 quit.
+# 3 redraw-only, 4 quit, 11 Save As... / 12 Open... (shared file dialog).
 def _menu_activate(m: int32, i: uint64) -> int32:
     menu_open = 0
     if m == 1:
@@ -2034,9 +2087,11 @@ def _menu_activate(m: int32, i: uint64) -> int32:
             hamslides_new_deck()
             return 3
         if i == 1:
-            return 2
+            return ACT_OPEN                             # Open... (shared dialog)
         if i == 2:
             return 1
+        if i == 3:
+            return ACT_SAVE_AS                          # Save As... (shared)
         return 4
     if m == 2:
         if i == 0:
@@ -2237,10 +2292,20 @@ def _draw_canvas():
                        _th_ink(), 0)
         b = b + 1
     if nb == 0:
-        hint: Ptr[uint8] = cast[Ptr[uint8]]("(Enter to add a bullet)")
+        # An EMPTY body needs a visible affordance saying it is a click target:
+        # a PowerPoint-style content placeholder frame drawn around the region
+        # a bullet would occupy, with the hint sitting on the first bullet's
+        # own baseline (it used to float 100px below it).
+        hbx: int32 = 0
+        hby: int32 = 0
+        hbw: int32 = 0
+        _bul_box(0, &hbx, &hby, &hbw)
+        hamscene_rect(hbx - 26, hby - 6,
+                      hbw + 30, CV_Y + CV_H - 12 - (hby - 6), _th_muted())
+        hint: Ptr[uint8] = cast[Ptr[uint8]]("Click here to add content")
         if l == LAY_TITLE:
-            hint = cast[Ptr[uint8]]("(Enter to add a subtitle)")
-        hamscene_glyphs(CV_X + 48, CV_Y + 172, hint, _th_muted())
+            hint = cast[Ptr[uint8]]("Click here to add a subtitle")
+        hamscene_glyphs(hbx, hby, hint, _th_muted())
 
     _draw_edit_caret()
 
@@ -2541,7 +2606,7 @@ def hamslides_hit(x: int64, y: int64) -> int32:
             hamslides_set_present(1)
             return 3
         if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
-            return 2
+            return ACT_OPEN                            # -> shared file dialog
         if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
             return 1
         return 0
@@ -2591,4 +2656,14 @@ def hamslides_hit(x: int64, y: int64) -> int32:
             focus_row = 0
             _place_caret_from_x(x, tx)
             return 3
+        # Anything else inside the canvas IS the body/content region: focus it
+        # (adding the first bullet if the slide is still blank) and drop the
+        # caret at the clicked column.
+        if hamslides_focus_body(y) != 0:
+            fbx: int32 = 0
+            fby: int32 = 0
+            fbw: int32 = 0
+            _bul_box(focus_row - 1, &fbx, &fby, &fbw)
+            _place_caret_from_x(x, fbx)
+        return 3
     return 0

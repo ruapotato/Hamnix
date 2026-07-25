@@ -79,6 +79,28 @@ fmc_bottom_reserve: int32 = 0
 # Columns that fit across the content width (computed by fmc_set_geometry).
 fmc_cols: int32 = 3
 
+# Paint ORIGIN. The browse grid is authored in content-local coordinates
+# (0,0 = top-left of the browser area). A host that draws the browser as a
+# CENTRED FLOATING PANEL over its own document — the shared Save/Open dialog in
+# lib/filepick.ad — sets an origin so the same paint body and the same
+# hit-test land inside the panel instead of the window's top-left corner.
+# Defaults to (0,0), so the full-window file manager is byte-identical.
+fmc_origin_x: int32 = 0
+fmc_origin_y: int32 = 0
+
+
+def fmc_set_origin(ox: int32, oy: int32):
+    fmc_origin_x = ox
+    fmc_origin_y = oy
+
+
+def fmc_origin_x_get() -> int32:
+    return fmc_origin_x
+
+
+def fmc_origin_y_get() -> int32:
+    return fmc_origin_y
+
 # --- vertical scroll -------------------------------------------------
 # The grid is scrolled by whole ROWS: scroll_row is the index of the topmost
 # VISIBLE grid row (0 = top). Rendering offsets every cell up by
@@ -830,13 +852,13 @@ def fmc_go_parent():
 # --- cell geometry / labels ------------------------------------------
 def fmc_cell_x(i: uint64) -> int32:
     col: int32 = cast[int32](i) % fmc_cols
-    return 4 + col * FMC_CELL_W
+    return fmc_origin_x + 4 + col * FMC_CELL_W
 
 
 def fmc_cell_y(i: uint64) -> int32:
     row: int32 = cast[int32](i) / fmc_cols
     row = row - cast[int32](fmc_scroll_row)
-    return FMC_GRID_TOP + row * FMC_CELL_H
+    return fmc_origin_y + FMC_GRID_TOP + row * FMC_CELL_H
 
 
 # Coarse file-class tint by filename extension. An executable (x-bit) file wins
@@ -920,10 +942,11 @@ def _fmc_cell_label(i: uint64, out: Ptr[uint8]):
 def fmc_paint():
     fmc_clamp_scroll()
     # Content background (light file-manager canvas).
-    hamscene_fill(0, 0, fmc_w, fmc_h, cast[Ptr[uint8]]("#f6f5f3"))
+    hamscene_fill(fmc_origin_x, fmc_origin_y, fmc_w, fmc_h,
+                  cast[Ptr[uint8]]("#f6f5f3"))
     # Breadcrumb header strip showing the label + current path — cohesive
     # cool-blue gradient headerbar (matches the compositor SSD titlebar family).
-    hamscene_headerbar(0, 0, fmc_w, FMC_HDR_H)
+    hamscene_headerbar(fmc_origin_x, fmc_origin_y, fmc_w, FMC_HDR_H)
     hdr: Array[96, uint8]
     hp: uint64 = 0
     a: uint64 = 0
@@ -966,13 +989,16 @@ def fmc_paint():
             hdr[hp] = 41                               # ')'
             hp = hp + 1
     hdr[hp] = 0
-    hamscene_glyphs(4, 4, &hdr[0], cast[Ptr[uint8]]("#ffffff"))
-    grid_bot: int32 = fmc_h - fmc_bottom_reserve
+    hamscene_glyphs(fmc_origin_x + 4, fmc_origin_y + 4, &hdr[0],
+                    cast[Ptr[uint8]]("#ffffff"))
+    # Clip bounds are ABSOLUTE (cell_x/cell_y already carry the origin).
+    grid_top_abs: int32 = fmc_origin_y + FMC_GRID_TOP
+    grid_bot: int32 = fmc_origin_y + fmc_h - fmc_bottom_reserve
     r: uint64 = 0
     while r < fmc_n:
         cx: int32 = fmc_cell_x(r)
         cy: int32 = fmc_cell_y(r)
-        if cy + FMC_CELL_H <= FMC_GRID_TOP:
+        if cy + FMC_CELL_H <= grid_top_abs:
             r = r + 1
             continue
         if cy >= grid_bot:
@@ -1057,6 +1083,10 @@ def fmc_paint():
 # Map a content-local click (lx,ly) to a grid cell index, or -1. Clicks below
 # the grid viewport (in the host's reserved strip) return -1.
 def fmc_cell_at(lx: int64, ly: int64) -> int64:
+    # Fold the paint origin out first, so a floating-panel host can forward
+    # raw window-local coordinates unchanged.
+    lx = lx - cast[int64](fmc_origin_x)
+    ly = ly - cast[int64](fmc_origin_y)
     if ly < cast[int64](FMC_GRID_TOP):
         return -1
     if ly >= cast[int64](fmc_h - fmc_bottom_reserve):

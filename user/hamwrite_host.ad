@@ -33,8 +33,8 @@ from lib.hamwritecore import hamwrite_build_scene, hamwrite_key, \
     hamwrite_attr_count, hamwrite_clear, hamwrite_hit, hamwrite_select_word, \
     hamwrite_select_line, hamwrite_sel_len, hamwrite_toggle_bold, \
     hamwrite_set_fname, hamwrite_drag, hamwrite_size_count, \
-    hamwrite_align_count, hamwrite_menu_open, hamwrite_prompt_active, \
-    hamwrite_prompt_ptr, hamwrite_fname_ptr, hamwrite_row_count, \
+    hamwrite_align_count, hamwrite_menu_open, \
+    hamwrite_fname_ptr, hamwrite_row_count, \
     hamwrite_scroll_top, hamwrite_scroll, hamwrite_undo_depth, \
     hamwrite_redo_depth, hamwrite_can_undo, hamwrite_can_redo, \
     hamwrite_set_find, hamwrite_set_repl, hamwrite_find_open, \
@@ -42,7 +42,14 @@ from lib.hamwritecore import hamwrite_build_scene, hamwrite_key, \
     hamwrite_replace_all, hamwrite_find_hits, hamwrite_find_cur, \
     hamwrite_find_active, hamwrite_find_ptr, hamwrite_sel_ptr, \
     hamwrite_list_count, hamwrite_indent_count, hamwrite_color_count, \
-    hamwrite_hilite_count, hamwrite_heading_count, hamwrite_find_msg
+    hamwrite_hilite_count, hamwrite_heading_count, hamwrite_find_msg, \
+    hamwrite_heading_level_at, hamwrite_toggle_heading_level, \
+    hamwrite_active_attr
+from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
+    filepick_handle_code, filepick_take_result, filepick_result_path, \
+    filepick_result_mode, filepick_save_name_ptr, FILEPICK_SAVE
+from lib.hamfmcore import fmc_set_cur_path, fmc_model_reset, fmc_add_entry, \
+    fmc_sort_entries, fmc_select
 
 
 obuf: Array[512, uint8]
@@ -178,14 +185,19 @@ def _file_len() -> int64:
     return total
 
 
-# Second document path: the SAME directory as doc_path, but the basename the
-# modal "Save As..." prompt committed. Mirrors user/hamwrite.ad's
-# _docpath_from_fname (which joins /home/live/Documents/ on the device).
+# The path the Save-As dialog committed to. The dialog returns an ABSOLUTE
+# path, so unlike the retired one-line prompt there is no directory to rejoin.
 alt_path: Array[192, uint8]
 alt_path_len: uint64 = 0
 
 
-def _altpath_from_fname():
+# ---- the SHARED Save/Open dialog (mirrors user/hamwrite.ad) ---------------
+# The driver pops lib/filepick.ad seeded with the document's own DIRECTORY and
+# basename, renders it as a centred panel over the live document, and on commit
+# adopts the returned absolute path. Directory enumeration is a kernel path the
+# dev host cannot run, so the listing is injected with the browse core's own
+# model primitives (the same records fmc_load_dir yields on-device).
+def _doc_dir(out: Ptr[uint8]) -> uint64:
     cut: uint64 = 0
     k: uint64 = 0
     while k < doc_path_len:
@@ -194,20 +206,64 @@ def _altpath_from_fname():
         k = k + 1
     p: uint64 = 0
     while p < cut:
-        alt_path[p] = doc_path[p]
+        out[p] = doc_path[p]
         p = p + 1
-    nm: Ptr[uint8] = hamwrite_fname_ptr()
-    j: uint64 = 0
-    while nm[j] != 0 and p < 191:
-        alt_path[p] = nm[j]
+    # Strip the trailing slash (fmc keeps paths without one, except at root).
+    if p > 1 and out[p - 1] == 47:
+        p = p - 1
+    out[p] = 0
+    return p
+
+
+def _doc_base() -> Ptr[uint8]:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    return &doc_path[cut]
+
+
+dlg_dir: Array[192, uint8]
+
+
+def _pop_dialog(mode: int32):
+    _doc_dir(&dlg_dir[0])
+    filepick_open(mode, &dlg_dir[0], _doc_base())
+    # Host stand-in for fmc_load_dir(): a representative listing to browse.
+    fmc_set_cur_path(&dlg_dir[0])
+    fmc_model_reset()
+    fmc_add_entry(cast[Ptr[uint8]]("Reports"), 1, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("hamwrite_scratch.hdoc"), 0, 0)
+    fmc_sort_entries()
+    fmc_select(-1)
+
+
+def _render_with_dialog(w: int32, h: int32) -> int32:
+    hamwrite_build_scene()
+    filepick_emit_panel(w, h)
+    hamui_host_begin(w, h)
+    return hamui_host_rasterize()
+
+
+# Adopt a committed pick: the returned path becomes the document path.
+def _apply_pick():
+    src: Ptr[uint8] = filepick_result_path()
+    p: uint64 = 0
+    while src[p] != 0 and p < 191:
+        alt_path[p] = src[p]
         p = p + 1
-        j = j + 1
     alt_path[p] = 0
     alt_path_len = p
-
-
-def _save_alt():
-    _altpath_from_fname()
+    # The title bar shows the new basename.
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < alt_path_len:
+        if alt_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    hamwrite_set_fname(&alt_path[cut])
     fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 577, 420)
     if fd < 0:
         return
@@ -238,8 +294,6 @@ def _dispatch(act: int32):
         _load_doc()
     elif act == 4:                                     # New
         hamwrite_clear()
-    elif act == 5:                                     # Save As <fname>
-        _save_alt()
 
 
 # Feed one keypress via the "d <code>" wire line (exercises the parser too),
@@ -441,7 +495,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_str(cast[Ptr[uint8]]("\nBODY-END\n"))
     _o_flush()
 
-    # ---- (6) MENU BAR: File -> "Save As..." -> the modal prompt -------
+    # ---- (6) MENU BAR: File -> "Save As..." -> the SHARED file dialog -
     mhit: int32 = hamwrite_hit(20, 32)                 # click "File"
     _o_str(cast[Ptr[uint8]]("MENU_HIT "))
     _o_dec(cast[int64](mhit))                          # 3 = redraw
@@ -455,28 +509,58 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     sys_write(1, hamscene_bufptr(), hamscene_length())
     _o_str(cast[Ptr[uint8]]("MENU-END\n"))
     _o_flush()
-    # item 3 of the File menu = "Save As..." (drop-down rows are 20px from y=48)
-    hamwrite_hit(30, 118)
-    _o_str(cast[Ptr[uint8]]("PROMPT "))
-    _o_dec(cast[int64](hamwrite_prompt_active()))      # 1 = Save As
+    # item 3 of the File menu = "Save As..." (drop-down rows are 20px from y=48).
+    # It no longer raises a bespoke one-line prompt: it asks the DRIVER for the
+    # shared, file-browser-backed dialog (action 11), exactly as HamSheet and
+    # HamSlides now do.
+    saveas_act: int32 = hamwrite_hit(30, 118)
+    _o_str(cast[Ptr[uint8]]("SAVEAS_ACTION "))
+    _o_dec(cast[int64](saveas_act))                    # 11 = ACT_SAVE_AS
     _o_ch(10)
-    # clear the pre-filled name, type a new one, commit with Enter
+    # The driver's response: pop lib/filepick.ad seeded with the document's own
+    # directory + basename (user/hamwrite.ad _pop_dialog does exactly this).
+    _pop_dialog(FILEPICK_SAVE)
+    _o_str(cast[Ptr[uint8]]("DIALOG_ACTIVE "))
+    _o_dec(cast[int64](filepick_active()))             # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_SEED "))
+    _o_str(filepick_save_name_ptr())                   # the current basename
+    _o_ch(10)
+    # SCREENDUMP: the document with the shared Save dialog floating over it.
+    _render_with_dialog(W, H)
+    _write_ppm(cast[Ptr[char]](argv[8]))
+    _o_str(cast[Ptr[uint8]]("SAVEDLG-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("SAVEDLG-END\n"))
+    _o_flush()
+    # Clear the seeded name, type a new one, commit with Enter.
     bs: int32 = 0
     while bs < 40:
-        _press(8)
+        filepick_handle_code(8)
         bs = bs + 1
     nm2: Ptr[uint8] = cast[Ptr[uint8]]("renamed.hdoc")
     q: uint64 = 0
     while nm2[q] != 0:
-        _press(cast[int32](nm2[q]))
+        filepick_handle_code(cast[int32](nm2[q]))
         q = q + 1
-    _o_str(cast[Ptr[uint8]]("PROMPT_TEXT "))
-    _o_str(hamwrite_prompt_ptr())
+    _o_str(cast[Ptr[uint8]]("DIALOG_NAME "))
+    _o_str(filepick_save_name_ptr())
     _o_ch(10)
-    _press(13)                                         # Enter -> action 5
-    _o_str(cast[Ptr[uint8]]("PROMPT_AFTER "))
-    _o_dec(cast[int64](hamwrite_prompt_active()))      # 0 = closed
+    filepick_handle_code(13)                           # Enter -> commit
+    _o_str(cast[Ptr[uint8]]("DIALOG_AFTER "))
+    _o_dec(cast[int64](filepick_active()))             # 0 = closed
     _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_RESULT "))
+    _o_dec(cast[int64](filepick_take_result()))        # 1 = a pick is waiting
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_MODE "))
+    _o_dec(cast[int64](filepick_result_mode()))        # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_PATH "))
+    _o_str(filepick_result_path())                     # <docdir>/renamed.hdoc
+    _o_ch(10)
+    _apply_pick()                                      # driver: adopt + save
     _o_str(cast[Ptr[uint8]]("SAVEAS_NAME "))
     _o_str(hamwrite_fname_ptr())
     _o_ch(10)
@@ -688,6 +772,51 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_str(cast[Ptr[uint8]]("HEAD3 "))
     _o_dec(cast[int64](hamwrite_heading_count(3)))     # 15
     _o_ch(10)
+    # HEADING TOGGLE: clicking the ACTIVE heading button again must return the
+    # text to BODY, exactly like the B/I/U toggles beside it. It used to be a
+    # one-way trip that could only be undone from Format > Body Text.
+    _o_str(cast[Ptr[uint8]]("H3_ACTIVE_LEVEL "))
+    _o_dec(cast[int64](hamwrite_heading_level_at(0)))  # 3
+    _o_ch(10)
+    _render(W, H)
+    _write_ppm(cast[Ptr[char]](argv[9]))               # heading ON
+    _o_str(cast[Ptr[uint8]]("HEADON-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("HEADON-END\n"))
+    _o_flush()
+    hamwrite_hit(186, 58)                              # toolbar "H3" AGAIN
+    _o_str(cast[Ptr[uint8]]("HEAD3_AFTER_RECLICK "))
+    _o_dec(cast[int64](hamwrite_heading_count(3)))     # 0: back to body text
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("BODY_AFTER_RECLICK "))
+    _o_dec(cast[int64](hamwrite_heading_count(0)))     # 15: all body again
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("TOGGLED_LEVEL "))
+    _o_dec(cast[int64](hamwrite_heading_level_at(0)))  # 0 = body
+    _o_ch(10)
+    _render(W, H)
+    _write_ppm(cast[Ptr[char]](argv[10]))              # heading OFF again
+    _o_str(cast[Ptr[uint8]]("HEADOFF-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("HEADOFF-END\n"))
+    _o_flush()
+    # A DIFFERENT heading button still switches level rather than toggling off.
+    hamwrite_hit(152, 58)                              # H2 on body text
+    _o_str(cast[Ptr[uint8]]("H2_FROM_BODY "))
+    _o_dec(cast[int64](hamwrite_heading_count(2)))     # 15
+    _o_ch(10)
+    hamwrite_hit(186, 58)                              # H3 while H2 is active
+    _o_str(cast[Ptr[uint8]]("H3_FROM_H2 "))
+    _o_dec(cast[int64](hamwrite_heading_count(3)))     # 15 (switched, not off)
+    _o_ch(10)
+    hamwrite_hit(186, 58)                              # H3 again -> body
+    _o_str(cast[Ptr[uint8]]("H3_TOGGLED_OFF "))
+    _o_dec(cast[int64](hamwrite_heading_count(0)))     # 15 body
+    _o_ch(10)
+    # Restore H3 for the round-trip assertions that follow.
+    hamwrite_hit(186, 58)
     # SAVE -> CLEAR -> RE-OPEN: the SECOND attribute plane must round-trip
     _press(19)                                         # Ctrl-S
     _o_str(cast[Ptr[uint8]]("A2_FILE_LEN "))
@@ -818,4 +947,41 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         _o_dec(cast[int64](hamwrite_len()))
         _o_ch(10)
         _o_flush()
+
+    # ---- (11) HEADING TOGGLE with a BARE CARET ------------------------
+    # The user's exact complaint was "if you select a header you can't click it
+    # again to go back to normal text". The common case has NO selection at
+    # all: the caret just sits in the paragraph. A heading is a PARAGRAPH
+    # property, so one click restyles the whole paragraph and a second click on
+    # the same button restores body text.
+    hamwrite_clear()
+    _type(cast[Ptr[uint8]]("Chapter One"))
+    _press(13)
+    _type(cast[Ptr[uint8]]("Body sentence."))
+    # The caret now sits in paragraph 2 with NOTHING selected.
+    _o_str(cast[Ptr[uint8]]("CARET_SEL "))
+    _o_dec(cast[int64](hamwrite_sel_len()))            # 0 = no selection
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("CARET_LEVEL_BEFORE "))
+    _o_dec(cast[int64](hamwrite_para_heading_level()))  # 0 = body
+    _o_ch(10)
+    hamwrite_hit(120, 58)                              # toolbar "H1"
+    _o_str(cast[Ptr[uint8]]("CARET_H1_ON "))
+    _o_dec(cast[int64](hamwrite_para_heading_level()))  # 1 = the paragraph is H1
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("CARET_H1_CHARS "))
+    _o_dec(cast[int64](hamwrite_heading_count(1)))     # 14 = "Body sentence."
+    _o_ch(10)
+    hamwrite_hit(120, 58)                              # click "H1" AGAIN
+    _o_str(cast[Ptr[uint8]]("CARET_H1_OFF "))
+    _o_dec(cast[int64](hamwrite_para_heading_level()))  # 0 = back to body text
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("CARET_H1_CHARS_OFF "))
+    _o_dec(cast[int64](hamwrite_heading_count(1)))     # 0
+    _o_ch(10)
+    # The OTHER paragraph was never touched: a heading is per-paragraph.
+    _o_str(cast[Ptr[uint8]]("CARET_OTHER_PARA_BODY "))
+    _o_dec(cast[int64](hamwrite_heading_level_at(0)))  # 0 = "Chapter One" body
+    _o_ch(10)
+    _o_flush()
     return 0

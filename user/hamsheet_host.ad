@@ -10,8 +10,15 @@
 # text AND the formulas survive a save->load round-trip and recompute to the
 # same values. Two PPMs are written for a human/agent to LOOK at.
 #
+# It also drives the SHARED Save-As dialog (lib/filepick.ad) exactly as the
+# native driver does: the toolbar's SaveAs button raises action 11, the driver
+# pops the chooser seeded with the sheet's own directory + basename, the dialog
+# is RENDERED as a centred panel over the live grid, a new filename is typed and
+# committed with Enter, and the returned ABSOLUTE path is then written and
+# re-read to prove the round trip.
+#
 # USAGE (built to build/host/hamsheet_host):
-#   hamsheet_host DOCPATH BEFORE.ppm AFTER.ppm
+#   hamsheet_host DOCPATH BEFORE.ppm AFTER.ppm SAVEDLG.ppm
 
 extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
@@ -22,6 +29,11 @@ from lib.hamscene import hamscene_bufptr, hamscene_length
 from lib.hamui_host import hamui_host_begin, hamui_host_rasterize, \
     hamui_host_ppm_header, hamui_host_fb_ptr, hamui_host_fb_bytes, \
     hamui_host_pixel
+from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
+    filepick_handle_code, filepick_take_result, filepick_result_path, \
+    filepick_result_mode, filepick_save_name_ptr, FILEPICK_SAVE
+from lib.hamfmcore import fmc_set_cur_path, fmc_model_reset, fmc_add_entry, \
+    fmc_sort_entries, fmc_select
 from lib.hamsheetcore import hamsheet_init, hamsheet_build_scene, \
     hamsheet_set_cell, hamsheet_cell_kind, hamsheet_cell_value_fp, \
     hamsheet_cell_display, hamsheet_recompute, hamsheet_serialize, \
@@ -30,7 +42,7 @@ from lib.hamsheetcore import hamsheet_init, hamsheet_build_scene, \
     hamsheet_sel_row, hamsheet_sel_col, hamsheet_cell_raw_ptr, \
     hamsheet_cell_raw_len, hamsheet_select, hamsheet_set_fmt, \
     hamsheet_export_csv, hamsheet_import_csv, hamsheet_col_width, \
-    hamsheet_cell_fmt, hamsheet_undo_depth
+    hamsheet_cell_fmt, hamsheet_undo_depth, hamsheet_hit, hamsheet_mark_saved
 
 
 obuf: Array[512, uint8]
@@ -160,8 +172,109 @@ def _dispatch(act: int32):
         _load_doc()
 
 
+# ---- the SHARED Save/Open dialog (mirrors user/hamsheet.ad) ---------------
+# The driver pops lib/filepick.ad seeded with the sheet's own DIRECTORY and
+# basename, renders it as a centred panel over the live grid, and on commit
+# adopts the returned absolute path. Directory enumeration is a kernel path the
+# dev host cannot run, so the listing is injected with the browse core's own
+# model primitives (the same records fmc_load_dir yields on-device).
+dlg_dir:  Array[192, uint8]
+alt_path: Array[192, uint8]
+alt_path_len: uint64 = 0
+
+
+def _doc_dir(out: Ptr[uint8]) -> uint64:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    p: uint64 = 0
+    while p < cut:
+        out[p] = doc_path[p]
+        p = p + 1
+    # Strip the trailing slash (fmc keeps paths without one, except at root).
+    if p > 1 and out[p - 1] == 47:
+        p = p - 1
+    out[p] = 0
+    return p
+
+
+def _doc_base() -> Ptr[uint8]:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    return &doc_path[cut]
+
+
+def _pop_dialog(mode: int32):
+    _doc_dir(&dlg_dir[0])
+    filepick_open(mode, &dlg_dir[0], _doc_base())
+    # Host stand-in for fmc_load_dir(): a representative listing to browse.
+    fmc_set_cur_path(&dlg_dir[0])
+    fmc_model_reset()
+    fmc_add_entry(cast[Ptr[uint8]]("Reports"), 1, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("hamsheet_scratch.hsheet"), 0, 0)
+    fmc_sort_entries()
+    fmc_select(-1)
+
+
+def _render_with_dialog(w: int32, h: int32) -> int32:
+    hamsheet_build_scene()
+    filepick_emit_panel(w, h)
+    hamui_host_begin(w, h)
+    return hamui_host_rasterize()
+
+
+# Adopt a committed pick: the returned path becomes the sheet's path, then the
+# document is written there (SAVE) exactly as user/hamsheet.ad does.
+def _apply_pick():
+    src: Ptr[uint8] = filepick_result_path()
+    p: uint64 = 0
+    while src[p] != 0 and p < 191:
+        alt_path[p] = src[p]
+        p = p + 1
+    alt_path[p] = 0
+    alt_path_len = p
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < alt_path_len:
+        if alt_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    hamsheet_set_fname(&alt_path[cut])                 # title bar basename
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 577, 420)
+    if fd < 0:
+        return
+    n: uint64 = hamsheet_serialize(&ser_buf[0])
+    sys_write(fd, &ser_buf[0], n)
+    sys_close(fd)
+    hamsheet_mark_saved()
+
+
+# Re-read the Save-As target off disk into the live sheet (round-trip proof).
+def _load_alt() -> int64:
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 0, 0)
+    if fd < 0:
+        return -1
+    total: uint64 = 0
+    while total < 32768:
+        r: int64 = sys_read(fd, &ser_buf[total], 32768 - total)
+        if r <= 0:
+            break
+        total = total + cast[uint64](r)
+    sys_close(fd)
+    hamsheet_deserialize(&ser_buf[0], total)
+    return cast[int64](total)
+
+
 # Feed one keypress via the "d <code>" wire line, then drain+dispatch action.
 kl: Array[16, uint8]
+last_action: int32 = 0
 
 
 def _press(code: int32) -> int32:
@@ -181,8 +294,10 @@ def _press(code: int32) -> int32:
     kl[p] = cast[uint8](code % 10) + 48
     p = p + 1
     ch: int32 = hamsheet_key_line(&kl[0], p)
+    last_action = 0
     if ch == 1:
         act: int32 = hamsheet_take_action()
+        last_action = act
         if act != 0:
             _dispatch(act)
     return ch
@@ -234,9 +349,9 @@ def _hb(s: Ptr[uint8]):
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
-    if argc < 4:
+    if argc < 5:
         _o_str(cast[Ptr[uint8]](
-            "usage: hamsheet_host DOCPATH BEFORE.ppm AFTER.ppm\n"))
+            "usage: hamsheet_host DOCPATH BEFORE.ppm AFTER.ppm SAVEDLG.ppm\n"))
         _o_flush()
         return 2
 
@@ -317,7 +432,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_str(cast[Ptr[uint8]]("SUM_AFTER_CLEAR "))
     _o_dec(hamsheet_cell_value_fp(0, 1))               # 0
     _o_ch(10)
-    _press(15)                                         # Ctrl-O -> _load_doc
+    # Ctrl-O now raises the SHARED Open dialog (action 12) rather than blindly
+    # reloading the fixed path; the driver's answer to that action is the
+    # chooser, and the chooser's answer is a path this harness then loads.
+    _press(15)
+    _o_str(cast[Ptr[uint8]]("CTRLO_ACTION "))
+    _o_dec(cast[int64](last_action))                   # 12 = ACT_OPEN
+    _o_ch(10)
+    _load_doc()
     _o_str(cast[Ptr[uint8]]("SUM_AFTER_OPEN "))
     _o_dec(hamsheet_cell_value_fp(0, 1))               # 60000000 again
     _o_ch(10)
@@ -493,7 +615,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # ================================================================
     _press(19)                                            # Ctrl-S
     hamsheet_clear()
-    _press(15)                                            # Ctrl-O
+    _load_doc()                                           # re-open off disk
     _dump_cell(cast[Ptr[uint8]]("RT_CURRENCY"), 0, 6)
     _dump_raw(cast[Ptr[uint8]]("RT_ABSREF"), 2, 5)
     _dump_cell(cast[Ptr[uint8]]("RT_IF"), 0, 3)
@@ -584,5 +706,81 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_flush()
     sys_write(1, hamscene_bufptr(), hamscene_length())
     _o_str(cast[Ptr[uint8]]("SCENE2-END\n"))
+    _o_flush()
+
+    # ================================================================
+    # (16) SAVE AS through the SHARED file dialog (lib/filepick.ad)
+    # ================================================================
+    # The toolbar's "SaveAs" button no longer saves blindly to the launch path:
+    # it asks the DRIVER for the shared, file-browser-backed chooser (action 11),
+    # exactly as HamWrite and HamSlides do.
+    saveas_act: int32 = hamsheet_hit(484, 32)          # SaveAs toolbar button
+    _o_str(cast[Ptr[uint8]]("SAVEAS_ACTION "))
+    _o_dec(cast[int64](saveas_act))                    # 11 = ACT_SAVE_AS
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("OPENBTN_ACTION "))
+    _o_dec(cast[int64](hamsheet_hit(436, 32)))         # 12 = ACT_OPEN
+    _o_ch(10)
+    # Ctrl-U is the keyboard route to the same action.
+    _press(21)
+    _o_str(cast[Ptr[uint8]]("CTRLU_ACTION "))
+    _o_dec(cast[int64](last_action))                   # 11 = ACT_SAVE_AS
+    _o_ch(10)
+    # The driver's response: pop lib/filepick.ad seeded with the sheet's own
+    # directory + basename (user/hamsheet.ad _pop_dialog does exactly this).
+    _pop_dialog(FILEPICK_SAVE)
+    _o_str(cast[Ptr[uint8]]("DIALOG_ACTIVE "))
+    _o_dec(cast[int64](filepick_active()))             # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_SEED "))
+    _o_str(filepick_save_name_ptr())                   # the current basename
+    _o_ch(10)
+    # SCREENDUMP: the live spreadsheet with the shared Save dialog over it.
+    _render_with_dialog(W, H)
+    _write_ppm(cast[Ptr[char]](argv[4]))
+    _o_str(cast[Ptr[uint8]]("SAVEDLG-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("SAVEDLG-END\n"))
+    _o_flush()
+    # Clear the seeded name, type a new one, commit with Enter.
+    bs: int32 = 0
+    while bs < 48:
+        filepick_handle_code(8)
+        bs = bs + 1
+    nm2: Ptr[uint8] = cast[Ptr[uint8]]("renamed.hsheet")
+    q: uint64 = 0
+    while nm2[q] != 0:
+        filepick_handle_code(cast[int32](nm2[q]))
+        q = q + 1
+    _o_str(cast[Ptr[uint8]]("DIALOG_NAME "))
+    _o_str(filepick_save_name_ptr())
+    _o_ch(10)
+    filepick_handle_code(13)                           # Enter -> commit
+    _o_str(cast[Ptr[uint8]]("DIALOG_AFTER "))
+    _o_dec(cast[int64](filepick_active()))             # 0 = closed
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_RESULT "))
+    _o_dec(cast[int64](filepick_take_result()))        # 1 = a pick is waiting
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_MODE "))
+    _o_dec(cast[int64](filepick_result_mode()))        # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("DIALOG_PATH "))
+    _o_str(filepick_result_path())                     # <docdir>/renamed.hsheet
+    _o_ch(10)
+    _o_flush()
+    _apply_pick()                                      # driver: adopt + save
+    # PROVE the round trip: clear the sheet, re-read the file the dialog named.
+    hamsheet_clear()
+    _o_str(cast[Ptr[uint8]]("SAVEAS_CLEARED "))
+    _o_dec(hamsheet_cell_value_fp(5, 3))               # 0 (subtotal gone)
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SAVEAS_LEN "))
+    _o_dec(_load_alt())                                # bytes read back
+    _o_ch(10)
+    _dump_cell(cast[Ptr[uint8]]("SAVEAS_SUBTOTAL"), 5, 3)
+    _dump_cell(cast[Ptr[uint8]]("SAVEAS_GRAND"), 7, 3)
+    _dump_raw(cast[Ptr[uint8]]("SAVEAS_RAW_GRAND"), 7, 3)
     _o_flush()
     return 0

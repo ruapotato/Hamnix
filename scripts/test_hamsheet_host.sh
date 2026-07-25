@@ -27,9 +27,12 @@ cd "$(dirname "$0")/.." || exit 1
 
 OUT="build/host"
 BIN="$OUT/hamsheet_host"
-DOC="$OUT/hamsheet_scratch.hsheet"
+# ABSOLUTE paths: the shared file dialog is backed by the real file-manager
+# browse core, which rejects relative directories.
+DOC="$PWD/$OUT/hamsheet_scratch.hsheet"
+ALT="$PWD/$OUT/renamed.hsheet"
 mkdir -p "$OUT"
-rm -f "$DOC"
+rm -f "$DOC" "$ALT"
 fail=0
 
 echo "[hamsheet-host] compiling core+harness for x86_64-linux ..."
@@ -47,11 +50,12 @@ fi
 echo "[hamsheet-host] PASS native hamsheet still compiles"
 
 DUMP="$OUT/hs_dump.txt"
-if ! "$BIN" "$DOC" "$OUT/hs_before.ppm" "$OUT/hs_after.ppm" >"$DUMP" 2>&1; then
+if ! "$BIN" "$DOC" "$OUT/hs_before.ppm" "$OUT/hs_after.ppm" \
+        "$OUT/hs_savedlg.ppm" >"$DUMP" 2>&1; then
     echo "[hamsheet-host] FAIL: host harness exited non-zero"; cat "$DUMP"; exit 1
 fi
 
-for f in before after; do
+for f in before after savedlg; do
     if python3 scripts/ppm_to_png.py "$OUT/hs_$f.ppm" "$OUT/hs_$f.png" 2>"$OUT/hs_png.log"; then
         echo "[hamsheet-host] PASS rendered $OUT/hs_$f.png"
     else
@@ -62,6 +66,21 @@ done
 assert_grep() {
     if grep -Eq -- "$1" "$DUMP"; then echo "[hamsheet-host] PASS $2";
     else echo "[hamsheet-host] FAIL $2 (missing: $1)"; fail=1; fi
+}
+# assert_in SECTION REGEX MSG — assert inside a BEGIN/END scene dump only.
+# NOTE: awk output is captured FIRST (never piped into grep -q) — under
+# `set -o pipefail` an early-exiting grep SIGPIPEs awk and the whole pipeline
+# reports failure even when the pattern matched.
+section() {
+    awk -v b="^$1-BEGIN$" -v e="^$1-END$" \
+        '$0 ~ b {f=1;next} $0 ~ e {f=0} f' "$DUMP"
+}
+assert_in() {
+    if grep -Eq -- "$2" <<<"$(section "$1")"; then
+        echo "[hamsheet-host] PASS $3"
+    else
+        echo "[hamsheet-host] FAIL $3 (missing in $1: $2)"; fail=1
+    fi
 }
 
 # --- window chrome / formula bar / grid headers ----------------------------
@@ -94,7 +113,8 @@ assert_grep '^FILE_LEN [0-9][0-9][0-9]'         "Ctrl-S wrote the document conta
 
 # --- CLEAR + RE-OPEN off disk: round-trip proof ----------------------------
 assert_grep '^SUM_AFTER_CLEAR 0'                "sheet cleared before reopen"
-assert_grep '^SUM_AFTER_OPEN 60000000'          "Ctrl-O reloaded + recomputed =SUM to 60"
+assert_grep '^CTRLO_ACTION 12'                  "Ctrl-O raises the SHARED Open dialog (action 12)"
+assert_grep '^SUM_AFTER_OPEN 60000000'          "reopening reloaded + recomputed =SUM to 60"
 assert_grep '^EXPR_AFTER_OPEN 50000000'         "the cell-arithmetic formula survived the round-trip"
 
 # --- keyboard type-to-edit + recalc cascade --------------------------------
@@ -203,8 +223,45 @@ assert_grep '^CSVIN_B3 6'                        "CSV import round-tripped the n
 
 # --- the new chrome is actually drawn --------------------------------------
 assert_grep 'glyphs .*"CSV"'                     "CSV toolbar button rendered"
+assert_grep 'glyphs .*"SaveAs"'                  "SaveAs toolbar button rendered"
 assert_grep 'glyphs .*"fx"'                      "formula-bar fx label rendered"
 assert_grep 'glyphs .*"\^Z undo \^C/\^V \^D fill"' "status-bar key hints rendered"
+
+# --- SAVE AS through the SHARED file dialog (lib/filepick.ad) --------------
+assert_grep '^SAVEAS_ACTION 11'                  "the SaveAs button asks for the SHARED file dialog"
+assert_grep '^OPENBTN_ACTION 12'                 "the Open button raises the SHARED Open dialog"
+assert_grep '^CTRLU_ACTION 11'                   "Ctrl-U is the keyboard route to Save As"
+assert_grep '^DIALOG_ACTIVE 2'                   "the shared Save dialog opened in SAVE mode"
+assert_grep '^DIALOG_SEED hamsheet_scratch.hsheet' \
+                                                 "the dialog seeds the current basename"
+assert_grep '^DIALOG_NAME renamed.hsheet'        "the dialog's Name field accepts a typed filename"
+assert_grep '^DIALOG_AFTER 0'                    "Enter closes the shared dialog"
+assert_grep '^DIALOG_RESULT 1'                   "the dialog handed the driver a committed pick"
+assert_grep '^DIALOG_MODE 2'                     "the pick came back tagged SAVE"
+assert_grep '^DIALOG_PATH .*/renamed\.hsheet$'   "the pick is an ABSOLUTE path under the browsed dir"
+# The dialog is the SHARED, file-browser-backed one — same component, same
+# chrome, as HamWrite/HamSlides/hamedit raise, floating over the live grid.
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save As"'  "shared dialog draws its title bar"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save in: .*"' \
+                                                 "shared dialog draws the file-browser breadcrumb"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Name: hamsheet_scratch.hsheet_"' \
+                                                 "shared dialog draws the Name entry"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Save"'  "shared dialog draws its Save button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Cancel"' "shared dialog draws its Cancel button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Reports"' "shared dialog lists a real directory entry"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ "Subtotal"' \
+                                                 "the live spreadsheet is still drawn under the dialog"
+
+# --- the Save-As target really round-trips on disk -------------------------
+assert_grep '^SAVEAS_CLEARED 0'                  "sheet cleared before re-reading the Save-As file"
+assert_grep '^SAVEAS_LEN [0-9][0-9][0-9]'        "the Save-As path was written (>=100 bytes)"
+assert_grep '^SAVEAS_SUBTOTAL \$'                "the re-read Save-As file recomputed the subtotal"
+assert_grep '^SAVEAS_RAW_GRAND =D6\+D7'          "the formula text survived the Save-As round trip"
+if [ -s "$ALT" ]; then echo "[hamsheet-host] PASS $ALT written by the dialog's path";
+else echo "[hamsheet-host] FAIL Save As did not write $ALT"; fail=1; fi
+if head -c 9 "$ALT" | grep -qx 'HAMSHEET2'; then
+    echo "[hamsheet-host] PASS the Save-As file carries the HAMSHEET2 magic";
+else echo "[hamsheet-host] FAIL Save-As file missing HAMSHEET2 magic"; fail=1; fi
 
 if [ "$fail" -ne 0 ]; then echo "[hamsheet-host] OVERALL FAIL"; exit 1; fi
 echo "[hamsheet-host] OVERALL PASS"

@@ -16,10 +16,13 @@
 # file on disk (Ctrl-S / Ctrl-O / New / Save As / Open by name) + the
 # /dev/snarf clipboard (Ctrl-C/V/X).
 #
-# DOCUMENTS live in the user's home: /home/live/Documents/<name>.hdoc. "New"
-# resets to untitled.hdoc; the File menu's "Save As..." / "Open..." raise the
-# core's modal filename prompt and hand this driver the chosen basename, which
-# is joined onto that directory.
+# DOCUMENTS live in the user's home: /home/live/Documents/<name>.hdoc by
+# default. "New" resets to untitled.hdoc; the File menu's "Save As..." /
+# "Open..." raise the SHARED file dialog (lib/filepick.ad) — the same
+# GtkFileChooser-shaped, file-browser-backed chooser HamSheet, HamSlides and
+# hamedit raise, built on the real file-manager browse core (lib/hamfmcore.ad).
+# It returns an ABSOLUTE path, so the user can save anywhere instead of being
+# locked into one hard-coded directory the way the old one-line prompt was.
 #
 # FORMATTING NOTE: see the render-fidelity section of lib/hamwritecore.ad — the
 # document model stores every attribute (bold/italic/underline, H1-H3 heading
@@ -42,6 +45,10 @@ extern def sys_get_jiffies() -> uint64
 from lib.hamui import hamscene_commit
 from lib.hamtextbox import htb_clip_put, htb_clip_get, htb_click_count, \
     htb_evt_parse_m, htb_mid_edge
+from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
+    filepick_handle_code, filepick_click, filepick_take_result, \
+    filepick_result_path, filepick_result_mode, filepick_owns_point, \
+    filepick_wheel, FILEPICK_OPEN, FILEPICK_SAVE
 from lib.hamwritecore import hamwrite_build_scene, hamwrite_key_line, \
     hamwrite_take_action, hamwrite_serialize, hamwrite_deserialize, \
     hamwrite_mark_saved, hamwrite_set_fname, hamwrite_hit, hamwrite_drag, \
@@ -220,9 +227,59 @@ def _do_cut():
     hamwrite_delete_selection()
 
 
+# ---- the SHARED Save/Open dialog (lib/filepick.ad) -------------------------
+# Pop the shared chooser seeded with the document's OWN directory and basename,
+# so Save As opens where the document lives. The dialog does no file I/O: it
+# resolves a path, and this driver performs the open/save.
+dlg_dir: Array[192, uint8]
+
+
+def _doc_dir(out: Ptr[uint8]):
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    p: uint64 = 0
+    while p < cut:
+        out[p] = doc_path[p]
+        p = p + 1
+    if p > 1 and out[p - 1] == 47:                     # keep "/" but drop "a/"
+        p = p - 1
+    out[p] = 0
+
+
+def _doc_base() -> Ptr[uint8]:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    return &doc_path[cut]
+
+
+def _pop_dialog(mode: int32):
+    _doc_dir(&dlg_dir[0])
+    filepick_open(mode, &dlg_dir[0], _doc_base())
+
+
+# Adopt a committed pick: it becomes the document path, then open or save it.
+def _apply_pick():
+    _set_docpath(filepick_result_path())
+    _sync_fname()
+    if filepick_result_mode() == FILEPICK_OPEN:
+        _load_doc()
+        _sync_fname()
+    else:
+        _save_doc()
+
+
 # Dispatch a pending action set by a keystroke or a menu/toolbar click.
-#   1 save   2 open(current path)   4 new   5 save-as(prompted name)
-#   6 quit   7 copy   8 paste   9 cut   10 open(prompted name)
+#   1 save   2 open(current path)   4 new   6 quit
+#   7 copy   8 paste   9 cut
+#  11 Save As / 12 Open -> raise the SHARED file dialog
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
@@ -232,9 +289,6 @@ def _dispatch(act: int32):
         hamwrite_clear()
         _set_docpath(cast[Ptr[uint8]]("/home/live/Documents/untitled.hdoc"))
         _sync_fname()
-    elif act == 5:
-        _docpath_from_fname()
-        _save_doc()
     elif act == 6:
         hw_quit = 1
     elif act == 7:
@@ -243,10 +297,23 @@ def _dispatch(act: int32):
         _do_paste()
     elif act == 9:
         _do_cut()
-    elif act == 10:
-        _docpath_from_fname()
-        _load_doc()
-        _sync_fname()
+    elif act == 11:
+        _pop_dialog(FILEPICK_SAVE)
+    elif act == 12:
+        _pop_dialog(FILEPICK_OPEN)
+
+
+# Rebuild + publish the scene: the document, then the shared dialog on top of
+# it when one is up (it renders as a centred floating panel over live content).
+_HW_WIN_W: int32 = 720
+_HW_WIN_H: int32 = 552
+
+
+def _repaint(wid: int32):
+    hamwrite_build_scene()
+    if filepick_active() != 0:
+        filepick_emit_panel(_HW_WIN_W, _HW_WIN_H)
+    hamscene_commit(wid)
 
 
 # ---- pointer input --------------------------------------------------------
@@ -257,6 +324,19 @@ hw_dragging: int32 = 0
 # Handle a window-local pointer event. Returns 1 if a redraw is needed.
 def _pointer(lx: int64, ly: int64, btn: int64, dz: int64) -> int32:
     changed: int32 = 0
+    # The shared dialog is MODAL: while it is up it takes the pointer, and a
+    # click outside its panel must not reach the document underneath.
+    if filepick_active() != 0:
+        if dz != 0:
+            if filepick_wheel(dz) != 0:
+                changed = 1
+        b1d: int64 = btn & 1
+        pb1d: int64 = hw_prev_btn & 1
+        if b1d != 0 and pb1d == 0:
+            if filepick_click(lx, ly) != 0:
+                changed = 1
+        hw_prev_btn = btn
+        return changed
     if dz != 0:
         if hamwrite_scroll(dz) != 0:
             changed = 1
@@ -350,6 +430,41 @@ kev_buf: Array[512, uint8]
 kev_carry: uint64 = 0
 
 
+# Parse one "<type> <code>" wire line and hand the code to the shared dialog.
+# Only "d" (down) lines carry a character; everything else is ignored.
+def _dialog_key_line(line: Ptr[uint8], n: uint64) -> int32:
+    if n < 3:
+        return 0
+    if line[0] != 100:                                 # 'd'
+        return 0
+    i: uint64 = 1
+    while i < n and line[i] == 32:
+        i = i + 1
+    neg: int32 = 0
+    if i < n and line[i] == 45:
+        neg = 1
+        i = i + 1
+    code: int32 = 0
+    got: int32 = 0
+    while i < n and line[i] >= 48 and line[i] <= 57:
+        code = code * 10 + cast[int32](line[i]) - 48
+        got = 1
+        i = i + 1
+    if got == 0:
+        return 0
+    if neg != 0:
+        code = 0 - code
+    return filepick_handle_code(code)
+
+
+# Drain a committed pick, if any. Returns 1 if the scene must be rebuilt.
+def _drain_pick() -> int32:
+    if filepick_take_result() == 0:
+        return 0
+    _apply_pick()
+    return 1
+
+
 # Parse complete "<type> <code>\n" lines; feed each to the core. Returns bytes
 # consumed; sets *changed_p if any key mutated the doc/caret.
 def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
@@ -361,6 +476,13 @@ def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
             i = i + 1
         if i >= n:
             return consumed
+        # While the shared dialog is up it owns the keyboard.
+        if filepick_active() != 0:
+            if _dialog_key_line(&kev_buf[ls], i - ls) != 0:
+                changed_p[0] = 1
+            i = i + 1
+            consumed = i
+            continue
         # feed the line [ls, i) to the core
         if hamwrite_key_line(&kev_buf[ls], i - ls) != 0:
             act: int32 = hamwrite_take_action()
@@ -420,8 +542,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         _set_docpath(cast[Ptr[uint8]]("/home/live/Documents/untitled.hdoc"))
     _sync_fname()
 
-    hamwrite_build_scene()
-    hamscene_commit(wid)
+    _repaint(wid)
     _writeall(1, cast[Ptr[uint8]]("[hamwrite] scene window ready\n"))
 
     kfd: int32 = sys_open(cast[Ptr[char]](&keysp[0]))
@@ -441,8 +562,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         kn: int64 = sys_read_nb(kfd, &kev_buf[kev_carry], room)
         did_work: int32 = 0
         if _poll_events(efd) != 0:
-            hamwrite_build_scene()
-            hamscene_commit(wid)
+            _drain_pick()
+            _repaint(wid)
             did_work = 1
         if kn > 0:
             total: uint64 = kev_carry + cast[uint64](kn)
@@ -455,8 +576,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 m = m + 1
             kev_carry = leftover
             if changed != 0:
-                hamwrite_build_scene()
-                hamscene_commit(wid)
+                _drain_pick()
+                _repaint(wid)
             did_work = 1
         if hw_quit != 0:
             _writeall(1, cast[Ptr[uint8]]("[hamwrite] quit\n"))

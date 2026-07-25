@@ -51,8 +51,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 OUT="build/host"
 BIN="$OUT/hamwrite_host"
-DOC="$OUT/hamwrite_scratch.hdoc"
-ALT="$OUT/renamed.hdoc"
+DOC="$PWD/$OUT/hamwrite_scratch.hdoc"
+ALT="$PWD/$OUT/renamed.hdoc"
 mkdir -p "$OUT"
 rm -f "$DOC" "$ALT"
 fail=0
@@ -74,11 +74,12 @@ echo "[hamwrite-host] PASS native hamwrite still compiles"
 DUMP="$OUT/hw_dump.txt"
 if ! "$BIN" "$DOC" "$OUT/hw_before.ppm" "$OUT/hw_after.ppm" \
         'Hello world from HamWrite' "$OUT/hw_showcase.ppm" \
-        "$OUT/hw_find.ppm" "$OUT/hw_menu.ppm" >"$DUMP" 2>&1; then
+        "$OUT/hw_find.ppm" "$OUT/hw_menu.ppm" "$OUT/hw_savedlg.ppm" \
+        "$OUT/hw_head_on.ppm" "$OUT/hw_head_off.ppm" >"$DUMP" 2>&1; then
     echo "[hamwrite-host] FAIL: host harness exited non-zero"; cat "$DUMP"; exit 1
 fi
 
-for f in before after find menu showcase; do
+for f in before after find menu showcase savedlg head_on head_off; do
     if python3 scripts/ppm_to_png.py "$OUT/hw_$f.ppm" "$OUT/hw_$f.png" 2>"$OUT/hw_png.log"; then
         echo "[hamwrite-host] PASS rendered $OUT/hw_$f.png"
     else
@@ -198,9 +199,47 @@ else
 fi
 
 # --- "Save As..." prompt: type a name, Enter, a SECOND real file appears ----
-assert_grep '^PROMPT 1'                         "File > Save As... raises the modal prompt"
-assert_grep '^PROMPT_TEXT renamed.hdoc'         "the prompt accepts a typed filename"
-assert_grep '^PROMPT_AFTER 0'                   "Enter closes the prompt"
+assert_grep '^SAVEAS_ACTION 11'                 "File > Save As... asks for the SHARED file dialog"
+assert_grep '^DIALOG_ACTIVE 2'                  "the shared Save dialog opened in SAVE mode"
+assert_grep '^DIALOG_SEED hamwrite_scratch.hdoc' \
+                                                "the dialog seeds the current basename"
+assert_grep '^DIALOG_NAME renamed.hdoc'         "the dialog's Name field accepts a typed filename"
+assert_grep '^DIALOG_AFTER 0'                   "Enter closes the shared dialog"
+assert_grep '^DIALOG_RESULT 1'                  "the dialog handed the driver a committed pick"
+assert_grep '^DIALOG_MODE 2'                    "the pick came back tagged SAVE"
+assert_grep '^DIALOG_PATH .*/renamed\.hdoc$'    "the pick is an ABSOLUTE path under the browsed dir"
+# The dialog is the SHARED, file-browser-backed one — same component, same
+# chrome, as HamSheet/HamSlides/hamedit raise.
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Save As\"'  "shared dialog draws its title bar"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Save in: .*\"' \
+                                                "shared dialog draws the file-browser breadcrumb"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Name: hamwrite_scratch.hdoc_\"' \
+                                                "shared dialog draws the Name entry"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Save\"'    "shared dialog draws its Save button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Cancel\"'  "shared dialog draws its Cancel button"
+assert_in SAVEDLG 'glyphs [0-9]+ [0-9]+ \"Reports\"' "shared dialog lists a real directory entry"
+
+# --- HEADING TOGGLE: a heading button must ROUND-TRIP back to body text -----
+assert_grep '^H3_ACTIVE_LEVEL 3'                "the H3 button applied heading level 3"
+assert_grep '^HEAD3_AFTER_RECLICK 0'            "clicking H3 again cleared the heading"
+assert_grep '^BODY_AFTER_RECLICK 15'            "the text returned to BODY on the second click"
+assert_grep '^TOGGLED_LEVEL 0'                  "the toggled paragraph reports body level"
+assert_grep '^H2_FROM_BODY 15'                  "H2 still applies from body text"
+assert_grep '^H3_FROM_H2 15'                    "a DIFFERENT heading button switches level, not off"
+assert_grep '^H3_TOGGLED_OFF 15'                "the active heading button toggles back off"
+assert_in HEADON 'glyphs [0-9]+ [0-9]+ \"H3\"'      "H3 button drawn while the heading is active"
+assert_in HEADOFF 'glyphs [0-9]+ [0-9]+ \"H3\"'     "H3 button still drawn once toggled off"
+
+# ...and the case the user actually hit: a BARE CARET, nothing selected. A
+# heading is a PARAGRAPH property, so one click restyles the paragraph the
+# caret sits in and a second click on the same button restores body text.
+assert_grep '^CARET_SEL 0'                      "the bare-caret case really has no selection"
+assert_grep '^CARET_LEVEL_BEFORE 0'             "the paragraph starts as body text"
+assert_grep '^CARET_H1_ON 1'                    "one H1 click makes the caret's paragraph a heading"
+assert_grep '^CARET_H1_CHARS 14'                "the WHOLE paragraph became the heading"
+assert_grep '^CARET_H1_OFF 0'                   "clicking H1 again returns the paragraph to body text"
+assert_grep '^CARET_H1_CHARS_OFF 0'             "no heading characters survive the round-trip"
+assert_grep '^CARET_OTHER_PARA_BODY 0'          "the neighbouring paragraph was left alone"
 assert_grep '^SAVEAS_NAME renamed.hdoc'         "the document is renamed to the typed name"
 assert_grep '^SAVEAS_LEN 88'                    "Save As wrote the container under the new name"
 

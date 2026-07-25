@@ -35,12 +35,12 @@
 #   #                  else: ...save...
 
 from lib.hamui import hamscene_fill, hamscene_rect, hamscene_glyphs, \
-    hamscene_stroke
+    hamscene_stroke, hamscene_glyphs_bold
 from lib.hamfmcore import fmc_set_geometry, fmc_set_header, fmc_set_cur_path, \
     fmc_load_dir, fmc_paint, fmc_cell_at, fmc_go_into, fmc_go_parent, \
     fmc_num_entries, fmc_has_up_entry, fmc_entry_is_dir, fmc_full_path_ptr, \
     fmc_cur_path_ptr, fmc_select, fmc_selected, fmc_scroll_to, fmc_entry_name_len, \
-    fmc_name_ptr, fmc_grid_cols
+    fmc_name_ptr, fmc_grid_cols, fmc_set_origin, fmc_wheel
 
 
 # Picker modes (also the result-mode the host reads back).
@@ -67,6 +67,35 @@ fp_esc_st: int32 = 0
 
 # Height of the picker's own bottom strip (Name field / hint + OK·Cancel).
 FP_BOTTOM_H: int32 = 36
+
+# --- live button rects ------------------------------------------------
+# The Save/Open + Cancel buttons used to be DECORATIVE: filepick_click only
+# forwarded to fmc_cell_at, which returns -1 inside the reserved bottom strip,
+# so the buttons could not be clicked at all. The strip painter now records
+# their rects here and filepick_click hit-tests them first.
+fp_ok_x: int32 = 0
+fp_ok_y: int32 = 0
+fp_ok_w: int32 = 0
+fp_ca_x: int32 = 0
+fp_ca_y: int32 = 0
+fp_ca_w: int32 = 0
+FP_BTN_H: int32 = 18
+
+# Remembered panel/browser geometry, so a click can be classified without the
+# host having to tell us where it drew us.
+fp_win_w: int32 = 0
+fp_win_h: int32 = 0
+fp_panel_x: int32 = 0
+fp_panel_y: int32 = 0
+fp_panel_w: int32 = 0
+fp_panel_h: int32 = 0
+fp_panel_mode: int32 = 0         # 1 once emitted as a centred floating panel
+
+# Centred-panel metrics (a GTK Save dialog shape, clamped to the window).
+FP_PANEL_W: int32 = 470
+FP_PANEL_H: int32 = 320
+FP_TITLE_H: int32 = 22
+FP_PAD: int32 = 8
 
 
 # ====================================================================
@@ -206,6 +235,26 @@ def _fp_reselect_first():
         fmc_select(-1)
 
 
+# COMMIT the dialog — the single "OK" path shared by the Enter key and the
+# Save/Open button. In SAVE mode a selected DIRECTORY means "go in there
+# first" (GTK behaviour) rather than saving a file named after the folder.
+def _fp_ok() -> int32:
+    if fp_mode == FILEPICK_SAVE:
+        sel: int64 = fmc_selected()
+        on_dir: int32 = 0
+        n: uint64 = fmc_num_entries()
+        if sel >= 0 and cast[uint64](sel) < n and \
+           fmc_entry_is_dir(cast[uint64](sel)) != 0:
+            on_dir = 1
+        if on_dir != 0:
+            _fp_activate()                          # navigate into dir
+            return 1
+        _fp_commit_save()
+    else:
+        _fp_activate()
+    return 1
+
+
 # Host calls this each loop. Returns 1 (and clears the flag) if a pick was
 # committed since the last call.
 def filepick_take_result() -> int32:
@@ -228,18 +277,56 @@ def filepick_result_mode() -> int32:
 # SHARED icon grid (fmc_paint, reserving FP_BOTTOM_H at the bottom), then the
 # picker's own Name/hint + OK·Cancel strip.
 def filepick_emit(ed_w: int32, ed_h: int32):
+    fp_win_w = ed_w
+    fp_win_h = ed_h
+    fp_panel_mode = 0
+    fp_panel_x = 0
+    fp_panel_y = 0
+    fp_panel_w = ed_w
+    fp_panel_h = ed_h
+    # Full-window mode: the browser starts at the window origin.
+    fmc_set_origin(0, 0)
     # Match the core geometry to the host window and reserve the bottom strip.
     fmc_set_geometry(cast[int64](ed_w), cast[int64](ed_h), FP_BOTTOM_H)
     # Keep the selected cell in view (key navigation may have moved it).
     fmc_scroll_to(fmc_selected())
     # SHARED icon-grid browser (breadcrumb header + folder/file icons).
     fmc_paint()
-    # --- picker chrome: bottom strip ---------------------------------
-    fy: int32 = ed_h - FP_BOTTOM_H
-    hamscene_fill(0, fy, ed_w, FP_BOTTOM_H, cast[Ptr[uint8]]("#e8e8d8"))
-    hamscene_stroke(2, fy + 1, ed_w - 4, FP_BOTTOM_H - 3, 1,
+    _fp_bottom_strip(0, ed_h - FP_BOTTOM_H, ed_w)
+
+
+# Does the typed SAVE name already exist as a regular file in the listing?
+# Drives the "will overwrite" warning and lets a host confirm before clobbering.
+def filepick_name_exists() -> int32:
+    if fp_save_len == 0:
+        return 0
+    n: uint64 = fmc_num_entries()
+    i: uint64 = 0
+    while i < n:
+        if fmc_entry_is_dir(i) == 0 and fmc_entry_name_len(i) == fp_save_len:
+            src: Ptr[uint8] = fmc_name_ptr(i)
+            k: uint64 = 0
+            same: int32 = 1
+            while k < fp_save_len:
+                if src[k] != fp_save_name[k]:
+                    same = 0
+                    k = fp_save_len
+                else:
+                    k = k + 1
+            if same != 0:
+                return 1
+        i = i + 1
+    return 0
+
+
+# The picker's own bottom strip: the SAVE Name entry (or the OPEN key hint),
+# an overwrite warning, and the live Save/Open + Cancel buttons. Shared by the
+# full-window and centred-panel renderers; records the button rects for
+# filepick_click.
+def _fp_bottom_strip(sx: int32, sy: int32, sw: int32):
+    hamscene_fill(sx, sy, sw, FP_BOTTOM_H, cast[Ptr[uint8]]("#e8e8d8"))
+    hamscene_stroke(sx + 2, sy + 1, sw - 4, FP_BOTTOM_H - 3, 1,
                     cast[Ptr[uint8]]("#808060"))
-    # Name field (SAVE) or key hint (OPEN).
     fbuf: Array[160, uint8]
     fp: uint64 = 0
     if fp_mode == FILEPICK_SAVE:
@@ -265,19 +352,125 @@ def filepick_emit(ed_w: int32, ed_h: int32):
             fp = fp + 1
             a2 = a2 + 1
     fbuf[fp] = 0
-    hamscene_glyphs(6, fy + 4, &fbuf[0], cast[Ptr[uint8]]("#202020"))
-    # OK / Cancel buttons along the bottom of the strip.
-    okx: int32 = ed_w - 120
-    cax: int32 = ed_w - 58
-    by2: int32 = fy + 18
-    hamscene_fill(okx, by2, 54, 14, cast[Ptr[uint8]]("#cfe0f4"))
-    hamscene_stroke(okx, by2, 54, 14, 1, cast[Ptr[uint8]]("#5a9bf0"))
-    hamscene_glyphs(okx + 18, by2 + 2, cast[Ptr[uint8]]("OK"),
-                    cast[Ptr[uint8]]("#1a4a8a"))
-    hamscene_fill(cax, by2, 54, 14, cast[Ptr[uint8]]("#f0d6d6"))
-    hamscene_stroke(cax, by2, 54, 14, 1, cast[Ptr[uint8]]("#c45f5f"))
-    hamscene_glyphs(cax + 6, by2 + 2, cast[Ptr[uint8]]("Cancel"),
+    # A white sunken entry box under the SAVE filename, like a GTK name field.
+    if fp_mode == FILEPICK_SAVE:
+        hamscene_fill(sx + 4, sy + 2, sw - 130, 15,
+                      cast[Ptr[uint8]]("#ffffff"))
+        hamscene_stroke(sx + 4, sy + 2, sw - 130, 15, 1,
+                        cast[Ptr[uint8]]("#808060"))
+    hamscene_glyphs(sx + 6, sy + 4, &fbuf[0], cast[Ptr[uint8]]("#202020"))
+    # Overwrite warning: saving onto an existing file REPLACES it.
+    if fp_mode == FILEPICK_SAVE and filepick_name_exists() != 0:
+        hamscene_glyphs(sx + 6, sy + 20,
+                        cast[Ptr[uint8]]("replaces existing file"),
+                        cast[Ptr[uint8]]("#a03010"))
+    # Commit / Cancel buttons (right-aligned inside the strip).
+    bw2: int32 = 60
+    cax: int32 = sx + sw - bw2 - 4
+    okx: int32 = cax - bw2 - 6
+    by2: int32 = sy + 15
+    fp_ok_x = okx
+    fp_ok_y = by2
+    fp_ok_w = bw2
+    fp_ca_x = cax
+    fp_ca_y = by2
+    fp_ca_w = bw2
+    hamscene_fill(okx, by2, bw2, FP_BTN_H, cast[Ptr[uint8]]("#cfe0f4"))
+    hamscene_stroke(okx, by2, bw2, FP_BTN_H, 1,
+                    cast[Ptr[uint8]]("#5a9bf0"))
+    oklbl: Ptr[uint8] = cast[Ptr[uint8]]("Save")
+    if fp_mode == FILEPICK_OPEN:
+        oklbl = cast[Ptr[uint8]]("Open")
+    hamscene_glyphs(okx + 14, by2 + 4, oklbl, cast[Ptr[uint8]]("#1a4a8a"))
+    hamscene_fill(cax, by2, bw2, FP_BTN_H, cast[Ptr[uint8]]("#f0d6d6"))
+    hamscene_stroke(cax, by2, bw2, FP_BTN_H, 1,
+                    cast[Ptr[uint8]]("#c45f5f"))
+    hamscene_glyphs(cax + 6, by2 + 4, cast[Ptr[uint8]]("Cancel"),
                     cast[Ptr[uint8]]("#8a1a1a"))
+
+
+# Render the picker as a CENTRED FLOATING DIALOG over the caller's live
+# document — the shape every office app uses, so Save As looks and behaves the
+# same in HamWrite, HamSheet and HamSlides. The caller owns
+# hamscene_begin()/hamscene_commit() and draws this LAST, over its content.
+def filepick_emit_panel(win_w: int32, win_h: int32):
+    fp_win_w = win_w
+    fp_win_h = win_h
+    fp_panel_mode = 1
+    pw: int32 = FP_PANEL_W
+    ph: int32 = FP_PANEL_H
+    if pw > win_w - 16:
+        pw = win_w - 16
+    if ph > win_h - 16:
+        ph = win_h - 16
+    px: int32 = (win_w - pw) / 2
+    py: int32 = (win_h - ph) / 2
+    if px < 0:
+        px = 0
+    if py < 0:
+        py = 0
+    fp_panel_x = px
+    fp_panel_y = py
+    fp_panel_w = pw
+    fp_panel_h = ph
+    # Scrim: dim the document so the dialog reads as MODAL.
+    hamscene_fill(0, 0, win_w, win_h, cast[Ptr[uint8]]("#00000033"))
+    # Drop shadow + panel body + border.
+    hamscene_fill(px + 4, py + 4, pw, ph, cast[Ptr[uint8]]("#00000033"))
+    hamscene_fill(px, py, pw, ph, cast[Ptr[uint8]]("#f4f5f7"))
+    hamscene_stroke(px, py, pw, ph, 1, cast[Ptr[uint8]]("#8b929b"))
+    # Dialog title bar.
+    hamscene_fill(px, py, pw, FP_TITLE_H, cast[Ptr[uint8]]("#3f6fb5"))
+    ttl: Ptr[uint8] = cast[Ptr[uint8]]("Save As")
+    if fp_mode == FILEPICK_OPEN:
+        ttl = cast[Ptr[uint8]]("Open File")
+    hamscene_glyphs_bold(px + 8, py + 4, ttl, cast[Ptr[uint8]]("#ffffff"))
+    # The SHARED browse grid, drawn INSIDE the panel via the core's origin.
+    bx: int32 = px + FP_PAD
+    by: int32 = py + FP_TITLE_H + 4
+    bw: int32 = pw - 2 * FP_PAD
+    bh: int32 = ph - FP_TITLE_H - 4 - FP_PAD
+    fmc_set_origin(bx, by)
+    fmc_set_geometry(cast[int64](bw), cast[int64](bh), FP_BOTTOM_H)
+    fmc_scroll_to(fmc_selected())
+    fmc_paint()
+    hamscene_stroke(bx, by, bw, bh, 1, cast[Ptr[uint8]]("#8b929b"))
+    _fp_bottom_strip(bx, by + bh - FP_BOTTOM_H, bw)
+
+
+# Cancel/dismiss the dialog without committing.
+def filepick_cancel():
+    fp_mode = 0
+
+
+# --- introspection (hosts + gates) ------------------------------------
+def filepick_save_name_ptr() -> Ptr[uint8]:
+    return &fp_save_name[0]
+
+
+def filepick_save_len() -> uint64:
+    return fp_save_len
+
+
+def filepick_panel_x() -> int32:
+    return fp_panel_x
+
+
+def filepick_panel_y() -> int32:
+    return fp_panel_y
+
+
+def filepick_panel_w() -> int32:
+    return fp_panel_w
+
+
+def filepick_panel_h() -> int32:
+    return fp_panel_h
+
+
+# Where the host should send a wheel notch while the dialog is up.
+def filepick_wheel(dz: int64) -> int32:
+    return fmc_wheel(dz)
 
 
 # Move the selection by a cell delta (clamped to real entries).
@@ -328,20 +521,7 @@ def filepick_handle_code(code: int32) -> int32:
         fp_mode = 0
         return 1
     if code == 13 or code == 10:                    # Enter == OK
-        if fp_mode == FILEPICK_SAVE:
-            sel: int64 = fmc_selected()
-            on_dir: int32 = 0
-            n: uint64 = fmc_num_entries()
-            if sel >= 0 and cast[uint64](sel) < n and \
-               fmc_entry_is_dir(cast[uint64](sel)) != 0:
-                on_dir = 1
-            if on_dir != 0:
-                _fp_activate()                      # navigate into dir
-                return 1
-            _fp_commit_save()
-        else:
-            _fp_activate()
-        return 1
+        return _fp_ok()
     if fp_mode == FILEPICK_SAVE:
         if code == 8 or code == 127:                # Backspace
             if fp_save_len > 0:
@@ -370,11 +550,42 @@ def fmc_cols_for_nav() -> int64:
 # coords. Single click selects; a click on the already-selected cell (or any
 # dir) activates (enter dir / open file). Returns 1 if the scene changed.
 def filepick_click(lx: int64, ly: int64) -> int32:
+    # The commit/Cancel buttons come FIRST: they live in the reserved bottom
+    # strip, where fmc_cell_at deliberately reports -1.
+    if ly >= cast[int64](fp_ca_y) and \
+            ly < cast[int64](fp_ca_y + FP_BTN_H):
+        if lx >= cast[int64](fp_ca_x) and \
+                lx < cast[int64](fp_ca_x + fp_ca_w):
+            filepick_cancel()
+            return 1
+        if lx >= cast[int64](fp_ok_x) and \
+                lx < cast[int64](fp_ok_x + fp_ok_w):
+            return _fp_ok()
     idx: int64 = fmc_cell_at(lx, ly)
     if idx < 0:
+        # A click anywhere else inside a floating panel is swallowed so it
+        # cannot leak through to the document underneath.
+        if fp_panel_mode != 0:
+            return 0
         return 0
     prev: int64 = fmc_selected()
     fmc_select(idx)
     if prev == idx:
         _fp_activate()
+    return 1
+
+
+# Is a window-local point inside the dialog (so the host must NOT treat it as
+# a click on its own document)? Always true for the full-window renderer.
+def filepick_owns_point(lx: int64, ly: int64) -> int32:
+    if fp_mode == 0:
+        return 0
+    if fp_panel_mode == 0:
+        return 1
+    if lx < cast[int64](fp_panel_x) or \
+            lx >= cast[int64](fp_panel_x + fp_panel_w):
+        return 0
+    if ly < cast[int64](fp_panel_y) or \
+            ly >= cast[int64](fp_panel_y + fp_panel_h):
+        return 0
     return 1

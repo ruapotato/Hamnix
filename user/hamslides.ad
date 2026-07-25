@@ -29,10 +29,14 @@ extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char], flag: int32) -> in
 
 from lib.hamui import hamscene_commit
 from lib.hamtextbox import htb_evt_parse_m
+from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
+    filepick_handle_code, filepick_click, filepick_take_result, \
+    filepick_result_path, filepick_result_mode, filepick_wheel, \
+    FILEPICK_OPEN, FILEPICK_SAVE
 from lib.hamslidescore import hamslides_init, hamslides_build_scene, \
     hamslides_key_line, hamslides_take_action, hamslides_serialize, \
     hamslides_deserialize, hamslides_mark_saved, hamslides_set_fname, \
-    hamslides_hit, hamslides_key_idle
+    hamslides_hit, hamslides_key_idle, hamslides_win_w, hamslides_win_h
 
 
 def _slen(s: Ptr[uint8]) -> uint64:
@@ -165,6 +169,67 @@ def _load_doc():
 want_quit: int32 = 0
 
 
+# ---- the SHARED Save/Open dialog (lib/filepick.ad) -------------------------
+# Pop the shared chooser seeded with the DECK's own directory and basename, so
+# "Save As..." opens where the deck lives. The dialog does no file I/O: it
+# resolves an absolute path and this driver performs the open/save — the same
+# wiring HamWrite and HamSheet use, so the office suite shares one chooser.
+dlg_dir: Array[192, uint8]
+
+
+def _doc_dir(out: Ptr[uint8]):
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    p: uint64 = 0
+    while p < cut:
+        out[p] = doc_path[p]
+        p = p + 1
+    if p > 1 and out[p - 1] == 47:                     # keep "/" but drop "a/"
+        p = p - 1
+    out[p] = 0
+
+
+def _doc_base() -> Ptr[uint8]:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    return &doc_path[cut]
+
+
+def _pop_dialog(mode: int32):
+    _doc_dir(&dlg_dir[0])
+    filepick_open(mode, &dlg_dir[0], _doc_base())
+
+
+# Adopt a committed pick: it becomes the deck path, then open or save it.
+def _apply_pick():
+    _set_docpath(filepick_result_path())
+    _sync_fname()
+    if filepick_result_mode() == FILEPICK_OPEN:
+        _load_doc()
+        _sync_fname()
+    else:
+        _save_doc()
+
+
+# Drain a committed pick, if any. Returns 1 if the scene must be rebuilt.
+def _drain_pick() -> int32:
+    if filepick_take_result() == 0:
+        return 0
+    _apply_pick()
+    return 1
+
+
+# Dispatch a pending action set by a keystroke or a menu/toolbar click.
+#   1 save   2 open(current path)   3 quit
+#  11 Save As / 12 Open -> raise the SHARED file dialog
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
@@ -172,19 +237,46 @@ def _dispatch(act: int32):
         _load_doc()
     elif act == 3:
         want_quit = 1
+    elif act == 11:
+        _pop_dialog(FILEPICK_SAVE)
+    elif act == 12:
+        _pop_dialog(FILEPICK_OPEN)
+
+
+# Rebuild + publish the scene: the deck, then the shared dialog on top of it
+# when one is up (it renders as a centred floating panel over live content).
+def _repaint(wid: int32):
+    hamslides_build_scene()
+    if filepick_active() != 0:
+        filepick_emit_panel(hamslides_win_w(), hamslides_win_h())
+    hamscene_commit(wid)
 
 
 # ---- pointer input --------------------------------------------------------
 hs_prev_btn: int64 = 0
 
 
-def _pointer(lx: int64, ly: int64, btn: int64) -> int32:
+def _pointer(lx: int64, ly: int64, btn: int64, dz: int64) -> int32:
     changed: int32 = 0
+    # The shared dialog is MODAL: while it is up it takes the pointer FIRST, so
+    # a click in (or behind) the panel can never reach the slide underneath and
+    # start editing the body.
+    if filepick_active() != 0:
+        if dz != 0:
+            if filepick_wheel(dz) != 0:
+                changed = 1
+        b1d: int64 = btn & 1
+        pb1d: int64 = hs_prev_btn & 1
+        if b1d != 0 and pb1d == 0:
+            if filepick_click(lx, ly) != 0:
+                changed = 1
+        hs_prev_btn = btn
+        return changed
     b1: int64 = btn & 1
     pb1: int64 = hs_prev_btn & 1
     if b1 != 0 and pb1 == 0:                            # button-1 PRESS
         act: int32 = hamslides_hit(lx, ly)
-        if act == 1 or act == 2:
+        if act == 1 or act == 2 or act == 11 or act == 12:
             _dispatch(act)
             changed = 1
         elif act == 4:                                  # File > Quit
@@ -225,7 +317,7 @@ def _poll_events(efd: int32) -> int32:
                     dz: int64 = 0
                     if htb_evt_parse_m(&ev_buf[ls], i - ls, &ex, &ey,
                                        &ebtn, &dz) != 0:
-                        if _pointer(ex, ey, ebtn) != 0:
+                        if _pointer(ex, ey, ebtn, dz) != 0:
                             changed = 1
                 ls = i + 1
             i = i + 1
@@ -244,6 +336,33 @@ kev_buf: Array[512, uint8]
 kev_carry: uint64 = 0
 
 
+# Parse one "<type> <code>" wire line and hand the code to the shared dialog.
+# Only "d" (down) lines carry a character; everything else is ignored.
+def _dialog_key_line(line: Ptr[uint8], n: uint64) -> int32:
+    if n < 3:
+        return 0
+    if line[0] != 100:                                 # 'd'
+        return 0
+    i: uint64 = 1
+    while i < n and line[i] == 32:
+        i = i + 1
+    neg: int32 = 0
+    if i < n and line[i] == 45:
+        neg = 1
+        i = i + 1
+    code: int32 = 0
+    got: int32 = 0
+    while i < n and line[i] >= 48 and line[i] <= 57:
+        code = code * 10 + cast[int32](line[i]) - 48
+        got = 1
+        i = i + 1
+    if got == 0:
+        return 0
+    if neg != 0:
+        code = 0 - code
+    return filepick_handle_code(code)
+
+
 def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
     i: uint64 = 0
     consumed: uint64 = 0
@@ -253,6 +372,13 @@ def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
             i = i + 1
         if i >= n:
             return consumed
+        # While the shared dialog is up it owns the keyboard.
+        if filepick_active() != 0:
+            if _dialog_key_line(&kev_buf[ls], i - ls) != 0:
+                changed_p[0] = 1
+            i = i + 1
+            consumed = i
+            continue
         if hamslides_key_line(&kev_buf[ls], i - ls) != 0:
             act: int32 = hamslides_take_action()
             if act != 0:
@@ -310,8 +436,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         _set_docpath(cast[Ptr[uint8]]("/home/live/Documents/untitled.hamslides"))
     _sync_fname()
 
-    hamslides_build_scene()
-    hamscene_commit(wid)
+    _repaint(wid)
     _writeall(1, cast[Ptr[uint8]]("[hamslides] scene window ready\n"))
 
     kfd: int32 = sys_open(cast[Ptr[char]](&keysp[0]))
@@ -331,8 +456,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         kn: int64 = sys_read_nb(kfd, &kev_buf[kev_carry], room)
         did_work: int32 = 0
         if _poll_events(efd) != 0:
-            hamslides_build_scene()
-            hamscene_commit(wid)
+            _drain_pick()
+            _repaint(wid)
             did_work = 1
         if kn > 0:
             total: uint64 = kev_carry + cast[uint64](kn)
@@ -345,8 +470,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 m = m + 1
             kev_carry = leftover
             if changed != 0:
-                hamslides_build_scene()
-                hamscene_commit(wid)
+                _drain_pick()
+                _repaint(wid)
             did_work = 1
         if want_quit != 0:
             break
@@ -354,8 +479,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             # A bare ESC (not followed by '[') is a real Escape once the key
             # stream goes quiet: leave PRESENT / close the menu.
             if hamslides_key_idle() != 0:
-                hamslides_build_scene()
-                hamscene_commit(wid)
+                _repaint(wid)
             wfds: Array[1, int32]
             wfds[0] = kfd
             sys_waitfds(&wfds[0], 1, IDLE_WAIT_MS)

@@ -175,9 +175,18 @@ find_msg:  int32 = 0                    # 0 none, 1 "not found", 2 "wrapped",
 find_nrep: uint64 = 0
 
 # Action requested by a keystroke or a click, drained by the driver:
-#   0 none  1 save  2 open(current path)  4 new  5 save-as(fname)  6 quit
-#   7 copy  8 paste  9 cut  10 open-named(fname)
+#   0 none  1 save  2 open(current path)  4 new  6 quit
+#   7 copy  8 paste  9 cut
+#   11 SAVE AS  12 OPEN  -- raise the SHARED file dialog (lib/filepick.ad).
 # (3 is reserved as the hit-test "redraw only" reply and is never pending.)
+#
+# 11/12 replaced the core's old bespoke one-line filename prompt: every office
+# app now asks its DRIVER to pop the same file-browser-backed Save/Open dialog,
+# so the chooser is identical across HamWrite/HamSheet/HamSlides/hamedit and
+# the user can actually pick a DIRECTORY instead of being locked into
+# /home/live/Documents. The core stays extern-free — it only signals intent.
+ACT_SAVE_AS: int32 = 11
+ACT_OPEN: int32 = 12
 pending_action: int32 = 0
 
 # CSI escape decode: 0 ground, 1 saw ESC, 2 saw ESC '['; par = numeric param.
@@ -198,11 +207,6 @@ menu_open: int32 = 0
 # Index of the first VISIBLE laid-out row (the page's vertical scroll).
 scroll_top: uint64 = 0
 
-# Modal filename prompt: 0 none, 1 "Save As", 2 "Open".
-prompt_on: int32 = 0
-PROMPT_CAP: uint64 = 96
-prompt_buf: Array[96, uint8]
-prompt_len: uint64 = 0
 
 
 def _hw_slen(s: Ptr[uint8]) -> uint64:
@@ -388,19 +392,6 @@ def hamwrite_align_at(i: uint64) -> int32:
 
 def hamwrite_menu_open() -> int32:
     return menu_open
-
-
-def hamwrite_prompt_active() -> int32:
-    return prompt_on
-
-
-def hamwrite_prompt_ptr() -> Ptr[uint8]:
-    prompt_buf[prompt_len] = 0
-    return &prompt_buf[0]
-
-
-def hamwrite_prompt_len() -> uint64:
-    return prompt_len
 
 
 # The formatting that WOULD apply to a character typed now: the char before the
@@ -626,7 +617,6 @@ def hamwrite_clear():
     cur_attr = 0
     cur_attr2 = 0
     menu_open = 0
-    prompt_on = 0
     find_on = 0
     find_cur = -1
     find_hits = 0
@@ -847,17 +837,28 @@ def hamwrite_set_heading(level: int32) -> int32:
         sz = SIZE_TITLE
     elif level == 2:
         sz = SIZE_LARGE
+    # A heading is a PARAGRAPH property in every word processor: with a real
+    # selection we restyle exactly that span, but a bare caret must restyle the
+    # whole paragraph it sits in (the same rule hamwrite_set_align and
+    # hamwrite_set_list already follow) — otherwise clicking H1 with no
+    # selection silently changed nothing on the page.
+    a: uint64 = 0
+    b: uint64 = 0
     if _sel_has() != 0:
-        a: uint64 = _sel_lo()
-        b: uint64 = _sel_hi()
-        i: uint64 = a
-        while i < b:
-            if level == 0:
-                attr[i] = attr[i] & (255 - ATTR_HEADING)
-            else:
-                attr[i] = attr[i] | ATTR_HEADING
-            attr[i] = _with_size(attr[i], sz)
-            i = i + 1
+        a = _sel_lo()
+        b = _sel_hi()
+    else:
+        a = _para_start(caret)
+        b = _para_end(caret)
+    i: uint64 = a
+    while i < b:
+        if level == 0:
+            attr[i] = attr[i] & (255 - ATTR_HEADING)
+        else:
+            attr[i] = attr[i] | ATTR_HEADING
+        attr[i] = _with_size(attr[i], sz)
+        i = i + 1
+    if b > a:
         dirty = 1
         _hist_record(EDIT_OTHER)
     if level == 0:
@@ -866,6 +867,33 @@ def hamwrite_set_heading(level: int32) -> int32:
         cur_attr = cur_attr | ATTR_HEADING
     cur_attr = _with_size(cur_attr, sz)
     return 1
+
+
+# TOGGLE a heading level: applying the level the caret/selection ALREADY
+# carries returns it to body text, so the H1/H2/H3 toolbar buttons round-trip
+# like the B/I/U toggles beside them instead of being a one-way trip that can
+# only be undone from Format > Body Text.
+def hamwrite_toggle_heading_level(level: int32) -> int32:
+    if level < 1 or level > 3:
+        return 0
+    if hamwrite_para_heading_level() == level:
+        return hamwrite_set_heading(0)
+    return hamwrite_set_heading(level)
+
+
+# The heading level actually IN EFFECT for what the next style click will
+# restyle. With a selection that is the selection's first character; with a
+# bare caret it is the PARAGRAPH the caret sits in (which is what
+# hamwrite_set_heading now restyles) — not cur_attr, which only describes the
+# attributes freshly typed text would take and can disagree with the page.
+def hamwrite_para_heading_level() -> int32:
+    if _sel_has() != 0:
+        return _heading_level(attr[_sel_lo()])
+    s: uint64 = _para_start(caret)
+    e: uint64 = _para_end(caret)
+    if e > s:
+        return _heading_level(attr[s])
+    return _heading_level(cur_attr)
 
 
 # The heading LEVEL an attribute byte encodes (0 = body text).
@@ -1199,7 +1227,6 @@ def hamwrite_find_open():
     find_on = 1
     find_field = 0
     menu_open = 0
-    prompt_on = 0
     find_msg = 0
     # a live selection seeds the search box, as in every real editor
     if _sel_has() != 0 and _sel_hi() - _sel_lo() < FIND_CAP:
@@ -1797,57 +1824,6 @@ def _hw_nav(fin: int32) -> int32:
     return 0
 
 
-# ---- modal filename prompt -------------------------------------------------
-def _prompt_open(mode: int32):
-    prompt_on = mode
-    menu_open = 0
-    prompt_len = 0
-    i: uint64 = 0
-    while i < fname_len and i < PROMPT_CAP - 1:
-        prompt_buf[i] = fname[i]
-        i = i + 1
-    prompt_len = i
-
-
-def hamwrite_prompt_open(mode: int32):
-    _prompt_open(mode)
-
-
-def hamwrite_prompt_cancel():
-    prompt_on = 0
-
-
-# Feed one key to the modal prompt. Returns 1 if a redraw is needed.
-def _prompt_key(code: int32) -> int32:
-    if code == 27:                                     # ESC -> cancel
-        prompt_on = 0
-        return 1
-    if code == 8 or code == 127:                       # Backspace
-        if prompt_len > 0:
-            prompt_len = prompt_len - 1
-            return 1
-        return 0
-    if code == 13 or code == 10:                       # Enter -> commit
-        if prompt_len == 0:
-            prompt_on = 0
-            return 1
-        prompt_buf[prompt_len] = 0
-        hamwrite_set_fname(&prompt_buf[0])
-        if prompt_on == 1:
-            pending_action = 5                         # save-as <fname>
-        else:
-            pending_action = 10                        # open <fname>
-        prompt_on = 0
-        return 1
-    if code >= 32 and code <= 126:
-        if prompt_len < PROMPT_CAP - 1:
-            prompt_buf[prompt_len] = cast[uint8](code)
-            prompt_len = prompt_len + 1
-            return 1
-        return 0
-    return 0
-
-
 # ---- keyboard --------------------------------------------------------------
 # Apply one key (ASCII/decoded code). Returns 1 if the buffer/caret/action
 # changed (redraw needed). Ctrl-C/V/X + Ctrl-S/O/N set a pending action the
@@ -1905,8 +1881,6 @@ def _find_key(code: int32) -> int32:
 def hamwrite_key(code: int32) -> int32:
     if find_on != 0:
         return _find_key(code)
-    if prompt_on != 0:
-        return _prompt_key(code)
     if hw_esc == 1:                                    # after ESC
         if code == 91:                                 # '['
             hw_esc = 2
@@ -2326,7 +2300,7 @@ def _menu_item_active(m: int32, i: uint64) -> int32:
         wh: int32 = cast[int32](i) - 3
         if i == 7:
             wh = 0
-        if _heading_level(a) == wh:
+        if hamwrite_para_heading_level() == wh:
             return 1
         return 0
     if i >= 8 and i <= 11:
@@ -2361,13 +2335,11 @@ def _menu_activate(m: int32, i: uint64) -> int32:
             hamwrite_clear()
             return 4                                    # New (driver: reset path)
         if i == 1:
-            _prompt_open(2)                             # Open... (filename prompt)
-            return 3
+            return ACT_OPEN                             # Open... (shared dialog)
         if i == 2:
             return 1                                    # Save
         if i == 3:
-            _prompt_open(1)                             # Save As...
-            return 3
+            return ACT_SAVE_AS                          # Save As... (shared)
         return 6                                        # Quit
     if m == 2:
         if i == 0:
@@ -2514,8 +2486,6 @@ def _find_hit(x: int64, y: int64) -> int32:
 def hamwrite_hit(x: int64, y: int64) -> int32:
     if find_on != 0:
         return _find_hit(x, y)
-    if prompt_on != 0:
-        return 0
     # an open drop-down eats the next click
     if menu_open != 0:
         px0: int32 = _menu_x(menu_open)
@@ -2557,13 +2527,13 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
             hamwrite_toggle(ATTR_UNDER)
             return 3
         if x >= cast[int64](H1_X) and x < cast[int64](H1_X + H1_W):
-            hamwrite_set_heading(1)
+            hamwrite_toggle_heading_level(1)
             return 3
         if x >= cast[int64](H2_X) and x < cast[int64](H2_X + H2_W):
-            hamwrite_set_heading(2)
+            hamwrite_toggle_heading_level(2)
             return 3
         if x >= cast[int64](H3_X) and x < cast[int64](H3_X + H3_W):
-            hamwrite_set_heading(3)
+            hamwrite_toggle_heading_level(3)
             return 3
         if x >= cast[int64](SZ_S_X) and x < cast[int64](SZ_S_X + SZ_S_W):
             hamwrite_set_size(SIZE_SMALL)
@@ -2633,9 +2603,9 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
 
 
 # Is (x,y) inside the editable page? 1 = yes. Gates double/triple-click. A live
-# drop-down or prompt covers the page, so it reports 0 while either is up.
+# drop-down or the shared file dialog covers the page, so it reports 0 then.
 def hamwrite_in_page(x: int64, y: int64) -> int32:
-    if menu_open != 0 or prompt_on != 0 or find_on != 0:
+    if menu_open != 0 or find_on != 0:
         return 0
     if x >= cast[int64](PAGE_X) and x < cast[int64](PAGE_X + PAGE_W) and \
             y >= cast[int64](PAGE_Y) and y < cast[int64](PAGE_Y + PAGE_H):
@@ -2646,7 +2616,7 @@ def hamwrite_in_page(x: int64, y: int64) -> int32:
 # Pointer DRAG (button-1 held): move caret to hit-test, KEEP anchor -> paint a
 # selection. Returns 1 if the caret moved.
 def hamwrite_drag(x: int64, y: int64) -> int32:
-    if menu_open != 0 or prompt_on != 0 or find_on != 0:
+    if menu_open != 0 or find_on != 0:
         return 0
     idx: uint64 = _hit_offset(x, y)
     if idx == caret:
@@ -2974,36 +2944,6 @@ def _draw_dropdown():
         i = i + 1
 
 
-def _draw_prompt():
-    if prompt_on == 0:
-        return
-    bx: int32 = 120
-    by: int32 = 160
-    bw: int32 = 400
-    bh: int32 = 96
-    hamscene_fill(bx + 3, by + 3, bw, bh, cast[Ptr[uint8]]("#00000033"))
-    hamscene_fill(bx, by, bw, bh, cast[Ptr[uint8]]("#f4f5f7"))
-    hamscene_stroke(bx, by, bw, bh, 1, cast[Ptr[uint8]]("#8b929b"))
-    hamscene_fill(bx, by, bw, 22, cast[Ptr[uint8]]("#3f6fb5"))
-    ttl: Ptr[uint8] = cast[Ptr[uint8]]("Save As")
-    if prompt_on == 2:
-        ttl = cast[Ptr[uint8]]("Open")
-    hamscene_glyphs_bold(bx + 8, by + 4, ttl, cast[Ptr[uint8]]("#ffffff"))
-    hamscene_glyphs(bx + 12, by + 32,
-                    cast[Ptr[uint8]]("File name (in /home/live/Documents):"),
-                    cast[Ptr[uint8]]("#4a5058"))
-    hamscene_fill(bx + 12, by + 50, bw - 24, 22, cast[Ptr[uint8]]("#ffffff"))
-    hamscene_stroke(bx + 12, by + 50, bw - 24, 22, 1,
-                    cast[Ptr[uint8]]("#8b929b"))
-    prompt_buf[prompt_len] = 0
-    hamscene_glyphs(bx + 16, by + 53, &prompt_buf[0], COL_INK())
-    cx: int32 = bx + 16 + htb_text_width(&prompt_buf[0], prompt_len)
-    hamscene_fill(cx, by + 53, 2, 16, COL_INK())
-    hamscene_glyphs(bx + 12, by + 76,
-                    cast[Ptr[uint8]]("Enter = OK    Esc = Cancel"),
-                    cast[Ptr[uint8]]("#7b828c"))
-
-
 def _draw_scrollbar():
     if doc_h <= VIEW_H:
         return
@@ -3178,7 +3118,9 @@ def hamwrite_build_scene():
     un_on: int32 = 0
     if (act & ATTR_UNDER) != 0:
         un_on = 1
-    hlv: int32 = _heading_level(act)
+    # The pressed state must agree with what clicking the button would DO, so
+    # it reads the paragraph's real level (see hamwrite_para_heading_level).
+    hlv: int32 = hamwrite_para_heading_level()
     h1_on: int32 = 0
     if hlv == 1:
         h1_on = 1
@@ -3313,5 +3255,4 @@ def hamwrite_build_scene():
 
     # ---- overlays (drawn last, on top of the page) ---------------------
     _draw_dropdown()
-    _draw_prompt()
     _draw_find()

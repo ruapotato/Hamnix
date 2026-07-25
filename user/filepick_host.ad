@@ -1,0 +1,362 @@
+# user/filepick_host.ad — HOST driver + render harness for the SHARED
+# Save/Open dialog (lib/filepick.ad) that every office app now uses.
+# Built for the x86_64-linux Adder target; runs on the dev host, no QEMU.
+#
+# The dialog is a GtkFileChooser-shaped modal backed by the REAL file-browser
+# core (lib/hamfmcore.ad) — the same directory model, dir-walk, sort, icon grid
+# and hit-test the file manager itself uses. This harness drives the SHIPPING
+# component through a full Save-As and Open session and asserts that both the
+# model and the RENDER agree:
+#
+#   1. the centred floating PANEL draws over a live document: scrim, shadow,
+#      title bar ("Save As" / "Open File"), the shared browse grid inside it,
+#      the Name entry and the live Save/Cancel buttons;
+#   2. NAVIGATION works through the browser: clicking a folder cell selects it,
+#      clicking it again descends, and the breadcrumb follows;
+#   3. the filename ENTRY takes typed keys and Backspace;
+#   4. the OK/Cancel BUTTONS are real click targets (they used to be painted
+#      decoration) — clicking Save commits <cur_dir>/<typed name>;
+#   5. OVERWRITE is surfaced: typing the name of a file that already exists in
+#      the listing raises the "replaces existing file" warning;
+#   6. OPEN mode returns the full path of the picked file;
+#   7. Cancel and Esc dismiss without producing a result.
+#
+# Directory ENUMERATION is a kernel path the dev host cannot run, so the
+# listing is built with the core's own model primitives (fmc_model_reset /
+# fmc_add_entry / fmc_sort_entries — the exact records fmc_load_dir produces
+# on-device) and rendered through the REAL fmc_paint + filepick_emit_panel.
+#
+# USAGE (built to build/host/filepick_host):
+#   filepick_host SAVE.ppm OPEN.ppm
+
+extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+
+from lib.hamscene import hamscene_begin, hamscene_fill, hamscene_glyphs, \
+    hamscene_glyphs_bold, hamscene_bufptr, hamscene_length
+from lib.hamui_host import hamui_host_begin, hamui_host_rasterize, \
+    hamui_host_ppm_header, hamui_host_fb_ptr, hamui_host_fb_bytes
+from lib.hamfmcore import fmc_set_cur_path, fmc_model_reset, fmc_add_entry, \
+    fmc_sort_entries, fmc_num_entries, fmc_select, fmc_selected, \
+    fmc_cur_path_ptr, fmc_entry_name_copy, fmc_cell_x, fmc_cell_y
+from lib.filepick import filepick_open, filepick_active, filepick_cancel, \
+    filepick_emit_panel, filepick_emit, filepick_handle_code, filepick_click, \
+    filepick_take_result, filepick_result_path, filepick_result_mode, \
+    filepick_save_name_ptr, filepick_save_len, filepick_name_exists, \
+    filepick_panel_x, filepick_panel_y, filepick_panel_w, filepick_panel_h, \
+    filepick_owns_point, FILEPICK_OPEN, FILEPICK_SAVE
+
+
+# ---- stdout helpers ------------------------------------------------------
+obuf: Array[1024, uint8]
+obuf_n: uint64 = 0
+
+
+def _o_ch(c: uint8):
+    if obuf_n < 1023:
+        obuf[obuf_n] = c
+        obuf_n = obuf_n + 1
+
+
+def _o_str(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        _o_ch(s[i])
+        i = i + 1
+
+
+def _o_dec(v: int64):
+    if v < 0:
+        _o_ch(45)
+        v = 0 - v
+    if v == 0:
+        _o_ch(48)
+        return
+    digs: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = cast[uint64](v)
+    while x > 0:
+        digs[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    while n > 0:
+        n = n - 1
+        _o_ch(digs[n])
+
+
+def _o_flush():
+    if obuf_n > 0:
+        sys_write(1, &obuf[0], obuf_n)
+        obuf_n = 0
+
+
+# ---- PPM writer ----------------------------------------------------------
+ppm_hdr: Array[64, uint8]
+
+
+def _write_ppm(path: Ptr[char]) -> int32:
+    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    if fd < 0:
+        return -1
+    hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])
+    sys_write(fd, &ppm_hdr[0], hlen)
+    sys_write(fd, hamui_host_fb_ptr(), hamui_host_fb_bytes())
+    sys_close(fd)
+    return 0
+
+
+def _dump_scene(tag: Ptr[uint8]):
+    _o_str(tag)
+    _o_str(cast[Ptr[uint8]]("-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(tag)
+    _o_str(cast[Ptr[uint8]]("-END\n"))
+    _o_flush()
+
+
+# ---- a stand-in "document" the dialog floats over ------------------------
+W: int32 = 640
+H: int32 = 480
+
+
+def _draw_document(title: Ptr[uint8]):
+    hamscene_fill(0, 0, W, H, cast[Ptr[uint8]]("#d8d8d8"))
+    hamscene_fill(0, 0, W, 22, cast[Ptr[uint8]]("#3f6fb5"))
+    hamscene_glyphs_bold(8, 4, title, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_fill(60, 44, W - 120, H - 90, cast[Ptr[uint8]]("#ffffff"))
+    hamscene_glyphs(76, 64, cast[Ptr[uint8]]("The quick brown fox"),
+                    cast[Ptr[uint8]]("#101010"))
+
+
+# Build the listing the dialog browses. Deliberately shuffled so the render
+# order proves the core's dirs-first sort ran.
+def _seed_listing(path: Ptr[uint8]):
+    fmc_set_cur_path(path)
+    fmc_model_reset()
+    fmc_add_entry(cast[Ptr[uint8]]("notes.hdoc"), 0, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("Reports"), 1, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("budget.hsheet"), 0, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("Archive"), 1, 0)
+    fmc_add_entry(cast[Ptr[uint8]]("deck.hamslides"), 0, 0)
+    fmc_sort_entries()
+    fmc_select(0)
+
+
+# Type a NUL-terminated string into the dialog, one key at a time.
+def _type(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        filepick_handle_code(cast[int32](s[i]))
+        i = i + 1
+
+
+def _render_panel(path: Ptr[char], title: Ptr[uint8]) -> int32:
+    hamscene_begin()
+    _draw_document(title)
+    filepick_emit_panel(W, H)
+    hamui_host_begin(W, H)
+    hamui_host_rasterize()
+    return _write_ppm(path)
+
+
+# Report the index of the entry whose name matches `want`, or -1.
+def _find_entry(want: Ptr[uint8]) -> int64:
+    n: uint64 = fmc_num_entries()
+    i: uint64 = 0
+    while i < n:
+        nm: Array[64, uint8]
+        fmc_entry_name_copy(i, &nm[0], 64)
+        k: uint64 = 0
+        same: int32 = 1
+        while want[k] != 0 or nm[k] != 0:
+            if nm[k] != want[k]:
+                same = 0
+                break
+            k = k + 1
+        if same != 0:
+            return cast[int64](i)
+        i = i + 1
+    return -1
+
+
+# Click the CENTRE of entry `idx`'s cell, in window-local coords (the core's
+# paint origin is folded in by fmc_cell_x/fmc_cell_y, exactly as an app would
+# forward a raw pointer event).
+def _click_entry(idx: int64) -> int32:
+    u: uint64 = cast[uint64](idx)
+    cx: int64 = cast[int64](fmc_cell_x(u)) + 30
+    cy: int64 = cast[int64](fmc_cell_y(u)) + 20
+    return filepick_click(cx, cy)
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    if argc < 3:
+        _o_str(cast[Ptr[uint8]]("usage: filepick_host SAVE.ppm OPEN.ppm\n"))
+        _o_flush()
+        return 2
+
+    # ================= (1) SAVE AS: the panel over a document ============
+    filepick_open(FILEPICK_SAVE, cast[Ptr[uint8]]("/home/live/Documents"),
+                  cast[Ptr[uint8]]("report.hdoc"))
+    _seed_listing(cast[Ptr[uint8]]("/home/live/Documents"))
+    _o_str(cast[Ptr[uint8]]("ACTIVE "))
+    _o_dec(cast[int64](filepick_active()))             # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SEEDNAME "))
+    _o_str(filepick_save_name_ptr())                   # report.hdoc
+    _o_ch(10)
+    _render_panel(cast[Ptr[char]](argv[1]),
+                  cast[Ptr[uint8]]("HamWrite - report.hdoc"))
+    _dump_scene(cast[Ptr[uint8]]("SAVEPANEL"))
+    # The panel is CENTRED and floats: it must not cover the whole window.
+    _o_str(cast[Ptr[uint8]]("PANEL "))
+    _o_dec(cast[int64](filepick_panel_x()))
+    _o_ch(32)
+    _o_dec(cast[int64](filepick_panel_y()))
+    _o_ch(32)
+    _o_dec(cast[int64](filepick_panel_w()))
+    _o_ch(32)
+    _o_dec(cast[int64](filepick_panel_h()))
+    _o_ch(10)
+    # A point inside the panel belongs to the dialog; one in the far corner
+    # does not (so the host keeps its own document clicks).
+    _o_str(cast[Ptr[uint8]]("OWNS_CENTER "))
+    _o_dec(cast[int64](filepick_owns_point(cast[int64](W / 2),
+                                           cast[int64](H / 2))))
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("OWNS_CORNER "))
+    _o_dec(cast[int64](filepick_owns_point(2, 2)))
+    _o_ch(10)
+
+    # ================= (2) NAVIGATE into a folder ========================
+    ridx: int64 = _find_entry(cast[Ptr[uint8]]("Reports"))
+    _o_str(cast[Ptr[uint8]]("REPORTS_IDX "))
+    _o_dec(ridx)
+    _o_ch(10)
+    _click_entry(ridx)                                 # first click: select
+    _o_str(cast[Ptr[uint8]]("SEL_AFTER_CLICK "))
+    _o_dec(fmc_selected())
+    _o_ch(10)
+    _click_entry(ridx)                                 # second click: descend
+    _o_str(cast[Ptr[uint8]]("CWD_AFTER_ENTER "))
+    _o_str(fmc_cur_path_ptr())                         # .../Documents/Reports
+    _o_ch(10)
+    # The descended directory is empty on the host; re-seed so the rest of the
+    # session has something to browse and an existing file to overwrite.
+    _seed_listing(fmc_cur_path_ptr())
+
+    # ================= (3) TYPE a filename ==============================
+    i: int32 = 0
+    while i < 11:                                      # clear "report.hdoc"
+        filepick_handle_code(8)                        # Backspace
+        i = i + 1
+    _o_str(cast[Ptr[uint8]]("NAME_CLEARED "))
+    _o_dec(cast[int64](filepick_save_len()))           # 0
+    _o_ch(10)
+    _type(cast[Ptr[uint8]]("q3.hdoc"))
+    _o_str(cast[Ptr[uint8]]("TYPED "))
+    _o_str(filepick_save_name_ptr())                   # q3.hdoc
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("OVERWRITE_NEW "))
+    _o_dec(cast[int64](filepick_name_exists()))        # 0: q3.hdoc is new
+    _o_ch(10)
+
+    # ================= (4) OVERWRITE warning ============================
+    i = 0
+    while i < 7:
+        filepick_handle_code(8)
+        i = i + 1
+    _type(cast[Ptr[uint8]]("notes.hdoc"))
+    _o_str(cast[Ptr[uint8]]("OVERWRITE_EXISTING "))
+    _o_dec(cast[int64](filepick_name_exists()))        # 1: notes.hdoc is there
+    _o_ch(10)
+    _render_panel(cast[Ptr[char]](argv[1]),
+                  cast[Ptr[uint8]]("HamWrite - report.hdoc"))
+    _dump_scene(cast[Ptr[uint8]]("OVERWRITEPANEL"))
+
+    # ================= (5) the SAVE BUTTON commits ======================
+    # Deselect the folder row so Enter/Save means "save", not "descend".
+    fmc_select(-1)
+    i = 0
+    while i < 10:
+        filepick_handle_code(8)
+        i = i + 1
+    _type(cast[Ptr[uint8]]("q3.hdoc"))
+    # Click the Save button by its recorded rect (bottom-right of the strip).
+    bx: int64 = cast[int64](filepick_panel_x() + filepick_panel_w()) - 100
+    by: int64 = cast[int64](filepick_panel_y() + filepick_panel_h()) - 26
+    filepick_click(bx, by)
+    _o_str(cast[Ptr[uint8]]("SAVE_RESULT "))
+    _o_dec(cast[int64](filepick_take_result()))        # 1
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SAVE_MODE "))
+    _o_dec(cast[int64](filepick_result_mode()))        # 2 = SAVE
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("SAVE_PATH "))
+    _o_str(filepick_result_path())
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("CLOSED_AFTER_SAVE "))
+    _o_dec(cast[int64](filepick_active()))             # 0
+    _o_ch(10)
+
+    # ================= (6) OPEN mode ====================================
+    filepick_open(FILEPICK_OPEN, cast[Ptr[uint8]]("/home/live/Documents"),
+                  cast[Ptr[uint8]](0))
+    _seed_listing(cast[Ptr[uint8]]("/home/live/Documents"))
+    _render_panel(cast[Ptr[char]](argv[2]),
+                  cast[Ptr[uint8]]("HamSlides - deck.hamslides"))
+    _dump_scene(cast[Ptr[uint8]]("OPENPANEL"))
+    didx: int64 = _find_entry(cast[Ptr[uint8]]("deck.hamslides"))
+    _click_entry(didx)                                 # select
+    _click_entry(didx)                                 # activate -> commit
+    _o_str(cast[Ptr[uint8]]("OPEN_RESULT "))
+    _o_dec(cast[int64](filepick_take_result()))        # 1
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("OPEN_MODE "))
+    _o_dec(cast[int64](filepick_result_mode()))        # 1 = OPEN
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("OPEN_PATH "))
+    _o_str(filepick_result_path())
+    _o_ch(10)
+
+    # ================= (7) CANCEL paths =================================
+    filepick_open(FILEPICK_SAVE, cast[Ptr[uint8]]("/home/live/Documents"),
+                  cast[Ptr[uint8]]("x.hdoc"))
+    _seed_listing(cast[Ptr[uint8]]("/home/live/Documents"))
+    _render_panel(cast[Ptr[char]](argv[2]),
+                  cast[Ptr[uint8]]("HamSheet - budget.hsheet"))
+    cbx: int64 = cast[int64](filepick_panel_x() + filepick_panel_w()) - 38
+    cby: int64 = cast[int64](filepick_panel_y() + filepick_panel_h()) - 26
+    filepick_click(cbx, cby)                           # Cancel button
+    _o_str(cast[Ptr[uint8]]("CANCEL_BTN_CLOSED "))
+    _o_dec(cast[int64](filepick_active()))             # 0
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("CANCEL_NO_RESULT "))
+    _o_dec(cast[int64](filepick_take_result()))        # 0
+    _o_ch(10)
+    filepick_open(FILEPICK_OPEN, cast[Ptr[uint8]]("/home/live/Documents"),
+                  cast[Ptr[uint8]](0))
+    _seed_listing(cast[Ptr[uint8]]("/home/live/Documents"))
+    filepick_handle_code(27)                           # ESC ...
+    filepick_handle_code(113)                          # ... not a CSI -> cancel
+    _o_str(cast[Ptr[uint8]]("ESC_CLOSED "))
+    _o_dec(cast[int64](filepick_active()))             # 0
+    _o_ch(10)
+
+    # ================= (8) full-window mode still works =================
+    # user/hameditscene.ad renders the picker full-window; that path must keep
+    # painting from the window origin (origin 0,0) after the panel used it.
+    filepick_open(FILEPICK_OPEN, cast[Ptr[uint8]]("/home/live/Documents"),
+                  cast[Ptr[uint8]](0))
+    _seed_listing(cast[Ptr[uint8]]("/home/live/Documents"))
+    hamscene_begin()
+    filepick_emit(W, H)
+    _dump_scene(cast[Ptr[uint8]]("FULLWIN"))
+    _o_str(cast[Ptr[uint8]]("FULLWIN_OWNS_CORNER "))
+    _o_dec(cast[int64](filepick_owns_point(2, 2)))     # 1: covers everything
+    _o_ch(10)
+
+    _o_flush()
+    return 0

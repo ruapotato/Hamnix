@@ -112,7 +112,14 @@ flash: int32 = 0                         # "saved!" ack countdown
 msg_id: int32 = 0                        # transient status message id
 
 # Action requested by a keystroke/click, drained by the driver:
-#   0 none  1 save  2 open  3 export CSV  4 import CSV
+#   0 none  1 save  2 open(current path)  3 export CSV  4 import CSV
+#   11 Save As...  12 Open...  -> raise the SHARED file dialog (lib/filepick.ad)
+#
+# 11/12 are the SAME action numbers HamWrite and HamSlides use, so every office
+# app asks its driver for the shared chooser the same way. The core stays
+# extern-free and knows NOTHING about the dialog: it only sets the number.
+ACT_SAVE_AS: int32 = 11
+ACT_OPEN:    int32 = 12
 pending_action: int32 = 0
 
 # CSI escape decode (arrow keys, incl. modifiers): 0 ground, 1 ESC, 2 CSI.
@@ -2810,8 +2817,8 @@ def hamsheet_key(code: int32) -> int32:
     if code == 14:                                     # Ctrl-N insert row
         _insert_row(_sel_r0())
         return 1
-    if code == 15:                                     # Ctrl-O open
-        pending_action = 2
+    if code == 15:                                     # Ctrl-O -> Open... dialog
+        pending_action = ACT_OPEN
         return 1
     if code == 16:                                     # Ctrl-P insert column
         _insert_col(_sel_c0())
@@ -2829,6 +2836,13 @@ def hamsheet_key(code: int32) -> int32:
         return 1
     if code == 20:                                     # Ctrl-T narrow column
         _widen(-8)
+        return 1
+    if code == 21:                                     # Ctrl-U -> Save As...
+        # (hameditscene/HamWrite use Ctrl-W for Save As, but HamSheet's Ctrl-W
+        # is "widen column"; the toolbar's SaveAs button is the primary route.)
+        if editing != 0:
+            _commit_edit()
+        pending_action = ACT_SAVE_AS
         return 1
     if code == 22:                                     # Ctrl-V paste
         _paste_range()
@@ -3181,12 +3195,16 @@ WIN_H: int32 = 384
 BAR_H: int32 = 22            # title bar
 FB_Y:  int32 = 22            # formula/status bar
 FB_H:  int32 = 24
-CSV_X:  int32 = 414
-CSV_W:  int32 = 44
-OPEN_X: int32 = 476
-OPEN_W: int32 = 52
-SAVE_X: int32 = 532
-SAVE_W: int32 = 52
+# Formula-bar toolbar buttons, right-aligned. "SaveAs" raises the SHARED file
+# dialog (ACT_SAVE_AS) and "Open" raises it in OPEN mode (ACT_OPEN).
+CSV_X:  int32 = 386
+CSV_W:  int32 = 38
+OPEN_X: int32 = 426
+OPEN_W: int32 = 46
+SVAS_X: int32 = 474
+SVAS_W: int32 = 62
+SAVE_X: int32 = 538
+SAVE_W: int32 = 46
 
 GRID_Y:   int32 = 46        # top of the column-header strip
 ROWHDR_W: int32 = 34        # left row-number gutter width
@@ -3386,6 +3404,7 @@ def hamsheet_build_scene():
         hamscene_fill(cx0, FB_Y + 5, 2, 13, cast[Ptr[uint8]]("#2f7d54"))
     _toolbtn(CSV_X, CSV_W, cast[Ptr[uint8]]("CSV"))
     _toolbtn(OPEN_X, OPEN_W, cast[Ptr[uint8]]("Open"))
+    _toolbtn(SVAS_X, SVAS_W, cast[Ptr[uint8]]("SaveAs"))
     _toolbtn(SAVE_X, SAVE_W, cast[Ptr[uint8]]("Save"))
 
     # ---- grid: corner + headers ------------------------------------------
@@ -3497,13 +3516,16 @@ def hamsheet_build_scene():
 
 
 # ---- pointer hit-testing ---------------------------------------------------
-# Returns: 1 save, 2 open, 3 redraw-only (cell selected), 4 export CSV, 0 none.
+# Returns: 1 save, 3 redraw-only (cell selected), 4 export CSV, 0 none,
+#          11 Save As... / 12 Open... (raise the SHARED file dialog).
 def hamsheet_hit(x: int64, y: int64) -> int32:
     if y >= cast[int64](FB_Y) and y < cast[int64](FB_Y + FB_H):
         if x >= cast[int64](CSV_X) and x < cast[int64](CSV_X + CSV_W):
             return 4
         if x >= cast[int64](OPEN_X) and x < cast[int64](OPEN_X + OPEN_W):
-            return 2
+            return ACT_OPEN
+        if x >= cast[int64](SVAS_X) and x < cast[int64](SVAS_X + SVAS_W):
+            return ACT_SAVE_AS
         if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
             return 1
         return 0

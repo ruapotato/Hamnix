@@ -12,6 +12,13 @@
 # gate scripts/test_hamsheet_host.sh). This driver does the on-box work the core
 # can't: create the wsys window, poll /keys + /event, and open/save the document
 # file on disk (Ctrl-S / Ctrl-O).
+#
+# SAVE AS / OPEN: the toolbar's "SaveAs" and "Open" buttons (and Ctrl-U /
+# Ctrl-O) raise the SHARED file dialog lib/filepick.ad — the same
+# GtkFileChooser-shaped, file-browser-backed chooser HamWrite, HamSlides and
+# hamedit raise, built on the real file-manager browse core (lib/hamfmcore.ad).
+# It returns an ABSOLUTE path, so the sheet can be saved/opened anywhere instead
+# of being locked into the one path the app was launched with.
 
 extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
@@ -25,6 +32,10 @@ extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char], flag: int32) -> in
 
 from lib.hamui import hamscene_commit
 from lib.hamtextbox import htb_evt_parse_m
+from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
+    filepick_handle_code, filepick_click, filepick_take_result, \
+    filepick_result_path, filepick_result_mode, filepick_owns_point, \
+    filepick_wheel, FILEPICK_OPEN, FILEPICK_SAVE
 from lib.hamsheetcore import hamsheet_init, hamsheet_build_scene, \
     hamsheet_key_line, hamsheet_take_action, hamsheet_serialize, \
     hamsheet_deserialize, hamsheet_mark_saved, hamsheet_set_fname, \
@@ -210,6 +221,58 @@ def _import_csv():
     hamsheet_import_csv(&ser_buf[0], total)
 
 
+# ---- the SHARED Save/Open dialog (lib/filepick.ad) -------------------------
+# Pop the shared chooser seeded with the document's OWN directory and basename,
+# so Save As opens where the sheet lives. The dialog does no file I/O: it
+# resolves a path, and this driver performs the open/save.
+dlg_dir: Array[192, uint8]
+
+
+def _doc_dir(out: Ptr[uint8]):
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    p: uint64 = 0
+    while p < cut:
+        out[p] = doc_path[p]
+        p = p + 1
+    if p > 1 and out[p - 1] == 47:                     # keep "/" but drop "a/"
+        p = p - 1
+    out[p] = 0
+
+
+def _doc_base() -> Ptr[uint8]:
+    cut: uint64 = 0
+    k: uint64 = 0
+    while k < doc_path_len:
+        if doc_path[k] == 47:
+            cut = k + 1
+        k = k + 1
+    return &doc_path[cut]
+
+
+def _pop_dialog(mode: int32):
+    _doc_dir(&dlg_dir[0])
+    filepick_open(mode, &dlg_dir[0], _doc_base())
+
+
+# Adopt a committed pick: it becomes the document path, then open or save it.
+def _apply_pick():
+    _set_docpath(filepick_result_path())
+    _sync_fname()
+    if filepick_result_mode() == FILEPICK_OPEN:
+        _load_doc()
+        _sync_fname()
+    else:
+        _save_doc()
+
+
+# Dispatch a pending action set by a keystroke or a toolbar click.
+#   1 save   2 open(current path)   3 export CSV   4 import CSV
+#  11 Save As / 12 Open -> raise the SHARED file dialog
 def _dispatch(act: int32):
     if act == 1:
         _save_doc()
@@ -219,19 +282,49 @@ def _dispatch(act: int32):
         _export_csv()
     elif act == 4:
         _import_csv()
+    elif act == 11:
+        _pop_dialog(FILEPICK_SAVE)
+    elif act == 12:
+        _pop_dialog(FILEPICK_OPEN)
+
+
+# Rebuild + publish the scene: the sheet, then the shared dialog on top of it
+# when one is up (it renders as a centred floating panel over live content).
+_HS_WIN_W: int32 = 600
+_HS_WIN_H: int32 = 384
+
+
+def _repaint(wid: int32):
+    hamsheet_build_scene()
+    if filepick_active() != 0:
+        filepick_emit_panel(_HS_WIN_W, _HS_WIN_H)
+    hamscene_commit(wid)
 
 
 # ---- pointer input --------------------------------------------------------
 hs_prev_btn: int64 = 0
 
 
-def _pointer(lx: int64, ly: int64, btn: int64) -> int32:
+def _pointer(lx: int64, ly: int64, btn: int64, dz: int64) -> int32:
     changed: int32 = 0
+    # The shared dialog is MODAL: while it is up it takes the pointer, and a
+    # click outside its panel must not reach the grid underneath.
+    if filepick_active() != 0:
+        if dz != 0:
+            if filepick_wheel(dz) != 0:
+                changed = 1
+        b1d: int64 = btn & 1
+        pb1d: int64 = hs_prev_btn & 1
+        if b1d != 0 and pb1d == 0:
+            if filepick_click(lx, ly) != 0:
+                changed = 1
+        hs_prev_btn = btn
+        return changed
     b1: int64 = btn & 1
     pb1: int64 = hs_prev_btn & 1
     if b1 != 0 and pb1 == 0:                            # button-1 PRESS
         act: int32 = hamsheet_hit(lx, ly)
-        if act == 1 or act == 2:
+        if act == 1 or act == 2 or act == 11 or act == 12:
             _dispatch(act)
             changed = 1
         elif act == 4:
@@ -275,7 +368,7 @@ def _poll_events(efd: int32) -> int32:
                     dz: int64 = 0
                     if htb_evt_parse_m(&ev_buf[ls], i - ls, &ex, &ey,
                                        &ebtn, &dz) != 0:
-                        if _pointer(ex, ey, ebtn) != 0:
+                        if _pointer(ex, ey, ebtn, dz) != 0:
                             changed = 1
                 ls = i + 1
             i = i + 1
@@ -294,6 +387,41 @@ kev_buf: Array[512, uint8]
 kev_carry: uint64 = 0
 
 
+# Parse one "<type> <code>" wire line and hand the code to the shared dialog.
+# Only "d" (down) lines carry a character; everything else is ignored.
+def _dialog_key_line(line: Ptr[uint8], n: uint64) -> int32:
+    if n < 3:
+        return 0
+    if line[0] != 100:                                 # 'd'
+        return 0
+    i: uint64 = 1
+    while i < n and line[i] == 32:
+        i = i + 1
+    neg: int32 = 0
+    if i < n and line[i] == 45:
+        neg = 1
+        i = i + 1
+    code: int32 = 0
+    got: int32 = 0
+    while i < n and line[i] >= 48 and line[i] <= 57:
+        code = code * 10 + cast[int32](line[i]) - 48
+        got = 1
+        i = i + 1
+    if got == 0:
+        return 0
+    if neg != 0:
+        code = 0 - code
+    return filepick_handle_code(code)
+
+
+# Drain a committed pick, if any. Returns 1 if the scene must be rebuilt.
+def _drain_pick() -> int32:
+    if filepick_take_result() == 0:
+        return 0
+    _apply_pick()
+    return 1
+
+
 def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
     i: uint64 = 0
     consumed: uint64 = 0
@@ -303,6 +431,13 @@ def _drain_keys(n: uint64, changed_p: Ptr[int32]) -> uint64:
             i = i + 1
         if i >= n:
             return consumed
+        # While the shared dialog is up it owns the keyboard.
+        if filepick_active() != 0:
+            if _dialog_key_line(&kev_buf[ls], i - ls) != 0:
+                changed_p[0] = 1
+            i = i + 1
+            consumed = i
+            continue
         if hamsheet_key_line(&kev_buf[ls], i - ls) != 0:
             act: int32 = hamsheet_take_action()
             if act != 0:
@@ -360,8 +495,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         _set_docpath(cast[Ptr[uint8]]("/home/live/Documents/untitled.hsheet"))
     _sync_fname()
 
-    hamsheet_build_scene()
-    hamscene_commit(wid)
+    _repaint(wid)
     _writeall(1, cast[Ptr[uint8]]("[hamsheet] scene window ready\n"))
 
     kfd: int32 = sys_open(cast[Ptr[char]](&keysp[0]))
@@ -381,8 +515,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         kn: int64 = sys_read_nb(kfd, &kev_buf[kev_carry], room)
         did_work: int32 = 0
         if _poll_events(efd) != 0:
-            hamsheet_build_scene()
-            hamscene_commit(wid)
+            _drain_pick()
+            _repaint(wid)
             did_work = 1
         if kn > 0:
             total: uint64 = kev_carry + cast[uint64](kn)
@@ -395,8 +529,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 m = m + 1
             kev_carry = leftover
             if changed != 0:
-                hamsheet_build_scene()
-                hamscene_commit(wid)
+                _drain_pick()
+                _repaint(wid)
             did_work = 1
         if did_work == 0:
             wfds: Array[1, int32]
