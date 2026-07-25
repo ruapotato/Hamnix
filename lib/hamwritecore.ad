@@ -4,17 +4,28 @@
 #
 #   1. a multi-line, PIXEL word-wrapped BODY with an editable caret, selection
 #      and SCROLLING (the page scrolls, the caret is kept in view),
-#   2. CHARACTER FORMATTING — bold / italic / underline / heading + four TEXT
-#      SIZES — toggled from a toolbar, the Format menu or Ctrl-keys, applied to
+#   2. CHARACTER FORMATTING — bold / italic / underline + H1/H2/H3 HEADING
+#      LEVELS + four TEXT SIZES + an eight-colour TEXT PALETTE + a HIGHLIGHTER —
+#      toggled from a two-row toolbar, the Format menu or Ctrl-keys, applied to
 #      the live selection or to subsequently-typed text,
-#   3. PARAGRAPH ALIGNMENT — left / centre / right, applied to every paragraph
-#      the selection touches (Ctrl-L / Ctrl-E / Ctrl-R, as in Word),
-#   4. a real MENU BAR (File / Edit / Format) with working drop-downs, plus a
+#   3. PARAGRAPH FORMATTING — left / centre / right alignment, BULLET and
+#      NUMBERED LISTS with a real marker gutter, four INDENT levels and true
+#      paragraph spacing, applied to every paragraph the selection touches,
+#   4. MULTI-LEVEL UNDO / REDO (Ctrl-Z / Ctrl-Y) over a 16-deep snapshot ring,
+#      with consecutive typing coalesced into word-sized undo steps so one
+#      Ctrl-Z takes back the word you just typed — and formatting changes and a
+#      whole Replace All are each a single undoable step,
+#   5. FIND & REPLACE (Ctrl-F) — a modal dialog with a live, case-insensitive
+#      hit counter, Find Next (wrapping), Replace, Replace All, and EVERY match
+#      highlighted on the page at once,
+#   6. a real MENU BAR (File / Edit / Format) with working drop-downs, plus a
 #      modal filename PROMPT so "Save As…" / "Open…" work without a picker,
-#   5. a real DOCUMENT FILE that round-trips the text AND every attribute, so a
-#      save->load preserves which spans were bold/italic/underlined/sized and
-#      how each paragraph was aligned,
-#   6. a live word/character count.
+#   7. a real DOCUMENT FILE that round-trips the text AND every attribute, so a
+#      save->load preserves which spans were bold/italic/underlined/sized/
+#      coloured/highlighted, how each paragraph was aligned, and which
+#      paragraphs are bulleted or numbered and at what indent,
+#   8. a RULER over the page and a status footer with the caret's Ln/Col plus a
+#      live word/character count.
 #
 # Like the other dual-target apps (docs/hamui_dual_target.md) this file imports
 # ONLY lib/hamscene (+ lib/hamtextbox for proportional measurement/hit-testing)
@@ -26,8 +37,8 @@
 # scripted keystrokes deterministically (scripts/test_hamwrite_host.sh).
 #
 # ---------------------------------------------------------------------------
-# FORMATTING MODEL — one attribute BYTE per character, parallel to the text
-# buffer. The byte is fully packed, so the on-disk container needs no change:
+# FORMATTING MODEL — TWO attribute BYTES per character, parallel to the text
+# buffer. The first byte is fully packed:
 #
 #     bit 0  (1)    BOLD
 #     bit 1  (2)    ITALIC
@@ -35,6 +46,11 @@
 #     bit 3  (8)    UNDERLINE
 #     bits 4-5 (48) SIZE   0 = normal, 1 = small, 2 = large, 3 = title
 #     bits 6-7 (192) ALIGN 0 = left,   1 = centre, 2 = right   (paragraph-wide)
+#
+# …and the SECOND byte (attr2, added with lists/colour — see A2_* below) holds
+# the list kind, the indent level, the text-colour index and the highlight bit.
+# Both planes ride the same length-prefixed container (bumped to HAMWRITE2;
+# HAMWRITE1 files still load, with plane 2 decoding to the defaults).
 #
 # Newly typed characters inherit `cur_attr` (the toolbar's live toggles).
 # Applying a character format to a selection toggles/sets the bits across that
@@ -79,9 +95,33 @@ ALIGN_CENTER: int32 = 1
 ALIGN_RIGHT:  int32 = 2
 
 
+# ---- SECOND attribute plane (attr2) ---------------------------------------
+# The first byte is FULL, so everything added since (lists, indent, text colour
+# and highlight) lives in a parallel SECOND byte per character. The container
+# was bumped to HAMWRITE2 to carry it; HAMWRITE1 files still load (plane 2
+# decodes as all-zero = no list, no indent, default ink, no highlight).
+#
+#     bits 0-1 (3)   LIST   0 none, 1 bullet, 2 numbered   (paragraph-wide)
+#     bits 2-3 (12)  INDENT 0..3 levels                    (paragraph-wide)
+#     bits 4-6 (112) COLOUR 0..7 palette index             (per character)
+#     bit  7   (128) HIGHLIGHT                             (per character)
+A2_LIST_MASK:   uint8 = 3
+A2_INDENT_MASK: uint8 = 12
+A2_COLOR_MASK:  uint8 = 112
+A2_HILITE:      uint8 = 128
+
+LIST_NONE:   int32 = 0
+LIST_BULLET: int32 = 1
+LIST_NUMBER: int32 = 2
+
+MAX_INDENT: int32 = 3
+INDENT_PX:  int32 = 24
+
+
 CAP: uint64 = 4096
 text: Array[4096, uint8]
 attr: Array[4096, uint8]                # one formatting byte per character
+attr2: Array[4096, uint8]               # second plane: list/indent/colour/hilite
 tlen: uint64 = 0
 dirty: int32 = 0
 
@@ -91,6 +131,48 @@ sel_on: int32 = 0                       # 1 iff a live (possibly-empty) highligh
 
 # Formatting applied to newly-typed characters (toggled with no selection).
 cur_attr: uint8 = 0
+cur_attr2: uint8 = 0
+
+# ---- UNDO / REDO -----------------------------------------------------------
+# Multi-level, SNAPSHOT based: every edit records the resulting document (text +
+# both attribute planes + the caret) into a ring of states. `h_pos` indexes the
+# CURRENT state inside that history, so undo/redo is just a cursor move, and a
+# fresh edit truncates everything after the cursor (exactly like Word).
+#
+# Consecutive typing (or consecutive deletes) COALESCE into one history entry so
+# a single Ctrl-Z removes the word you just typed, not one letter — a space or a
+# newline closes the group.
+UND_SLOTS: uint64 = 16
+und_text:  Array[65536, uint8]          # UND_SLOTS * CAP
+und_attr:  Array[65536, uint8]
+und_attr2: Array[65536, uint8]
+und_len:   Array[16, uint32]
+und_caret: Array[16, uint32]
+und_kind:  Array[16, int32]
+
+h_base: uint64 = 0                      # ring index of logical history[0]
+h_len:  uint64 = 0                      # number of states held
+h_pos:  uint64 = 0                      # logical index of the CURRENT state
+
+EDIT_TYPE: int32 = 1                    # coalescing groups
+EDIT_DEL:  int32 = 2
+EDIT_OTHER: int32 = 3
+grp_break: int32 = 0                    # 1 = the next edit starts a new group
+
+# ---- FIND & REPLACE --------------------------------------------------------
+# 0 = closed, 1 = open. `find_field` is which of the two entry boxes has focus.
+find_on: int32 = 0
+find_field: int32 = 0                   # 0 = Find, 1 = Replace with
+FIND_CAP: uint64 = 64
+find_buf: Array[64, uint8]
+find_len: uint64 = 0
+repl_buf: Array[64, uint8]
+repl_len: uint64 = 0
+find_hits: uint64 = 0                   # matches in the document (live)
+find_cur:  int64 = -1                   # offset of the CURRENT match, -1 none
+find_msg:  int32 = 0                    # 0 none, 1 "not found", 2 "wrapped",
+                                        # 3 "replaced n"
+find_nrep: uint64 = 0
 
 # Action requested by a keystroke or a click, drained by the driver:
 #   0 none  1 save  2 open(current path)  4 new  5 save-as(fname)  6 quit
@@ -173,6 +255,95 @@ def _with_size(a: uint8, sz: int32) -> uint8:
 
 def _with_align(a: uint8, al: int32) -> uint8:
     return (a & (255 - ATTR_ALIGN_MASK)) | cast[uint8](al * 64)
+
+
+# ---- attr2 field accessors -------------------------------------------------
+def _list_of(a: uint8) -> int32:
+    return cast[int32](a & A2_LIST_MASK)
+
+
+def _indent_of(a: uint8) -> int32:
+    return cast[int32]((a & A2_INDENT_MASK) / 4)
+
+
+def _color_of(a: uint8) -> int32:
+    return cast[int32]((a & A2_COLOR_MASK) / 16)
+
+
+def _with_list(a: uint8, k: int32) -> uint8:
+    return (a & (255 - A2_LIST_MASK)) | cast[uint8](k)
+
+
+def _with_indent(a: uint8, n: int32) -> uint8:
+    return (a & (255 - A2_INDENT_MASK)) | cast[uint8](n * 4)
+
+
+def _with_color(a: uint8, c: int32) -> uint8:
+    return (a & (255 - A2_COLOR_MASK)) | cast[uint8](c * 16)
+
+
+def hamwrite_attr2_at(i: uint64) -> uint8:
+    if i >= tlen:
+        return cur_attr2
+    return attr2[i]
+
+
+def hamwrite_attr2_ptr() -> Ptr[uint8]:
+    return &attr2[0]
+
+
+def hamwrite_list_at(i: uint64) -> int32:
+    return _list_of(hamwrite_attr2_at(i))
+
+
+def hamwrite_indent_at(i: uint64) -> int32:
+    return _indent_of(hamwrite_attr2_at(i))
+
+
+def hamwrite_color_at(i: uint64) -> int32:
+    return _color_of(hamwrite_attr2_at(i))
+
+
+# Count characters whose attr2 LIST/INDENT/COLOUR field equals a value, or that
+# carry the highlight bit. Used by the gate to prove the round-trip.
+def hamwrite_list_count(k: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _list_of(attr2[i]) == k:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+def hamwrite_indent_count(lv: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _indent_of(attr2[i]) == lv:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+def hamwrite_color_count(c: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _color_of(attr2[i]) == c:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+def hamwrite_hilite_count() -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if (attr2[i] & A2_HILITE) != 0:
+            n = n + 1
+        i = i + 1
+    return n
 
 
 # ---- accessors -------------------------------------------------------------
@@ -334,14 +505,134 @@ def _reset_caret():
     sel_on = 0
 
 
+# ---- undo/redo history -----------------------------------------------------
+def _h_slot(i: uint64) -> uint64:
+    return (h_base + i) % UND_SLOTS
+
+
+# Copy the live document INTO history slot `sl`.
+def _h_store(sl: uint64, kind: int32):
+    off: uint64 = sl * CAP
+    i: uint64 = 0
+    while i < tlen:
+        und_text[off + i] = text[i]
+        und_attr[off + i] = attr[i]
+        und_attr2[off + i] = attr2[i]
+        i = i + 1
+    und_len[sl] = cast[uint32](tlen)
+    und_caret[sl] = cast[uint32](caret)
+    und_kind[sl] = kind
+
+
+# Copy history slot `sl` back into the live document.
+def _h_restore(sl: uint64):
+    off: uint64 = sl * CAP
+    n: uint64 = cast[uint64](und_len[sl])
+    i: uint64 = 0
+    while i < n:
+        text[i] = und_text[off + i]
+        attr[i] = und_attr[off + i]
+        attr2[i] = und_attr2[off + i]
+        i = i + 1
+    tlen = n
+    caret = cast[uint64](und_caret[sl])
+    if caret > tlen:
+        caret = tlen
+    anchor = caret
+    sel_on = 0
+
+
+# Drop the whole history and seed it with the CURRENT document (called by New /
+# Open / set_text, where "undo back into the previous document" is wrong).
+def _hist_reset():
+    h_base = 0
+    h_len = 1
+    h_pos = 0
+    _h_store(0, EDIT_OTHER)
+
+
+# Record the document AFTER an edit. Consecutive edits of the same coalescing
+# `kind` overwrite the top entry instead of pushing a new one, so one Ctrl-Z
+# undoes a typed run rather than a single keystroke.
+def _hist_record(kind: int32):
+    if h_len == 0:
+        # first edit of a fresh process: anchor the history on an EMPTY
+        # document so that very first keystroke is undoable too
+        h_base = 0
+        und_len[0] = 0
+        und_caret[0] = 0
+        und_kind[0] = EDIT_OTHER
+        h_len = 1
+        h_pos = 0
+    brk: int32 = grp_break
+    grp_break = 0
+    if kind != EDIT_OTHER and brk == 0 and h_pos + 1 == h_len:
+        if und_kind[_h_slot(h_pos)] == kind:
+            _h_store(_h_slot(h_pos), kind)
+            return
+    h_len = h_pos + 1
+    if h_len >= UND_SLOTS:                  # ring full: drop the oldest state
+        h_base = (h_base + 1) % UND_SLOTS
+        h_len = h_len - 1
+        h_pos = h_pos - 1
+    _h_store(_h_slot(h_len), kind)
+    h_len = h_len + 1
+    h_pos = h_len - 1
+
+
+def hamwrite_can_undo() -> int32:
+    if h_pos > 0:
+        return 1
+    return 0
+
+
+def hamwrite_can_redo() -> int32:
+    if h_pos + 1 < h_len:
+        return 1
+    return 0
+
+
+def hamwrite_undo() -> int32:
+    if h_pos == 0:
+        return 0
+    h_pos = h_pos - 1
+    _h_restore(_h_slot(h_pos))
+    dirty = 1
+    menu_open = 0
+    return 1
+
+
+def hamwrite_redo() -> int32:
+    if h_pos + 1 >= h_len:
+        return 0
+    h_pos = h_pos + 1
+    _h_restore(_h_slot(h_pos))
+    dirty = 1
+    menu_open = 0
+    return 1
+
+
+def hamwrite_undo_depth() -> uint64:
+    return h_pos
+
+
+def hamwrite_redo_depth() -> uint64:
+    return h_len - 1 - h_pos
+
+
 def hamwrite_clear():
     tlen = 0
     dirty = 0
     cur_attr = 0
+    cur_attr2 = 0
     menu_open = 0
     prompt_on = 0
+    find_on = 0
+    find_cur = -1
+    find_hits = 0
     scroll_top = 0
     _reset_caret()
+    _hist_reset()
 
 
 def _sel_lo() -> uint64:
@@ -375,6 +666,7 @@ def _delete_range(a: uint64, b: uint64) -> int32:
     while j + span < tlen:
         text[j] = text[j + span]
         attr[j] = attr[j + span]
+        attr2[j] = attr2[j + span]
         j = j + 1
     tlen = tlen - span
     caret = a
@@ -393,21 +685,44 @@ def _delete_selection() -> int32:
     return r
 
 
-# Insert one char with attribute `at` at the caret (shift tail right).
-def _insert_at(c: uint8, at: uint8) -> int32:
+# Insert one char with attributes (at, at2) at the caret (shift tail right).
+def _insert_at2(c: uint8, at: uint8, at2: uint8) -> int32:
     if tlen + 1 > CAP:
         return 0
     j: uint64 = tlen
     while j > caret:
         text[j] = text[j - 1]
         attr[j] = attr[j - 1]
+        attr2[j] = attr2[j - 1]
         j = j - 1
     text[caret] = c
     attr[caret] = at
+    attr2[caret] = at2
     tlen = tlen + 1
     caret = caret + 1
     anchor = caret
     return 1
+
+
+A2_PARA_MASK: uint8 = 15                # LIST | INDENT (paragraph-wide fields)
+
+
+# Adopt the paragraph fields (list kind + indent) of the paragraph the caret is
+# in, so the toolbar readout and the next typed character agree with the page.
+def _sync_para_attrs():
+    ps: uint64 = _para_start(caret)
+    if ps < tlen and text[ps] != 10:
+        cur_attr2 = (cur_attr2 & (255 - A2_PARA_MASK)) | (attr2[ps] & A2_PARA_MASK)
+
+
+# Insert inheriting the CURRENT paragraph's list/indent, so typing inside a
+# bullet keeps the bullet. At a paragraph START the toolbar's cur_attr2 governs
+# (that is what "click Bullet then type" must do).
+def _insert_at(c: uint8, at: uint8) -> int32:
+    a2: uint8 = cur_attr2
+    if caret > 0 and caret <= tlen and text[caret - 1] != 10:
+        a2 = (a2 & (255 - A2_PARA_MASK)) | (attr2[caret - 1] & A2_PARA_MASK)
+    return _insert_at2(c, at, a2)
 
 
 def _backspace() -> int32:
@@ -417,6 +732,7 @@ def _backspace() -> int32:
     while j + 1 < tlen:
         text[j] = text[j + 1]
         attr[j] = attr[j + 1]
+        attr2[j] = attr2[j + 1]
         j = j + 1
     tlen = tlen - 1
     caret = caret - 1
@@ -431,6 +747,7 @@ def _delete_fwd() -> int32:
     while j + 1 < tlen:
         text[j] = text[j + 1]
         attr[j] = attr[j + 1]
+        attr2[j] = attr2[j + 1]
         j = j + 1
     tlen = tlen - 1
     return 1
@@ -444,10 +761,12 @@ def hamwrite_set_text(s: Ptr[uint8], n: uint64):
     while i < n:
         text[i] = s[i]
         attr[i] = 0
+        attr2[i] = 0
         i = i + 1
     tlen = n
     dirty = 0
     _reset_caret()
+    _hist_reset()
 
 
 # ---- formatting toggles ----------------------------------------------------
@@ -472,6 +791,7 @@ def hamwrite_toggle(bit: uint8) -> int32:
                 attr[i] = attr[i] | bit
             i = i + 1
         dirty = 1
+        _hist_record(EDIT_OTHER)
         return 1
     # no selection: toggle the typing attribute
     if (cur_attr & bit) != 0:
@@ -510,8 +830,68 @@ def hamwrite_set_size(sz: int32) -> int32:
             attr[i] = _with_size(attr[i], sz)
             i = i + 1
         dirty = 1
+        _hist_record(EDIT_OTHER)
     cur_attr = _with_size(cur_attr, sz)
     return 1
+
+
+# HEADING LEVELS. Word's H1/H2/H3 are the heading bit PLUS a size class, so the
+# three levels read apart on the page and still fit the existing attribute byte:
+#   level 1 -> heading + title size, 2 -> heading + large, 3 -> heading + normal
+#   level 0 -> "Body Text": clears the heading bit and returns to normal size.
+def hamwrite_set_heading(level: int32) -> int32:
+    if level < 0 or level > 3:
+        return 0
+    sz: int32 = SIZE_NORMAL
+    if level == 1:
+        sz = SIZE_TITLE
+    elif level == 2:
+        sz = SIZE_LARGE
+    if _sel_has() != 0:
+        a: uint64 = _sel_lo()
+        b: uint64 = _sel_hi()
+        i: uint64 = a
+        while i < b:
+            if level == 0:
+                attr[i] = attr[i] & (255 - ATTR_HEADING)
+            else:
+                attr[i] = attr[i] | ATTR_HEADING
+            attr[i] = _with_size(attr[i], sz)
+            i = i + 1
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+    if level == 0:
+        cur_attr = cur_attr & (255 - ATTR_HEADING)
+    else:
+        cur_attr = cur_attr | ATTR_HEADING
+    cur_attr = _with_size(cur_attr, sz)
+    return 1
+
+
+# The heading LEVEL an attribute byte encodes (0 = body text).
+def _heading_level(a: uint8) -> int32:
+    if (a & ATTR_HEADING) == 0:
+        return 0
+    sz: int32 = _size_of(a)
+    if sz == SIZE_TITLE:
+        return 1
+    if sz == SIZE_LARGE:
+        return 2
+    return 3
+
+
+def hamwrite_heading_level_at(i: uint64) -> int32:
+    return _heading_level(hamwrite_attr_at(i))
+
+
+def hamwrite_heading_count(level: int32) -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < tlen:
+        if _heading_level(attr[i]) == level:
+            n = n + 1
+        i = i + 1
+    return n
 
 
 # Paragraph bounds containing `pos`: [start, end) with end at the '\n' (or tlen).
@@ -551,8 +931,130 @@ def hamwrite_set_align(al: int32) -> int32:
         i = i + 1
     if e > s:
         dirty = 1
+        _hist_record(EDIT_OTHER)
     cur_attr = _with_align(cur_attr, al)
     return 1
+
+
+# ---- lists + indent (paragraph properties, stored in attr2) ----------------
+# The span of every paragraph the selection (or the bare caret) touches.
+def _para_span(sp: Ptr[uint64], ep: Ptr[uint64]):
+    lo: uint64 = caret
+    hi: uint64 = caret
+    if _sel_has() != 0:
+        lo = _sel_lo()
+        hi = _sel_hi()
+    sp[0] = _para_start(lo)
+    ep[0] = _para_end(hi)
+
+
+# Set the LIST kind (0 none / 1 bullet / 2 numbered) on the touched paragraphs.
+# Re-applying the same kind turns the list OFF, exactly like Word's toolbar.
+def hamwrite_set_list(kind: int32) -> int32:
+    if kind < 0 or kind > 2:
+        return 0
+    s: uint64 = 0
+    e: uint64 = 0
+    _para_span(&s, &e)
+    want: int32 = kind
+    if e > s and _list_of(attr2[s]) == kind:
+        want = LIST_NONE
+    elif e <= s and _list_of(cur_attr2) == kind:
+        want = LIST_NONE
+    i: uint64 = s
+    while i < e:
+        attr2[i] = _with_list(attr2[i], want)
+        i = i + 1
+    if e > s:
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+    cur_attr2 = _with_list(cur_attr2, want)
+    return 1
+
+
+# Indent (+1) / outdent (-1) the touched paragraphs, clamped to 0..MAX_INDENT.
+def hamwrite_indent(delta: int32) -> int32:
+    s: uint64 = 0
+    e: uint64 = 0
+    _para_span(&s, &e)
+    base: int32 = _indent_of(cur_attr2)
+    if e > s:
+        base = _indent_of(attr2[s])
+    lv: int32 = base + delta
+    if lv < 0:
+        lv = 0
+    if lv > MAX_INDENT:
+        lv = MAX_INDENT
+    if lv == base:
+        return 0
+    i: uint64 = s
+    while i < e:
+        attr2[i] = _with_indent(attr2[i], lv)
+        i = i + 1
+    if e > s:
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+    cur_attr2 = _with_indent(cur_attr2, lv)
+    return 1
+
+
+# ---- text colour + highlight (character properties, stored in attr2) -------
+def hamwrite_set_color(c: int32) -> int32:
+    if c < 0 or c > 7:
+        return 0
+    if _sel_has() != 0:
+        a: uint64 = _sel_lo()
+        b: uint64 = _sel_hi()
+        i: uint64 = a
+        while i < b:
+            attr2[i] = _with_color(attr2[i], c)
+            i = i + 1
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+    cur_attr2 = _with_color(cur_attr2, c)
+    return 1
+
+
+def hamwrite_toggle_hilite() -> int32:
+    if _sel_has() != 0:
+        a: uint64 = _sel_lo()
+        b: uint64 = _sel_hi()
+        all_set: int32 = 1
+        i: uint64 = a
+        while i < b:
+            if (attr2[i] & A2_HILITE) == 0:
+                all_set = 0
+            i = i + 1
+        i = a
+        while i < b:
+            if all_set != 0:
+                attr2[i] = attr2[i] & (255 - A2_HILITE)
+            else:
+                attr2[i] = attr2[i] | A2_HILITE
+            i = i + 1
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+        return 1
+    if (cur_attr2 & A2_HILITE) != 0:
+        cur_attr2 = cur_attr2 & (255 - A2_HILITE)
+    else:
+        cur_attr2 = cur_attr2 | A2_HILITE
+    return 1
+
+
+# The attr2 that WOULD apply now (mirrors hamwrite_active_attr for plane 2).
+def hamwrite_active_attr2() -> uint8:
+    if sel_on != 0 and caret != anchor:
+        lo: uint64 = caret
+        if anchor < lo:
+            lo = anchor
+        if lo < tlen:
+            return attr2[lo]
+    if caret > 0 and caret <= tlen:
+        p: uint8 = attr2[caret - 1]
+        return (cur_attr2 & (255 - A2_LIST_MASK - A2_INDENT_MASK)) | \
+               (p & (A2_LIST_MASK | A2_INDENT_MASK))
+    return cur_attr2
 
 
 # ---- selection / clipboard glue -------------------------------------------
@@ -573,6 +1075,7 @@ def hamwrite_sel_len() -> uint64:
 def hamwrite_delete_selection() -> int32:
     if _delete_selection() != 0:
         dirty = 1
+        _hist_record(EDIT_OTHER)
         return 1
     return 0
 
@@ -589,6 +1092,250 @@ def hamwrite_paste(s: Ptr[uint8], n: uint64):
         i = i + 1
     if n > 0:
         dirty = 1
+        _hist_record(EDIT_OTHER)
+
+
+# ---- FIND & REPLACE --------------------------------------------------------
+# Case-INSENSITIVE literal matching (what a word processor does by default).
+def _lower(c: uint8) -> uint8:
+    if c >= 65 and c <= 90:
+        return c + 32
+    return c
+
+
+# Does the needle sit at document offset `at`?
+def _match_at(at: uint64) -> int32:
+    if find_len == 0:
+        return 0
+    if at + find_len > tlen:
+        return 0
+    k: uint64 = 0
+    while k < find_len:
+        if _lower(text[at + k]) != _lower(find_buf[k]):
+            return 0
+        k = k + 1
+    return 1
+
+
+# Is offset `at` the start of a live match? (renderer's highlight-all hook)
+def hamwrite_match_at(at: uint64) -> int32:
+    if find_on == 0:
+        return 0
+    return _match_at(at)
+
+
+def _count_hits() -> uint64:
+    n: uint64 = 0
+    if find_len == 0 or find_len > tlen:
+        find_hits = 0
+        return 0
+    i: uint64 = 0
+    while i + find_len <= tlen:
+        if _match_at(i) != 0:
+            n = n + 1
+            i = i + find_len
+        else:
+            i = i + 1
+    find_hits = n
+    return n
+
+
+def hamwrite_find_hits() -> uint64:
+    return find_hits
+
+
+def hamwrite_find_cur() -> int64:
+    return find_cur
+
+
+def hamwrite_find_msg() -> int32:
+    return find_msg
+
+
+def hamwrite_find_replaced() -> uint64:
+    return find_nrep
+
+
+def hamwrite_find_active() -> int32:
+    return find_on
+
+
+def hamwrite_find_ptr() -> Ptr[uint8]:
+    find_buf[find_len] = 0
+    return &find_buf[0]
+
+
+def hamwrite_repl_ptr() -> Ptr[uint8]:
+    repl_buf[repl_len] = 0
+    return &repl_buf[0]
+
+
+def hamwrite_find_field() -> int32:
+    return find_field
+
+
+# Seed the Find / Replace-with fields programmatically (menus, scripted tests).
+def hamwrite_set_find(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0 and i < FIND_CAP - 1:
+        find_buf[i] = s[i]
+        i = i + 1
+    find_len = i
+    find_buf[i] = 0
+    _count_hits()
+    find_msg = 0
+
+
+def hamwrite_set_repl(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0 and i < FIND_CAP - 1:
+        repl_buf[i] = s[i]
+        i = i + 1
+    repl_len = i
+    repl_buf[i] = 0
+
+
+def hamwrite_find_open():
+    find_on = 1
+    find_field = 0
+    menu_open = 0
+    prompt_on = 0
+    find_msg = 0
+    # a live selection seeds the search box, as in every real editor
+    if _sel_has() != 0 and _sel_hi() - _sel_lo() < FIND_CAP:
+        n: uint64 = _sel_hi() - _sel_lo()
+        s: uint64 = _sel_lo()
+        i: uint64 = 0
+        while i < n:
+            find_buf[i] = text[s + i]
+            i = i + 1
+        find_len = n
+    _count_hits()
+
+
+def hamwrite_find_close():
+    find_on = 0
+    find_cur = -1
+    find_msg = 0
+
+
+# Select the next match at or after `from`, wrapping to the top of the document.
+# Returns 1 if a match was selected.
+def hamwrite_find_next() -> int32:
+    _count_hits()
+    find_msg = 0
+    if find_len == 0 or find_len > tlen:
+        find_cur = -1
+        find_msg = 1
+        return 0
+    # Resume just PAST the match we are sitting on, else from the caret.
+    start: uint64 = caret
+    if _sel_has() != 0:
+        start = _sel_lo()
+        if _match_at(start) != 0:
+            start = start + 1
+        else:
+            start = _sel_hi()
+    i: uint64 = start
+    while i + find_len <= tlen:
+        if _match_at(i) != 0:
+            anchor = i
+            caret = i + find_len
+            sel_on = 1
+            find_cur = cast[int64](i)
+            return 1
+        i = i + 1
+    i = 0
+    while i < start and i + find_len <= tlen:
+        if _match_at(i) != 0:
+            anchor = i
+            caret = i + find_len
+            sel_on = 1
+            find_cur = cast[int64](i)
+            find_msg = 2                                # wrapped to the top
+            return 1
+        i = i + 1
+    find_cur = -1
+    find_msg = 1                                        # not found
+    return 0
+
+
+# Splice the replacement over [at, at+find_len), inheriting the attributes of
+# the first replaced character so a bolded hit stays bold.
+def _splice_replacement(at: uint64) -> int32:
+    if at + find_len > tlen:
+        return 0
+    a0: uint8 = cur_attr
+    a2: uint8 = cur_attr2
+    if at < tlen:
+        a0 = attr[at]
+        a2 = attr2[at]
+    if tlen - find_len + repl_len > CAP:
+        return 0
+    caret = at
+    anchor = at
+    sel_on = 0
+    _delete_range(at, at + find_len)
+    i: uint64 = 0
+    while i < repl_len:
+        if _insert_at2(repl_buf[i], a0, a2) == 0:
+            break
+        i = i + 1
+    return 1
+
+
+# Replace the CURRENT match (if the selection is on one), then advance.
+def hamwrite_replace() -> int32:
+    find_msg = 0
+    if find_len == 0:
+        return 0
+    on: int32 = 0
+    at: uint64 = 0
+    if _sel_has() != 0 and _sel_hi() - _sel_lo() == find_len:
+        at = _sel_lo()
+        if _match_at(at) != 0:
+            on = 1
+    if on == 0:
+        return hamwrite_find_next()
+    _splice_replacement(at)
+    dirty = 1
+    _hist_record(EDIT_OTHER)
+    find_nrep = 1
+    find_msg = 3
+    find_cur = -1
+    _count_hits()
+    hamwrite_find_next()
+    return 1
+
+
+# Replace EVERY match, front to back. Returns the number replaced.
+def hamwrite_replace_all() -> uint64:
+    find_msg = 0
+    find_nrep = 0
+    if find_len == 0 or find_len > tlen:
+        find_msg = 1
+        return 0
+    n: uint64 = 0
+    i: uint64 = 0
+    while i + find_len <= tlen:
+        if _match_at(i) != 0:
+            if _splice_replacement(i) == 0:
+                break
+            n = n + 1
+            i = i + repl_len
+        else:
+            i = i + 1
+    find_nrep = n
+    if n > 0:
+        dirty = 1
+        _hist_record(EDIT_OTHER)
+        find_msg = 3
+    else:
+        find_msg = 1
+    find_cur = -1
+    sel_on = 0
+    _count_hits()
+    return n
 
 
 def _select_all():
@@ -601,16 +1348,25 @@ def _select_all():
 
 
 # ---- window geometry -------------------------------------------------------
-WIN_W: int32 = 640
-WIN_H: int32 = 452
+# The window grew to 720x552 to fit a SECOND toolbar row (undo/redo, lists,
+# indent, the colour swatches, highlight and Find) and a RULER over a bigger
+# sheet of paper — the page is now 696x396 instead of 616x330.
+WIN_W: int32 = 720
+WIN_H: int32 = 552
 
 BAR_H:  int32 = 22          # title bar
 MENU_Y: int32 = 22          # menu bar (File / Edit / Format)
 MENU_H: int32 = 22
-TB_Y:   int32 = 44          # formatting toolbar
-TB_H:   int32 = 32
-BTN_Y:  int32 = 49
+TB_Y:   int32 = 44          # formatting toolbar, row 1
+TB_H:   int32 = 30
+BTN_Y:  int32 = 48
 BTN_H:  int32 = 22
+TB2_Y:  int32 = 74          # formatting toolbar, row 2
+TB2_H:  int32 = 30
+BTN2_Y: int32 = 78
+
+RULER_Y: int32 = 104        # horizontal ruler over the page
+RULER_H: int32 = 16
 
 # menu-bar buttons
 MB_FILE_X: int32 = 8
@@ -624,47 +1380,75 @@ MB_FMT_W:  int32 = 66
 DD_Y:  int32 = 44
 DD_IH: int32 = 20           # item height
 
-# toolbar buttons
+# toolbar row 1: B I U | H1 H2 H3 | S M L XL | Left Center Right | Open Save
 B_X:  int32 = 8
 B_W:  int32 = 26
 I_X:  int32 = 38
 I_W:  int32 = 26
 U_X:  int32 = 68
 U_W:  int32 = 26
-H_X:  int32 = 98
-H_W:  int32 = 30
-SZ_S_X: int32 = 142
+H1_X: int32 = 104
+H1_W: int32 = 30
+H2_X: int32 = 138
+H2_W: int32 = 30
+H3_X: int32 = 172
+H3_W: int32 = 30
+SZ_S_X: int32 = 212
 SZ_S_W: int32 = 26
-SZ_M_X: int32 = 172
+SZ_M_X: int32 = 242
 SZ_M_W: int32 = 26
-SZ_L_X: int32 = 202
+SZ_L_X: int32 = 272
 SZ_L_W: int32 = 26
-SZ_T_X: int32 = 232
+SZ_T_X: int32 = 302
 SZ_T_W: int32 = 32
-AL_L_X: int32 = 278
+AL_L_X: int32 = 346
 AL_L_W: int32 = 42
-AL_C_X: int32 = 324
+AL_C_X: int32 = 392
 AL_C_W: int32 = 58
-AL_R_X: int32 = 386
+AL_R_X: int32 = 454
 AL_R_W: int32 = 48
-OPEN_X: int32 = 448
+OPEN_X: int32 = 608
 OPEN_W: int32 = 48
-SAVE_X: int32 = 500
+SAVE_X: int32 = 660
 SAVE_W: int32 = 48
+
+# toolbar row 2: Undo Redo | Bul Num | >> << | 8 colour swatches | HL | Find
+UNDO_X: int32 = 8
+UNDO_W: int32 = 44
+REDO_X: int32 = 56
+REDO_W: int32 = 44
+BUL_X:  int32 = 110
+BUL_W:  int32 = 34
+NUM_X:  int32 = 148
+NUM_W:  int32 = 34
+IND_X:  int32 = 192
+IND_W:  int32 = 34
+OUT_X:  int32 = 230
+OUT_W:  int32 = 34
+SW_X:   int32 = 274         # first colour swatch
+SW_W:   int32 = 16
+SW_STEP: int32 = 18
+HL_X:   int32 = 424
+HL_W:   int32 = 34
+FIND_X: int32 = 468
+FIND_W: int32 = 46
 
 # page (document) area + its text content box
 PAGE_X: int32 = 12
-PAGE_Y: int32 = 82
-PAGE_W: int32 = 616
-PAGE_H: int32 = 330
-TXT_X:  int32 = 26          # PAGE_X + 14
-TXT_Y:  int32 = 90          # PAGE_Y + 8
-CONTENT_W: int32 = 578      # PAGE_W - 2*14 - 10 (scrollbar gutter)
-VIEW_H:    int32 = 314      # PAGE_H - 16
-SBAR_X: int32 = 616         # PAGE_X + PAGE_W - 12
+PAGE_Y: int32 = 120
+PAGE_W: int32 = 696
+PAGE_H: int32 = 396
+TXT_X:  int32 = 30          # PAGE_X + 18
+TXT_Y:  int32 = 130         # PAGE_Y + 10
+CONTENT_W: int32 = 650      # PAGE_W - 2*18 - 10 (scrollbar gutter)
+VIEW_H:    int32 = 376      # PAGE_H - 20
+SBAR_X: int32 = 696         # PAGE_X + PAGE_W - 12
 SBAR_W: int32 = 8
 
-STATUS_Y: int32 = 420
+STATUS_Y: int32 = 526
+
+# Extra space after the last row of a paragraph (real paragraph spacing).
+PARA_GAP: int32 = 6
 
 
 # ---- laid-out row table ----------------------------------------------------
@@ -680,6 +1464,9 @@ row_y:     Array[600, int32]       # y of the row's top, relative to doc top
 row_h:     Array[600, int32]       # line-box height (max size class in the row)
 row_w:     Array[600, int32]       # pixel width of the row's glyphs
 row_al:    Array[600, int32]       # paragraph alignment for the row
+row_ind:   Array[600, int32]       # left indent in pixels (indent + list gutter)
+row_mark:  Array[600, int32]       # 0 none, 1 bullet, 2 number (FIRST row only)
+row_num:   Array[600, int32]       # ordinal for a numbered-list paragraph
 nrows:     uint64 = 0
 doc_h:     int32 = 0
 
@@ -712,14 +1499,55 @@ def _adv(c: uint8, sz: int32) -> int32:
     return w
 
 
+# Ordinal of a numbered-list paragraph starting at `start`: 1 + the run of
+# immediately preceding paragraphs that are ALSO numbered at the same indent.
+def _list_ordinal(start: uint64, lv: int32) -> int32:
+    n: int32 = 1
+    p: uint64 = start
+    while p > 0:
+        pe: uint64 = p - 1                              # the '\n' before us
+        ps: uint64 = _para_start(pe)
+        if pe <= ps:
+            break                                       # empty paragraph: stop
+        if _list_of(attr2[ps]) != LIST_NUMBER:
+            break
+        if _indent_of(attr2[ps]) != lv:
+            break
+        n = n + 1
+        p = ps
+        if ps == 0:
+            break
+    return n
+
+
 # Rebuild the row table: PIXEL word-wrap (break at the last space that fits,
-# hard-break at '\n'), then per-row height / width / alignment.
+# hard-break at '\n'), then per-row height / width / alignment / list indent.
+# Paragraphs are separated by PARA_GAP pixels of real leading, and a list
+# paragraph reserves a gutter for its bullet or number.
 def _layout():
     nrows = 0
     i: uint64 = 0
     y: int32 = 0
+    para_head: int32 = 1                                # row starts a paragraph
     while nrows < ROWS_CAP:
         start: uint64 = i
+        # paragraph properties come from attr2 at the paragraph's first char
+        pstart: uint64 = _para_start(start)
+        pa2: uint8 = cur_attr2
+        if pstart < tlen:
+            pa2 = attr2[pstart]
+        elif start > 0:
+            pa2 = attr2[start - 1]
+        else:
+            pa2 = cur_attr2
+        lk: int32 = _list_of(pa2)
+        lv: int32 = _indent_of(pa2)
+        ind: int32 = lv * INDENT_PX
+        if lk != LIST_NONE:
+            ind = ind + INDENT_PX
+        avail: int32 = CONTENT_W - ind
+        if avail < 80:
+            avail = 80
         w: int32 = 0
         j: uint64 = i
         brk: uint64 = 0
@@ -731,7 +1559,7 @@ def _layout():
             if j - start >= ROW_CHARS_MAX:
                 break
             a: int32 = _adv(c, _size_of(attr[j]))
-            if w + a > CONTENT_W and j > start:
+            if w + a > avail and j > start:
                 if has_brk != 0 and brk > start and brk <= j:
                     j = brk
                 break
@@ -758,19 +1586,31 @@ def _layout():
             al = _align_of(attr[start])
         elif start > 0:
             al = _align_of(attr[start - 1])
+        mark: int32 = 0
+        num: int32 = 0
+        if para_head != 0 and lk != LIST_NONE:
+            mark = lk
+            if lk == LIST_NUMBER:
+                num = _list_ordinal(pstart, lv)
         row_start[nrows] = cast[uint32](start)
         row_len[nrows] = cast[uint32](j - start)
         row_y[nrows] = y
         row_h[nrows] = rh
         row_w[nrows] = rw
         row_al[nrows] = al
+        row_ind[nrows] = ind
+        row_mark[nrows] = mark
+        row_num[nrows] = num
         y = y + rh
         nrows = nrows + 1
         if j >= tlen:
             break
         if text[j] == 10:
+            y = y + PARA_GAP                            # paragraph spacing
             i = j + 1
+            para_head = 1
             continue
+        para_head = 0
         i = j
     if nrows == 0:
         row_start[0] = 0
@@ -779,19 +1619,24 @@ def _layout():
         row_h[0] = 20
         row_w[0] = 0
         row_al[0] = 0
+        row_ind[0] = 0
+        row_mark[0] = 0
+        row_num[0] = 0
         nrows = 1
         y = 20
     doc_h = y
 
 
-# Left edge of a row's glyphs, honouring the paragraph alignment.
+# Left edge of a row's glyphs, honouring the paragraph indent + alignment.
 def _row_x(r: uint64) -> int32:
+    x0: int32 = TXT_X + row_ind[r]
+    avail: int32 = CONTENT_W - row_ind[r]
     al: int32 = row_al[r]
     if al == ALIGN_CENTER:
-        return TXT_X + (CONTENT_W - row_w[r]) / 2
+        return x0 + (avail - row_w[r]) / 2
     if al == ALIGN_RIGHT:
-        return TXT_X + CONTENT_W - row_w[r]
-    return TXT_X
+        return x0 + avail - row_w[r]
+    return x0
 
 
 # Pixel offset of the caret gap BEFORE the row's k-th character.
@@ -938,9 +1783,11 @@ def _hw_nav(fin: int32) -> int32:
     if fin == 51:                                      # Delete
         if _delete_selection() != 0:
             dirty = 1
+            _hist_record(EDIT_OTHER)
             return 1
         if _delete_fwd() != 0:
             dirty = 1
+            _hist_record(EDIT_DEL)
             return 1
         return 0
     if fin == 53:                                      # PgUp
@@ -1008,7 +1855,56 @@ def _prompt_key(code: int32) -> int32:
 # applied in-core:
 #   Ctrl-B bold   Ctrl-I italic   Ctrl-U underline
 #   Ctrl-L left   Ctrl-E centre   Ctrl-R right      (Word's alignment keys)
+# Feed one key to the modal Find & Replace dialog. Returns 1 if a redraw is
+# needed. Tab switches field, Enter = Find Next, ^R = Replace, ^T = Replace All.
+def _find_key(code: int32) -> int32:
+    if code == 27:                                     # ESC -> close
+        hamwrite_find_close()
+        return 1
+    if code == 9:                                      # Tab -> other field
+        find_field = 1 - find_field
+        return 1
+    if code == 13 or code == 10:                       # Enter -> Find Next
+        hamwrite_find_next()
+        return 1
+    if code == 18:                                     # Ctrl-R -> Replace
+        hamwrite_replace()
+        return 1
+    if code == 20:                                     # Ctrl-T -> Replace All
+        hamwrite_replace_all()
+        return 1
+    if code == 8 or code == 127:                       # Backspace
+        if find_field == 0:
+            if find_len > 0:
+                find_len = find_len - 1
+                _count_hits()
+                find_msg = 0
+                return 1
+            return 0
+        if repl_len > 0:
+            repl_len = repl_len - 1
+            return 1
+        return 0
+    if code >= 32 and code <= 126:
+        if find_field == 0:
+            if find_len < FIND_CAP - 1:
+                find_buf[find_len] = cast[uint8](code)
+                find_len = find_len + 1
+                _count_hits()
+                find_msg = 0
+                return 1
+            return 0
+        if repl_len < FIND_CAP - 1:
+            repl_buf[repl_len] = cast[uint8](code)
+            repl_len = repl_len + 1
+            return 1
+        return 0
+    return 0
+
+
 def hamwrite_key(code: int32) -> int32:
+    if find_on != 0:
+        return _find_key(code)
     if prompt_on != 0:
         return _prompt_key(code)
     if hw_esc == 1:                                    # after ESC
@@ -1066,6 +1962,13 @@ def hamwrite_key(code: int32) -> int32:
         return hamwrite_set_align(ALIGN_CENTER)
     if code == 18:                                     # Ctrl-R -> align right
         return hamwrite_set_align(ALIGN_RIGHT)
+    if code == 26:                                     # Ctrl-Z -> undo
+        return hamwrite_undo()
+    if code == 25:                                     # Ctrl-Y -> redo
+        return hamwrite_redo()
+    if code == 6:                                      # Ctrl-F -> find/replace
+        hamwrite_find_open()
+        return 1
     if code == 1:                                      # Ctrl-A -> select all
         _select_all()
         return 1
@@ -1081,21 +1984,31 @@ def hamwrite_key(code: int32) -> int32:
     if code == 8 or code == 127:                       # Backspace
         if _delete_selection() != 0:
             dirty = 1
+            _hist_record(EDIT_OTHER)
             return 1
         if _backspace() != 0:
             dirty = 1
+            _hist_record(EDIT_DEL)
             return 1
         return 0
     if code == 13 or code == 10:                       # Enter -> newline
         _delete_selection()
-        if _insert_at(10, cur_attr) != 0:
+        _sync_para_attrs()                     # the new paragraph continues the
+        if _insert_at(10, cur_attr) != 0:      # list/indent we are leaving
             dirty = 1
+            _hist_record(EDIT_OTHER)               # a newline closes the group
             return 1
         return 0
     if code >= 32 and code <= 126:                     # printable -> insert
-        _delete_selection()
+        had_sel: int32 = _delete_selection()
         if _insert_at(cast[uint8](code), cur_attr) != 0:
             dirty = 1
+            if had_sel != 0:
+                _hist_record(EDIT_OTHER)
+            else:
+                _hist_record(EDIT_TYPE)
+                if code == 32:
+                    grp_break = 1                  # a space closes the group
             return 1
         return 0
     return 0
@@ -1140,7 +2053,7 @@ def hamwrite_key_line(s: Ptr[uint8], n: uint64) -> int32:
 # HAMWRITE1 files simply carry zeroes in the new bits, which decode to the
 # defaults (normal size, left aligned, not underlined). Returns the byte count.
 def hamwrite_serialize(out: Ptr[uint8]) -> uint64:
-    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMWRITE1"))
+    p: uint64 = _append_cstr(out, 0, cast[Ptr[uint8]]("HAMWRITE2"))
     out[p] = 10
     p = p + 1
     p = p + _hw_udec(tlen, &out[p])
@@ -1156,6 +2069,11 @@ def hamwrite_serialize(out: Ptr[uint8]) -> uint64:
         out[p] = attr[i]
         p = p + 1
         i = i + 1
+    i = 0
+    while i < tlen:
+        out[p] = attr2[i]
+        p = p + 1
+        i = i + 1
     return p
 
 
@@ -1163,14 +2081,25 @@ def hamwrite_serialize(out: Ptr[uint8]) -> uint64:
 # with the magic is treated as PLAIN text (so opening an ordinary .txt works):
 # every byte becomes an unformatted character.
 def hamwrite_deserialize(s: Ptr[uint8], n: uint64):
-    # magic check
-    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMWRITE1")
+    # magic check: "HAMWRITE" + a version digit ('1' = no second plane).
+    magic: Ptr[uint8] = cast[Ptr[uint8]]("HAMWRITE")
     is_magic: int32 = 1
     k: uint64 = 0
     while magic[k] != 0:
         if k >= n or s[k] != magic[k]:
             is_magic = 0
         k = k + 1
+    ver: int32 = 0
+    if is_magic != 0 and k < n:
+        if s[k] == 49:
+            ver = 1
+        elif s[k] == 50:
+            ver = 2
+        else:
+            is_magic = 0
+    else:
+        is_magic = 0
+    k = k + 1                                          # step past the version
     scroll_top = 0
     if is_magic == 0:
         # plain text import
@@ -1181,10 +2110,12 @@ def hamwrite_deserialize(s: Ptr[uint8], n: uint64):
         while i0 < m:
             text[i0] = s[i0]
             attr[i0] = 0
+            attr2[i0] = 0
             i0 = i0 + 1
         tlen = m
         dirty = 0
         _reset_caret()
+        _hist_reset()
         return
     i: uint64 = k                                      # just past the magic
     if i < n and s[i] == 10:
@@ -1213,8 +2144,19 @@ def hamwrite_deserialize(s: Ptr[uint8], n: uint64):
     while a < tlen:
         attr[a] = 0
         a = a + 1
+    # second attribute plane (HAMWRITE2 only; v1 files decode as all-zero)
+    b: uint64 = 0
+    if ver >= 2:
+        while b < tlen and i < n:
+            attr2[b] = s[i]
+            b = b + 1
+            i = i + 1
+    while b < tlen:
+        attr2[b] = 0
+        b = b + 1
     dirty = 0
     _reset_caret()
+    _hist_reset()
 
 
 def hamwrite_flash_saved():
@@ -1228,9 +2170,9 @@ def _menu_count(m: int32) -> uint64:
     if m == 1:
         return 5                                        # File
     if m == 2:
-        return 4                                        # Edit
+        return 7                                        # Edit
     if m == 3:
-        return 11                                       # Format
+        return 19                                       # Format
     return 0
 
 
@@ -1251,9 +2193,9 @@ def _menu_bw(m: int32) -> int32:
 
 
 def _menu_panel_w(m: int32) -> int32:
-    if m == 3:
-        return 168
-    return 136
+    if m == 1:
+        return 136
+    return 176
 
 
 def _menu_title(m: int32) -> Ptr[uint8]:
@@ -1277,12 +2219,18 @@ def _menu_item(m: int32, i: uint64) -> Ptr[uint8]:
         return cast[Ptr[uint8]]("Quit")
     if m == 2:
         if i == 0:
-            return cast[Ptr[uint8]]("Cut")
+            return cast[Ptr[uint8]]("Undo")
         if i == 1:
-            return cast[Ptr[uint8]]("Copy")
+            return cast[Ptr[uint8]]("Redo")
         if i == 2:
+            return cast[Ptr[uint8]]("Cut")
+        if i == 3:
+            return cast[Ptr[uint8]]("Copy")
+        if i == 4:
             return cast[Ptr[uint8]]("Paste")
-        return cast[Ptr[uint8]]("Select All")
+        if i == 5:
+            return cast[Ptr[uint8]]("Select All")
+        return cast[Ptr[uint8]]("Find & Replace...")
     if i == 0:
         return cast[Ptr[uint8]]("Bold")
     if i == 1:
@@ -1290,20 +2238,36 @@ def _menu_item(m: int32, i: uint64) -> Ptr[uint8]:
     if i == 2:
         return cast[Ptr[uint8]]("Underline")
     if i == 3:
-        return cast[Ptr[uint8]]("Heading")
+        return cast[Ptr[uint8]]("Highlight")
     if i == 4:
-        return cast[Ptr[uint8]]("Size Small")
+        return cast[Ptr[uint8]]("Heading 1")
     if i == 5:
-        return cast[Ptr[uint8]]("Size Normal")
+        return cast[Ptr[uint8]]("Heading 2")
     if i == 6:
-        return cast[Ptr[uint8]]("Size Large")
+        return cast[Ptr[uint8]]("Heading 3")
     if i == 7:
-        return cast[Ptr[uint8]]("Size Title")
+        return cast[Ptr[uint8]]("Body Text")
     if i == 8:
-        return cast[Ptr[uint8]]("Align Left")
+        return cast[Ptr[uint8]]("Size Small")
     if i == 9:
+        return cast[Ptr[uint8]]("Size Normal")
+    if i == 10:
+        return cast[Ptr[uint8]]("Size Large")
+    if i == 11:
+        return cast[Ptr[uint8]]("Size Title")
+    if i == 12:
+        return cast[Ptr[uint8]]("Align Left")
+    if i == 13:
         return cast[Ptr[uint8]]("Align Center")
-    return cast[Ptr[uint8]]("Align Right")
+    if i == 14:
+        return cast[Ptr[uint8]]("Align Right")
+    if i == 15:
+        return cast[Ptr[uint8]]("Bullet List")
+    if i == 16:
+        return cast[Ptr[uint8]]("Numbered List")
+    if i == 17:
+        return cast[Ptr[uint8]]("Indent")
+    return cast[Ptr[uint8]]("Outdent")
 
 
 def _menu_accel(m: int32, i: uint64) -> Ptr[uint8]:
@@ -1317,23 +2281,29 @@ def _menu_accel(m: int32, i: uint64) -> Ptr[uint8]:
         return cast[Ptr[uint8]]("")
     if m == 2:
         if i == 0:
-            return cast[Ptr[uint8]]("^X")
+            return cast[Ptr[uint8]]("^Z")
         if i == 1:
-            return cast[Ptr[uint8]]("^C")
+            return cast[Ptr[uint8]]("^Y")
         if i == 2:
+            return cast[Ptr[uint8]]("^X")
+        if i == 3:
+            return cast[Ptr[uint8]]("^C")
+        if i == 4:
             return cast[Ptr[uint8]]("^V")
-        return cast[Ptr[uint8]]("^A")
+        if i == 5:
+            return cast[Ptr[uint8]]("^A")
+        return cast[Ptr[uint8]]("^F")
     if i == 0:
         return cast[Ptr[uint8]]("^B")
     if i == 1:
         return cast[Ptr[uint8]]("^I")
     if i == 2:
         return cast[Ptr[uint8]]("^U")
-    if i == 8:
+    if i == 12:
         return cast[Ptr[uint8]]("^L")
-    if i == 9:
+    if i == 13:
         return cast[Ptr[uint8]]("^E")
-    if i == 10:
+    if i == 14:
         return cast[Ptr[uint8]]("^R")
     return cast[Ptr[uint8]]("")
 
@@ -1343,29 +2313,42 @@ def _menu_item_active(m: int32, i: uint64) -> int32:
     if m != 3:
         return 0
     a: uint8 = hamwrite_active_attr()
+    a2: uint8 = hamwrite_active_attr2()
     if i == 0 and (a & ATTR_BOLD) != 0:
         return 1
     if i == 1 and (a & ATTR_ITALIC) != 0:
         return 1
     if i == 2 and (a & ATTR_UNDER) != 0:
         return 1
-    if i == 3 and (a & ATTR_HEADING) != 0:
+    if i == 3 and (a2 & A2_HILITE) != 0:
         return 1
     if i >= 4 and i <= 7:
+        wh: int32 = cast[int32](i) - 3
+        if i == 7:
+            wh = 0
+        if _heading_level(a) == wh:
+            return 1
+        return 0
+    if i >= 8 and i <= 11:
         want: int32 = SIZE_NORMAL
-        if i == 4:
+        if i == 8:
             want = SIZE_SMALL
-        elif i == 6:
+        elif i == 10:
             want = SIZE_LARGE
-        elif i == 7:
+        elif i == 11:
             want = SIZE_TITLE
         if _size_of(a) == want:
             return 1
         return 0
-    if i >= 8:
-        wa: int32 = cast[int32](i) - 8
+    if i >= 12 and i <= 14:
+        wa: int32 = cast[int32](i) - 12
         if _align_of(a) == wa:
             return 1
+        return 0
+    if i == 15 and _list_of(a2) == LIST_BULLET:
+        return 1
+    if i == 16 and _list_of(a2) == LIST_NUMBER:
+        return 1
     return 0
 
 
@@ -1388,12 +2371,21 @@ def _menu_activate(m: int32, i: uint64) -> int32:
         return 6                                        # Quit
     if m == 2:
         if i == 0:
-            return 9                                    # Cut
+            hamwrite_undo()
+            return 3
         if i == 1:
-            return 7                                    # Copy
+            hamwrite_redo()
+            return 3
         if i == 2:
+            return 9                                    # Cut
+        if i == 3:
+            return 7                                    # Copy
+        if i == 4:
             return 8                                    # Paste
-        _select_all()
+        if i == 5:
+            _select_all()
+            return 3
+        hamwrite_find_open()
         return 3
     if i == 0:
         hamwrite_toggle(ATTR_BOLD)
@@ -1402,21 +2394,37 @@ def _menu_activate(m: int32, i: uint64) -> int32:
     elif i == 2:
         hamwrite_toggle(ATTR_UNDER)
     elif i == 3:
-        hamwrite_toggle(ATTR_HEADING)
+        hamwrite_toggle_hilite()
     elif i == 4:
-        hamwrite_set_size(SIZE_SMALL)
+        hamwrite_set_heading(1)
     elif i == 5:
-        hamwrite_set_size(SIZE_NORMAL)
+        hamwrite_set_heading(2)
     elif i == 6:
-        hamwrite_set_size(SIZE_LARGE)
+        hamwrite_set_heading(3)
     elif i == 7:
-        hamwrite_set_size(SIZE_TITLE)
+        hamwrite_set_heading(0)
     elif i == 8:
-        hamwrite_set_align(ALIGN_LEFT)
+        hamwrite_set_size(SIZE_SMALL)
     elif i == 9:
+        hamwrite_set_size(SIZE_NORMAL)
+    elif i == 10:
+        hamwrite_set_size(SIZE_LARGE)
+    elif i == 11:
+        hamwrite_set_size(SIZE_TITLE)
+    elif i == 12:
+        hamwrite_set_align(ALIGN_LEFT)
+    elif i == 13:
         hamwrite_set_align(ALIGN_CENTER)
-    else:
+    elif i == 14:
         hamwrite_set_align(ALIGN_RIGHT)
+    elif i == 15:
+        hamwrite_set_list(LIST_BULLET)
+    elif i == 16:
+        hamwrite_set_list(LIST_NUMBER)
+    elif i == 17:
+        hamwrite_indent(1)
+    else:
+        hamwrite_indent(-1)
     return 3
 
 
@@ -1460,7 +2468,52 @@ def _hit_offset(x: int64, y: int64) -> uint64:
 #   0 = nothing (or a body click that only moved the caret)
 #   1 save   2 open(current)   3 redraw-only   4 new   6 quit
 #   7 copy   8 paste   9 cut
+# ---- Find & Replace dialog geometry ---------------------------------------
+FD_X: int32 = 150
+FD_Y: int32 = 170
+FD_W: int32 = 440
+FD_H: int32 = 190
+FD_F1_Y: int32 = 198        # Find field
+FD_F2_Y: int32 = 228        # Replace-with field
+FD_FX:  int32 = 262         # FD_X + 112
+FD_FW:  int32 = 316
+FD_BY:  int32 = 292         # button row
+FD_BH:  int32 = 24
+FD_B1_X: int32 = 162
+FD_B1_W: int32 = 90
+FD_B2_X: int32 = 258
+FD_B2_W: int32 = 80
+FD_B3_X: int32 = 344
+FD_B3_W: int32 = 104
+FD_B4_X: int32 = 454
+FD_B4_W: int32 = 70
+
+
+# Clicks inside the modal Find & Replace dialog. Always returns 3 (redraw-only)
+# while the dialog is up, so it swallows everything behind it.
+def _find_hit(x: int64, y: int64) -> int32:
+    if y >= cast[int64](FD_F1_Y) and y < cast[int64](FD_F1_Y + 22):
+        find_field = 0
+        return 3
+    if y >= cast[int64](FD_F2_Y) and y < cast[int64](FD_F2_Y + 22):
+        find_field = 1
+        return 3
+    if y >= cast[int64](FD_BY) and y < cast[int64](FD_BY + FD_BH):
+        if x >= cast[int64](FD_B1_X) and x < cast[int64](FD_B1_X + FD_B1_W):
+            hamwrite_find_next()
+        elif x >= cast[int64](FD_B2_X) and x < cast[int64](FD_B2_X + FD_B2_W):
+            hamwrite_replace()
+        elif x >= cast[int64](FD_B3_X) and x < cast[int64](FD_B3_X + FD_B3_W):
+            hamwrite_replace_all()
+        elif x >= cast[int64](FD_B4_X) and x < cast[int64](FD_B4_X + FD_B4_W):
+            hamwrite_find_close()
+        return 3
+    return 3
+
+
 def hamwrite_hit(x: int64, y: int64) -> int32:
+    if find_on != 0:
+        return _find_hit(x, y)
     if prompt_on != 0:
         return 0
     # an open drop-down eats the next click
@@ -1503,8 +2556,14 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
         if x >= cast[int64](U_X) and x < cast[int64](U_X + U_W):
             hamwrite_toggle(ATTR_UNDER)
             return 3
-        if x >= cast[int64](H_X) and x < cast[int64](H_X + H_W):
-            hamwrite_toggle(ATTR_HEADING)
+        if x >= cast[int64](H1_X) and x < cast[int64](H1_X + H1_W):
+            hamwrite_set_heading(1)
+            return 3
+        if x >= cast[int64](H2_X) and x < cast[int64](H2_X + H2_W):
+            hamwrite_set_heading(2)
+            return 3
+        if x >= cast[int64](H3_X) and x < cast[int64](H3_X + H3_W):
+            hamwrite_set_heading(3)
             return 3
         if x >= cast[int64](SZ_S_X) and x < cast[int64](SZ_S_X + SZ_S_W):
             hamwrite_set_size(SIZE_SMALL)
@@ -1532,10 +2591,43 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
         if x >= cast[int64](SAVE_X) and x < cast[int64](SAVE_X + SAVE_W):
             return 1
         return 0
+    # toolbar row 2: undo/redo, lists, indent, colour swatches, highlight, find
+    if y >= cast[int64](TB2_Y) and y < cast[int64](TB2_Y + TB2_H):
+        if x >= cast[int64](UNDO_X) and x < cast[int64](UNDO_X + UNDO_W):
+            hamwrite_undo()
+            return 3
+        if x >= cast[int64](REDO_X) and x < cast[int64](REDO_X + REDO_W):
+            hamwrite_redo()
+            return 3
+        if x >= cast[int64](BUL_X) and x < cast[int64](BUL_X + BUL_W):
+            hamwrite_set_list(LIST_BULLET)
+            return 3
+        if x >= cast[int64](NUM_X) and x < cast[int64](NUM_X + NUM_W):
+            hamwrite_set_list(LIST_NUMBER)
+            return 3
+        if x >= cast[int64](IND_X) and x < cast[int64](IND_X + IND_W):
+            hamwrite_indent(1)
+            return 3
+        if x >= cast[int64](OUT_X) and x < cast[int64](OUT_X + OUT_W):
+            hamwrite_indent(-1)
+            return 3
+        if x >= cast[int64](SW_X) and x < cast[int64](SW_X + 8 * SW_STEP):
+            ci: int64 = (x - cast[int64](SW_X)) / cast[int64](SW_STEP)
+            if ci >= 0 and ci < 8:
+                hamwrite_set_color(cast[int32](ci))
+            return 3
+        if x >= cast[int64](HL_X) and x < cast[int64](HL_X + HL_W):
+            hamwrite_toggle_hilite()
+            return 3
+        if x >= cast[int64](FIND_X) and x < cast[int64](FIND_X + FIND_W):
+            hamwrite_find_open()
+            return 3
+        return 0
     if hamwrite_in_page(x, y) != 0:
         caret = _hit_offset(x, y)
         anchor = caret
         sel_on = 0
+        _sync_para_attrs()
         return 0
     return 0
 
@@ -1543,7 +2635,7 @@ def hamwrite_hit(x: int64, y: int64) -> int32:
 # Is (x,y) inside the editable page? 1 = yes. Gates double/triple-click. A live
 # drop-down or prompt covers the page, so it reports 0 while either is up.
 def hamwrite_in_page(x: int64, y: int64) -> int32:
-    if menu_open != 0 or prompt_on != 0:
+    if menu_open != 0 or prompt_on != 0 or find_on != 0:
         return 0
     if x >= cast[int64](PAGE_X) and x < cast[int64](PAGE_X + PAGE_W) and \
             y >= cast[int64](PAGE_Y) and y < cast[int64](PAGE_Y + PAGE_H):
@@ -1554,7 +2646,7 @@ def hamwrite_in_page(x: int64, y: int64) -> int32:
 # Pointer DRAG (button-1 held): move caret to hit-test, KEEP anchor -> paint a
 # selection. Returns 1 if the caret moved.
 def hamwrite_drag(x: int64, y: int64) -> int32:
-    if menu_open != 0 or prompt_on != 0:
+    if menu_open != 0 or prompt_on != 0 or find_on != 0:
         return 0
     idx: uint64 = _hit_offset(x, y)
     if idx == caret:
@@ -1642,13 +2734,48 @@ def _run_color(a: uint8) -> Ptr[uint8]:
     return COL_INK()
 
 
+# ---- the eight-entry TEXT COLOUR palette (attr2 bits 4-6) -----------------
+# Index 0 is "automatic": the run keeps the colour its other formatting implies.
+def COL_PALETTE(i: int32) -> Ptr[uint8]:
+    if i == 1:
+        return cast[Ptr[uint8]]("#c0392b")             # red
+    if i == 2:
+        return cast[Ptr[uint8]]("#d35400")             # orange
+    if i == 3:
+        return cast[Ptr[uint8]]("#b7950b")             # amber
+    if i == 4:
+        return cast[Ptr[uint8]]("#1e8449")             # green
+    if i == 5:
+        return cast[Ptr[uint8]]("#1b4f9c")             # blue
+    if i == 6:
+        return cast[Ptr[uint8]]("#6c3483")             # purple
+    if i == 7:
+        return cast[Ptr[uint8]]("#5d6d7e")             # slate
+    return COL_INK()
+
+
+def COL_HILITE() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#fff3a3")
+
+
+def COL_MATCH() -> Ptr[uint8]:
+    return cast[Ptr[uint8]]("#ffd24a")
+
+
+# The ink for a run, letting an EXPLICIT text colour win over the implied tint.
+def _run_color2(a: uint8, a2: uint8) -> Ptr[uint8]:
+    c: int32 = _color_of(a2)
+    if c != 0:
+        return COL_PALETTE(c)
+    return _run_color(a)
+
+
 # Emit the NUL-terminated seg_buf (n chars) at (x, gy). Normal/small runs go out
 # as ONE `glyphs` op (cheap, and what the compositor's cache likes); large/title
 # runs are emitted per character at the scaled advance with an extra strike a
 # pixel down, which is how this app renders a bigger face without a compositor
 # size argument. Returns the run's pixel width.
-def _emit_run(x: int32, gy: int32, a: uint8, n: uint64) -> int32:
-    col: Ptr[uint8] = _run_color(a)
+def _emit_run(x: int32, gy: int32, a: uint8, col: Ptr[uint8], n: uint64) -> int32:
     sz: int32 = _size_of(a)
     heavy: int32 = 0
     if (a & ATTR_BOLD) != 0 or (a & ATTR_HEADING) != 0:
@@ -1689,6 +2816,45 @@ def _draw_row(r: uint64, yy: int32, lo: uint64, hi: uint64,
     gy: int32 = yy + (rh - 16) / 2
     if gy < yy:
         gy = yy
+    # LIST MARKER: a bullet dot or the paragraph's ordinal, drawn in the gutter
+    if row_mark[r] != 0:
+        mx: int32 = TXT_X + row_ind[r] - INDENT_PX + 4
+        if row_mark[r] == LIST_BULLET:
+            hamscene_roundrect(mx + 3, gy + 5, 6, 6, 3, COL_INK())
+        else:
+            nb: Array[8, uint8]
+            nl: uint64 = _hw_udec(cast[uint64](row_num[r]), &nb[0])
+            nb[nl] = 46                                 # '.'
+            nb[nl + 1] = 0
+            hamscene_glyphs(mx, gy, &nb[0], COL_INK())
+    # FIND highlight: every live match that overlaps this row gets a band, so
+    # the user sees all hits at once (the current one keeps the selection tint).
+    if find_on != 0 and find_len > 0:
+        q: uint64 = 0
+        while q < n:
+            if _match_at(s + q) != 0:
+                e2: uint64 = q + find_len
+                if e2 > n:
+                    e2 = n
+                mx0: int32 = x0 + _row_char_dx(r, q)
+                mx1: int32 = x0 + _row_char_dx(r, e2)
+                hamscene_fill(mx0, yy, mx1 - mx0, rh, COL_MATCH())
+                q = e2
+            else:
+                q = q + 1
+    # HIGHLIGHTER bands (per character, merged into runs by the loop below)
+    hq: uint64 = 0
+    while hq < n:
+        if (attr2[s + hq] & A2_HILITE) != 0:
+            he: uint64 = hq
+            while he < n and (attr2[s + he] & A2_HILITE) != 0:
+                he = he + 1
+            hx0: int32 = x0 + _row_char_dx(r, hq)
+            hx1: int32 = x0 + _row_char_dx(r, he)
+            hamscene_fill(hx0, yy, hx1 - hx0, rh, COL_HILITE())
+            hq = he
+        else:
+            hq = hq + 1
     # selection band
     if sel_on != 0 and hi > lo:
         a1: uint64 = lo
@@ -1706,18 +2872,21 @@ def _draw_row(r: uint64, yy: int32, lo: uint64, hi: uint64,
     rx: int32 = x0
     while c0 < n:
         a0: uint8 = attr[s + c0]
+        b0: uint8 = attr2[s + c0] & A2_COLOR_MASK       # colour splits runs too
         c1: uint64 = c0
-        while c1 < n and attr[s + c1] == a0 and c1 - c0 < SEG_CAP - 1:
+        while c1 < n and attr[s + c1] == a0 and \
+                (attr2[s + c1] & A2_COLOR_MASK) == b0 and c1 - c0 < SEG_CAP - 1:
             c1 = c1 + 1
         si: uint64 = 0
         while c0 + si < c1:
             seg_buf[si] = text[s + c0 + si]
             si = si + 1
         seg_buf[si] = 0
-        runw: int32 = _emit_run(rx, gy, a0, c1 - c0)
+        rcol: Ptr[uint8] = _run_color2(a0, b0)
+        runw: int32 = _emit_run(rx, gy, a0, rcol, c1 - c0)
         if (a0 & ATTR_UNDER) != 0 or (a0 & ATTR_HEADING) != 0:
             uy: int32 = gy + 15
-            hamscene_line(rx, uy, rx + runw, uy, 1, _run_color(a0))
+            hamscene_line(rx, uy, rx + runw, uy, 1, rcol)
         rx = rx + runw
         c0 = c1
     # caret
@@ -1727,13 +2896,23 @@ def _draw_row(r: uint64, yy: int32, lo: uint64, hi: uint64,
         caret_donep[0] = 1
 
 
-def _toolbtn(x: int32, w: int32, label: Ptr[uint8], active: int32):
+def _toolbtn_at(x: int32, by: int32, w: int32, label: Ptr[uint8], active: int32,
+                enabled: int32):
     fillc: Ptr[uint8] = cast[Ptr[uint8]]("#e6e8ec")
     if active != 0:
-        fillc = cast[Ptr[uint8]]("#c3d7f5")                              # depressed/active tint
-    hamscene_roundrect(x, BTN_Y, w, BTN_H, 4, fillc)
-    hamscene_stroke(x, BTN_Y, w, BTN_H, 1, cast[Ptr[uint8]]("#a8b0ba"))
-    hamscene_glyphs_bold(x + 6, BTN_Y + 4, label, COL_INK())
+        fillc = cast[Ptr[uint8]]("#c3d7f5")            # depressed/active tint
+    elif enabled == 0:
+        fillc = cast[Ptr[uint8]]("#eceef1")            # greyed out
+    hamscene_roundrect(x, by, w, BTN_H, 4, fillc)
+    hamscene_stroke(x, by, w, BTN_H, 1, cast[Ptr[uint8]]("#a8b0ba"))
+    ink: Ptr[uint8] = COL_INK()
+    if enabled == 0:
+        ink = cast[Ptr[uint8]]("#a5abb3")
+    hamscene_glyphs_bold(x + 6, by + 4, label, ink)
+
+
+def _toolbtn(x: int32, w: int32, label: Ptr[uint8], active: int32):
+    _toolbtn_at(x, BTN_Y, w, label, active, 1)
 
 
 # Build "<n> word[s]  <m> char[s]" into wc_buf (NUL-term); returns length.
@@ -1843,6 +3022,124 @@ def _draw_scrollbar():
                        cast[Ptr[uint8]]("#a7b0bb"))
 
 
+# A word-processor RULER over the page: the paper's margins in light grey, the
+# text column in white, a tick every half inch (48px) and a numbered inch mark.
+rul_buf: Array[8, uint8]
+
+
+def _draw_ruler():
+    hamscene_fill(0, RULER_Y, WIN_W, RULER_H, cast[Ptr[uint8]]("#dfe3e8"))
+    hamscene_fill(PAGE_X, RULER_Y + 2, PAGE_W, RULER_H - 4,
+                  cast[Ptr[uint8]]("#c9cdd3"))
+    hamscene_fill(TXT_X, RULER_Y + 2, CONTENT_W, RULER_H - 4,
+                  cast[Ptr[uint8]]("#ffffff"))
+    hamscene_stroke(TXT_X, RULER_Y + 2, CONTENT_W, RULER_H - 4, 1,
+                    cast[Ptr[uint8]]("#a8b0ba"))
+    k: int32 = 1
+    while k * 48 < CONTENT_W:
+        tx: int32 = TXT_X + k * 48
+        if k % 2 == 0:
+            hamscene_fill(tx, RULER_Y + 3, 1, RULER_H - 6,
+                          cast[Ptr[uint8]]("#8b929b"))
+            n: uint64 = _hw_udec(cast[uint64](k / 2), &rul_buf[0])
+            rul_buf[n] = 0
+            hamscene_glyphs(tx + 3, RULER_Y - 1, &rul_buf[0],
+                            cast[Ptr[uint8]]("#7b828c"))
+        else:
+            hamscene_fill(tx, RULER_Y + 6, 1, 4, cast[Ptr[uint8]]("#a8b0ba"))
+        k = k + 1
+    # the current paragraph's indent marker
+    ind: int32 = _indent_of(hamwrite_active_attr2()) * INDENT_PX
+    hamscene_roundrect(TXT_X + ind - 3, RULER_Y + 3, 7, 7, 2,
+                       cast[Ptr[uint8]]("#3f6fb5"))
+
+
+# The modal Find & Replace dialog: two entry boxes, a hit counter and the four
+# actions (Find Next / Replace / Replace All / Close).
+fmsg_buf: Array[64, uint8]
+
+
+def _find_status() -> uint64:
+    p: uint64 = 0
+    if find_msg == 1:
+        p = _append_cstr(&fmsg_buf[0], p, cast[Ptr[uint8]]("not found"))
+    elif find_msg == 3:
+        p = p + _hw_udec(find_nrep, &fmsg_buf[p])
+        p = _append_cstr(&fmsg_buf[0], p, cast[Ptr[uint8]](" replaced"))
+    else:
+        p = p + _hw_udec(find_hits, &fmsg_buf[p])
+        if find_hits == 1:
+            p = _append_cstr(&fmsg_buf[0], p, cast[Ptr[uint8]](" match"))
+        else:
+            p = _append_cstr(&fmsg_buf[0], p, cast[Ptr[uint8]](" matches"))
+        if find_msg == 2:
+            p = _append_cstr(&fmsg_buf[0], p,
+                             cast[Ptr[uint8]](" (wrapped)"))
+    fmsg_buf[p] = 0
+    return p
+
+
+def _draw_field(y: int32, buf: Ptr[uint8], n: uint64, focus: int32):
+    hamscene_fill(FD_FX, y, FD_FW, 22, cast[Ptr[uint8]]("#ffffff"))
+    bc: Ptr[uint8] = cast[Ptr[uint8]]("#8b929b")
+    if focus != 0:
+        bc = cast[Ptr[uint8]]("#3f6fb5")
+    hamscene_stroke(FD_FX, y, FD_FW, 22, 1, bc)
+    buf[n] = 0
+    hamscene_glyphs(FD_FX + 4, y + 3, buf, COL_INK())
+    if focus != 0:
+        cx: int32 = FD_FX + 4 + htb_text_width(buf, n)
+        hamscene_fill(cx, y + 3, 2, 16, COL_INK())
+
+
+def _draw_find():
+    if find_on == 0:
+        return
+    hamscene_fill(FD_X + 3, FD_Y + 3, FD_W, FD_H, cast[Ptr[uint8]]("#00000033"))
+    hamscene_fill(FD_X, FD_Y, FD_W, FD_H, cast[Ptr[uint8]]("#f4f5f7"))
+    hamscene_stroke(FD_X, FD_Y, FD_W, FD_H, 1, cast[Ptr[uint8]]("#8b929b"))
+    hamscene_fill(FD_X, FD_Y, FD_W, 22, cast[Ptr[uint8]]("#3f6fb5"))
+    hamscene_glyphs_bold(FD_X + 8, FD_Y + 4,
+                         cast[Ptr[uint8]]("Find & Replace"),
+                         cast[Ptr[uint8]]("#ffffff"))
+    hamscene_glyphs(FD_X + 12, FD_F1_Y + 3, cast[Ptr[uint8]]("Find:"),
+                    cast[Ptr[uint8]]("#4a5058"))
+    hamscene_glyphs(FD_X + 12, FD_F2_Y + 3, cast[Ptr[uint8]]("Replace with:"),
+                    cast[Ptr[uint8]]("#4a5058"))
+    f0: int32 = 0
+    if find_field == 0:
+        f0 = 1
+    f1: int32 = 1 - f0
+    _draw_field(FD_F1_Y, &find_buf[0], find_len, f0)
+    _draw_field(FD_F2_Y, &repl_buf[0], repl_len, f1)
+    _find_status()
+    hamscene_glyphs(FD_X + 12, FD_BY - 32, &fmsg_buf[0],
+                    cast[Ptr[uint8]]("#2f6f4f"))
+    _toolbtn_at(FD_B1_X, FD_BY, FD_B1_W, cast[Ptr[uint8]]("Find Next"), 0, 1)
+    _toolbtn_at(FD_B2_X, FD_BY, FD_B2_W, cast[Ptr[uint8]]("Replace"), 0, 1)
+    _toolbtn_at(FD_B3_X, FD_BY, FD_B3_W, cast[Ptr[uint8]]("Replace All"), 0, 1)
+    _toolbtn_at(FD_B4_X, FD_BY, FD_B4_W, cast[Ptr[uint8]]("Close"), 0, 1)
+    hamscene_glyphs(FD_X + 12, FD_Y + FD_H - 26,
+                    cast[Ptr[uint8]](
+                        "Tab = field   Enter = next   ^R = replace   ^T = all   Esc = close"),
+                    cast[Ptr[uint8]]("#7b828c"))
+
+
+# "Ln <row>, Col <col>" for the status footer (1-based, over the laid-out rows).
+lnc_buf: Array[48, uint8]
+
+
+def _lncol_text() -> uint64:
+    cr: uint64 = _caret_row()
+    col: uint64 = caret - cast[uint64](row_start[cr]) + 1
+    p: uint64 = _append_cstr(&lnc_buf[0], 0, cast[Ptr[uint8]]("Ln "))
+    p = p + _hw_udec(cr + 1, &lnc_buf[p])
+    p = _append_cstr(&lnc_buf[0], p, cast[Ptr[uint8]](", Col "))
+    p = p + _hw_udec(col, &lnc_buf[p])
+    lnc_buf[p] = 0
+    return p
+
+
 def hamwrite_build_scene():
     if flash > 0:
         flash = flash - 1
@@ -1881,14 +3178,24 @@ def hamwrite_build_scene():
     un_on: int32 = 0
     if (act & ATTR_UNDER) != 0:
         un_on = 1
-    hd_on: int32 = 0
-    if (act & ATTR_HEADING) != 0:
-        hd_on = 1
+    hlv: int32 = _heading_level(act)
+    h1_on: int32 = 0
+    if hlv == 1:
+        h1_on = 1
+    h2_on: int32 = 0
+    if hlv == 2:
+        h2_on = 1
+    h3_on: int32 = 0
+    if hlv == 3:
+        h3_on = 1
     _toolbtn(B_X, B_W, cast[Ptr[uint8]]("B"), bold_on)
     _toolbtn(I_X, I_W, cast[Ptr[uint8]]("I"), it_on)
     _toolbtn(U_X, U_W, cast[Ptr[uint8]]("U"), un_on)
-    _toolbtn(H_X, H_W, cast[Ptr[uint8]]("H1"), hd_on)
-    hamscene_stroke(134, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    hamscene_stroke(98, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    _toolbtn(H1_X, H1_W, cast[Ptr[uint8]]("H1"), h1_on)
+    _toolbtn(H2_X, H2_W, cast[Ptr[uint8]]("H2"), h2_on)
+    _toolbtn(H3_X, H3_W, cast[Ptr[uint8]]("H3"), h3_on)
+    hamscene_stroke(206, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
     csz: int32 = _size_of(act)
     s_on: int32 = 0
     if csz == SIZE_SMALL:
@@ -1906,7 +3213,7 @@ def hamwrite_build_scene():
     _toolbtn(SZ_M_X, SZ_M_W, cast[Ptr[uint8]]("M"), m_on)
     _toolbtn(SZ_L_X, SZ_L_W, cast[Ptr[uint8]]("L"), l_on)
     _toolbtn(SZ_T_X, SZ_T_W, cast[Ptr[uint8]]("XL"), t_on)
-    hamscene_stroke(270, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    hamscene_stroke(340, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
     cal: int32 = _align_of(act)
     al_on: int32 = 0
     if cal == ALIGN_LEFT:
@@ -1920,9 +3227,56 @@ def hamwrite_build_scene():
     _toolbtn(AL_L_X, AL_L_W, cast[Ptr[uint8]]("Left"), al_on)
     _toolbtn(AL_C_X, AL_C_W, cast[Ptr[uint8]]("Center"), ac_on)
     _toolbtn(AL_R_X, AL_R_W, cast[Ptr[uint8]]("Right"), ar_on)
-    hamscene_stroke(440, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    hamscene_stroke(596, BTN_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
     _toolbtn(OPEN_X, OPEN_W, cast[Ptr[uint8]]("Open"), 0)
     _toolbtn(SAVE_X, SAVE_W, cast[Ptr[uint8]]("Save"), 0)
+
+    # ---- toolbar row 2: undo/redo, lists, indent, colour, find ---------
+    hamscene_fill(0, TB2_Y, WIN_W, TB2_H, cast[Ptr[uint8]]("#eef0f3"))
+    hamscene_stroke(0, TB2_Y + TB2_H - 1, WIN_W, 1, 1,
+                    cast[Ptr[uint8]]("#b4b8bf"))
+    act2: uint8 = hamwrite_active_attr2()
+    _toolbtn_at(UNDO_X, BTN2_Y, UNDO_W, cast[Ptr[uint8]]("Undo"), 0,
+                hamwrite_can_undo())
+    _toolbtn_at(REDO_X, BTN2_Y, REDO_W, cast[Ptr[uint8]]("Redo"), 0,
+                hamwrite_can_redo())
+    hamscene_stroke(104, BTN2_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    lk: int32 = _list_of(act2)
+    bul_on: int32 = 0
+    if lk == LIST_BULLET:
+        bul_on = 1
+    num_on: int32 = 0
+    if lk == LIST_NUMBER:
+        num_on = 1
+    _toolbtn_at(BUL_X, BTN2_Y, BUL_W, cast[Ptr[uint8]]("Bul"), bul_on, 1)
+    _toolbtn_at(NUM_X, BTN2_Y, NUM_W, cast[Ptr[uint8]]("Num"), num_on, 1)
+    hamscene_stroke(186, BTN2_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    _toolbtn_at(IND_X, BTN2_Y, IND_W, cast[Ptr[uint8]](">>"), 0, 1)
+    _toolbtn_at(OUT_X, BTN2_Y, OUT_W, cast[Ptr[uint8]]("<<"), 0, 1)
+    hamscene_stroke(268, BTN2_Y, 1, BTN_H, 1, cast[Ptr[uint8]]("#c0c4cb"))
+    curc: int32 = _color_of(act2)
+    ci: int32 = 0
+    while ci < 8:
+        sx: int32 = SW_X + ci * SW_STEP
+        hamscene_fill(sx, BTN2_Y + 3, SW_W, 16, COL_PALETTE(ci))
+        if ci == curc:
+            hamscene_stroke(sx - 2, BTN2_Y + 1, SW_W + 4, 20, 2,
+                            cast[Ptr[uint8]]("#3f6fb5"))
+        else:
+            hamscene_stroke(sx, BTN2_Y + 3, SW_W, 16, 1,
+                            cast[Ptr[uint8]]("#9aa0a8"))
+        ci = ci + 1
+    hl_on: int32 = 0
+    if (act2 & A2_HILITE) != 0:
+        hl_on = 1
+    _toolbtn_at(HL_X, BTN2_Y, HL_W, cast[Ptr[uint8]]("HL"), hl_on, 1)
+    fnd_on: int32 = 0
+    if find_on != 0:
+        fnd_on = 1
+    _toolbtn_at(FIND_X, BTN2_Y, FIND_W, cast[Ptr[uint8]]("Find"), fnd_on, 1)
+
+    # ---- ruler ---------------------------------------------------------
+    _draw_ruler()
 
     # ---- document page (white paper) ----------------------------------
     hamscene_fill(PAGE_X, PAGE_Y, PAGE_W, PAGE_H, cast[Ptr[uint8]]("#ffffff"))
@@ -1948,12 +3302,16 @@ def hamwrite_build_scene():
     # ---- status footer -------------------------------------------------
     hamscene_glyphs(PAGE_X, STATUS_Y,
                     cast[Ptr[uint8]](
-                        "^B bold  ^I italic  ^U under  ^L/^E/^R align  ^S save"),
+                        "^B bold  ^U under  ^Z undo  ^Y redo  ^F find  ^S save"),
                     cast[Ptr[uint8]]("#606870"))
+    lnn: uint64 = _lncol_text()
     wcn: uint64 = _wc_text()
     wcx: int32 = WIN_W - 12 - htb_text_width(&wc_buf[0], wcn)
     hamscene_glyphs(wcx, STATUS_Y, &wc_buf[0], cast[Ptr[uint8]]("#5a5f66"))
+    lnx: int32 = wcx - 20 - htb_text_width(&lnc_buf[0], lnn)
+    hamscene_glyphs(lnx, STATUS_Y, &lnc_buf[0], cast[Ptr[uint8]]("#5a5f66"))
 
     # ---- overlays (drawn last, on top of the page) ---------------------
     _draw_dropdown()
     _draw_prompt()
+    _draw_find()

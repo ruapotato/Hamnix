@@ -1,9 +1,11 @@
 # user/hamwrite.ad — NATIVE scene-DE driver for HamWrite, the Hamnix office
 # word processor (/bin/hamwrite). The flagship of the native office suite: a
-# single-document rich-text editor with a File/Edit/Format MENU BAR, a
-# formatting toolbar (bold / italic / underline / heading, four text sizes,
-# left-centre-right paragraph alignment), pixel word-wrap + scrolling,
-# selection + clipboard and a real save/load document file.
+# single-document rich-text editor with a File/Edit/Format MENU BAR, a two-row
+# formatting toolbar (bold / italic / underline, H1-H3 headings, four text
+# sizes, left-centre-right alignment, undo/redo, bullet + numbered LISTS with
+# indent/outdent, an eight-colour text palette and a highlighter), a RULER,
+# MULTI-LEVEL UNDO/REDO, FIND & REPLACE, pixel word-wrap + scrolling, selection
+# + clipboard and a real save/load document file.
 #
 # This is the thin I/O + windowing shell around lib/hamwritecore.ad (which owns
 # the buffers, editing, formatting, hit-testing and the word-wrapped render).
@@ -393,7 +395,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     cfd: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd >= 0:
-        _writeall(cfd, cast[Ptr[uint8]]("geometry 100 60 640 452\n"))
+        _writeall(cfd, cast[Ptr[uint8]]("geometry 80 40 720 552\n"))
         sys_close(cfd)
     cfd2: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
     if cfd2 >= 0:
