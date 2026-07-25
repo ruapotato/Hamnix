@@ -37,18 +37,15 @@ cancellation off for them.
  concurrency:
 -  group: ${{ github.workflow }}-${{ github.ref }}
 -  cancel-in-progress: true
-+  group: >-
-+    ${{ github.workflow }}-${{ github.ref }}-${{
-+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-+      && 'full' || 'fast' }}
-+  cancel-in-progress: >-
-+    ${{ github.event_name != 'schedule'
-+        && github.event_name != 'workflow_dispatch' }}
++  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'fast' }}
++  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
 ```
 
 Notes:
-* `cancel-in-progress` accepts an expression; it is evaluated as a boolean, and
-  the `>-` folded scalar keeps it a single line for the parser.
+* Keep each expression on ONE physical line. A YAML folded scalar (`>-`) does
+  **not** fold a more-indented continuation — it preserves the newline, and a
+  multi-line `${{ ... }}` is not parsed by GitHub. Verified with `yaml.safe_load`.
+* `cancel-in-progress` accepts an expression; it is evaluated as a boolean.
 * Two concurrent nightlies cannot happen (cron fires once a day), and a manual
   dispatch during a nightly queues rather than cancels — which is the intent.
 
