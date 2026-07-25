@@ -238,8 +238,11 @@ wait_exit() {
 # terminal — deliberately heterogeneous so a leak in one app's teardown does
 # not hide behind another's. hambrowse gets --demo so it renders a
 # deterministic offline page instead of waiting on a network that isn't there.
-APP_POOL=(hamwrite hamsheet hamslides hamfmscene hammonscene
-          hamaudioscene hamcalcscene hambrowse hamtermscene)
+# SOAK_APPS overrides the pool, which is how you turn this gate into a
+# BISECTION tool: drop one app and re-run to see which counter's slope
+# collapses. That is how hamtermscene was identified as the dominant leaker
+# (its orphaned child shell) — see docs/de_stress_soak.md.
+read -r -a APP_POOL <<< "${SOAK_APPS:-hamwrite hamsheet hamslides hamfmscene hammonscene hamaudioscene hamcalcscene hambrowse hamtermscene}"
 APP_ARGS_hambrowse="--demo"
 
 snapshot 000_idle

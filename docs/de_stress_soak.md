@@ -69,18 +69,26 @@ Registered in `scripts/ci_battery_manifest.txt` behind `HAMNIX_SOAK=1`. It is
 deliberately too slow for the 50-minute per-shard budget and is a no-op in the
 normal battery — run it nightly, by hand, or before a release.
 
-## Two gate defects found on the very first run (both fixed)
+## Three gate defects found on the very first run (all fixed)
 
-Recorded because both are easy to reintroduce in any gate that drives hamsh
-over a serial FIFO.
+Recorded because all three are easy to reintroduce in any gate that drives
+hamsh over a serial FIFO for a long time.
 
 1. **`code=143` is not a failure when you are the one sending the note.**
    The gate closes apps with `/bin/kill <pid>`, i.e. the Plan 9 terminate
    note, and 143 *is* that note's normal exit status. A raw `code=143` counter
    is therefore 100% false positives — it fired on cycle 1. The gate now
-   tracks the pids it noted and only fails on a 143 exit it did not cause.
+   counts terminate notes *issued* against `code=143` exits *observed* and
+   fails only on the excess. Note that a **pid set** would have been the wrong
+   fix: pids recycle over a 30-minute soak, so a genuine unexpected 143 from a
+   recycled number would be masked.
 
-2. **hamsh's command echo contains your markers before the command runs.**
+2. **Waiting for an exit by grep *presence* is broken by pid recycling.**
+   `grep -q "task: pid $pid exited"` matches the exit of the *previous* holder
+   of that pid number and returns instantly, so a process that never died
+   looks closed. The gate compares occurrence *counts* before and after.
+
+3. **hamsh's command echo contains your markers before the command runs.**
    hamsh echoes the line it is being fed one character at a time, redrawing
    the whole line after each keystroke, so the log contains a single line
    reading `hamsh$ echo SOAKSMP_c0closed_B; cat /proc/meminfo; ... echo
@@ -144,3 +152,160 @@ into a 1536-byte scratch (`sys/src/9/port/devcpuinfo.ad`), so `cat
 /proc/cpuinfo` truncates the same way. The fix is mechanically identical to
 the meminfo one; it is left as a separate change so this one stays
 independently bisectable.
+
+---
+
+# RESULTS — first full run, 2026-07-25
+
+Image: `build/hamnix-installer.img` built the same hour from this tree
+(98 566 144 bytes, always-overwrite contract). Host: OVMF + KVM, `-m 1G`,
+`-vga std`, 1 vCPU. Two runs, identical except for the app pool.
+
+| | run 2 (full pool, 9 apps) | run 3 (control, 8 apps — **no** `hamtermscene`) |
+|---|---|---|
+| cycles completed | 36 | 36 |
+| wall clock | 922 s | 862 s |
+| apps launched / closed | 141 / 140 | 142 / 140 |
+| windows mapped | 144 | 145 |
+| **MemFree slope** | **−4 525 kB/cycle** | **−1 443 kB/cycle** |
+| **PagesInUse slope** | **+148.8 pg/cycle** | **+24.4 pg/cycle** |
+| **VmaNodesLive slope** | **+0.89 /cycle** (28 → 58) | **+0.00 /cycle** (28 → 28) |
+| **TasksLive slope** | **+0.44 /cycle** (20 → 35) | **+0.00 /cycle** (20 → 20) |
+| KmallocLive slope | +155 /cycle | +50 /cycle |
+| live wids | 0, max 4 of 32 — **no wid leak** | 0, max 4 of 32 — **no wid leak** |
+| mean recovery ratio | 0.912 | 0.960 |
+| verdict | LEAK, then **hard failure at cycle 36** | LEAK, then **hard failure at cycle 36** |
+
+**Answer to the user's question: NO — closing the apps does not fully recover
+the RAM, and the system does not survive 30 minutes of app churn.** It dies
+after ~15 minutes and ~141 app launches, in both configurations.
+
+## Ranked findings
+
+### 1. FATAL — after ~141 app launches, `exec` fails forever and the desktop can no longer open anything
+
+Reproduced identically in both runs, at cycle 36. The failing launch spawns a
+task which immediately exits **`code=127`**, and hamsh then walks its whole
+PATH spawning one 127-exiting task per candidate:
+
+```
+[141] 463
+[014178] [devwsys] window 5 mapped pid=463      <- launch 141 still fine
+[014184] task: pid 464 exited (code=127)        <- launch 142: exec fails
+[014192] task: pid 465 exited (code=127)        <- ... and every PATH retry
+```
+
+There is **no** `newwindow: table full`, **no** `create_user_task: no free
+task slot`, **no** OOM message, **no** panic, and the serial console stays
+responsive. From userspace this is indistinguishable from *"command not
+found"* — the single most misleading diagnostic the kernel could emit for
+"the machine is out of usable memory". Anyone hitting this on a real desktop
+would go looking for a missing binary.
+
+It is **not** a memory-*quantity* failure, and this is the surprising part:
+
+| at the moment of death | run 2 | run 3 |
+|---|---|---|
+| `MemFree` | 334 304 kB | **504 512 kB** |
+| `PagesFree` | 2 | 1 |
+| `PagesTotal` | 18 432 (72 MiB) | 15 360 (60 MiB) |
+
+**`MemFree` reports a third to half a gigabyte free while the page allocator
+has one free page and every `exec` fails.** `MemFree` is
+`memblock_avail() + buddy_free`, so it is counting memory the page allocator
+cannot actually obtain.
+
+Why it cannot obtain it: `mm/page_alloc.ad` grows the buddy pool **only** by
+cold-carving a fresh run out of memblock with
+`memblock_alloc(size, size)` (line 389, gated by `memblock_can_alloc(size,
+size)` at line 337) — i.e. **alignment equal to the allocation size**. As
+memblock's one-way bump pointer advances, size-aligned runs of the larger
+orders stop being available long before the byte count runs out, so
+`PagesTotal` stalls (at 60 MiB in run 3, 72 MiB in run 2) while
+`memblock_avail()` stays enormous. `PagesFree` then sits pinned at 0-1 from
+about cycle 5 onward — the allocator has been running on fumes for 90 % of
+the soak — and the first cycle whose peak demand exceeds the frozen ceiling
+kills every subsequent `exec`.
+
+That also explains why the leakier run survived exactly as long as the
+cleaner one: the pool grew to whatever each run's peak demand needed, until
+it couldn't grow at all.
+
+**Fix directions** (not attempted here — this is a memory-architecture
+change, not a one-liner): let the buddy pool accept *unaligned* / smaller
+carves and coalesce, or pre-hand the whole of memblock to the buddy
+allocator at boot instead of cold-carving on demand. Independently, and
+cheaply: **`MemFree` must not report memory the page allocator cannot get**,
+and a failed ELF load must say so on the console instead of surfacing as
+`127`.
+
+### 2. `hamtermscene` orphans its child shell on every close — the dominant leak
+
+`user/hamtermscene.ad:898-905` spawns a long-lived
+`/bin/hamsh --no-echo /etc/rc.de-user` as the terminal's inner shell. The only
+teardown path is `_reap_shell()` (line 977), a `WNOHANG` poll from the main
+loop that reaps the child **when the child exits on its own**. Nothing sends
+the child a note when *hamtermscene itself* is terminated. So closing a
+terminal window leaves its shell running forever.
+
+The control run isolates it exactly. Dropping `hamtermscene` from the pool
+and changing nothing else:
+
+* `TasksLive` **28 → 28**: the task leak goes to **zero** (was +15 over 35 cycles).
+* `VmaNodesLive` **28 → 28**: the VMA-node leak goes to **zero** (was +30).
+* `MemFree` slope improves **3.1×** (−4 525 → −1 443 kB/cycle).
+* `PagesInUse` slope improves **6.1×** (+148.8 → +24.4 pg/cycle).
+
+Per terminal open/close the orphan costs **1 task, 2 VMA nodes and ~300 pages
+(~1.2 MiB)**. The cycles where `TasksLive` steps up (3, 5, 7, 9, 12, 14, 16,
+18, 21, 23, 25, 27, 30, 32, 34) are *exactly* the cycles containing
+`hamtermscene`.
+
+This is the highest-value fix on the list and it is local: note `sh_pid` from
+hamtermscene's own exit path.
+
+### 3. Residual page leak of ~6 pages (~24 KiB) per app open/close
+
+With the terminal removed, `PagesInUse` still climbs **+24.4 pages/cycle** at
+4 apps/cycle ≈ **6 pages (~24 KiB) per app open/close**, while `TasksLive` and
+`VmaNodesLive` stay perfectly flat. Tasks are being reaped and their VMAs
+freed, but pages are not all returned — so this is a kernel-side page leak in
+task teardown, not an orphaned-process artifact. `KmallocLive` climbs
++50/cycle alongside it.
+
+Small in isolation; it is what pushes peak demand into finding #1 over time.
+
+### 4. `PagesInUse` and `KmallocLive` disagree with `PagesTotal − PagesFree`
+
+At run 2's last sample: `PagesTotal 18432`, `PagesFree 2`, so
+`PagesTotal − PagesFree = 18430` — which is exactly what `KmallocLive`
+reports (it is defined that way in `devmeminfo.ad`). But `PagesInUse` says
+`11216`. Two counters that should describe the same quantity differ by 7 214
+pages (28 MiB). At least one of them is wrong, and `KmallocLive` is in any
+case mislabelled — it is a page count, not a kmalloc-object count, as its own
+comment admits ("KmallocLive proxy"). A leak gate that trusts the wrong one
+draws the wrong conclusion.
+
+### 5. Two unexplained ~147 MB cliffs in `MemFree`
+
+`MemFree` drops ~147-148 MB in a single cycle twice in run 2 (c1→c2:
+656 312 → 508 564; c31→c32: 483 092 → 335 704) and once in run 3 (during the
+first five cycles). `PagesTotal` grows only 4 096 pages (16 MiB) across the
+same boundary, so ~130 MB left `memblock_avail()` without reaching the buddy
+pool. Not diagnosed; flagged because a 147 MB step is far too large to be
+per-app churn and it repeats at a suspiciously identical magnitude.
+
+### 6. Things that are FINE
+
+* **The 32-slot wid table does not leak.** Live wids returned to 0 after every
+  single one of the 70 close phases across both runs; peak concurrent was 4.
+  `wsys_free_wid` / `wsys_reap_dead_wids` are doing their job. The historical
+  slot-exhaustion bug has not regressed.
+* **No kernel faults.** Zero `PANIC` / `TRAP` / `BUG` / OOM-kill markers in
+  28 minutes of combined churn.
+* **No wedge.** Every liveness round-trip succeeded, including after the
+  system could no longer exec anything — the console stayed interactive
+  throughout, which is why this failure is silent rather than obvious.
+* **Close is reliable.** 140/140 apps in each run took the terminate note and
+  exited; the only survivor was the app caught by finding #1.
+* **Boot is fast.** 6 s from QEMU start to DE handoff, both runs.
