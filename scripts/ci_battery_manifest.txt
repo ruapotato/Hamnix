@@ -2909,6 +2909,23 @@ bash scripts/test_hambrowse_bindata_host.sh
 # census required to come back to baseline. Unlike the soak it fits the
 # per-shard budget, so it runs unconditionally.
 bash scripts/test_de_term_child_reap.sh
+# test_hambrowse_realwebjs: QEMU-free gate for the engine gaps that broke REAL
+# google.com in a user's hands ("Ti is not a function", "_DumpException is not a
+# function", "I can't select the search bar"). Each was a CASCADE — an earlier
+# script died, so the globals it defines never existed. Locks down all seven root
+# causes: ReferenceError is a CATCHABLE throw instead of a fatal engine flag;
+# `async function` EXPRESSIONS and async object/class methods parse (the parser
+# branch for them was dead code behind a generic TK_IDENT match — `async
+# function(` appears 47x in google's main bundle); sloppy-mode `this` in a
+# receiver-less call is the global object (google's `var window=this` idiom);
+# `src`/`href` are reflected IDL Strings defaulting to "" while getAttribute
+# still answers null; DOM collections index past the old DOM_MAX=64 object cap
+# (over it, getElementsByTagName reported a length with every entry undefined);
+# non-JS `<script type>` (ld+json) is not executed; and `font-size:N%` resolves
+# against the inherited size instead of N x 12px. Ends END-TO-END on the captured
+# real google homepage: the reported errors are gone, it still lays out, and the
+# search bar is still click-focusable and typable.
+bash scripts/test_hambrowse_realwebjs_host.sh
 
 # test_de_stress_soak: the 30-MINUTE DESKTOP SOAK — open a bunch of apps,
 # close a bunch of apps, repeat, and prove the session recovers its RAM.

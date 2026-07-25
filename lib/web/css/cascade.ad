@@ -1810,6 +1810,83 @@ def _style_len(vs: uint64, ve: uint64) -> int32:
     return v
 
 
+# Parse a CSS `font-size` value into the r_fontpx/d_fontpx encoding.
+#
+#   -1            unset / unparseable
+#   > 0           absolute PIXELS
+#   <= -1000      a PERCENTAGE of the INHERITED font-size, encoded as
+#                 -1000 - permille  (90% -> -1900, 120% -> -2200)
+#
+# WHY: `font-size` used to go through the generic _style_len(), which has no
+# percent branch — it dropped the `%` and returned the bare number scaled like an
+# em multiplier, so `font-size:80%` computed to roughly 80x12 = ~960px. That is
+# what rendered books.toscrape.com's tagline at ~300px and swallowed the page.
+# Percentages must resolve against the PARENT's font-size, which is only known
+# once the element's style scope opens, so we defer exactly like line-height's
+# `-permille` encoding does (see _lineh_value / _lineh_resolve).
+FONTPCT_BIAS: int32 = 1000
+
+# Does this r_fontpx/d_fontpx encoding carry a font-size at all? (-1 = unset;
+# > 0 = px; <= -1000 = a deferred percentage.) A plain `>= 0` test would read a
+# percentage as "unset", which is why every guard goes through here.
+def _fontpx_is_set(enc: int32) -> int32:
+    if enc > 0:
+        return 1
+    if enc <= 0 - FONTPCT_BIAS:
+        return 1
+    return 0
+
+
+def _fontsize_value(vs: uint64, ve: uint64) -> int32:
+    i: uint64 = vs
+    while i < ve and (src_ptr[i] == 32 or src_ptr[i] == 9):
+        i = i + 1
+    # scan a plain number followed immediately by '%' — anything else (px/em/pt/
+    # vw/calc()/keywords) keeps the existing generic length path untouched.
+    j: uint64 = i
+    seen: int32 = 0
+    whole: int32 = 0
+    while j < ve and src_ptr[j] >= 48 and src_ptr[j] <= 57:
+        whole = whole * 10 + cast[int32](src_ptr[j] - 48)
+        seen = 1
+        j = j + 1
+    frac: int32 = 0                   # milli fraction (0..999)
+    scale: int32 = 100
+    if j < ve and src_ptr[j] == 46:                       # '.'
+        j = j + 1
+        while j < ve and scale > 0 and src_ptr[j] >= 48 and src_ptr[j] <= 57:
+            frac = frac + cast[int32](src_ptr[j] - 48) * scale
+            scale = scale / 10
+            seen = 1
+            j = j + 1
+    if seen != 0 and j < ve and src_ptr[j] == 37:         # '%'
+        j = j + 1
+        while j < ve and (src_ptr[j] == 32 or src_ptr[j] == 9):
+            j = j + 1
+        if j == ve:                                       # nothing but `N%`
+            permille: int32 = whole * 1000 + frac
+            if permille < 0:
+                return -1
+            return 0 - (FONTPCT_BIAS + permille)
+    return _style_len(vs, ve)
+
+
+# Resolve the _fontsize_value encoding to absolute PIXELS. `parent_px` is the
+# INHERITED font-size (0 => the face default EM_PX). Non-percentage encodings
+# pass through unchanged.
+def _fontsize_resolve(enc: int32, parent_px: int32) -> int32:
+    if enc > -1000:
+        return enc                                        # px, or -1 = unset
+    base: int32 = parent_px
+    if base <= 0:
+        base = EM_PX
+    permille: int32 = (0 - enc) - FONTPCT_BIAS
+    px: int32 = (base * permille) / 100000
+    if px < 1:
+        px = 1                                            # never round away to 0
+    return px
+
+
 # Is the value [vs,ve) a BARE percentage (e.g. `100%`, `50.0%`) — a lone number
 # followed by `%` and nothing else? A percentage HEIGHT resolves against the
 # containing block's height, which in this block-flow engine is INDEFINITE for
@@ -5661,8 +5738,8 @@ def _apply_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64):
             d_rowgap = rgp
         return
     if _prop_is(ps, pe, cast[Ptr[uint8]]("font-size")) != 0:
-        fp: int32 = _style_len(vs, ve)
-        if fp > 0:
+        fp: int32 = _fontsize_value(vs, ve)
+        if _fontpx_is_set(fp) != 0:
             d_fontpx = fp
         return
     if _prop_is(ps, pe, cast[Ptr[uint8]]("line-height")) != 0:
@@ -5876,7 +5953,7 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
        d_grspan == 0 and d_grstart == 0 and \
        d_gan == 0 and d_gareaname < 0 and \
        d_ml < 0 and d_mr < 0 and d_mt < 0 and d_mb < 0 and \
-       d_wd < 0 and d_bd < 0 and d_center == 0 and d_fontpx < 0 and \
+       d_wd < 0 and d_bd < 0 and d_center == 0 and _fontpx_is_set(d_fontpx) == 0 and \
        d_lineh == 0 and \
        d_ws == 0 and \
        d_float == 0 and d_clear == 0 and \
@@ -7528,7 +7605,7 @@ def _cascade_match_current():
                 m_animfill = r_animfill[ri]
             if r_center[ri] != 0:
                 m_center = 1
-            if r_fontpx[ri] >= 0 and sp >= sfp:
+            if _fontpx_is_set(r_fontpx[ri]) != 0 and sp >= sfp:
                 sfp = sp
                 m_fontpx = r_fontpx[ri]
             if r_lineh[ri] != 0 and sp >= slh:
@@ -8086,10 +8163,14 @@ def _open_style(ne: uint64, te: uint64):
         dec = d_deco
     if d_fstyle != 0:
         fst = d_fstyle
-    if d_fontpx >= 0:
+    if _fontpx_is_set(d_fontpx) != 0:
         fpx = d_fontpx
+    # `font-size: N%` is relative to the PARENT's computed size, which is the
+    # font-size scope currently in effect (g_font_px) — resolve it now, at the
+    # moment this element's scope opens.
+    fpx = _fontsize_resolve(fpx, g_font_px)
     push_px: int32 = 0
-    if fpx >= 0:
+    if fpx > 0:
         push_px = fpx
     # line-height: inline overrides the cascade; resolve unitless/% against this
     # element's effective font-size (its own if set, else the inherited one).
@@ -8382,8 +8463,8 @@ def _parse_inline_wa(ne: uint64, te: uint64):
                 if rgp2 >= 0:
                     d_rowgap = rgp2
             elif _prop_is(ps, pe, cast[Ptr[uint8]]("font-size")) != 0:
-                fp: int32 = _style_len(vs, i)
-                if fp > 0:
+                fp: int32 = _fontsize_value(vs, i)
+                if _fontpx_is_set(fp) != 0:
                     d_fontpx = fp
             elif _prop_is(ps, pe, cast[Ptr[uint8]]("line-height")) != 0:
                 lh: int32 = _lineh_value(_val_start(vs, i), i)

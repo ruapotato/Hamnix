@@ -571,10 +571,25 @@ if ! "$BIN" "$OUT/js_err.html" 600 >"$DUMP6" 2>&1; then
     echo "[hb-host] FAIL: js-error harness exited non-zero"; cat "$DUMP6"; exit 1
 fi
 cat "$DUMP6"
-if grep -q 'JSERR 1' "$DUMP6"; then
-    echo "[hb-host] PASS runtime JS error surfaced as JSERR"
+# The error must be SURFACED with its identifier named — as an UNCAUGHT
+# EXCEPTION, which is what a real browser console prints and what node/V8 report.
+#
+# This used to assert `JSERR 1`, the engine's FATAL error flag. That was wrong:
+# an undefined identifier is an ordinary catchable ReferenceError, and raising the
+# fatal flag for it meant try/catch could not see it AND the rest of the script
+# was abandoned. Real bundles feature-detect missing globals inside try/catch
+# constantly, so that one behaviour detonated real pages — on google.com it
+# killed 3 of 10 scripts and produced the user-visible
+# "_DumpException is not a function". A fatal JSERR here would now be the bug.
+if grep -q 'Uncaught ReferenceError: bogusUndefinedRef is not defined' "$DUMP6"; then
+    echo "[hb-host] PASS runtime JS error surfaced as a named uncaught ReferenceError"
 else
     echo "[hb-host] FAIL runtime JS error not surfaced"; fail=1
+fi
+if grep -q '^JSERR 1' "$DUMP6"; then
+    echo "[hb-host] FAIL an undefined identifier raised the FATAL engine flag (must be catchable)"; fail=1
+else
+    echo "[hb-host] PASS an undefined identifier is NOT a fatal engine error"
 fi
 # the render survives the error: pre-error mutation applied + tail still renders.
 if grep -q '|set ok|' "$DUMP6" && grep -q '|after error|' "$DUMP6"; then

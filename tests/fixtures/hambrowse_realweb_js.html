@@ -1,0 +1,73 @@
+<!doctype html>
+<html><head><title>realweb-js</title>
+<!-- A DATA BLOCK. Per HTML it must NEVER be executed as JavaScript; hambrowse
+     used to feed it to the interpreter and report a bogus SyntaxError. This is
+     schema.org markup, present on a very large share of the real web. -->
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite"}</script>
+<script type="text/template"><div>{{ this is not JS }}</div></script>
+<script type="application/json" id="dblock">{"a":1}</script>
+<style>
+  /* font-size: N% must resolve against the INHERITED size, not N x 12px */
+  body   { font-size: 20px }
+  #pct80 { font-size: 80% }        /* => 16px */
+  #pct150{ font-size: 150% }       /* => 30px */
+</style>
+</head>
+<body>
+<p id="pct80">eighty</p>
+<p id="pct150">onefifty</p>
+<img id="noimg" data-src="deferred.png">
+<a id="nohref">plain</a>
+<form action="/search"><input id="q" name="q" type="text"></form>
+<div id="many"></div>
+
+<script>
+// ---- (1) ReferenceError must be CATCHABLE and must not abort the script ----
+try { __definitely_not_defined_anywhere; }
+catch (e) { console.log("R1 caught " + (e instanceof ReferenceError) + " " + e.name); }
+console.log("R2 script continued after ReferenceError");
+
+// ---- (2) async function EXPRESSIONS + async methods must PARSE -------------
+var af = async function (v) { return v * 2; };
+console.log("A1 " + typeof af);
+var ao = { async m() { return 7; }, async: 1, get: 2, other(){ return 3; } };
+console.log("A2 " + typeof ao.m + " " + ao.async + " " + ao.get + " " + ao.other());
+class AC { async go() { return 9; } static async sgo() { return 11; } }
+new AC().go().then(function (v) { console.log("A3 " + v); });
+AC.sgo().then(function (v) { console.log("A4 " + v); });
+af(21).then(function (v) { console.log("A5 " + v); });
+
+// ---- (3) sloppy-mode `this` in a plain call is the GLOBAL object -----------
+// `(function(_){var window=this; ...})(x)` opens google's gbar bundle; with
+// `this === undefined` every later `window.foo` threw.
+(function (_) {
+  var window = this;
+  console.log("T1 " + (typeof window) + " " + (window === globalThis));
+})({});
+console.log("T2 " + (function () { return typeof this; })());
+
+// ---- (4) reflected string IDL attributes are ALWAYS strings ---------------
+var im = document.getElementById("noimg");
+var an = document.getElementById("nohref");
+console.log("S1 " + typeof im.src + " len=" + im.src.length);
+console.log("S2 " + typeof an.href + " len=" + an.href.length);
+// ...but getAttribute still reports the CONTENT attribute: absent => null
+console.log("S3 " + im.getAttribute("src") + " " + an.getAttribute("href"));
+
+// ---- (5) DOM collections index past the old 64-element object cap ---------
+var host = document.getElementById("many");
+var h = "";
+for (var i = 0; i < 200; i++) { h += "<span class='g'>" + i + "</span>"; }
+host.innerHTML = h;
+var col = document.querySelectorAll("span.g");
+var nulls = 0;
+for (var j = 0; j < col.length; j++) { if (!col[j]) { nulls++; } }
+console.log("C1 len=" + col.length + " nulls=" + nulls);
+
+// ---- (6) a non-JS <script> block did not run (no stray SyntaxError) -------
+console.log("D1 " + typeof dblock);
+
+// ---- (7) the property name appears in the null-deref TypeError ------------
+try { (null).someProp; } catch (e) { console.log("P1 " + e.message); }
+</script>
+</body></html>

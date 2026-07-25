@@ -324,7 +324,11 @@ def member_get(objv: int32, key_sid: int32) -> int32:
                 return b_val[gb]
         return v_undef()
     if t == TAG_UNDEF or t == TAG_NULL:
-        throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("cannot read property of null or undefined"))
+        # NAME the property, the way V8 does ("cannot read property 'foo' of
+        # null"). A bare "cannot read property of null or undefined" is nearly
+        # useless on a 200 KB minified bundle — it says a page broke but not on
+        # what, and every one of these failures looks identical in the console.
+        throw_error(cast[Ptr[uint8]]("TypeError"), named_error_msg(cast[Ptr[uint8]]("cannot read property '"), key_sid, cast[Ptr[uint8]]("' of null or undefined")))
         return v_undef()
     return v_undef()
 
@@ -868,8 +872,18 @@ def eval_expr(node: int32, env: int32) -> int32:
             # This is what the `Array.prototype.slice.call(arguments)` idiom needs.
             if str_eq_cstr(n_str[node], cast[Ptr[uint8]]("arguments")) != 0 and this_top > 0 and argc_stack[this_top - 1] >= 0:
                 return build_arguments(argbase_stack[this_top - 1], argc_stack[this_top - 1])
-            # undefined global reference -> ReferenceError semantics soft:
-            set_error(named_error_msg(cast[Ptr[uint8]]("ReferenceError: "), n_str[node], cast[Ptr[uint8]](" is not defined")))
+            # Undefined global reference. Per spec this is a THROWN
+            # ReferenceError: an ordinary catchable exception that unwinds to the
+            # nearest try/catch and, if uncaught, ends only THIS script.
+            #
+            # It used to call set_error(), which raises the engine's FATAL flag —
+            # unwinding past every try/catch and aborting the rest of the
+            # document's scripts. Real bundles feature-detect missing globals
+            # inside try/catch constantly, so one absent global (`google`,
+            # `performance`, `Node`) took the whole page with it. Using
+            # throw_error() makes the failure local and recoverable, which is the
+            # single highest-leverage fix for running unmodified real pages.
+            throw_error(cast[Ptr[uint8]]("ReferenceError"), named_error_msg(cast[Ptr[uint8]](""), n_str[node], cast[Ptr[uint8]](" is not defined")))
             return v_undef()
         return b_val[b]
     if k == ND_ARRAY:
@@ -1738,6 +1752,23 @@ def invoke(fnv: int32, thisv: int32, argbase: int32, argc: int32) -> int32:
     use_home: int32 = obj_fn_home[o]
     if is_arrow != 0 and obj_fn_this[o] != -2:
         use_this = obj_fn_this[o]
+    elif is_arrow == 0 and g_global_obj != 0 and tag_of(use_this) == TAG_UNDEF:
+        # SLOPPY-MODE THIS SUBSTITUTION (ES2015 9.2.1.2 OrdinaryCallBindThis):
+        # in non-strict code an ordinary function called with NO receiver —
+        # `f()`, `(function(){...})()`, `fn.call(undefined)` — sees `this` as the
+        # GLOBAL object, not undefined.
+        #
+        # We used to leave it undefined, which breaks the single most common
+        # "reach the global object" idiom in real minified bundles:
+        #
+        #     (function(_){ var window = this; ... })(x)
+        #
+        # Google's gbar bundle opens exactly like that, so EVERY later
+        # `window.foo` in those 233 KB threw "cannot read property of null or
+        # undefined" — one line of missing sloppy-mode semantics killing an
+        # entire bundle, and with it the globals (`Ti`, `_DumpException`) the
+        # scripts after it call.
+        use_this = g_global_obj
     esave_env: int32 = env_gc_top
     callenv: int32 = env_new(fenv, 1)
     env_push(callenv)                      # pin the call scope for the whole frame

@@ -2668,6 +2668,14 @@ def _js_host_dispatch(id: int32) -> int32:
                 gpv: int32 = js_get_prop(dom_obj[el2], &nm[0], cast[uint64](an))
                 gpp: Ptr[uint8] = js_str_ptr(gpv)
                 if _is_undef_str(gpp, _cstr_len(gpp)) == 0:
+                    # `src`/`href`/`alt`/`title` are reflected onto every element
+                    # object and DEFAULT to "" (IDL String semantics, so
+                    # `img.src.substring(...)` never throws). But getAttribute
+                    # reports the CONTENT attribute, which is genuinely absent
+                    # here — the source tag was already checked above — so it must
+                    # still answer null, not "".
+                    if _cstr_len(gpp) == 0 and _is_reflected_idl_attr(&nm[0], an) != 0:
+                        return js_null()
                     return gpv
                 return js_null()
             # created node: read the property we stashed (class -> className).
@@ -3725,6 +3733,101 @@ def _page_has_js() -> int32:
 
 # True if a <script> start tag [ts,te) carries `type="module"` (case-insensitive)
 # — the trigger to evaluate its body as an ES module rather than a classic script.
+# Lowercased, whitespace-stripped copy of a <script type=...> value.
+_stype_buf: Array[80, uint8]
+_stype_len: int32 = 0
+
+
+def _stype_suffix_is(s: Ptr[uint8]) -> int32:
+    # does _stype_buf end with the cstr `s`?
+    n: int32 = 0
+    while s[n] != 0:
+        n = n + 1
+    if n > _stype_len:
+        return 0
+    base: int32 = _stype_len - n
+    k: int32 = 0
+    while k < n:
+        if _stype_buf[base + k] != s[k]:
+            return 0
+        k = k + 1
+    return 1
+
+
+def _stype_prefix_is(s: Ptr[uint8]) -> int32:
+    k: int32 = 0
+    while s[k] != 0:
+        if k >= _stype_len:
+            return 0
+        if _stype_buf[k] != s[k]:
+            return 0
+        k = k + 1
+    return 1
+
+
+# The attribute names _dom_register_el reflects onto every element object with a
+# "" default (see _reflect_str_attr). Kept in one place so getAttribute can tell
+# "reflected default" apart from a real empty attribute.
+def _is_reflected_idl_attr(nm: Ptr[uint8], n: int32) -> int32:
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("src"), 3) != 0:
+        return 1
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("href"), 4) != 0:
+        return 1
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("alt"), 3) != 0:
+        return 1
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("title"), 5) != 0:
+        return 1
+    return 0
+
+
+def _script_type_executable(ts: uint64, te: uint64) -> int32:
+    # HTML's "classic script" gate. A <script> may only be EXECUTED when its
+    # `type` is absent, empty, "module", or a JavaScript MIME type. Every other
+    # value is a DATA BLOCK that the parser must leave alone — most importantly
+    # `application/ld+json` (schema.org markup, present on a very large share of
+    # the real web), plus `text/template` and `application/json`.
+    #
+    # We used to feed all of them to the JS engine, which reported a spurious
+    # "SyntaxError: unexpected token in expression" on pages whose real
+    # JavaScript is perfectly clean — this was Wikipedia's ONLY JS error.
+    if _hx_find_attr(ts, te, cast[Ptr[uint8]]("type")) == 0:
+        return 1                                  # no type => classic script
+    n: int32 = 0
+    p: uint64 = g_attr_start
+    while p < g_attr_end and n < 79:
+        c: uint8 = _hx_lower(src_ptr[p])
+        # drop ASCII whitespace, and truncate at a MIME parameter
+        # (`text/javascript; charset=utf-8`)
+        if c == 59:
+            break
+        if c != 32 and c != 9 and c != 10 and c != 13 and c != 12:
+            _stype_buf[n] = c
+            n = n + 1
+        p = p + 1
+    _stype_buf[n] = 0
+    _stype_len = n
+    if n == 0:
+        return 1                                  # type="" => classic script
+    if _stype_suffix_is(cast[Ptr[uint8]]("module")) != 0 and n == 6:
+        return 1
+    # The whole legacy JS MIME list (text/javascript, application/javascript,
+    # text/ecmascript, application/x-ecmascript, text/jscript, text/livescript,
+    # text/javascript1.5, …) ends in one of these four words. `application/json`
+    # and `application/ld+json` deliberately do NOT match.
+    if _stype_suffix_is(cast[Ptr[uint8]]("javascript")) != 0:
+        return 1
+    if _stype_suffix_is(cast[Ptr[uint8]]("ecmascript")) != 0:
+        return 1
+    if _stype_suffix_is(cast[Ptr[uint8]]("jscript")) != 0:
+        return 1
+    if _stype_suffix_is(cast[Ptr[uint8]]("livescript")) != 0:
+        return 1
+    # versioned legacy types: `text/javascript1.5`, `text/javascript1.0`, …
+    if _stype_prefix_is(cast[Ptr[uint8]]("text/javascript")) != 0:
+        return 1
+    return 0
+
+
 def _script_type_is_module(ts: uint64, te: uint64) -> int32:
     if _hx_find_attr(ts, te, cast[Ptr[uint8]]("type")) == 0:
         return 0
@@ -3834,6 +3937,8 @@ def _run_scripts() -> int32:
                 j = j + 1
             bs: uint64 = j
             is_mod: int32 = _script_type_is_module(i, tagclose)
+            # data blocks (application/ld+json, text/template, …) are skipped
+            runnable: int32 = _script_type_executable(i, tagclose)
             # body ends at </script>
             be: uint64 = bs
             while be < src_len:
@@ -3842,7 +3947,7 @@ def _run_scripts() -> int32:
                    _tagname_is(be + 2, cast[Ptr[uint8]]("script")) != 0:
                     break
                 be = be + 1
-            if be > bs:
+            if be > bs and runnable != 0:
                 if is_mod != 0:
                     # `<script type=module>`: evaluate as an ES module (own scope,
                     # deferred-style, imports resolved through the browser's module

@@ -24,26 +24,44 @@ from lib.htmlengine import _cssom_reset
 # the original source byte-for-byte (zero behavioural change, zero jsengine
 # touch — which also sidesteps the native float-division #DE, task #51).
 # ====================================================================
-DOM_MAX:     int32  = 64
-DOM_ID_CAP:  int32  = 4096
+# DOM_MAX caps how many source elements can ever be materialised as JS objects.
+# At 64 it was FAR below what a real page touches: google.com's homepage has 440
+# elements, and once the registry filled, _dom_register_el() returned
+# `undefined` — so `document.getElementsByTagName("img")` reported length 7 while
+# EVERY entry was undefined, and the page's own `for(...) a[i].getAttribute(...)`
+# loop threw "cannot read property 'getAttribute' of null". Two of google's
+# scripts died on exactly that. The arrays are int-per-element, so 1024 costs
+# ~4 KB each and comfortably covers a real content page.
+DOM_MAX:     int32  = 1024
+DOM_ID_CAP:  int32  = 32768
+# Shared buffer holding each registered element's baseline textContent +
+# innerHTML. DELIBERATELY LEFT AT 64 KB. It looks like it wants to grow — a real
+# page overflows it, which sets dom_orig_trunc and suppresses inner overrides,
+# and that is why document.body.textContent comes back "". But the suppression is
+# load-bearing: raising this to 1 MB was MEASURED to blank google.com entirely
+# (LAYOUT segs 29 -> 0), because the readback then trusts a full baseline,
+# concludes the whole <body> was mutated, and re-emits the page as escaped
+# textContent — exactly the failure the dom_orig_trunc comment below describes.
+# Growing this needs the readback fixed FIRST; until then it is a safety valve,
+# not a limit.
 DOM_TXT_CAP: int32  = 65536
 DOM_OV_CAP:  int32  = 65536
 
-dom_idbuf:   Array[4096, uint8]      # concatenated element ids (case-sensitive)
+dom_idbuf:   Array[32768, uint8]      # concatenated element ids (case-sensitive)
 dom_idbuf_len: int32 = 0
-dom_id_off:  Array[64, int32]
-dom_id_len:  Array[64, int32]
-dom_obj:     Array[64, int32]        # JS object value-handle per element
-dom_clsobj:  Array[64, int32]        # the element's classList object handle (-1 none)
-dom_anchor:  Array[64, int32]        # source offset of the element's '<' (-1 = none)
-dom_cstart:  Array[64, int32]        # inner-content span in the source
-dom_cend:    Array[64, int32]
-dom_ns:      Array[64, int32]        # tag-name span in the source
-dom_nl:      Array[64, int32]
-dom_orig_off: Array[64, int32]       # original textContent (in dom_txtbuf)
-dom_orig_len: Array[64, int32]
-dom_html_off: Array[64, int32]       # original innerHTML (raw markup, in dom_txtbuf)
-dom_html_len: Array[64, int32]
+dom_id_off:  Array[1024, int32]
+dom_id_len:  Array[1024, int32]
+dom_obj:     Array[1024, int32]        # JS object value-handle per element
+dom_clsobj:  Array[1024, int32]        # the element's classList object handle (-1 none)
+dom_anchor:  Array[1024, int32]        # source offset of the element's '<' (-1 = none)
+dom_cstart:  Array[1024, int32]        # inner-content span in the source
+dom_cend:    Array[1024, int32]
+dom_ns:      Array[1024, int32]        # tag-name span in the source
+dom_nl:      Array[1024, int32]
+dom_orig_off: Array[1024, int32]       # original textContent (in dom_txtbuf)
+dom_orig_len: Array[1024, int32]
+dom_html_off: Array[1024, int32]       # original innerHTML (raw markup, in dom_txtbuf)
+dom_html_len: Array[1024, int32]
 # 1 when this element's textContent/innerHTML baseline was TRUNCATED because the
 # shared dom_txtbuf filled up (a big page: <html>/<body> each hold the whole
 # document's text, and a real article can exceed 64KB). A truncated baseline is
@@ -52,9 +70,9 @@ dom_html_len: Array[64, int32]
 # the rewrite would then re-emit the ENTIRE page as escaped textContent (all tags
 # stripped -> links vanish, and <style>/<script> text leaks as prose: the MDN
 # doc page). So _dom_readback skips inner overrides for flagged elements.
-dom_orig_trunc: Array[64, int32]
-dom_origcls_off: Array[64, int32]    # original class attribute value
-dom_origcls_len: Array[64, int32]
+dom_orig_trunc: Array[1024, int32]
+dom_origcls_off: Array[1024, int32]    # original class attribute value
+dom_origcls_len: Array[1024, int32]
 dom_txtbuf:  Array[65536, uint8]
 dom_txt_len: int32 = 0
 dom_n:       int32 = 0
@@ -71,30 +89,30 @@ dom_n:       int32 = 0
 # far more elements (TX_MAX) than the JS-object cap (DOM_MAX); JS element
 # objects are still registered lazily and their traversal properties are wired
 # from this index (see _dom_wire_tree). tx_parent[i] = -1 for a root.
-TX_MAX:     int32 = 512
-tx_anchor:  Array[512, int32]        # source offset of the element's '<'
-tx_cs:      Array[512, int32]        # inner-content start (just past '>')
-tx_ce:      Array[512, int32]        # inner-content end (the matching '</')
-tx_ns:      Array[512, int32]        # tag-name span start
-tx_nl:      Array[512, int32]        # tag-name span length
-tx_parent:  Array[512, int32]        # parent tx index, or -1 for a root
-tx_stack:   Array[512, int32]        # scratch: open-element stack while building
+TX_MAX:     int32 = 8192
+tx_anchor:  Array[8192, int32]        # source offset of the element's '<'
+tx_cs:      Array[8192, int32]        # inner-content start (just past '>')
+tx_ce:      Array[8192, int32]        # inner-content end (the matching '</')
+tx_ns:      Array[8192, int32]        # tag-name span start
+tx_nl:      Array[8192, int32]        # tag-name span length
+tx_parent:  Array[8192, int32]        # parent tx index, or -1 for a root
+tx_stack:   Array[8192, int32]        # scratch: open-element stack while building
 tx_n:       int32 = 0
 tx_built:   int32 = 0
 
 # event handlers (parallel to 0..dom_n)
-dom_onclick_fn:  Array[64, int32]    # stored JS function value, or -1
-dom_onclick_src: Array[64, int32]    # inline onclick="..." source off, or -1
-dom_onclick_srclen: Array[64, int32]
-dom_oninput_fn:  Array[64, int32]    # oninput handler fn value, or -1
-dom_oninput_src: Array[64, int32]
-dom_oninput_srclen: Array[64, int32]
-dom_onchange_fn: Array[64, int32]    # onchange handler fn value, or -1
-dom_onchange_src: Array[64, int32]
-dom_onchange_srclen: Array[64, int32]
-dom_onsubmit_fn: Array[64, int32]    # onsubmit handler fn value, or -1 (forms)
-dom_onsubmit_src: Array[64, int32]
-dom_onsubmit_srclen: Array[64, int32]
+dom_onclick_fn:  Array[1024, int32]    # stored JS function value, or -1
+dom_onclick_src: Array[1024, int32]    # inline onclick="..." source off, or -1
+dom_onclick_srclen: Array[1024, int32]
+dom_oninput_fn:  Array[1024, int32]    # oninput handler fn value, or -1
+dom_oninput_src: Array[1024, int32]
+dom_oninput_srclen: Array[1024, int32]
+dom_onchange_fn: Array[1024, int32]    # onchange handler fn value, or -1
+dom_onchange_src: Array[1024, int32]
+dom_onchange_srclen: Array[1024, int32]
+dom_onsubmit_fn: Array[1024, int32]    # onsubmit handler fn value, or -1 (forms)
+dom_onsubmit_src: Array[1024, int32]
+dom_onsubmit_srclen: Array[1024, int32]
 
 # addEventListener registry — MULTIPLE listeners per (element,kind), fired in
 # registration order (round 8). The el.on<evt> property + inline on<evt>=""
@@ -188,15 +206,15 @@ cv_sstk_n:     Array[8, int32]
 
 # form-control metadata (parallel to 0..dom_n). dom_kind: 0 generic, 1 input,
 # 2 textarea, 3 select, 4 button, 5 form.
-dom_kind:      Array[64, int32]
-dom_origval_off: Array[64, int32]    # original value (input/textarea/select)
-dom_origval_len: Array[64, int32]
-dom_origchecked: Array[64, int32]    # original checked state (0/1), else -1
+dom_kind:      Array[1024, int32]
+dom_origval_off: Array[1024, int32]    # original value (input/textarea/select)
+dom_origval_len: Array[1024, int32]
+dom_origchecked: Array[1024, int32]    # original checked state (0/1), else -1
 
 # resolved form overrides (parallel to 0..dom_n). off/len/flag == -1 = unset.
-dom_ov_val_off:  Array[64, int32]    # replacement value string
-dom_ov_val_len:  Array[64, int32]
-dom_ov_checked:  Array[64, int32]    # 1 checked, 0 unchecked, -1 unchanged
+dom_ov_val_off:  Array[1024, int32]    # replacement value string
+dom_ov_val_len:  Array[1024, int32]
+dom_ov_checked:  Array[1024, int32]    # 1 checked, 0 unchecked, -1 unchanged
 
 # form submission serialization result ("?a=1&b=2"), + last-navigated URL.
 dom_nav_buf:  Array[2048, uint8]
@@ -212,8 +230,8 @@ dom_body_buf: Array[2048, uint8]
 dom_body_len: int32 = 0
 # setCustomValidity() message store (parallel to 0..dom_n). len == 0 means no
 # custom error; a non-empty message forces the control invalid (customError).
-dom_customval_off: Array[64, int32]
-dom_customval_len: Array[64, int32]
+dom_customval_off: Array[1024, int32]
+dom_customval_len: Array[1024, int32]
 dom_customval_buf: Array[2048, uint8]
 dom_customval_top: int32 = 0
 g_prevent_default: int32 = 0         # set by event.preventDefault() in a handler
@@ -257,9 +275,9 @@ cc_n:        int32 = 0
 # textContent (a shared linear write cursor means an ancestor's [start..close)
 # span naturally includes its descendants' text, matching DOM textContent).
 FRAG_STACK_MAX: int32 = 64
-frag_st_cid:  Array[64, int32]       # open element's cre id (-1 = the root target)
-frag_st_arr:  Array[64, int32]       # its live childNodes/children JS array
-frag_st_txt:  Array[64, int32]       # frag_txt offset where its text began
+frag_st_cid:  Array[1024, int32]       # open element's cre id (-1 = the root target)
+frag_st_arr:  Array[1024, int32]       # its live childNodes/children JS array
+frag_st_txt:  Array[1024, int32]       # frag_txt offset where its text began
 FRAG_TXT_CAP: int32 = 16384
 frag_txt:     Array[16384, uint8]
 frag_txt_w:   int32 = 0
@@ -271,22 +289,22 @@ iah_buf:  Array[16384, uint8]
 iah_html: Array[16384, uint8]        # the inserted-html arg, copied out of the shared js_str_ptr scratch
 
 # resolved overrides (parallel to 0..dom_n). off/len == -1 means "not set".
-dom_ov_inner_off: Array[64, int32]   # replacement inner (text OR html)
-dom_ov_inner_len: Array[64, int32]
-dom_ov_inner_html: Array[64, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
-dom_ov_col_off:  Array[64, int32]    # colour (raw CSS value)
-dom_ov_col_len:  Array[64, int32]
-dom_ov_bg_off:   Array[64, int32]    # background-color
-dom_ov_bg_len:   Array[64, int32]
-dom_ov_wt_off:   Array[64, int32]    # font-weight
-dom_ov_wt_len:   Array[64, int32]
-dom_ov_al_off:   Array[64, int32]    # text-align
-dom_ov_al_len:   Array[64, int32]
-dom_ov_wd_off:   Array[64, int32]    # width (CSS length string, e.g. "100px")
-dom_ov_wd_len:   Array[64, int32]
-dom_ov_cls_off:  Array[64, int32]    # className
-dom_ov_cls_len:  Array[64, int32]
-dom_ov_hide:     Array[64, int32]    # 1 = display:none (drop the element)
+dom_ov_inner_off: Array[1024, int32]   # replacement inner (text OR html)
+dom_ov_inner_len: Array[1024, int32]
+dom_ov_inner_html: Array[1024, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
+dom_ov_col_off:  Array[1024, int32]    # colour (raw CSS value)
+dom_ov_col_len:  Array[1024, int32]
+dom_ov_bg_off:   Array[1024, int32]    # background-color
+dom_ov_bg_len:   Array[1024, int32]
+dom_ov_wt_off:   Array[1024, int32]    # font-weight
+dom_ov_wt_len:   Array[1024, int32]
+dom_ov_al_off:   Array[1024, int32]    # text-align
+dom_ov_al_len:   Array[1024, int32]
+dom_ov_wd_off:   Array[1024, int32]    # width (CSS length string, e.g. "100px")
+dom_ov_wd_len:   Array[1024, int32]
+dom_ov_cls_off:  Array[1024, int32]    # className
+dom_ov_cls_len:  Array[1024, int32]
+dom_ov_hide:     Array[1024, int32]    # 1 = display:none (drop the element)
 dom_ovbuf:   Array[65536, uint8]
 dom_ov_len:  int32 = 0
 dom_n_overrides: int32 = 0           # count of elements with ANY override
@@ -761,7 +779,7 @@ def _sel_isname(c: uint8) -> int32:
     return 0
 
 
-g_selattr: Array[64, uint8]           # scratch: an attribute name from a selector
+g_selattr: Array[1024, uint8]           # scratch: an attribute name from a selector
 
 
 # Case-insensitive attribute-value operator match. Attribute value bytes are

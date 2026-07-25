@@ -697,6 +697,14 @@ def tokenize(p: Ptr[uint8], n: int32):
                 tmpl_bdepth[tmpl_sp - 1] = tmpl_bdepth[tmpl_sp - 1] - 1
         push_tok(okind)
         lex_i = lex_i + olen
+    # The loop above stops at MAX_TOK even with source left over. Report that
+    # HONESTLY instead of silently handing the parser a truncated token stream:
+    # a half-lexed bundle either "parses" into a program missing most of its
+    # declarations, or dies at a meaningless token with a misleading "unexpected
+    # token" message. A clear per-script error lets js_eval roll the AST arena
+    # back and keeps the page's remaining scripts running.
+    if lex_i < lex_n:
+        set_error(cast[Ptr[uint8]]("SyntaxError: script too large (token limit)"))
     push_tok(TK_EOF)
 
 

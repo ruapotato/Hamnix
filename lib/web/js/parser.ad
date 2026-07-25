@@ -170,6 +170,17 @@ def parse_primary() -> int32:
     if k == TK_THIS:
         tk_pos = tk_pos + 1
         return nd_new(ND_THIS)
+    # `async function (){...}` / `async function f(){...}` EXPRESSION.
+    # This MUST be tested before the generic TK_IDENT branch below: `async` is a
+    # contextual keyword and lexes as an identifier, so a plain `k == TK_IDENT`
+    # test would consume it as a variable reference and leave `function(...)`
+    # stranded — which is exactly how `var f=async function(){}` used to fail
+    # with "ReferenceError: async is not defined". `async function(` appears 47
+    # times in google.com's main bundle alone.
+    if k == TK_IDENT and str_eq_cstr(tk_str[tk_pos], cast[Ptr[uint8]]("async")) != 0 and pk1() == TK_FUNCTION:
+        tk_pos = tk_pos + 1            # consume 'async'
+        pending_async = 1
+        return parse_function_expr()
     if k == TK_IDENT:
         nd3: int32 = nd_new(ND_IDENT)
         n_str[nd3] = tk_str[tk_pos]
@@ -195,11 +206,6 @@ def parse_primary() -> int32:
     if k == TK_LBRACE:
         return parse_object_lit()
     if k == TK_FUNCTION:
-        return parse_function_expr()
-    # `async function (){...}` expression (contextual keyword)
-    if k == TK_IDENT and str_eq_cstr(tk_str[tk_pos], cast[Ptr[uint8]]("async")) != 0 and pk1() == TK_FUNCTION:
-        tk_pos = tk_pos + 1            # consume 'async'
-        pending_async = 1
         return parse_function_expr()
     if k == TK_CLASS:
         return parse_class()
@@ -312,6 +318,14 @@ def parse_object_lit() -> int32:
             if pk() == TK_COMMA:
                 tk_pos = tk_pos + 1
             continue
+        # `async name(){}` / `async *name(){}` method shorthand. `async` is a
+        # contextual keyword, so only treat it as one when what follows can start
+        # a method name — `{async: 1}`, `{async(){}}`, `{async}` and `{async,b}`
+        # are all a property literally NAMED "async".
+        is_async_meth: int32 = 0
+        if pk() == TK_IDENT and str_eq_cstr(tk_str[tk_pos], cast[Ptr[uint8]]("async")) != 0 and pk1() != TK_COLON and pk1() != TK_LPAREN and pk1() != TK_COMMA and pk1() != TK_RBRACE and pk1() != TK_ASSIGN:
+            is_async_meth = 1
+            tk_pos = tk_pos + 1        # consume 'async'
         is_gen_meth: int32 = 0            # `*name(){}` generator method shorthand
         if pk() == TK_STAR:
             is_gen_meth = 1
@@ -349,10 +363,14 @@ def parse_object_lit() -> int32:
             mf: int32 = nd_new(ND_FUNC)
             n_str[mf] = keysid
             n_d[mf] = is_gen_meth          # 1 => generator method (*name(){})
+            n_op[mf] = is_async_meth       # 1 => async method ({async f(){}})
             n_a[mf] = parse_params()
             save_g0: int32 = in_gen
             in_gen = is_gen_meth
+            save_a0: int32 = in_async
+            in_async = is_async_meth       # enables `await` inside the body
             n_b[mf] = parse_block()
+            in_async = save_a0
             in_gen = save_g0
             n_a[prop] = mf
         elif pk() == TK_COLON:
@@ -549,6 +567,14 @@ def parse_class() -> int32:
                 n_next[tail] = m
                 tail = m
             continue
+        # async method modifier:  async name(){}  /  static async name(){}
+        # (contextual: `async(){}`, `async = v`, `async;`, `async}` all name a
+        # member "async"). Without this the body parsed but n_op stayed 0, so the
+        # method returned its raw value instead of a promise and `.then` threw.
+        cls_async: int32 = 0
+        if pk() == TK_IDENT and str_eq_cstr(tk_str[tk_pos], cast[Ptr[uint8]]("async")) != 0 and pk1() != TK_LPAREN and pk1() != TK_ASSIGN and pk1() != TK_SEMI and pk1() != TK_RBRACE:
+            cls_async = 1
+            tk_pos = tk_pos + 1
         # generator method modifier:  *name(){}  /  static *name(){}
         cls_gen: int32 = 0
         if pk() == TK_STAR:
@@ -566,10 +592,14 @@ def parse_class() -> int32:
             f: int32 = nd_new(ND_FUNC)
             n_str[f] = n_str[m]
             n_d[f] = cls_gen           # 1 => generator method (*name(){})
+            n_op[f] = cls_async        # 1 => async method (async name(){})
             n_a[f] = parse_params()
             save_cg: int32 = in_gen
             in_gen = cls_gen
+            save_ca: int32 = in_async
+            in_async = cls_async       # enables `await` inside the body
             n_b[f] = parse_block()
+            in_async = save_ca
             in_gen = save_cg
             n_a[m] = f
         else:

@@ -129,24 +129,37 @@ str_collections: int32 = 0        # total string collections this run (stats/deb
 # Google SERP bootstrap eval()s a single ~67 KB generated string that lexes to
 # ~37 000 tokens / a comparable number of AST nodes. A cap of 30 000 truncated
 # that mid-expression and surfaced as a spurious "unexpected token" SyntaxError
-# that blanked the page. Size the arenas for ~230 KB minified chunks instead.
-MAX_NODE: int32 = 131072
-n_kind: Array[131072, uint8]
-n_a:    Array[131072, int32]
-n_b:    Array[131072, int32]
-n_c:    Array[131072, int32]
-n_d:    Array[131072, int32]
-n_next: Array[131072, int32]
-n_str:  Array[131072, int32]
-n_op:   Array[131072, int32]
-n_num:  Array[131072, float64]
+# that blanked the page.
+#
+# Sizing, measured on a live google.com snapshot (2026-07-25): minified JS costs
+# ~1 AST node per 2.9 source bytes and ~1 token per 1.9 bytes. Google's homepage
+# ships 14 inline scripts; the largest that a browser must actually run is
+# 233 KB => 81 695 nodes / 121 865 tokens.
+#
+# The NODE arena is CUMULATIVE for the whole document (nodes are bump-allocated
+# and can never be freed — a closure from script 1 still points at its function
+# node when script 14 runs), so it must hold the SUM of every script on the page.
+# At 131 072 google's later scripts ran out of room and died with "script too
+# large", taking the globals they define (`Ti`, `_DumpException`, …) with them.
+# 262 144 covers google's whole page with headroom. The TOKEN arena is reset per
+# script, so it only needs the largest SINGLE script.
+MAX_NODE: int32 = 262144
+n_kind: Array[262144, uint8]
+n_a:    Array[262144, int32]
+n_b:    Array[262144, int32]
+n_c:    Array[262144, int32]
+n_d:    Array[262144, int32]
+n_next: Array[262144, int32]
+n_str:  Array[262144, int32]
+n_op:   Array[262144, int32]
+n_num:  Array[262144, float64]
 n_nodes: int32 = 0
 
-MAX_TOK: int32 = 131072
-tk_kind: Array[131072, uint8]
-tk_num:  Array[131072, float64]
-tk_str:  Array[131072, int32]
-tk_str2: Array[131072, int32]       # secondary string id (regex flags)
+MAX_TOK: int32 = 262144
+tk_kind: Array[262144, uint8]
+tk_num:  Array[262144, float64]
+tk_str:  Array[262144, int32]
+tk_str2: Array[262144, int32]       # secondary string id (regex flags)
 n_toks:  int32 = 0
 tk_pos:  int32 = 0
 
