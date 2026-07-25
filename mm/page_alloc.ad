@@ -34,7 +34,7 @@
 
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
 from mm.cow import cow_boot_cr3, cow_refcount, cow_drop_page
-from kernel.printk.printk import printk1, printk2
+from kernel.printk.printk import printk1, printk2, printk_set_level
 # #mm-parity: reset a frame's struct-page descriptor (LRU membership,
 # rmap, flags, mapcount) when it is freed, so a later re-allocation of the
 # same PFN never inherits stale reclaim bookkeeping (a freed page still
@@ -332,9 +332,15 @@ def pages_can_alloc(order: int32) -> int32:
     local_irq_restore(_ac_irq)
     if ok == 0:
         # No pooled run at this-or-higher order; would a cold memblock carve
-        # of the full run width succeed?
+        # succeed? Mirror _pa_grow_from_memblock EXACTLY: the naturally-
+        # aligned carve first, then the page-aligned over-carve fallback.
+        # Missing the fallback here would make the pre-check reject an
+        # execve the real allocator could have serviced.
         size: uint64 = PAGE_SIZE << cast[uint64](order)
         if memblock_can_alloc(size, size) != 0:
+            ok = 1
+        elif order > 0 and memblock_can_alloc(size + size - PAGE_SIZE,
+                                              PAGE_SIZE) != 0:
             ok = 1
     return ok
 
@@ -382,16 +388,117 @@ def _alloc_pages_raw(order: int32) -> uint64:
                 nr_pages_free = nr_pages_free + 1
             return higher
 
-    # Path 3: fresh allocation from memblock. Size and alignment must
-    # both be the full run width so the address is correctly aligned
-    # for the order-0 split that may follow.
+    # Path 3: grow the pool with a fresh carve from memblock.
+    return _pa_grow_from_memblock(order)
+
+
+def _pa_donate_raw(base: uint64, len_bytes: uint64):
+    # Hand a page-aligned, page-multiple RANGE of previously-unmanaged RAM
+    # to the buddy free lists WITHOUT requiring the range itself to be
+    # power-of-two sized or naturally aligned.
+    #
+    # WHY THIS IS BUDDY-SAFE. The buddy invariant is per-BLOCK, not per-
+    # range: a run on free_pages_order[k] must be (PAGE_SIZE << k)-aligned,
+    # because _free_pages_raw locates a block's sibling with the absolute-
+    # address XOR `addr ^ (PAGE_SIZE << k)`. So we decompose the range into
+    # MAXIMAL naturally-aligned power-of-two blocks — for each step, the
+    # largest order k with (PAGE_SIZE << k) <= remaining AND base aligned to
+    # (PAGE_SIZE << k). Every block we push therefore satisfies the
+    # alignment invariant exactly, and the XOR/merge arithmetic stays valid.
+    # This is the same decomposition Linux's __free_pages_memory() uses to
+    # hand memblock's leftovers to the buddy allocator.
+    #
+    # Blocks are PUSHED directly rather than routed through _free_pages_raw:
+    # these pages are NEW to the allocator (they were never handed out), so
+    # they must count towards nr_pages_total but must NOT inflate
+    # nr_pages_freed_total. Merging with an existing free neighbour is
+    # skipped for the same reason it is safe to skip — a later free of an
+    # adjacent block will still coalesce normally.
+    #
+    # Caller must hold _pa_buddy_lock and run under the boot-CR3 window
+    # (the _pa_set_next writes are raw-physical).
+    if base == 0 or len_bytes == 0:
+        return
+    cur: uint64 = base
+    left: uint64 = len_bytes
+    while left >= PAGE_SIZE:
+        # Largest order whose block both FITS in what is left and is
+        # naturally aligned at `cur`. Order 0 always qualifies.
+        k: int32 = MAX_ORDER
+        while k > 0:
+            blk: uint64 = PAGE_SIZE << cast[uint64](k)
+            if blk <= left and (cur & (blk - 1)) == 0:
+                break
+            k = k - 1
+        run: uint64 = PAGE_SIZE << cast[uint64](k)
+        ko: uint64 = cast[uint64](k)
+        _pa_set_next(cur, free_pages_order[ko])
+        free_pages_order[ko] = cur
+        if k == 0:
+            nr_pages_free = nr_pages_free + 1
+        nr_pages_total = nr_pages_total + (cast[uint64](1) << ko)
+        cur = cur + run
+        left = left - run
+
+
+def _pa_grow_from_memblock(order: int32) -> uint64:
+    # Grow the buddy pool by carving fresh RAM out of memblock and return a
+    # correctly-aligned run of `order` pages, or 0 if memblock is genuinely
+    # exhausted.
+    #
+    # THE BUG THIS FIXES. The old code was a single
+    # `memblock_alloc(size, size)` — alignment EQUAL TO the run width. That
+    # is the strictest possible request, and it has two costs against a
+    # ONE-WAY bump allocator whose cursor is de-aligned by every interleaved
+    # region_alloc (the ELF-image carves, which align to 4 KiB):
+    #   1. WASTE: each order-10 carve silently STRANDED up to 4 MiB - 4 KiB
+    #      of alignment padding. memblock has no free path, so that padding
+    #      was gone forever — memory that MemFree kept counting (it reads
+    #      memblock_avail) but the page allocator could never obtain.
+    #   2. PREMATURE FAILURE: a region whose remaining tail is big enough in
+    #      BYTES but has no size-aligned run left returns 0, so the pool
+    #      stopped growing while memblock still reported hundreds of MiB
+    #      free — and every subsequent exec died of "OOM" against a machine
+    #      that was not out of memory.
+    #
+    # THE FIX. Try the naturally-aligned carve first (it is free of slack
+    # when the cursor is already aligned, which is the steady-state case).
+    # If that fails, OVER-CARVE at mere PAGE alignment: ask for
+    # `2*size - PAGE_SIZE` bytes, which provably contains a size-aligned
+    # sub-run, take that sub-run as the caller's block, and DONATE the
+    # leading and trailing slack to the buddy pool via _pa_donate_raw's
+    # naturally-aligned decomposition. Nothing is stranded and the buddy
+    # invariant is preserved per block (see _pa_donate_raw). The pool now
+    # keeps growing until memblock is genuinely, byte-for-byte empty.
+    #
+    # Caller (via _alloc_pages_raw) holds _pa_buddy_lock under the boot-CR3
+    # window; memblock_alloc self-locks and is a leaf.
+    if order < 0 or order > MAX_ORDER:
+        return 0
+    o: uint64 = cast[uint64](order)
     size: uint64 = PAGE_SIZE << o
     page: uint64 = memblock_alloc(size, size)
-    if page == 0:
+    if page != 0:
+        nr_pages_total = nr_pages_total + (cast[uint64](1) << o)
+        return page
+    if order == 0:
+        # An order-0 request is already page-aligned == page-sized; there is
+        # no looser request to fall back to. memblock really is empty.
         return 0
-    pages_in_run: uint64 = cast[uint64](1) << o
-    nr_pages_total = nr_pages_total + pages_in_run
-    return page
+    want: uint64 = size + size - PAGE_SIZE
+    raw: uint64 = memblock_alloc(want, PAGE_SIZE)
+    if raw == 0:
+        return 0
+    aligned: uint64 = (raw + size - 1) & ~(size - 1)
+    head: uint64 = aligned - raw
+    tail: uint64 = (raw + want) - (aligned + size)
+    # The caller's run: count it as newly managed here; alloc_pages()'s
+    # public wrapper adds it to nr_pages_live on the way out.
+    nr_pages_total = nr_pages_total + (cast[uint64](1) << o)
+    # The slack becomes free pool (donate bumps nr_pages_total itself).
+    _pa_donate_raw(raw, head)
+    _pa_donate_raw(aligned + size, tail)
+    return aligned
 
 
 def _try_remove_buddy(target: uint64, order: int32) -> int32:

@@ -50,7 +50,7 @@ from mm.cow import (
 from kernel.printk.printk import (
     printk0, printk1, printk2, printk_set_level,
 )
-from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN, PRINTK_LEVEL_ERR
 from kernel.panic import panic
 # §4: PT_INTERP loading looks up the interpreter binary (typically
 # /lib64/ld-linux-x86-64.so.2) through the calling process's namespace.
@@ -599,7 +599,12 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # interpreter or any image with no BSS tail (eager == legacy).
     region: uint64 = region_alloc(file_hi_rel)
     if region == 0:
-        printk0("elf64: OOM\n")
+        # ERR level: this is the message that must survive
+        # console_set_interactive()'s INFO gate, or an out-of-memory exec
+        # is indistinguishable from "command not found" (exit 127).
+        printk_set_level(PRINTK_LEVEL_ERR)
+        printk1("elf64: OOM - OUT OF MEMORY: no contiguous region of %d bytes for the image\n",
+                file_hi_rel)
         elf_last_load_oom = 1
         return 0
     # SMAP (#120): the loader zero-fills + copies segment bytes into
@@ -1186,7 +1191,9 @@ def elf_load_blob(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # native ELF32 spawns recycle their backing instead of leaking it.
     region: uint64 = region_alloc(span)
     if region == 0:
-        printk0("elf: OOM\n")
+        printk_set_level(PRINTK_LEVEL_ERR)
+        printk1("elf: OOM - OUT OF MEMORY: no contiguous region of %d bytes for the image\n",
+                span)
         elf_last_load_oom = 1
         return 0
     # Zero the whole region so any p_memsz > p_filesz gap is .bss-zero'd.

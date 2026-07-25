@@ -231,7 +231,26 @@ LINE_MAX:      uint64 = 2048     # one logical input line (multi-line)
 # instead of truncating (see _emit_tok / lex_error).
 TOK_MAX:       uint64 = 4096     # tokens per logical input
 NODE_MAX:      uint64 = 16384    # AST node arena (session-lifetime)
-STR_ARENA_MAX: uint64 = 32768    # interned string bytes (session)
+# STR_ARENA_MAX — interned string bytes, SESSION-LIFETIME.
+#
+# THE 2026-07-25 STRESS-SOAK FATALITY LIVED HERE. Every command word the
+# REPL reads is interned into this append-only arena, and _maybe_recycle_
+# arenas() (below) refuses to reset it while ANY function or scope binding
+# is live — which the DE's rc files guarantee for an interactive session.
+# So the arena is monotonic for the life of the shell, and at 32 KiB it
+# filled after ~141 commands (~230 bytes each). str_intern_n's overflow
+# then returned offset 0 == THE EMPTY STRING, so every subsequent command
+# word became "", spawn_resolved saw a slash-less empty command, built
+# "<PATHDIR>/" + "" = "/bin/", found that a directory OPENS, spawned it,
+# and the child's execve("/bin/") failed -ENOENT -> exit 127. The desktop
+# could no longer launch ANYTHING after ~15 minutes of app churn, and the
+# only symptom was a bare 127 that looks exactly like "command not found".
+#
+# 1 MiB moves the wall from ~141 commands to ~4500 (many hours of churn),
+# the overflow is now LOUD (see str_intern_n), and spawn_resolved refuses
+# an empty command outright — so the class is diagnosable rather than
+# silent when a long enough session eventually reaches it.
+STR_ARENA_MAX: uint64 = 1048576  # interned string bytes (session)
 VAL_MAX:       uint64 = 16384    # value cells (session-lifetime)
 SCOPE_MAX:     uint64 = 128      # variable bindings (one flat table)
 ARGV_MAX:      uint64 = 64       # argv slots for an external command
@@ -245,13 +264,18 @@ LISTELEM_MAX:  uint64 = 16384    # list/dict element slots (shared pool)
 # A "string ref" is the byte offset of the first char. Offset 0 is the
 # empty string (a single NUL planted at init).
 
-str_arena:  Array[32768, uint8]
+str_arena:  Array[1048576, uint8]
 str_cursor: uint64 = 1            # 0 reserved for ""
 
 
 def str_arena_init():
     str_arena[0] = 0
     str_cursor = 1
+
+
+# One-shot latch so the arena-exhaustion diagnostic is printed ONCE, not
+# once per interned word (which would be every token of every command).
+str_arena_overflow_warned: int32 = 0
 
 
 def str_intern_n(src: Ptr[uint8], n: uint64) -> uint64:
@@ -262,7 +286,7 @@ def str_intern_n(src: Ptr[uint8], n: uint64) -> uint64:
     # lexer interns before the evaluator exists; rt_raise only sets a
     # latch + writes stderr, so it is safe from anywhere.)
     if str_cursor + n + 1 >= STR_ARENA_MAX:
-        rt_raise("string arena exhausted (STR_ARENA_MAX=32768 bytes, no GC)")
+        rt_raise("string arena exhausted (STR_ARENA_MAX=1048576 bytes, no GC)")
         return 0
     off: uint64 = str_cursor
     i: uint64 = 0
@@ -8527,6 +8551,16 @@ def spawn_resolved(cmd: Ptr[uint8], argv: Ptr[uint64]) -> int32:
     # sys_fdbind AFTER this returns and BEFORE waiting on it. PIPE ends
     # are the exception — they are bound child-side by _spawn_at, because
     # a post-spawn parent bind races the child on SMP.
+    # EMPTY-COMMAND GUARD. An empty `cmd` is never a launchable program,
+    # but without this the PATH walk below builds "<dir>/" + "" = "/bin/",
+    # _path_execable() finds that a DIRECTORY opens fine, and we spawn a
+    # child whose execve fails -ENOENT for a bare exit 127 — indisting-
+    # uishable from "command not found" and the exact shape the 2026-07-25
+    # desktop soak died in once the string arena overflowed (see
+    # STR_ARENA_MAX). Fail here instead, so the caller prints a real
+    # diagnostic and no bogus task is ever spawned.
+    if cmd[0] == 0:
+        return -1
     envp: Ptr[uint64] = _build_envp()
     has_slash: int32 = 0
     i: uint64 = 0

@@ -24,7 +24,8 @@
 # Linux additionally clears DF and a few others; we'll add as needed.
 
 from drivers.tty.serial.early_8250 import early_putc_user
-from kernel.printk.printk import printk0, printk1, printk2
+from kernel.printk.printk import printk0, printk1, printk2, printk_set_level
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_ERR
 # §6: classic-BPF seccomp filter inheritance hook.
 from kernel.seccomp_bpf import bpf_inherit_to_child
 from arch.x86.kernel.time import get_jiffies, tsc_monotonic_ns, read_tsc
@@ -2310,6 +2311,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
         # >4 GiB direct-map can't reach init's page tables / image page.
         diag_pml4: uint64 = uaccess_current_pml4()
         diag_phys: uint64 = uaccess_resolve(diag_pml4, a0, 0)
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk2("execve: copyin_path FAIL uptr=%p pml4=%p\n", a0, diag_pml4)
         printk1("execve: copyin_path FAIL resolve(uptr)=%p (0=fault)\n",
                 diag_phys)
@@ -2322,12 +2324,14 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # the check; a regular user without PERM_X on the target gets
     # -EPERM here with errstr "permission denied".
     if vfs_perm_check_exec(path) != 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk1("execve: perm_check_exec DENIED '%s' (-EPERM)\n",
                 cast[uint64](&exec_kpath[0]))
         set_current_errstr("execve: permission denied")
         return cast[int64](-1)            # -EPERM
     blob: uint64 = ns_blob_ptr(path)
     if blob == 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk1("execve: '%s' not in namespace\n", cast[uint64](&exec_kpath[0]))
         set_current_errstr("execve: file does not exist")
         return cast[int64](-2)            # -ENOENT
@@ -2340,6 +2344,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # A faulting user pointer returns -EFAULT here, while the caller is still
     # fully intact (no teardown has happened yet).
     if exec_snapshot_args(a1, a2) < 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk2("execve: snapshot_args FAIL argv=%p envp=%p (-EFAULT)\n",
                 a1, a2)
         set_current_errstr("execve: bad argv/envp address")
@@ -2364,6 +2369,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
             return cast[int64](-1)         # -EPERM
         iblob: uint64 = ns_blob_ptr(ipath)
         if iblob == 0:
+            printk_set_level(PRINTK_LEVEL_ERR)
             printk1("execve: shebang interp '%s' not found\n",
                     cast[uint64](&_shebang_interp[0]))
             set_current_errstr("execve: shebang interpreter not found")
@@ -2419,6 +2425,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     exec_eager_bytes: uint64 = elf_eager_region_bytes(
         cast[Ptr[uint8]](blob), sz)
     if exec_eager_bytes != 0 and region_can_alloc(exec_eager_bytes) == 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk2("execve: image '%s' needs %d contiguous bytes; not available (-ENOMEM, caller intact)\n",
                 cast[uint64](&exec_kpath[0]), exec_eager_bytes)
         set_current_errstr("execve: out of memory")
@@ -2435,6 +2442,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # -ENOMEM (Linux semantics) and the DE stays alive. The real alloc below
     # keeps a hard null-check backstop for the SMP race window.
     if pages_can_alloc(LINUX_USTACK_EAGER_ORDER) == 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk1("execve: user-stack prefix (%d bytes contiguous) not available (-ENOMEM, caller intact)\n",
                 LINUX_USTACK_EAGER_SIZE)
         set_current_errstr("execve: out of memory")
@@ -2671,6 +2679,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # freezing on a half-built address space.
     cur_pml4: uint64 = task_pml4(cast[int32](current_idx_get()))
     if elf_apply_last_user_mapping(cur_pml4) < 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk0("execve: user-mapping install failed (kernel-image collision?)\n")
         set_current_errstr("execve: cannot map binary")
         return cast[int64](-8)             # -ENOEXEC
@@ -2685,6 +2694,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     if vma_register_bss_demand(current_idx_get(), cur_pml4,
                                elf_last_app_bss_lo_get(),
                                elf_last_app_bss_hi_get()) < 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk0("execve: BSS demand-VMA register failed (OOM)\n")
         set_current_errstr("execve: cannot register BSS")
         return cast[int64](-12)            # -ENOMEM
@@ -2734,6 +2744,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # -ENOMEM terminates this task cleanly rather than corrupting kernel memory.
     new_ustack_phys: uint64 = alloc_pages(LINUX_USTACK_EAGER_ORDER)
     if new_ustack_phys == 0:
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk0("execve: user-stack prefix alloc OOM past PONR -> clean -ENOMEM (no phys-0 map)\n")
         set_current_errstr("execve: cannot back stack")
         return cast[int64](-12)             # -ENOMEM (address space already torn down)
@@ -2753,6 +2764,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
                               new_ustack_phys, "stack",
                               PT_FLAG_NX | PT_FLAG_RW) < 0:
         free_pages(new_ustack_phys, LINUX_USTACK_EAGER_ORDER)
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk0("execve: user-stack install failed (OOM in page-table walk?)\n")
         set_current_errstr("execve: cannot map stack")
         return cast[int64](-12)             # -ENOMEM
@@ -2764,6 +2776,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     if vma_register_stack_demand(current_idx_get(), cur_pml4,
                                  new_ustack_vbase, ustack_prefix_lo) < 0:
         free_pages(new_ustack_phys, LINUX_USTACK_EAGER_ORDER)
+        printk_set_level(PRINTK_LEVEL_ERR)
         printk0("execve: stack demand-VMA register failed (OOM)\n")
         set_current_errstr("execve: cannot register stack")
         return cast[int64](-12)             # -ENOMEM

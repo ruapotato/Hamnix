@@ -311,6 +311,36 @@ def _p9_route_stdio_through_fdname(fdnum: int32, fdname: Ptr[char]):
         sys_close(newfd)
 
 
+def _p9_werr(msg: Ptr[uint8]):
+    # Unconditional stderr write of a NUL-terminated string. lib/p9.ad has
+    # no libc, and write_str() is a per-program helper, so keep it local.
+    sys_write(2, msg, _p9_strlen(msg))
+
+
+# Exit status a spawn child uses when its execve failed because the machine
+# is OUT OF MEMORY, rather than because the binary was missing. 127 is the
+# universal "command not found" status; returning it for an OOM made a
+# desktop that had run out of usable RAM look exactly like a typo, which is
+# how the 2026-07-25 stress-soak failure went unnoticed for ~141 launches.
+# 12 == ENOMEM, mirroring the kernel's errno.
+P9_EXEC_ENOMEM_STATUS: int32 = 12
+
+
+def _p9_exec_failed(path: Ptr[char], rc: int32) -> int32:
+    # Common tail for every spawn child whose sys_execve_env RETURNED (it
+    # does not return on success). Reports the failure on stderr — LOUDLY
+    # and distinctly for -ENOMEM — and exits with a status that tells the
+    # two cases apart. Never returns.
+    if rc == -12:
+        _p9_werr(cast[Ptr[uint8]]("exec: OUT OF MEMORY (ENOMEM) loading "))
+        _p9_werr(cast[Ptr[uint8]](path))
+        _p9_werr(cast[Ptr[uint8]](" - the machine is out of usable RAM; the binary is fine\n"))
+        sys_exit(cast[uint64](P9_EXEC_ENOMEM_STATUS))
+        return P9_EXEC_ENOMEM_STATUS
+    sys_exit(127)
+    return 127
+
+
 def _spawn_flags(path: Ptr[char], argv: Ptr[uint64],
                  sin: int32, sout: int32, envp: Ptr[uint64],
                  extra_flags: int32) -> int32:
@@ -366,10 +396,10 @@ def _spawn_flags(path: Ptr[char], argv: Ptr[uint64],
     # exec. sys_execve_env doesn't return on success. On failure (bad
     # path, malformed ELF, ENOENT) we exit 127 to match the legacy
     # SYS_SPAWN "command not found" convention so callers can keep their
-    # exit-code probes.
-    sys_execve_env(path, argv, envp)
-    sys_exit(127)
-    return 127                                   # unreached
+    # exit-code probes — EXCEPT for -ENOMEM, which gets its own loud
+    # message + status (see _p9_exec_failed).
+    return _p9_exec_failed(path, sys_execve_env(path, argv, envp))
+
 
 
 def spawn(path: Ptr[char], argv: Ptr[uint64],
@@ -450,9 +480,7 @@ def spawn_stdio_pipes(path: Ptr[char], argv: Ptr[uint64],
     # CLEAN-FD contract (task #28): stdio is wired via the /fd names above;
     # drop every leaked launcher fd >= 3 before exec.
     p9_closefrom(3)
-    sys_execve_env(path, argv, envp)
-    sys_exit(127)                                # unreached on success
-    return 127
+    return _p9_exec_failed(path, sys_execve_env(path, argv, envp))
 
 
 def p9_pipe_pins_release():
@@ -545,9 +573,7 @@ def spawn_pipeline_stage(path: Ptr[char], argv: Ptr[uint64],
     # pipeline stage never pins an unrelated pipe end (would suppress
     # EOF/EPIPE for the real endpoints).
     p9_closefrom(3)
-    sys_execve_env(path, argv, envp)
-    sys_exit(127)                                # unreached on success
-    return 127
+    return _p9_exec_failed(path, sys_execve_env(path, argv, envp))
 
 
 # --- p9_note() — write a note string, the SYS_KILL replacement ------
