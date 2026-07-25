@@ -32,6 +32,17 @@ def write_str(fd: int32, s: Ptr[uint8]):
     sys_write(fd, s, strlen_u8(s))
 
 
+# Write ALL `n` bytes, retrying on short writes (the streaming ring returns a
+# short count when it fills). Gives up only if the device stops accepting.
+def push(fd: int32, p: Ptr[uint8], n: uint64):
+    off: uint64 = 0
+    while off < n:
+        w: int64 = sys_write(fd, &p[off], n - off)
+        if w <= 0:
+            return
+        off = off + cast[uint64](w)
+
+
 def u64_to_dec(value: uint64, out: Ptr[uint8]) -> uint64:
     if value == 0:
         out[0] = 48
@@ -159,23 +170,38 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     ctl_verb(ctlfd, "channels", channels)
     write_str(ctlfd, "format s16le\n")
 
+    # Arm the driver's CONTINUOUS STREAMING RING before shipping any PCM.
+    # Without this the writes only stage the first DMA-buffer-full (256 KiB
+    # = ~1.4 s at 48 kHz stereo) and `start` plays that cyclically FOREVER —
+    # the "startup sound repeats its first couple of seconds and never
+    # finishes" bug. In streaming mode the writes block until the ring has
+    # room, so the loop below paces itself against the hardware play cursor
+    # and the WHOLE file goes out exactly once.
+    write_str(ctlfd, "streamopen\n")
+
     # We already pulled `fl` bytes into hdr[] while sniffing. For a WAV, PCM
     # begins at `skip` (the data-chunk body offset); flush hdr[skip..fl] so we
     # skip the fmt/LIST/data-chunk headers exactly (never as clicky samples).
     # For raw PCM (skip == 0) the whole window is samples. Then stream the rest
     # of the file straight through.
+    # Each sys_write may be SHORT (the ring filled and the kernel copied only
+    # part of the chunk), so push every byte in a retry loop — dropping the
+    # remainder would silently truncate the clip.
     buf: Array[1024, uint8]
     if fl > skip:
-        sys_write(audfd, &hdr[skip], fl - skip)
+        push(audfd, &hdr[skip], fl - skip)
 
     while True:
         n: int64 = sys_read(infd, &buf[0], 1024)
         if n <= 0:
             break
-        sys_write(audfd, &buf[0], cast[uint64](n))
+        push(audfd, &buf[0], cast[uint64](n))
 
-    # Start playback.
-    write_str(ctlfd, "start\n")
+    # End of stream: play out what's left in the ring, then STOP. This is
+    # what makes the clip terminate — previously aplay wrote `start` and
+    # exited, leaving the cyclic DMA engine looping its buffer indefinitely
+    # with nobody left to clear the RUN bit.
+    write_str(ctlfd, "drain\n")
 
     sys_close(audfd)
     sys_close(ctlfd)

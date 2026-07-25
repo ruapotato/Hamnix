@@ -31,6 +31,8 @@ from drivers.audio.hda import (
     hda_is_initialized, hda_set_rate, hda_set_channels, hda_set_bits,
     hda_write_pcm, hda_start, hda_stop, hda_reset_buffer,
     hda_pcm_capacity, hda_pcm_loaded,
+    hda_stream_open, hda_stream_is_open, hda_stream_write, hda_stream_drain,
+    hda_stream_space, hda_stream_position, hda_stream_set_nonblock,
     hda_capture_is_ready, hda_capture_start, hda_capture_stop,
     hda_capture_read, hda_capture_avail, hda_capture_reset,
 )
@@ -173,7 +175,10 @@ def devaudio_read(off: uint64, buf: Ptr[uint8], count: uint64) -> int64:
         return 0
     if hda_is_initialized() == 0:
         return -2                                # -ENOENT: no audio dev
-    scratch: Array[96, uint8]
+    # 192 bytes: the line now also carries the streaming-ring " space "/" pos "
+    # fields, which can add ~30 chars on top of the loaded/cap/master/streams/
+    # mute text — the old 96-byte scratch would have overflowed.
+    scratch: Array[192, uint8]
     p: uint64 = 0
     tag1: Ptr[uint8] = "loaded "
     j: uint64 = 0
@@ -220,6 +225,25 @@ def devaudio_read(off: uint64, buf: Ptr[uint8], count: uint64) -> int64:
         p = p + 1
         j = j + 1
     p = p + _au_u64_to_dec(cast[uint64](hda_mix_muted()), &scratch[p])
+    # Streaming-ring telemetry: " space <bytes-writable> pos <bytes-played>".
+    # `space` lets a non-blocking UI producer write exactly what fits without
+    # stalling its event loop; `pos` is the HARDWARE play cursor (LPIB,
+    # unwrapped) so a progress bar reflects what was actually heard rather
+    # than a wall clock that keeps running when DMA has stopped.
+    tag6: Ptr[uint8] = " space "
+    j = 0
+    while tag6[j] != 0:
+        scratch[p] = tag6[j]
+        p = p + 1
+        j = j + 1
+    p = p + _au_u64_to_dec(hda_stream_space(), &scratch[p])
+    tag7: Ptr[uint8] = " pos "
+    j = 0
+    while tag7[j] != 0:
+        scratch[p] = tag7[j]
+        p = p + 1
+        j = j + 1
+    p = p + _au_u64_to_dec(hda_stream_position(), &scratch[p])
     scratch[p] = 10
     p = p + 1
     if off >= p:
@@ -240,6 +264,17 @@ def devaudio_write(off: uint64, buf: Ptr[uint8], count: uint64) -> int64:
     # zero-length write is the "flush/start" signal.
     if hda_is_initialized() == 0:
         return -2
+    # CONTINUOUS STREAMING MODE (armed by the `stream` ctl verb): the write
+    # APPENDS to the cyclic ring ahead of the hardware play cursor rather
+    # than staging at a file offset, so a file of ANY length plays through a
+    # fixed-size DMA buffer. A zero-length write is the end-of-stream marker
+    # and drains + stops (which is what makes a clip finish instead of
+    # looping its first ring-full forever).
+    if hda_stream_is_open() != 0:
+        if count == 0:
+            hda_stream_drain()
+            return 0
+        return hda_stream_write(buf, count)
     if count == 0:
         # EOF flush -> start playback of whatever's staged.
         hda_start()
@@ -278,6 +313,23 @@ def devaudioctl_write(buf: Ptr[uint8], count: uint64) -> int64:
             hda_set_bits(24)
         elif _au_tok_eq(&buf[7], count - 7, "s32le") != 0:
             hda_set_bits(32)
+        return cast[int64](count)
+    # --- continuous streaming ring verbs ---------------------------
+    # "streamopen"  : arm the ring for the current rate/channels/bits. All
+    #                 subsequent /dev/audio writes APPEND to it. (NOT named
+    #                 `stream` — that token is already the mixer's per-stream
+    #                 volume verb "stream <id> <pct>" handled below.)
+    # "nonblock <n>": 1 = short writes instead of blocking (UI producers).
+    # "drain"       : play out everything written, then stop (end of clip).
+    if _au_tok_eq(buf, count, "streamopen") != 0:
+        hda_stream_open()
+        return cast[int64](count)
+    if _au_tok_eq(buf, count, "nonblock") != 0:
+        hda_stream_set_nonblock(cast[int32](_au_parse_uint_after(buf,
+                                                                count, 0)))
+        return cast[int64](count)
+    if _au_tok_eq(buf, count, "drain") != 0:
+        hda_stream_drain()
         return cast[int64](count)
     if _au_tok_eq(buf, count, "start") != 0:
         hda_start()

@@ -45,6 +45,9 @@ from drivers.pci.pci import (
     PCI_BDF_NONE,
 )
 from mm.page_alloc import alloc_pages
+from kernel.sched.core import (
+    WaitQueue, wq_init, wq_wait_prepare, wq_wait_commit_timeout,
+)
 
 
 # --- HDA controller MMIO register offsets (HDA spec §3.3) -----------
@@ -200,6 +203,46 @@ hda_pcm_len:     uint64 = 0          # current valid PCM bytes loaded
 hda_rate:        uint32 = 48000
 hda_channels:    uint32 = 2
 hda_bits:        uint32 = 16
+
+
+# --- CONTINUOUS STREAMING RING (the "plays to the end" path) ---------
+#
+# The ORIGINAL playback model was one-shot: stage N bytes into the DMA
+# buffer, program CBL = N with LVI = 0, set RUN. Because an HDA stream
+# buffer is CYCLIC, that plays the staged window and then LOOPS IT
+# FOREVER. With a 256 KiB buffer that is 1.36 s at 48 kHz stereo — which
+# is exactly the user-visible "the startup sound plays the first ~2 s
+# over and over without finishing" bug, and it never terminated because
+# nothing ever cleared RUN (opening another audio app did, which is why
+# the jingle stopped then).
+#
+# Re-staging the next window from a WALL CLOCK (the previous attempt at a
+# fix) cannot work: it reprograms BDL/CBL while the stream is RUNNING,
+# which is illegal per the HDA spec (the descriptor must be stopped and
+# reset before its buffer parameters change) and wedges the DMA engine —
+# the "played 2 s then went quiet" half of the report.
+#
+# The correct model, and what this implements, is a real period-based
+# ring: the buffer is carved into HDA_NPERIODS BDL entries, CBL = the
+# whole ring, LVI = HDA_NPERIODS-1, programmed ONCE while the stream is
+# stopped. A producer then appends PCM continuously ahead of the play
+# cursor, which is read from the hardware LPIB position register (NOT a
+# guess), unwrapped into a monotonic byte count. The producer blocks
+# while the ring is full and is woken by a bounded timed sleep, so a
+# track of ANY length streams start-to-finish through a fixed buffer.
+HDA_NPERIODS:    uint64 = 8          # BDL entries in the streaming ring
+
+hda_period:      uint64 = 0          # bytes per BDL period
+hda_ring:        uint64 = 0          # effective ring bytes (NPERIODS*period)
+hda_stream_mode: int32  = 0          # 1 == continuous streaming ring armed
+hda_nonblock:    int32  = 0          # 1 == short writes instead of blocking
+hda_w:           uint64 = 0          # monotonic bytes appended by producer
+hda_play_base:   uint64 = 0          # unwrapped play cursor base (whole rings)
+hda_lpib_last:   uint32 = 0          # previous LPIB, for wrap detection
+hda_running:     int32  = 0          # stream RUN bit is set
+hda_zero:        uint64 = 0          # ring is silent up to here (>= hda_w)
+hda_wq:          WaitQueue           # timed-sleep parking spot for producers
+hda_wq_ready:    int32  = 0
 
 
 # --- CAPTURE (record / input) state ---------------------------------
@@ -788,6 +831,34 @@ def hda_stop():
         return
     ctl: uint32 = _sd_r8(HDA_SD_CTL)
     _sd_w8(HDA_SD_CTL, ctl & ~HDA_SDCTL_RUN)
+    hda_running = 0
+
+
+def _hda_stream_halt():
+    # Bring the output stream descriptor to a fully STOPPED + RESET state so
+    # its BDL / CBL / LVI may legally be reprogrammed. Per the HDA spec the
+    # RUN bit must be cleared (and read back clear) before SRST is pulsed;
+    # reprogramming a running descriptor is what silently wedged the DMA
+    # engine when the old code re-staged a new window mid-playback.
+    if hda_initialized == 0:
+        return
+    ctl: uint32 = _sd_r8(HDA_SD_CTL)
+    _sd_w8(HDA_SD_CTL, ctl & ~(HDA_SDCTL_RUN | HDA_SDCTL_IOCE))
+    spin: uint64 = 0
+    while spin < 100000:
+        if (_sd_r8(HDA_SD_CTL) & HDA_SDCTL_RUN) == 0:
+            spin = 100001
+        else:
+            spin = spin + 1
+    # Pulse stream reset so LPIB and the internal FIFO restart from zero.
+    _sd_w8(HDA_SD_CTL, HDA_SDCTL_SRST)
+    _hda_spin(2000)
+    _sd_w8(HDA_SD_CTL, 0)
+    _hda_spin(2000)
+    _sd_w8(HDA_SD_STS, HDA_SDSTS_BCIS | HDA_SDSTS_FIFOE | HDA_SDSTS_DESE)
+    hda_running = 0
+    hda_lpib_last = 0
+    hda_play_base = 0
 
 
 # --- the PCM write path ---------------------------------------------
@@ -829,6 +900,11 @@ def hda_start() -> int32:
     if pcm_len == 0:
         return -1
 
+    # The descriptor MUST be stopped + reset before its BDL/CBL change.
+    # (Without this a `start` issued while a previous stream was running
+    # reprogrammed a live DMA engine and it simply stopped producing.)
+    _hda_stream_halt()
+    hda_stream_mode = 0
     _hda_program_bdl(pcm_len)
     _hda_connect_codec_path()
 
@@ -841,6 +917,7 @@ def hda_start() -> int32:
     _sd_w8(HDA_SD_CTL + 2, (hda_stream_tag & 0xF) << 4)
     ctl: uint32 = _sd_r8(HDA_SD_CTL)
     _sd_w8(HDA_SD_CTL, ctl | HDA_SDCTL_RUN | HDA_SDCTL_IOCE)
+    hda_running = 1
     return 0
 
 
@@ -860,6 +937,246 @@ def hda_link_position() -> uint32:
 
 def hda_pcm_loaded() -> uint64:
     return hda_pcm_len
+
+
+# --- continuous streaming ring: the public producer API --------------
+
+def _hda_sleep_ticks(t: uint64):
+    # Park the calling task for `t` jiffies. We have no HDA completion IRQ
+    # wired (the driver is polled by design), so a producer that filled the
+    # ring sleeps on a private wait queue with a bounded deadline and then
+    # re-reads the hardware play position. This YIELDS the CPU — it is not
+    # a busy spin — so the rest of the system keeps running while a track
+    # streams.
+    if hda_wq_ready == 0:
+        wq_init(&hda_wq)
+        hda_wq_ready = 1
+    wq_wait_prepare(&hda_wq)
+    wq_wait_commit_timeout(&hda_wq, t)
+
+
+def _hda_frame_bytes() -> uint64:
+    f: uint64 = cast[uint64](hda_channels) * cast[uint64](hda_bits / 8)
+    if f == 0:
+        f = 4
+    return f
+
+
+def _hda_ring_geometry():
+    # Carve the DMA buffer into HDA_NPERIODS equal periods, each an integral
+    # number of sample frames (so a wrap never splits a frame and swaps the
+    # channels). The effective ring is NPERIODS*period, which may be a little
+    # smaller than the raw buffer when the frame size does not divide evenly.
+    frame: uint64 = _hda_frame_bytes()
+    per: uint64 = hda_pcm_cap / HDA_NPERIODS
+    per = (per / frame) * frame
+    if per == 0:
+        per = frame
+    hda_period = per
+    hda_ring = per * HDA_NPERIODS
+
+
+def _hda_ring_program_bdl():
+    # HDA_NPERIODS BDL entries covering the ring back-to-back, each with IOC
+    # set. CBL = the WHOLE ring and LVI = NPERIODS-1, so the DMA engine walks
+    # every entry and wraps — a true continuous ring, never a one-shot window.
+    i: uint64 = 0
+    while i < HDA_NPERIODS:
+        e: uint64 = hda_bdl + i * 16
+        cast[Ptr[uint64]](e + 0)[0] = hda_pcm_buf + i * hda_period
+        cast[Ptr[uint32]](e + 8)[0] = cast[uint32](hda_period & 0xFFFFFFFF)
+        cast[Ptr[uint32]](e + 12)[0] = 0x01               # IOC per period
+        i = i + 1
+    _sd_w32(HDA_SD_BDPL, cast[uint32](hda_bdl & 0xFFFFFFFF))
+    _sd_w32(HDA_SD_BDPU, cast[uint32](hda_bdl >> 32))
+    _sd_w32(HDA_SD_CBL, cast[uint32](hda_ring & 0xFFFFFFFF))
+    _sd_w16(HDA_SD_LVI, cast[uint32](HDA_NPERIODS - 1))
+    _sd_w16(HDA_SD_FMT, _hda_fmt_word())
+
+
+def hda_stream_open() -> int32:
+    # Arm the continuous streaming ring for the CURRENT rate/channels/bits.
+    # Stops + resets the descriptor first (the only legal time to reprogram
+    # BDL/CBL), zeroes the ring so an underrun is silence rather than stale
+    # audio, and clears the producer/consumer cursors. Call this BEFORE
+    # writing PCM with hda_stream_write().
+    if hda_initialized == 0:
+        return -1
+    _hda_stream_halt()
+    _hda_ring_geometry()
+    i: uint64 = 0
+    while i < hda_ring:
+        cast[Ptr[uint8]](hda_pcm_buf + i)[0] = 0
+        i = i + 1
+    _hda_ring_program_bdl()
+    hda_w = 0
+    hda_play_base = 0
+    hda_lpib_last = 0
+    hda_running = 0
+    hda_pcm_len = 0
+    hda_zero = hda_ring                # whole ring was just zeroed above
+    hda_nonblock = 0                   # blocking by default; opt in per stream
+    hda_stream_mode = 1
+    return 0
+
+
+def hda_stream_is_open() -> int32:
+    return hda_stream_mode
+
+
+def hda_stream_set_nonblock(nb: int32):
+    # Non-blocking producers (an interactive UI loop that must not stall)
+    # get SHORT writes when the ring is full instead of sleeping.
+    if nb != 0:
+        hda_nonblock = 1
+    else:
+        hda_nonblock = 0
+
+
+def _hda_stream_go():
+    # Set RUN on the (already programmed) ring. LPIB restarts at 0 after the
+    # SRST in _hda_stream_halt, so the unwrap state starts clean too.
+    if hda_running != 0:
+        return
+    _hda_connect_codec_path()
+    _sd_w8(HDA_SD_STS, HDA_SDSTS_BCIS | HDA_SDSTS_FIFOE | HDA_SDSTS_DESE)
+    _sd_w8(HDA_SD_CTL + 2, (hda_stream_tag & 0xF) << 4)
+    ctl: uint32 = _sd_r8(HDA_SD_CTL)
+    _sd_w8(HDA_SD_CTL, ctl | HDA_SDCTL_RUN | HDA_SDCTL_IOCE)
+    hda_lpib_last = 0
+    hda_play_base = 0
+    hda_running = 1
+
+
+def _hda_play_total() -> uint64:
+    # The play cursor as a MONOTONIC byte count, unwrapped from the hardware
+    # LPIB register. LPIB counts 0..CBL-1 and restarts; each observed
+    # backward step is one completed lap of the ring. This is real hardware
+    # position feedback — the thing the old wall-clock re-staging lacked.
+    if hda_running == 0:
+        return 0
+    lp: uint32 = _sd_r32(HDA_SD_LPIB)
+    if cast[uint64](lp) >= hda_ring:
+        lp = cast[uint32](cast[uint64](lp) % hda_ring)
+    if lp < hda_lpib_last:
+        hda_play_base = hda_play_base + hda_ring
+    hda_lpib_last = lp
+    return hda_play_base + cast[uint64](lp)
+
+
+def hda_stream_position() -> uint64:
+    # Bytes actually played out of the stream so far (monotonic). Consumers
+    # use this to drive a TRUTHFUL progress indicator.
+    if hda_stream_mode == 0:
+        return 0
+    return _hda_play_total()
+
+
+def hda_stream_space() -> uint64:
+    # Bytes the producer may append right now without overwriting audio that
+    # has not been played yet. One period is held back as a guard against the
+    # controller's FIFO prefetching ahead of the reported LPIB.
+    if hda_stream_mode == 0:
+        return 0
+    play: uint64 = _hda_play_total()
+    inflight: uint64 = 0
+    if hda_w > play:
+        inflight = hda_w - play
+    if inflight >= hda_ring:
+        return 0
+    free: uint64 = hda_ring - inflight
+    if free <= hda_period:
+        return 0
+    return free - hda_period
+
+
+def hda_stream_write(buf: Ptr[uint8], count: uint64) -> int64:
+    # Append PCM to the ring ahead of the play cursor. Blocks (sleeping, not
+    # spinning) while the ring is full unless non-blocking mode is set, in
+    # which case it returns a SHORT count. DMA auto-starts once the ring is
+    # half primed, so a producer just writes and the audio flows.
+    if hda_initialized == 0:
+        return -1
+    if hda_stream_mode == 0:
+        return -1
+    if count == 0:
+        return 0
+    done: uint64 = 0
+    stall: uint64 = 0
+    while done < count:
+        sp: uint64 = hda_stream_space()
+        if sp == 0:
+            # Ring full. Make sure DMA is actually draining it, then wait.
+            if hda_running == 0:
+                _hda_stream_go()
+            if hda_nonblock != 0:
+                break                             # short write; caller retries
+            _hda_sleep_ticks(1)
+            stall = stall + 1
+            if stall > 6000:                      # ~60 s: dead DMA, bail out
+                break
+        else:
+            stall = 0
+            take: uint64 = count - done
+            if take > sp:
+                take = sp
+            wpos: uint64 = hda_w % hda_ring
+            room: uint64 = hda_ring - wpos
+            if take > room:
+                take = room
+            i: uint64 = 0
+            while i < take:
+                cast[Ptr[uint8]](hda_pcm_buf + wpos + i)[0] = buf[done + i]
+                i = i + 1
+            hda_w = hda_w + take
+            done = done + take
+            # Keep one period of SILENCE immediately ahead of the write
+            # cursor. If the producer ever falls behind, the DMA engine then
+            # plays quiet rather than re-playing whatever stale audio was
+            # still sitting in that part of the ring (a cyclic buffer's
+            # default underrun behaviour is exactly the stutter-repeat this
+            # whole change is about).
+            while hda_zero < hda_w + hda_period:
+                cast[Ptr[uint8]](hda_pcm_buf + (hda_zero % hda_ring))[0] = 0
+                hda_zero = hda_zero + 1
+            if hda_running == 0 and hda_w >= hda_ring / 2:
+                _hda_stream_go()
+    hda_pcm_len = hda_w
+    return cast[int64](done)
+
+
+def hda_stream_written() -> uint64:
+    return hda_w
+
+
+def hda_stream_drain() -> int32:
+    # Play out everything written, then STOP the stream. This is what makes
+    # a clip END instead of looping: we silence one period past the write
+    # cursor (so the cyclic tail is quiet, not a repeat of earlier audio),
+    # wait for the hardware play cursor to reach the last written byte, and
+    # clear RUN.
+    if hda_initialized == 0:
+        return -1
+    if hda_stream_mode == 0:
+        return -1
+    if hda_w == 0:
+        return 0
+    if hda_running == 0:
+        _hda_stream_go()
+    z: uint64 = 0
+    while z < hda_period:
+        cast[Ptr[uint8]](hda_pcm_buf + ((hda_w + z) % hda_ring))[0] = 0
+        z = z + 1
+    guard: uint64 = 0
+    while True:
+        if _hda_play_total() >= hda_w:
+            break
+        _hda_sleep_ticks(1)
+        guard = guard + 1
+        if guard > 60000:                         # ~10 min watchdog
+            break
+    hda_stop()
+    return 0
 
 
 # --- CAPTURE (record / input) stream setup --------------------------

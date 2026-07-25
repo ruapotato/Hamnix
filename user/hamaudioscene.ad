@@ -37,7 +37,10 @@ from lib.wavdecode import wavdecode_parse, wavdecode_ok, wavdecode_rate, \
     wavdecode_frame_bytes, wavdecode_duration_ms, wavdecode_peak
 from lib.mp3decode import mp3decode_parse, mp3decode_ok, mp3decode_rate, \
     mp3decode_channels, mp3decode_data_len, mp3decode_duration_ms, \
-    mp3decode_pcm_ptr, mp3decode_peak
+    mp3decode_pcm_ptr, mp3decode_peak, \
+    mp3decode_begin, mp3decode_pump, mp3decode_read, \
+    mp3decode_frames_decoded, mp3decode_ring_frames, \
+    mp3decode_total_pcm_frames
 from lib.hamaudiocore import hamaudio_init, hamaudio_set_name, \
     hamaudio_set_format, hamaudio_set_duration_ms, hamaudio_set_position_ms, \
     hamaudio_set_level, hamaudio_set_playing, hamaudio_is_playing, \
@@ -60,28 +63,44 @@ from lib.hamaudiocore import hamaudio_init, hamaudio_set_name, \
 # not fit — the loader only ever saw a truncated prefix — which is exactly why
 # "unreadable audio" hit the big demo while the small test.mp3 (30 KiB) and
 # test.wav (105 KiB), which fit whole, played fine. 4 MiB holds the shipped demo
-# with headroom for real songs. (The HDA DMA buffer still caps a SINGLE staged
-# chunk at HDA_CAP; _stage_and_start re-stages per position, so this larger
-# file buffer does not change the DMA path.)
+# with headroom for real songs. (This is the ENCODED file; the decoded PCM is
+# produced incrementally into lib/mp3decode's ring as the track plays, so a
+# long track never needs its full decoded size in memory.)
 FILE_CAP: uint64 = 4194304
 au_filebuf: Array[4194304, uint8]
 au_filelen: uint64 = 0
 
-HDA_CAP: uint64 = 262144                    # HDA stream DMA buffer capacity
+# ---- streaming transport --------------------------------------------------
+#
+# The player FEEDS the driver's continuous ring (drivers/audio/hda.ad) instead
+# of staging fixed windows. The old model wrote one DMA-buffer-full and let the
+# CYCLIC engine repeat it, then tried to swap in the next window from a WALL
+# CLOCK — which both reprogrammed a running DMA engine (illegal, and it went
+# silent) and could never stay in sync. Now:
+#   * `streamopen` arms the ring, `nonblock 1` guarantees writes never stall
+#     this UI event loop;
+#   * every iteration we top the ring up by however many bytes the driver says
+#     it can take (the " space " field of /dev/audio's status line);
+#   * the progress indicator comes from the HARDWARE play cursor (the " pos "
+#     field = unwrapped LPIB), so it reflects what was actually heard;
+#   * for .mp3 the decoder is pumped INCREMENTALLY just ahead of the feed
+#     cursor, so a 2:19 track streams without needing 27 MB of decoded PCM.
+FEED_CHUNK: uint64 = 16384                  # staging buffer for one write
+feed_buf: Array[16384, uint8]
 
-# Currently-staged HDA window: byte range [stage_from, stage_from+stage_span)
-# into the PCM payload. The HDA DMA buffer is CYCLIC (drivers/audio/hda.ad
-# programs CBL = staged bytes, LVI = 0), so once a window drains it LOOPS
-# forever unless we stage the NEXT window. A track longer than HDA_CAP
-# (~1.36 s at 48 kHz stereo) therefore played only its first ~1.36 s on
-# repeat — the "won't play / stuck at ~1 sec" bug — until the transport loop
-# re-stages the next window as the play cursor crosses the boundary (main()).
-stage_from: uint64 = 0
-stage_span: uint64 = 0
+feed_frame: uint64 = 0        # next sample-frame to hand to the driver
+base_frame: uint64 = 0        # frame the current stream started at (seek base)
+audfd_g: int32 = -1           # persistent /dev/audio fd (streaming appends)
+stream_done: int32 = 0        # all of the track has been handed to the driver
 
-# Playback timing anchors (jiffies clock, HZ=100 => 10 ms/tick).
-play_start_j: uint64 = 0
-play_base_ms: uint64 = 0
+# Pending seek that needs the mp3 decoder rewound + pumped forward; done a
+# bounded slice per UI tick so the window stays responsive. -1 == none.
+seek_target: uint64 = 0
+seek_active: int32 = 0
+
+# Driver telemetry, refreshed once per loop from /dev/audio.
+hda_space: uint64 = 0
+hda_pos: uint64 = 0
 
 ctlfd_g: int32 = -1
 
@@ -112,7 +131,9 @@ def _src_off() -> uint64:
 
 def _src_len() -> uint64:
     if src_is_mp3 != 0:
-        return mp3decode_data_len()
+        # WHOLE-track PCM length (from the header scan), not just the slice
+        # decoded so far — decoding is incremental now.
+        return mp3decode_total_pcm_frames() * cast[uint64](mp3decode_channels()) * 2
     return wavdecode_data_len()
 
 
@@ -142,6 +163,18 @@ def _src_duration_ms() -> uint64:
     if src_is_mp3 != 0:
         return mp3decode_duration_ms()
     return wavdecode_duration_ms()
+
+
+# Total sample-frames in the WHOLE track. For .mp3 this comes from the frame
+# header scan, so it is the real track length even though only a slice has
+# been decoded so far.
+def _src_total_frames() -> uint64:
+    fb: uint64 = _src_frame_bytes()
+    if fb == 0:
+        return 0
+    if src_is_mp3 != 0:
+        return mp3decode_total_pcm_frames()
+    return wavdecode_data_len() / fb
 
 
 # Peak |sample| over PCM data span [dataoff, dataoff+n) (offsets are relative to
@@ -256,42 +289,134 @@ def _ctl_word(s: Ptr[uint8]):
         _writeall(ctlfd_g, s)
 
 
-# Stage PCM from `from_byte` (a byte offset into the PCM payload) into the
-# HDA DMA buffer starting at buffer offset 0, then START DMA. Returns the
-# byte where staging stopped. Reopens /dev/audio so the file offset is 0.
-def _stage_and_start(from_byte: uint64):
-    data_len: uint64 = _src_len()
-    if from_byte >= data_len:
+# Find `key` in `buf` and parse the decimal number that follows it.
+def _status_field(buf: Ptr[uint8], n: uint64, key: Ptr[uint8]) -> uint64:
+    klen: uint64 = _slen(key)
+    if klen == 0 or n < klen:
+        return 0
+    i: uint64 = 0
+    while i + klen <= n:
+        j: uint64 = 0
+        hit: int32 = 1
+        while j < klen:
+            if buf[i + j] != key[j]:
+                hit = 0
+                j = klen
+            else:
+                j = j + 1
+        if hit == 1:
+            k: uint64 = i + klen
+            while k < n and (buf[k] < 48 or buf[k] > 57):
+                k = k + 1
+            v: uint64 = 0
+            while k < n and buf[k] >= 48 and buf[k] <= 57:
+                v = v * 10 + cast[uint64](buf[k] - 48)
+                k = k + 1
+            return v
+        i = i + 1
+    return 0
+
+
+# Refresh hda_space / hda_pos from the driver's /dev/audio status line.
+def _refresh_status():
+    hda_space = 0
+    hda_pos = 0
+    sfd: int32 = sys_open(cast[Ptr[char]]("/dev/audio"))
+    if sfd < 0:
         return
-    # Reset any previously-staged PCM.
-    _ctl_word(cast[Ptr[uint8]]("reset\n"))
-    audfd: int32 = sys_open_write(cast[Ptr[char]]("/dev/audio"))
-    if audfd < 0:
+    sbuf: Array[224, uint8]
+    r: int64 = sys_read(sfd, &sbuf[0], 223)
+    sys_close(sfd)
+    if r <= 0:
         return
-    span: uint64 = data_len - from_byte
-    if span > HDA_CAP:
-        span = HDA_CAP
-    # Frame-align the span so DMA gets whole sample-frames.
+    n: uint64 = cast[uint64](r)
+    hda_space = _status_field(&sbuf[0], n, cast[Ptr[uint8]]("space "))
+    hda_pos = _status_field(&sbuf[0], n, cast[Ptr[uint8]]("pos "))
+
+
+# Open the streaming ring and begin playing at sample-frame `from_frame`.
+def _start_stream_at(from_frame: uint64):
+    total: uint64 = _src_total_frames()
+    if from_frame >= total:
+        return
+    if audfd_g >= 0:
+        sys_close(audfd_g)
+        audfd_g = -1
+    _ctl_word(cast[Ptr[uint8]]("stop\n"))
+    _configure_format()
+    # Arm the continuous ring, and make our writes NON-BLOCKING so a full ring
+    # never freezes the UI event loop.
+    _ctl_word(cast[Ptr[uint8]]("streamopen\n"))
+    _ctl_word(cast[Ptr[uint8]]("nonblock 1\n"))
+    audfd_g = sys_open_write(cast[Ptr[char]]("/dev/audio"))
+    feed_frame = from_frame
+    base_frame = from_frame
+    stream_done = 0
+    hda_pos = 0
+    hda_space = 0
+
+
+# Hand the driver as much PCM as its ring will take, decoding .mp3 just ahead
+# of the feed cursor. Bounded per call so the UI stays responsive.
+def _feed():
+    if audfd_g < 0:
+        return
+    total: uint64 = _src_total_frames()
     fb: uint64 = _src_frame_bytes()
-    if fb > 0:
-        span = (span / fb) * fb
-    if span == 0:
-        sys_close(audfd)
+    if fb == 0 or total == 0:
         return
-    # Record the staged window so the transport loop knows when the cyclic
-    # DMA buffer has drained and the NEXT window must be staged.
-    stage_from = from_byte
-    stage_span = span
-    base: uint64 = cast[uint64](_src_base()) + _src_off() + from_byte
-    written: uint64 = 0
-    while written < span:
-        chunk: uint64 = span - written
-        if chunk > 4096:
-            chunk = 4096
-        sys_write(audfd, cast[Ptr[uint8]](base + written), chunk)
-        written = written + chunk
-    sys_close(audfd)
-    _ctl_word(cast[Ptr[uint8]]("start\n"))
+    if feed_frame >= total:
+        stream_done = 1
+        return
+    budget: uint64 = 65536                 # max bytes pushed per UI tick
+    space: uint64 = hda_space
+    while space > 0 and budget > 0 and feed_frame < total:
+        want: uint64 = space
+        if want > budget:
+            want = budget
+        if want > FEED_CHUNK:
+            want = FEED_CHUNK
+        wf: uint64 = want / fb             # whole sample-frames
+        if wf == 0:
+            break
+        if feed_frame + wf > total:
+            wf = total - feed_frame
+        got: uint64 = 0
+        if src_is_mp3 != 0:
+            # Decode just far enough ahead of the feed cursor.
+            guard: uint64 = 0
+            while mp3decode_frames_decoded() < feed_frame + wf and guard < 64:
+                if mp3decode_pump(4) == 0:
+                    break
+                guard = guard + 1
+            got = mp3decode_read(&feed_buf[0], feed_frame, wf)
+        else:
+            avail: uint64 = 0
+            dl: uint64 = _src_len()
+            if feed_frame * fb < dl:
+                avail = (dl - feed_frame * fb) / fb
+            if avail > wf:
+                avail = wf
+            src: uint64 = cast[uint64](_src_base()) + _src_off() \
+                + feed_frame * fb
+            bi: uint64 = 0
+            while bi < avail * fb:
+                feed_buf[bi] = cast[Ptr[uint8]](src)[bi]
+                bi = bi + 1
+            got = avail
+        if got == 0:
+            break
+        w: int64 = sys_write(audfd_g, &feed_buf[0], got * fb)
+        if w <= 0:
+            break
+        adv: uint64 = cast[uint64](w) / fb
+        if adv == 0:
+            break
+        feed_frame = feed_frame + adv
+        space = space - cast[uint64](w)
+        budget = budget - cast[uint64](w)
+    if feed_frame >= total:
+        stream_done = 1
 
 
 # Peak-level sample of the PCM window around the current byte cursor, fed to
@@ -304,6 +429,71 @@ def _level_at(cur_byte: uint64) -> uint32:
     if cur_byte + win > data_len:
         win = data_len - cur_byte
     return _src_peak(cur_byte, win)
+
+
+# Sample-frame the HARDWARE has actually played up to (stream base + the
+# driver's unwrapped LPIB cursor). This is the truthful transport position.
+def _pos_frame() -> uint64:
+    fb: uint64 = _src_frame_bytes()
+    if fb == 0:
+        return base_frame
+    f: uint64 = base_frame + hda_pos / fb
+    total: uint64 = _src_total_frames()
+    if total > 0 and f > total:
+        f = total
+    return f
+
+
+def _pos_ms() -> uint64:
+    r: uint64 = cast[uint64](_src_rate())
+    if r == 0:
+        return 0
+    return _pos_frame() * 1000 / r
+
+
+def _ms_to_frames(ms: uint64) -> uint64:
+    return ms * cast[uint64](_src_rate()) / 1000
+
+
+# Seek to `target`. A .mp3 window that is still resident in the decoder's ring
+# can be replayed directly; otherwise the decoder is REWOUND and pumped
+# forward a slice at a time by _pump_seek() so the UI never freezes.
+def _seek_to_frame(target: uint64):
+    t: uint64 = target
+    total: uint64 = _src_total_frames()
+    if total > 0 and t >= total:
+        t = 0
+    seek_active = 0
+    if src_is_mp3 != 0:
+        dec: uint64 = mp3decode_frames_decoded()
+        ring: uint64 = mp3decode_ring_frames()
+        resident: int32 = 0
+        if t < dec and (dec - t) <= ring:
+            resident = 1
+        if resident == 0:
+            # Rewind the decoder and catch up incrementally.
+            mp3decode_begin(&au_filebuf[0], au_filelen)
+            seek_target = t
+            seek_active = 1
+            _ctl_word(cast[Ptr[uint8]]("stop\n"))
+            base_frame = t
+            feed_frame = t
+            hda_pos = 0
+            return
+    _start_stream_at(t)
+
+
+# Advance a pending long seek by a bounded number of mp3 frames per UI tick.
+def _pump_seek():
+    if seek_active == 0:
+        return
+    if mp3decode_frames_decoded() >= seek_target:
+        seek_active = 0
+        _start_stream_at(seek_target)
+        return
+    if mp3decode_pump(48) == 0:
+        seek_active = 0                    # hit EOF before the target
+        _start_stream_at(mp3decode_frames_decoded())
 
 
 def _ms_to_bytes(ms: uint64) -> uint64:
@@ -352,7 +542,11 @@ def _load_and_decode(path: Ptr[char]) -> int32:
 
     ok: int32 = 0
     if src_is_mp3 != 0:
-        ok = mp3decode_parse(&au_filebuf[0], au_filelen)
+        # INCREMENTAL: prime the decoder (scan the headers for the true
+        # duration + decode the first frame) and let _feed() pump the rest as
+        # it plays. Decoding the whole track up front would need ~27 MB of PCM
+        # for the shipped demo and would stall the window on launch.
+        ok = mp3decode_begin(&au_filebuf[0], au_filelen)
     elif au_filelen >= 44:
         ok = wavdecode_parse(&au_filebuf[0], au_filelen)
     if ok != 0:
@@ -445,14 +639,12 @@ def _switch_to(sel: int32) -> int32:
     _ctl_word(cast[Ptr[uint8]]("reset\n"))
     okk: int32 = _load_and_decode(cast[Ptr[char]](track_paths[sel]))
     hamaudio_set_selected_track(sel)
-    play_base_ms = 0
     hamaudio_set_position_ms(0)
     hamaudio_set_level(0)
     if okk != 0:
         _configure_format()
         _push_volume()
-        _stage_and_start(0)
-        play_start_j = sys_get_jiffies()
+        _start_stream_at(0)
         hamaudio_set_playing(1)
     else:
         hamaudio_set_playing(0)
@@ -541,9 +733,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # on-device gate opens the window and immediately hears playback).
     cur_byte: uint64 = 0
     if ok != 0:
-        _stage_and_start(0)
-        play_start_j = sys_get_jiffies()
-        play_base_ms = 0
+        _start_stream_at(0)
         hamaudio_set_playing(1)
         _writeall(1, cast[Ptr[uint8]]("[hamaudio] playing\n"))
         emit_scene(wid)
@@ -593,33 +783,30 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         cmd: int32 = hamaudio_take_command()
         if cmd == HAMAUDIO_CMD_PLAYPAUSE:
             if hamaudio_is_playing() != 0:
-                # Pause: freeze position, stop DMA.
-                play_base_ms = play_base_ms + \
-                    (sys_get_jiffies() - play_start_j) * 10
+                # Pause: stop DMA where it is; resume restarts the ring at the
+                # frame the HARDWARE actually reached.
                 _ctl_word(cast[Ptr[uint8]]("stop\n"))
                 hamaudio_set_playing(0)
             else:
-                cur_byte = _ms_to_bytes(play_base_ms)
-                _stage_and_start(cur_byte)
-                play_start_j = sys_get_jiffies()
+                _start_stream_at(_pos_frame())
                 hamaudio_set_playing(1)
             changed = 1
         elif cmd == HAMAUDIO_CMD_STOP:
             _ctl_word(cast[Ptr[uint8]]("stop\n"))
             _ctl_word(cast[Ptr[uint8]]("reset\n"))
             hamaudio_set_playing(0)
-            play_base_ms = 0
+            base_frame = 0
+            feed_frame = 0
+            hda_pos = 0
             cur_byte = 0
             hamaudio_set_position_ms(0)
             hamaudio_set_level(0)
             changed = 1
         elif cmd == HAMAUDIO_CMD_SEEK:
-            play_base_ms = hamaudio_seek_ms()
-            cur_byte = _ms_to_bytes(play_base_ms)
-            if hamaudio_is_playing() != 0:
-                _stage_and_start(cur_byte)
-                play_start_j = sys_get_jiffies()
-            hamaudio_set_position_ms(play_base_ms)
+            tgt_ms: uint64 = hamaudio_seek_ms()
+            _seek_to_frame(_ms_to_frames(tgt_ms))
+            hamaudio_set_position_ms(tgt_ms)
+            cur_byte = _ms_to_bytes(tgt_ms)
             hamaudio_set_level(_level_at(cur_byte))
             changed = 1
         elif cmd == HAMAUDIO_CMD_SELECT:
@@ -640,12 +827,20 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             _push_volume()
             changed = 1
 
-        # --- advance the play position while playing ---
+        # --- keep the ring fed and advance the play position while playing ---
         if hamaudio_is_playing() != 0:
-            now_ms: uint64 = play_base_ms + \
-                (sys_get_jiffies() - play_start_j) * 10
+            _refresh_status()
+            _pump_seek()
+            _feed()
+            now_ms: uint64 = _pos_ms()
             dur: uint64 = hamaudio_duration_ms()
-            if dur > 0 and now_ms >= dur:
+            # The track ends when everything has been handed to the driver AND
+            # the hardware cursor has played it all out — NOT when a wall clock
+            # says so.
+            ended: int32 = 0
+            if stream_done != 0 and _pos_frame() + 1 >= _src_total_frames():
+                ended = 1
+            if ended != 0:
                 # Reached the end. VLC-style follow-on, driven by the transport
                 # toggles:
                 #   * repeat-one         -> restage the SAME track from 0.
@@ -654,11 +849,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 #                            repeat-all; the last track stops
                 #                            when repeat is off).
                 #   * otherwise          -> stop + REWIND to 0 so the very next
-                #                            Play restages from the top (the old
-                #                            "stuck at the end" bug: settling at
-                #                            play_base_ms == dur made _ms_to_bytes
-                #                            land past data_len, so the next Play
-                #                            hit the early-return and did nothing).
+                #                            Play restarts from the top.
                 rep: int32 = hamaudio_repeat()
                 cursel: int32 = hamaudio_selected_track()
                 advance: int32 = 0
@@ -690,7 +881,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                     _ctl_word(cast[Ptr[uint8]]("stop\n"))
                     _ctl_word(cast[Ptr[uint8]]("reset\n"))
                     hamaudio_set_playing(0)
-                    play_base_ms = 0
+                    base_frame = 0
+                    feed_frame = 0
+                    hda_pos = 0
                     cur_byte = 0
                     hamaudio_set_position_ms(0)
                     hamaudio_set_level(0)
@@ -699,14 +892,6 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             else:
                 hamaudio_set_position_ms(now_ms)
                 cur_byte = _ms_to_bytes(now_ms)
-                # Re-stage the NEXT HDA window once the play cursor crosses the
-                # end of the currently-staged (cyclic) window, so a track longer
-                # than HDA_CAP streams all the way through instead of looping its
-                # first ~1.36 s. The position clock is wall-time driven, so
-                # re-staging from cur_byte resumes the audio at the right spot.
-                if stage_span > 0 and cur_byte >= stage_from + stage_span \
-                        and cur_byte < _src_len():
-                    _stage_and_start(cur_byte)
                 hamaudio_set_level(_level_at(cur_byte))
                 changed = 1
 

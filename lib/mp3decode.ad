@@ -44,9 +44,26 @@ MP3_PI:       float64 = 3.14159265358979323846
 mp3_ok:        int32  = 0
 mp3_rate:      uint32 = 0
 mp3_channels:  uint32 = 0
-mp3_pcm_frames: uint64 = 0                # sample-frames written
+mp3_pcm_frames: uint64 = 0                # sample-frames written (MONOTONIC)
 
+# pcm_buf is a RING, not a linear sink. mp3_pcm_frames counts every frame ever
+# decoded and never wraps; the storage slot is (frame % mp3_ring_frames). This
+# is what lets a track of ANY length be decoded incrementally through a fixed
+# buffer: the player consumes frames behind the decode cursor and the decoder
+# keeps running ahead of it. (When a whole file fits — every existing host gate
+# and the small shipped clips — nothing ever wraps and the buffer behaves
+# exactly as the old linear one, so mp3decode_pcm_ptr() stays valid there.)
 pcm_buf:  Array[2000000, int16]
+mp3_ring_frames: uint64 = 0               # ring capacity in sample-frames
+
+# Total MPEG frames in the WHOLE file, counted by walking the frame headers
+# (see _mp3_scan_frames). The TRUE duration derives from this, NOT from how
+# much audio happened to be decoded — the old duration was
+# mp3_pcm_frames/rate, so once decoding stopped at the buffer cap the UI
+# reported the CAP's length (1,000,000 frames / 48 kHz = 20.8 s) instead of
+# the real track length. That is exactly the "shows as only 20 sec" bug.
+mp3_total_frames: uint64 = 0
+MP3_SAMPLES_PER_FRAME: uint64 = 1152      # MPEG-1 Layer III
 
 # ---- input cursor --------------------------------------------------------
 in_buf:  Ptr[uint8]
@@ -913,7 +930,14 @@ def _subband(gr: int32, ch: int32, base_frame: uint64):
             elif samp < -32767:
                 samp = -32767
             p: uint64 = cast[uint64](32 * ss + i)
-            idx: uint64 = (base_frame + p) * cast[uint64](nch) + cast[uint64](ch)
+            # Ring slot: wrap the MONOTONIC frame counter into the buffer so
+            # decoding can continue indefinitely behind a consumer. (Was a
+            # hard `if idx < MP3_PCM_CAP` truncation, which simply stopped
+            # producing audio once the buffer filled.)
+            fr: uint64 = base_frame + p
+            if mp3_ring_frames > 0:
+                fr = fr % mp3_ring_frames
+            idx: uint64 = fr * cast[uint64](nch) + cast[uint64](ch)
             if idx < MP3_PCM_CAP:
                 pcm_buf[idx] = cast[int16](samp)
             i = i + 1
@@ -962,14 +986,63 @@ def _get_main_data(main_data_size: int32) -> int32:
 # ==========================================================================
 #  public API
 # ==========================================================================
-# Decode the whole .mp3 buffer into the internal PCM buffer. Returns 1 on
-# success (at least one frame decoded), 0 otherwise.
-def mp3decode_parse(buf: Ptr[uint8], length: uint64) -> int32:
+# Count every MPEG-1 Layer III frame in the buffer by walking the frame
+# headers (sync word -> bitrate/samplerate/padding -> frame size -> skip). This
+# is cheap (no decoding) and exact for CBR, and it is what gives the TRUE track
+# duration regardless of how much audio has actually been decoded so far.
+# Also latches the first frame's sample rate into mp3_rate.
+def _mp3_scan_frames(buf: Ptr[uint8], length: uint64) -> uint64:
+    pos: uint64 = 0
+    if length >= 10 and buf[0] == 73 and buf[1] == 68 and buf[2] == 51:
+        sz: uint64 = (cast[uint64](buf[6]) << 21) | (cast[uint64](buf[7]) << 14) \
+            | (cast[uint64](buf[8]) << 7) | cast[uint64](buf[9])
+        pos = sz + 10
+        if pos >= length:
+            pos = 0
+    n: uint64 = 0
+    while pos + 4 <= length:
+        h: uint32 = (cast[uint32](buf[pos]) << 24) \
+            | (cast[uint32](buf[pos + 1]) << 16) \
+            | (cast[uint32](buf[pos + 2]) << 8) \
+            | cast[uint32](buf[pos + 3])
+        matched: int32 = 0
+        if (h & 4292870144) == 4292870144:               # 0xffe00000 sync
+            idv: int32 = cast[int32]((h >> 19) & 1)
+            layer: int32 = cast[int32]((h >> 17) & 3)
+            bri: int32 = cast[int32]((h >> 12) & 15)
+            sfi: int32 = cast[int32]((h >> 10) & 3)
+            if idv == 1 and layer == 1 and bri != 0 and bri != 15 and sfi != 3:
+                pad: int32 = cast[int32]((h >> 9) & 1)
+                fsz: int32 = (144 * mp3t_bitrate(bri)) / mp3t_samprate(sfi) \
+                    + pad
+                if fsz >= 24 and fsz <= 2000:
+                    if n == 0:
+                        mp3_rate = cast[uint32](mp3t_samprate(sfi))
+                    n = n + 1
+                    pos = pos + cast[uint64](fsz)
+                    matched = 1
+        if matched == 0:
+            pos = pos + 1
+    return n
+
+
+def mp3decode_total_frames() -> uint64:
+    return mp3_total_frames
+
+
+# Prime the decoder on a .mp3 buffer: reset all state, scan the frame headers
+# for the TRUE duration, and decode the first frame so rate/channels are known.
+# Returns 1 on success. Callers then either pump incrementally
+# (mp3decode_pump) or let mp3decode_parse() decode linearly. Calling this again
+# REWINDS decoding to the start of the file, which is how the player seeks.
+def mp3decode_begin(buf: Ptr[uint8], length: uint64) -> int32:
     _mp3_build_tables()
     mp3_ok = 0
     mp3_rate = 0
     mp3_channels = 0
     mp3_pcm_frames = 0
+    mp3_ring_frames = 0
+    mp3_total_frames = 0
     in_buf = buf
     in_len = length
     in_pos = 0
@@ -994,10 +1067,35 @@ def mp3decode_parse(buf: Ptr[uint8], length: uint64) -> int32:
         in_pos = sz + 10
         if in_pos >= length:
             in_pos = 0
-    frames: int32 = 0
+    mp3_total_frames = _mp3_scan_frames(buf, length)
+    if _mp3_decode_one() == 0:
+        return 0
+    mp3_ok = 1
+    return 1
+
+
+# Decode the whole .mp3 buffer into the internal PCM buffer. Returns 1 on
+# success (at least one frame decoded), 0 otherwise. Whole-file callers (the
+# host gates, the on-device selftest, any consumer of mp3decode_pcm_ptr())
+# want a LINEAR decode, so this stops before the output would wrap the ring.
+def mp3decode_parse(buf: Ptr[uint8], length: uint64) -> int32:
+    if mp3decode_begin(buf, length) == 0:
+        return 0
+    while mp3_pcm_frames + MP3_SAMPLES_PER_FRAME <= mp3_ring_frames:
+        if _mp3_decode_one() == 0:
+            break
+    return 1
+
+
+# Decode EXACTLY one MPEG frame (2 granules = 1152 sample-frames) into the PCM
+# ring, skipping over malformed/undecodable frames. Returns 1 when a frame was
+# produced, 0 at end of input. Splitting this out of the old monolithic
+# whole-file loop is what makes decoding RESUMABLE, so a long track can be
+# decoded incrementally while it plays instead of all at once up front.
+def _mp3_decode_one() -> int32:
     while True:
         if _read_header() == 0:
-            break
+            return 0
         nch: int32 = h_nch
         sideinfo_size: int32 = 32
         if nch == 1:
@@ -1015,6 +1113,9 @@ def mp3decode_parse(buf: Ptr[uint8], length: uint64) -> int32:
         _read_sideinfo(sideinfo_size)
         mp3_rate = cast[uint32](mp3t_samprate(h_sfi))
         mp3_channels = cast[uint32](nch)
+        # Ring capacity in sample-frames, fixed on the first decoded frame.
+        if mp3_ring_frames == 0:
+            mp3_ring_frames = MP3_PCM_CAP / cast[uint64](nch)
         if _get_main_data(main_data_size) == 0:
             continue
         # ---- phase 1: scalefactors + Huffman for all granules/channels ----
@@ -1045,16 +1146,61 @@ def mp3decode_parse(buf: Ptr[uint8], length: uint64) -> int32:
                 _subband(gr, ch3, base_frame)
                 ch3 = ch3 + 1
             mp3_pcm_frames = mp3_pcm_frames + 576
-            if mp3_pcm_frames + 576 >= MP3_PCM_CAP / cast[uint64](nch):
-                # output buffer full; stop cleanly
-                mp3_ok = 1
-                return 1
             gr = gr + 1
-        frames = frames + 1
-    if frames > 0:
-        mp3_ok = 1
         return 1
-    return 0
+
+
+# Decode up to `max_frames` further MPEG frames. Returns how many were
+# produced (0 == end of stream). This is the incremental entry point the
+# player pumps while a track is playing.
+def mp3decode_pump(max_frames: uint64) -> uint64:
+    if mp3_ok == 0:
+        return 0
+    n: uint64 = 0
+    while n < max_frames:
+        if _mp3_decode_one() == 0:
+            break
+        n = n + 1
+    return n
+
+
+def mp3decode_ring_frames() -> uint64:
+    return mp3_ring_frames
+
+
+def mp3decode_frames_decoded() -> uint64:
+    return mp3_pcm_frames
+
+
+# Copy `nframes` sample-frames starting at ABSOLUTE frame index `frame_off`
+# out of the PCM ring into `dst` (s16le interleaved). Handles the ring wrap.
+# Returns the number of frames actually copied — 0 if the requested window has
+# already been overwritten by the decoder or has not been decoded yet.
+def mp3decode_read(dst: Ptr[uint8], frame_off: uint64,
+                   nframes: uint64) -> uint64:
+    if mp3_ring_frames == 0 or nframes == 0:
+        return 0
+    if frame_off >= mp3_pcm_frames:
+        return 0
+    avail: uint64 = mp3_pcm_frames - frame_off
+    if avail > mp3_ring_frames:
+        return 0                      # window evicted; caller must re-seek
+    take: uint64 = nframes
+    if take > avail:
+        take = avail
+    nch: uint64 = cast[uint64](mp3_channels)
+    if nch == 0:
+        return 0
+    d: Ptr[int16] = cast[Ptr[int16]](dst)
+    i: uint64 = 0
+    while i < take:
+        slot: uint64 = ((frame_off + i) % mp3_ring_frames) * nch
+        c: uint64 = 0
+        while c < nch:
+            d[i * nch + c] = pcm_buf[slot + c]
+            c = c + 1
+        i = i + 1
+    return take
 
 
 def mp3decode_ok() -> int32:
@@ -1092,7 +1238,21 @@ def mp3decode_pcm_ptr() -> Ptr[uint8]:
 def mp3decode_duration_ms() -> uint64:
     if mp3_rate == 0:
         return 0
+    # TRUE duration = every frame in the FILE (header scan) x 1152 samples,
+    # not just the frames decoded so far. Falls back to the decoded count only
+    # if the header scan found nothing.
+    if mp3_total_frames > 0:
+        return mp3_total_frames * MP3_SAMPLES_PER_FRAME * 1000 \
+            / cast[uint64](mp3_rate)
     return mp3_pcm_frames * 1000 / cast[uint64](mp3_rate)
+
+
+# Total sample-frames in the whole track (from the header scan) — the length
+# the player streams towards.
+def mp3decode_total_pcm_frames() -> uint64:
+    if mp3_total_frames > 0:
+        return mp3_total_frames * MP3_SAMPLES_PER_FRAME
+    return mp3_pcm_frames
 
 
 # Peak |sample| over a PCM byte span [off, off+n) of the decoded output. `off`
@@ -1100,11 +1260,19 @@ def mp3decode_duration_ms() -> uint64:
 # wavdecode_peak so the player's level meter can be driven identically.
 def mp3decode_peak(off: uint64, n: uint64) -> uint32:
     base: Ptr[uint8] = cast[Ptr[uint8]](&pcm_buf[0])
+    # Byte offsets are into the logical (monotonic) PCM stream; wrap them into
+    # the ring so the level meter reads the right window on a long track.
+    ring_bytes: uint64 = mp3_ring_frames * cast[uint64](mp3_channels) * 2
     peak: uint32 = 0
     i: uint64 = 0
     while i + 1 < n:
-        lo: uint32 = cast[uint32](base[off + i])
-        hi: uint32 = cast[uint32](base[off + i + 1])
+        pos: uint64 = off + i
+        if ring_bytes > 0:
+            pos = pos % ring_bytes
+            if pos + 1 >= ring_bytes:
+                pos = ring_bytes - 2       # never read past the ring's end
+        lo: uint32 = cast[uint32](base[pos])
+        hi: uint32 = cast[uint32](base[pos + 1])
         raw: uint32 = lo | (hi << 8)
         mag: uint32 = raw
         if raw >= 32768:
