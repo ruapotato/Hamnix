@@ -114,7 +114,7 @@ from sys.src.port9.port.devpid import devpid_read, devpid_write
 from sys.src.port9.port.devrandom import devrandom_read, devrandom_write
 from sys.src.port9.port.devmouse import devmouse_read, devmouse_write
 from sys.src.port9.port.devcpuinfo import devcpuinfo_read, devcpuinfo_write
-from sys.src.port9.port.devmeminfo import devmeminfo_read, devmeminfo_write
+from sys.src.port9.port.devmeminfo import devmeminfo_read, devmeminfo_read_at, devmeminfo_write
 from sys.src.port9.port.devuptime import devuptime_read, devuptime_write
 from sys.src.port9.port.devloadavg import devloadavg_read, devloadavg_write
 from sys.src.port9.port.devversion import devversion_read, devversion_write
@@ -1799,9 +1799,13 @@ def _devtab_read(dev_type: int32, wid: int32, layer: int32, off: uint64,
             return 0
         return devcpuinfo_read(buf, count)
     if dev_type == DEV_MEMINFO:
-        if off > 0:
-            return 0
-        return devmeminfo_read(buf, count)
+        # OFFSET-AWARE (unlike its EOF-on-any-offset siblings above): the
+        # meminfo blob is ~590 bytes, which is FIVE /bin/cat chunks. The old
+        # `if off > 0: return 0` arm made `cat /proc/meminfo` stop dead after
+        # its first 128-byte read, hiding every leak counter in the file
+        # (PagesInUse / VmaNodesLive / TasksLive / ...) from every chunked
+        # reader. See devmeminfo.ad devmeminfo_read_at.
+        return devmeminfo_read_at(buf, count, off)
     if dev_type == DEV_UPTIME:
         if off > 0:
             return 0

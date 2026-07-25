@@ -208,9 +208,31 @@ sample() {
     return 1
 }
 
-# Unexpected-SIGTERM watch: we kill apps with the Plan 9 terminate note, which
-# is a NORMAL exit for them; what must not happen is anything ELSE exiting 143.
-sig143_base=$(grep -ac "exited (code=143)" "$LOG")
+# Unexpected-SIGTERM watch. We close apps with the Plan 9 terminate note, and
+# code=143 IS that note's normal exit status — so a raw `code=143` count is
+# 100% false positives here (it fired on cycle 1 of the first run).
+#
+# Accounting by PID SET would be wrong over a soak: pids RECYCLE, so a pid we
+# killed in cycle 1 is a different process by cycle 40 and a genuine
+# unexpected 143 from a recycled number would be masked. Count instead: every
+# terminate note we issue is entitled to exactly one 143, so a total 143 count
+# ABOVE the number of notes we sent means something else took a SIGTERM.
+kills_issued=0
+count_143() { grep -ac "exited (code=143)" "$LOG"; }
+
+# wait_exit <pid> <timeout> — wait for a NEW "task: pid <pid> exited" line.
+# Presence alone is not enough for the same pid-recycling reason: `grep -q`
+# would match the exit of the PREVIOUS holder of this pid number and return
+# instantly, so a process that never died would look closed. Compare counts.
+wait_exit() {
+    local pid="$1" base="$2" deadline=$(( SECONDS + $3 ))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "$(grep -ac "task: pid $pid exited" "$LOG")" -gt "$base" ] && return 0
+        kill -0 "$QEMU_PID" 2>/dev/null || return 1
+        sleep 1
+    done
+    return 1
+}
 
 # The app mix. Spans the office suite, the scene apps, the browser and a
 # terminal — deliberately heterogeneous so a leak in one app's teardown does
@@ -273,8 +295,10 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
 
     # ---- close a bunch of apps ---------------------------------------
     for pid in $open_pids; do
+        exit_base=$(grep -ac "task: pid $pid exited" "$LOG")
+        kills_issued=$((kills_issued+1))
         printf '/bin/kill %s\n' "$pid" >&3
-        if ! wait_for "task: pid $pid exited" 20; then
+        if ! wait_exit "$pid" "$exit_base" 20; then
             say_fail "cycle $c: pid $pid survived the terminate note for 20s"
             stop=1
             break
@@ -289,10 +313,10 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
     sample "c${c}closed" || say_fail "cycle $c: CLOSED sample timed out"
 
     # ---- per-cycle health --------------------------------------------
-    now=$(grep -ac "exited (code=143)" "$LOG")
-    if [ "$now" -gt "$sig143_base" ]; then
-        say_fail "cycle $c: unexpected SIGTERM exit: $(grep -a 'exited (code=143)' "$LOG" | tail -1)"
-        sig143_base=$now
+    n143=$(count_143)
+    if [ "$n143" -gt "$kills_issued" ]; then
+        say_fail "cycle $c: $n143 code=143 exits but only $kills_issued terminate notes issued — something we did NOT kill took a SIGTERM: $(grep -a 'exited (code=143)' "$LOG" | tail -1)"
+        kills_issued=$n143      # re-baseline so one event is reported once
     fi
     assert_alive "cycle_$c" || stop=1
     if grep -aq "newwindow: table full" "$LOG"; then
@@ -337,17 +361,27 @@ import re, sys
 
 log, series_path, tol_kb, cycles, soak_s, launched, closed = sys.argv[1:8]
 tol_kb = int(tol_kb); cycles = int(cycles); soak_s = int(soak_s)
-text = open(log, 'rb').read().decode('utf-8', 'replace')
+text = open(log, 'rb').read().decode('utf-8', 'replace').replace('\r', '\n')
 
 # Split the log into the marked sample regions.
+#
+# The markers MUST be anchored to the start of a line. hamsh echoes back the
+# command it is being fed one character at a time, redrawing the whole line
+# after each keystroke, so the raw log contains a line reading
+#   hamsh$ echo SOAKSMP_c0closed_B; cat /proc/meminfo; ... echo SOAKSMP_c0closed_E
+# — i.e. BOTH markers, in order, on a single line, before the command has run.
+# An unanchored `SOAKSMP_(\w+)_B(.*?)SOAKSMP_\1_E` matches THAT echo first and
+# captures an empty region, silently yielding zero parsed fields for every
+# sample. Anchoring to ^...$ skips the echo and finds the real output.
 FIELDS = ["MemTotal", "MemFree", "MemAvailable", "MemUsed", "PagesInUse",
           "PagesFreedTotal", "VmaNodesLive", "KmallocLive", "TasksLive",
           "TasksSpawned", "TasksReaped"]
 samples = []                       # (label, {field: int}, live_wids)
-for m in re.finditer(r'SOAKSMP_(\w+)_B(.*?)SOAKSMP_\1_E', text, re.S):
+for m in re.finditer(r'^SOAKSMP_(\w+)_B\s*$(.*?)^SOAKSMP_\1_E\s*$',
+                     text, re.S | re.M):
     label, body = m.group(1), m.group(2)
     win = ''
-    wm = re.search(r'SOAKWIN_\w+_B(.*)$', body, re.S)
+    wm = re.search(r'^SOAKWIN_\w+_B\s*$(.*)$', body, re.S | re.M)
     if wm:
         win = wm.group(1)
         body = body[:wm.start()]

@@ -196,22 +196,54 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
 
 # --- public API -------------------------------------------------------
 
-def devmeminfo_read(buf: Ptr[uint8], count: uint64) -> int64:
-    # Stateless snapshot. 512 bytes covers the worst-case rendered
-    # blob with the new leak-accounting fields; caller's `count` is
-    # the only cap on bytes copied.
+def devmeminfo_read_at(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
+    # OFFSET-AWARE snapshot read.
+    #
+    # This used to be offset-BLIND — it always returned the first
+    # min(count, n) bytes — and namec.ad's dispatcher turned any non-zero
+    # offset into EOF (`if off > 0: return 0`). Together those two silently
+    # TRUNCATED /proc/meminfo to whatever the reader's FIRST buffer happened
+    # to be. /bin/cat reads in 128-byte chunks (user/cat.ad CHUNK), so
+    # `cat /proc/meminfo` printed exactly 128 bytes and stopped mid-word:
+    #
+    #     MemTotal: 873959 kB
+    #     ... SwapFree: 0 kB
+    #     MemUse                      <- 128 bytes, then EOF
+    #
+    # Everything past byte 128 — MemUsed, Pages, PagesFree, KmallocLive,
+    # PagesTotal, PagesFreedTotal, PagesInUse, VmaNodesLive, TasksSpawned,
+    # TasksReaped, TasksLive and the HugePages fields — was UNREACHABLE to
+    # any chunked reader. Those are precisely the leak counters this file
+    # exists to expose, so every leak-accounting field was invisible to the
+    # tools most likely to look at it. /bin/free happened to work only
+    # because it reads with a buffer larger than the blob. Found by
+    # scripts/test_de_stress_soak.sh, which could not read one of them.
+    #
+    # The blob stays a stateless snapshot, re-rendered per chunk (like a
+    # Linux seq_file without the buffered-record guarantee), so a
+    # multi-chunk read can observe counters from two adjacent instants.
+    # That is strictly better than reporting a truncated file as complete,
+    # and it is exactly what the single-read path already did.
     if count == 0:
         return 0
     scratch: Array[768, uint8]
     n: uint64 = _build_meminfo(&scratch[0], 768)
+    if off >= n:
+        return 0
+    remain: uint64 = n - off
     take: uint64 = count
-    if take > n:
-        take = n
+    if take > remain:
+        take = remain
     i: uint64 = 0
     while i < take:
-        buf[i] = scratch[i]
+        buf[i] = scratch[off + i]
         i = i + 1
     return cast[int64](take)
+
+
+def devmeminfo_read(buf: Ptr[uint8], count: uint64) -> int64:
+    # Back-compat entry point (whole-blob readers): read from offset 0.
+    return devmeminfo_read_at(buf, count, 0)
 
 
 def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
