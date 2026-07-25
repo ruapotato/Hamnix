@@ -137,6 +137,14 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
         exit 0
     fi
     echo "[test_de_screenshot] HAMNIX_SKIP_BUILD=1: reusing existing $INSTALLER_IMG (no rebuild)."
+    # ...but SAY SO when that image predates the tree, so nobody reads the
+    # screendump as a picture of current source (scripts/_installer_img.sh).
+    # shellcheck source=_installer_img.sh
+    source "$PROJ_ROOT/scripts/_installer_img.sh"
+    if installer_img_is_stale "$INSTALLER_IMG"; then
+        echo "[test_de_screenshot] WARNING: $INSTALLER_IMG is STALE (older than a" >&2
+        echo "[test_de_screenshot]   tracked build input) — the PNG below shows an OLD build." >&2
+    fi
 else
     echo "[test_de_screenshot] rebuilding $INSTALLER_IMG via build_installer_img.sh (~10-15 min)..."
     # HAMNIX_INSTALLER_IMG_OUT is already exported for the selftest image;

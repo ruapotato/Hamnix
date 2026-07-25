@@ -116,19 +116,15 @@ else
     exit 0
 fi
 
-# --- ensure installer image -------------------------------------------
-if [ ! -f "$INSTALLER_IMG" ]; then
-    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-        echo "[visual_gate] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
-        exit 0
-    fi
-    echo "[visual_gate] building installer image (~6 min)"
-    bash "$PROJ_ROOT/scripts/build_installer_img.sh"
-fi
-if [ ! -f "$INSTALLER_IMG" ]; then
-    echo "[visual_gate] SKIP: $INSTALLER_IMG unavailable" >&2
-    exit 0
-fi
+# --- ensure installer image (missing OR STALE -> rebuild) --------------
+# This gate's image path is DEDICATED (hamnix-installer-selftest.img), so the
+# old "rebuild only when absent" rule re-booted it forever. On 2026-07-24 that
+# made the gate report the office suite missing from a tree where it was
+# already shipping — the image it booted predated the launchers by two days.
+# See scripts/_installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+ensure_installer_img "$INSTALLER_IMG" "[visual_gate]" || exit 0
 
 mkdir -p "$OUT_DIR"
 echo "[visual_gate] output dir: $OUT_DIR"

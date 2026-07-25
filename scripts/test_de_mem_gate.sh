@@ -39,14 +39,12 @@ if [ -z "$OVMF_FD" ]; then
     done
 fi
 [ -f "$OVMF_FD" ] || { echo "[mem_gate] SKIP: no OVMF" >&2; exit 0; }
-if [ ! -f "$INSTALLER_IMG" ]; then
-    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-        echo "[mem_gate] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
-        exit 0
-    fi
-    echo "[mem_gate] building self-test installer image (~6 min)"
-    bash "$PROJ_ROOT/scripts/build_installer_img.sh"
-fi
+# Missing OR STALE -> rebuild. This gate boots a DEDICATED image path, which
+# the old "rebuild only when absent" rule pinned to whatever was built first.
+# See scripts/_installer_img.sh.
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+ensure_installer_img "$INSTALLER_IMG" "[mem_gate]" || exit 0
 [ -f "$INSTALLER_IMG" ] || { echo "[mem_gate] FAIL: no $INSTALLER_IMG" >&2; exit 1; }
 
 mkdir -p "$OUT_DIR"

@@ -93,8 +93,13 @@ command -v socat >/dev/null 2>&1 && MON_DRIVER=socat
 CONVERTER=""
 command -v convert >/dev/null 2>&1 && CONVERTER=convert
 [ -z "$CONVERTER" ] && command -v pnmtopng >/dev/null 2>&1 && CONVERTER=pnmtopng
-[ -f "$INSTALLER_IMG" ] || {
-    echo "[office] SKIP-RUNTIME: $INSTALLER_IMG absent (build it first)" >&2; exit 0; }
+# The image must be BOTH present and CURRENT: "is the office suite on the
+# desktop?" answered from a pre-office image is exactly the false red that
+# cost two agent cycles on 2026-07-24 (scripts/_installer_img.sh).
+# shellcheck source=_installer_img.sh
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+ensure_installer_img "$INSTALLER_IMG" "[office]" || {
+    echo "[office] SKIP-RUNTIME: no usable $INSTALLER_IMG" >&2; exit 0; }
 
 mkdir -p "$OUT_DIR"
 echo "[office] output dir: $OUT_DIR"
