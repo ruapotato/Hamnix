@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><title>livedom</title></head><body>
+<!-- The live-DOM keystone fixture (docs/hambrowse_real_web_review_2026-07-25.md).
+     Q: after the Phase-0 event work, can the ENGINE's own click dispatch
+     (he_dom_click by id — what a real user click routes through) reach elements
+     that JavaScript created after load? Each case reports into #log. -->
+<div id="host"></div>
+<div id="deleg"></div>
+<button id="statbtn">static</button>
+<div id="log">start</div>
+<div id="app"></div>
+<script>
+var log = [];
+function say(s){ log.push(s); document.getElementById('log').textContent = log.join(' | '); }
+
+// case 1 — STATIC button in the parsed HTML
+document.getElementById('statbtn').addEventListener('click', function(){ say('STATIC-FIRED'); });
+
+// case 2 — createElement + appendChild
+var b = document.createElement('button');
+b.id = 'dynbtn'; b.textContent = 'dyn';
+b.addEventListener('click', function(){ say('DYN-FIRED'); });
+document.getElementById('host').appendChild(b);
+
+// case 3 — innerHTML-created button, listener attached after query
+document.getElementById('host').innerHTML += '<button id="htmlbtn">html</button>';
+var hb = document.getElementById('htmlbtn');
+if (hb) { hb.addEventListener('click', function(){ say('HTML-FIRED'); }); }
+else { say('HTML-NOTFOUND'); }
+
+// case 4 — event DELEGATION: listener on a static container, dynamic child
+document.getElementById('deleg').addEventListener('click', function(e){
+  say('DELEG-FIRED:' + (e.target && e.target.id));
+});
+document.getElementById('deleg').innerHTML = '<button id="kid">kid</button>';
+
+// case 5 — programmatic .click() on a dynamic node (Phase-0 _obj_dispatch path)
+var p = document.createElement('button');
+p.id = 'progbtn';
+p.addEventListener('click', function(){ say('PROG-FIRED'); });
+document.body.appendChild(p);
+p.click();
+
+// case 6 — a mini-React: state + full re-render from JS on every click
+var count = 0;
+function render(){
+  var app = document.getElementById('app');
+  app.innerHTML = '';
+  var btn = document.createElement('button');
+  btn.id = 'inc';
+  btn.textContent = 'Count: ' + count;
+  btn.addEventListener('click', function(){ count++; render(); say('REACT-STATE=' + count); });
+  app.appendChild(btn);
+}
+render();
+</script>
+</body></html>

@@ -1,0 +1,16 @@
+# Live snapshots of third-party websites (docs/hambrowse_real_web_review_2026-07-25.md).
+# NOT committed: they are large (8.5 MB), third-party content, and go stale within days.
+# Regenerate with:
+#   scripts/fetch_realweb_fixture.sh https://news.ycombinator.com/   tests/fixtures/realweb/hn.html
+#   scripts/fetch_realweb_fixture.sh https://en.wikipedia.org/wiki/Plan_9_from_Bell_Labs \
+#                                                                   tests/fixtures/realweb/wikipedia.html
+#   scripts/fetch_realweb_fixture.sh https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input \
+#                                                                   tests/fixtures/realweb/mdn_input.html
+#   scripts/fetch_realweb_fixture.sh https://books.toscrape.com/    tests/fixtures/realweb/books_shop.html
+#   scripts/fetch_realweb_fixture.sh https://github.com/login       tests/fixtures/realweb/github_login.html
+#   scripts/fetch_realweb_fixture.sh https://react.dev/             tests/fixtures/realweb/react_dev.html
+#   scripts/fetch_realweb_fixture.sh https://www.google.com/        tests/fixtures/realweb/google_home.html
+# The two fixtures we DO commit (livedom_keystone.html, react_spa.html) are ours.
+*.html
+!livedom_keystone.html
+!react_spa.html

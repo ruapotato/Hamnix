@@ -1,0 +1,667 @@
+# user/hambrowse_probe_host.ad — REVIEW-ONLY copy of user/hambrowse_host.ad that
+# additionally prints the JS engine's ERROR MESSAGE (js_error_msg) instead of a
+# bare 'JSERR 1'. Added for docs/hambrowse_real_web_review_2026-07-25.md so real
+# sites' script failures can be named. No engine code is touched.
+#
+# ORIGINAL HEADER:
+# user/hambrowse_host.ad — HOST test harness for the hambrowse engine.
+#
+# Built for the `x86_64-linux` Adder target (see compiler/adder.py
+# TARGET_SPECS): a freestanding ELF that runs DIRECTLY on the developer's
+# host Linux kernel — no QEMU, no installer image. It reads a local HTML
+# file, drives the SAME parse+layout+colour engine the native browser uses
+# (lib/htmlengine.ad), and dumps the resulting display list to stdout so the
+# engine can be iterated + regression-tested on the host in milliseconds.
+#
+# This is a TEST shim only. It shares the engine with user/hambrowse.ad but
+# NOT the Plan 9 fetch / hamUI render path — the native browser keeps those.
+# No sockets are introduced anywhere: the host harness only reads a file.
+#
+# USAGE (built to build/host/hambrowse_host):
+#   hambrowse_host FILE.html [WIDTH]
+#
+# OUTPUT
+#   LAYOUT segs=N rows=M links=K width=W
+#   FLOW   <one line per visual row: the wrapped page as text>
+#   SEG    row x #rrggbb b<0|1> u<0|1> s<0|1> l<link> bg<...> |text|
+#
+# The x86_64-linux runtime (user/linux-runtime.S) supplies _start + the
+# raw-syscall wrappers; here sys_open takes the Linux (path, flags, mode)
+# ABI (O_RDONLY = 0).
+
+extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+
+from lib.jsengine import js_error_msg
+from lib.htmlengine import he_layout, he_seg_color_hex, he_rgb_hex, \
+    he_js_console_ptr, he_js_console_len, he_js_error, \
+    he_dom_title_ptr, he_dom_title_len, he_dom_title_present, he_dom_click, \
+    he_dom_set_value, he_dom_set_checked, he_dom_submit, \
+    he_nav_ptr, he_nav_len, he_nav_present, \
+    he_nav_method, he_nav_body_ptr, he_nav_body_len, \
+    he_set_click_links, he_dom_id_index, he_dom_is_textfield, \
+    he_dom_is_submit, he_dom_field_form, he_dom_set_value_index, \
+    he_dom_submit_index, he_dom_get_value, \
+    he_css_reset, he_css_append, he_set_module_resolver
+
+
+# ---- tiny libc-free helpers ----------------------------------------
+def _slen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def _writeall(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, _slen(s))
+
+
+def _streq(a: Ptr[uint8], b: Ptr[uint8]) -> int32:
+    i: uint64 = 0
+    while a[i] != 0 and b[i] != 0:
+        if a[i] != b[i]:
+            return 0
+        i = i + 1
+    if a[i] != b[i]:
+        return 0
+    return 1
+
+
+obuf: Array[256, uint8]
+obuf_n: uint64 = 0
+
+
+def _o_ch(c: uint8):
+    # obuf is a STREAMING buffer, not a hard output cap: when it fills, flush it
+    # to stdout and keep going. Previously it silently dropped every byte past
+    # 255 until the next _o_flush(), which truncated large JSLOG/FLOW output to
+    # ~a few hundred bytes (capping every test_hambrowse_*host.sh gate's console
+    # assertion budget). Auto-flushing makes total output unbounded.
+    if obuf_n >= 256:
+        sys_write(1, &obuf[0], obuf_n)
+        obuf_n = 0
+    obuf[obuf_n] = c
+    obuf_n = obuf_n + 1
+
+
+def _o_str(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        _o_ch(s[i])
+        i = i + 1
+
+
+def _o_dec(v: int64):
+    if v < 0:
+        _o_ch(45)
+        v = 0 - v
+    if v == 0:
+        _o_ch(48)
+        return
+    digs: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = cast[uint64](v)
+    while x > 0:
+        digs[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    while n > 0:
+        n = n - 1
+        _o_ch(digs[n])
+
+
+def _o_flush():
+    if obuf_n > 0:
+        sys_write(1, &obuf[0], obuf_n)
+        obuf_n = 0
+
+
+# ---- input buffer (BSS; the native user stack is one page) ----------
+FILE_CAP: uint64 = 4194304
+file_buf: Array[4194304, uint8]
+file_len: uint64 = 0
+fieldnav_seed: Array[256, uint8]    # scratch: a field's pre-fill value (fieldnav)
+hexline: Array[8, uint8]
+
+
+def _read_file(path: Ptr[char]) -> int32:
+    fd: int32 = sys_open(path, 0, 0)                  # O_RDONLY
+    if fd < 0:
+        return -1
+    file_len = 0
+    while file_len < FILE_CAP - 1:
+        n: int64 = sys_read(fd, &file_buf[file_len], FILE_CAP - 1 - file_len)
+        if n <= 0:
+            break
+        file_len = file_len + cast[uint64](n)
+    sys_close(fd)
+    return 0
+
+
+# Read a local .css file and hand it to the engine's external-stylesheet cascade
+# (the offline stand-in for the native browser's <link rel=stylesheet> fetch, so
+# external-CSS layout is testable without any network). Separate scratch buffer.
+css_file_buf: Array[262144, uint8]
+
+
+def _read_css_file(path: Ptr[char]) -> int32:
+    fd: int32 = sys_open(path, 0, 0)                  # O_RDONLY
+    if fd < 0:
+        return -1
+    clen: uint64 = 0
+    while clen < FILE_CAP - 1:
+        n: int64 = sys_read(fd, &css_file_buf[clen], FILE_CAP - 1 - clen)
+        if n <= 0:
+            break
+        clen = clen + cast[uint64](n)
+    sys_close(fd)
+    he_css_reset()
+    he_css_append(&css_file_buf[0], clen)
+    return 0
+
+
+# ---- decimal parse for the optional WIDTH argument ------------------
+def _atoi(s: Ptr[uint8]) -> int32:
+    v: int32 = 0
+    i: uint64 = 0
+    while s[i] >= 48 and s[i] <= 57:
+        v = v * 10 + cast[int32](s[i]) - 48
+        i = i + 1
+    return v
+
+
+# Dump the full display list (LAYOUT / TITLE / JSLOG / FLOW / SEG / RULE) for
+# the current layout state. Called once at load, and again after a programmatic
+# click so a gate can diff the JS-driven DOM mutation.
+def _dump():
+    # Summary.
+    _o_str(cast[Ptr[uint8]]("LAYOUT segs="))
+    _o_dec(cast[int64](n_segs))
+    _o_str(cast[Ptr[uint8]](" rows="))
+    _o_dec(cast[int64](total_rows))
+    _o_str(cast[Ptr[uint8]](" links="))
+    _o_dec(cast[int64](n_links))
+    _o_str(cast[Ptr[uint8]](" width="))
+    _o_dec(cast[int64](bw))
+    _o_ch(10)
+    _o_flush()
+
+    # TITLE — the page title, reflecting any document.title set by a script.
+    if he_dom_title_present() != 0:
+        _o_str(cast[Ptr[uint8]]("TITLE "))
+        tp: Ptr[uint8] = he_dom_title_ptr()
+        tn: uint64 = he_dom_title_len()
+        ti: uint64 = 0
+        while ti < tn:
+            _o_ch(tp[ti])
+            ti = ti + 1
+        _o_ch(10)
+        _o_flush()
+
+    # NAV — the serialized target of a form submit that was NOT preventDefault'd
+    # (the front-end would navigate here). For method=GET the line is
+    # "NAV <action?query>"; for method=POST it is "NAV POST <action>" followed by
+    # a "BODY <a=1&b=2>" line carrying the urlencoded request body.
+    if he_nav_present() != 0:
+        _o_str(cast[Ptr[uint8]]("NAV "))
+        if he_nav_method() != 0:
+            _o_str(cast[Ptr[uint8]]("POST "))
+        npn: Ptr[uint8] = he_nav_ptr()
+        nnn: uint64 = he_nav_len()
+        nni: uint64 = 0
+        while nni < nnn:
+            _o_ch(npn[nni])
+            nni = nni + 1
+        _o_ch(10)
+        if he_nav_method() != 0:
+            _o_str(cast[Ptr[uint8]]("BODY "))
+            bpn: Ptr[uint8] = he_nav_body_ptr()
+            bnn: uint64 = he_nav_body_len()
+            bni: uint64 = 0
+            while bni < bnn:
+                _o_ch(bpn[bni])
+                bni = bni + 1
+            _o_ch(10)
+        _o_flush()
+
+    # JSLOG — console.log output emitted by the page's <script>s, one visual
+    # line per JSLOG line (blank lines dropped for a stable gate).
+    cp: Ptr[uint8] = he_js_console_ptr()
+    cn: uint64 = he_js_console_len()
+    ci: uint64 = 0
+    line_has: int32 = 0
+    while ci < cn:
+        ch: uint8 = cp[ci]
+        if ch == 10:
+            if line_has != 0:
+                _o_ch(10)
+            line_has = 0
+        else:
+            if line_has == 0:
+                _o_str(cast[Ptr[uint8]]("JSLOG "))
+                line_has = 1
+            _o_ch(ch)
+        ci = ci + 1
+    if line_has != 0:
+        _o_ch(10)
+    _o_flush()
+    if he_js_error() != 0:
+        _o_str(cast[Ptr[uint8]]("JSERR "))
+        _o_str(js_error_msg())
+        _o_ch(10)
+        _o_flush()
+
+    # FLOW — reconstruct the wrapped page as one text line per visual row,
+    # honouring each segment's pixel-x so word spacing/indent is visible.
+    r: uint64 = 0
+    while r < total_rows:
+        _o_str(cast[Ptr[uint8]]("FLOW "))
+        col_cell: int32 = 0                           # current character column
+        si: uint64 = 0
+        while si < n_segs:
+            if cast[uint64](seg_line[si]) == r:
+                # pad to the segment's start column (x / CELL_W)
+                startc: int32 = seg_x[si] / CELL_W
+                while col_cell < startc:
+                    _o_ch(32)
+                    col_cell = col_cell + 1
+                off: uint64 = cast[uint64](seg_off[si])
+                ln: int32 = seg_len[si]
+                k: int32 = 0
+                while k < ln:
+                    _o_ch(seg_text_buf[off + cast[uint64](k)])
+                    k = k + 1
+                col_cell = col_cell + ln
+            si = si + 1
+        _o_ch(10)
+        _o_flush()
+        r = r + 1
+
+    # SEG — one machine-readable line per segment (colour-aware).
+    si2: uint64 = 0
+    while si2 < n_segs:
+        _o_str(cast[Ptr[uint8]]("SEG "))
+        _o_dec(cast[int64](seg_line[si2]))
+        _o_ch(32)
+        _o_dec(cast[int64](seg_x[si2]))
+        _o_ch(32)
+        he_seg_color_hex(si2, &hexline[0])
+        _o_str(&hexline[0])
+        _o_str(cast[Ptr[uint8]](" b"))
+        _o_dec(cast[int64](seg_bold[si2]))
+        _o_str(cast[Ptr[uint8]](" u"))
+        _o_dec(cast[int64](seg_uline[si2]))
+        _o_str(cast[Ptr[uint8]](" s"))
+        _o_dec(cast[int64](seg_strike[si2]))
+        _o_str(cast[Ptr[uint8]](" l"))
+        _o_dec(cast[int64](seg_link[si2]))
+        _o_str(cast[Ptr[uint8]](" bg"))
+        if seg_bg[si2] >= 0:
+            he_rgb_hex(seg_bg[si2], &hexline[0])
+            _o_str(&hexline[0])
+        else:
+            _o_ch(45)                                 # '-'
+        _o_str(cast[Ptr[uint8]](" |"))
+        off2: uint64 = cast[uint64](seg_off[si2])
+        ln2: int32 = seg_len[si2]
+        k2: int32 = 0
+        while k2 < ln2:
+            _o_ch(seg_text_buf[off2 + cast[uint64](k2)])
+            k2 = k2 + 1
+        _o_ch(124)                                    # '|'
+        _o_ch(10)
+        _o_flush()
+        si2 = si2 + 1
+
+    # SEGM — one line per segment carrying the TRUE FONT METRICS the engine
+    # computed (CSS font-size px, resolved line-height px, baseline y-offset px,
+    # and the face id 0..7). Kept OFF the pinned SEG line so every gate that pins
+    # the SEG format is unchanged; the PNG visualizer reads these to render text
+    # at its real proportional size / line pitch instead of a fixed 8px mono grid.
+    #   SEGM <idx> px<pxsize> lh<lineh> yo<yoff> f<face>
+    si4: uint64 = 0
+    while si4 < n_segs:
+        _o_str(cast[Ptr[uint8]]("SEGM "))
+        _o_dec(cast[int64](si4))
+        _o_str(cast[Ptr[uint8]](" px"))
+        _o_dec(cast[int64](he_seg_pxsize(si4)))
+        _o_str(cast[Ptr[uint8]](" lh"))
+        _o_dec(cast[int64](he_seg_lineh(si4)))
+        _o_str(cast[Ptr[uint8]](" yo"))
+        _o_dec(cast[int64](he_seg_yoff(si4)))
+        _o_str(cast[Ptr[uint8]](" f"))
+        _o_dec(cast[int64](he_seg_face(si4)))
+        _o_ch(10)
+        _o_flush()
+        si4 = si4 + 1
+
+    # SEGIT — one line per ITALIC (faux-oblique) segment: the seg's index. Kept
+    # OFF the SEG line so the fixed SEG format (and every gate that pins it) is
+    # unchanged; the PNG visualizer reads these to shear the matching runs.
+    si3: uint64 = 0
+    while si3 < n_segs:
+        if seg_italic[si3] != 0:
+            _o_str(cast[Ptr[uint8]]("SEGIT "))
+            _o_dec(cast[int64](si3))
+            _o_ch(10)
+            _o_flush()
+        si3 = si3 + 1
+
+    # SEGBTN — one line per PUSH-BUTTON segment (seg_field == 2) carrying the
+    # resolved author button chrome: background, border colour (- = UA default
+    # grey), and border-radius px (- = UA default 3px). Lets a gate assert a
+    # CSS-styled submit button (`.T14B5e input[type=submit]{background:#f8f9fa;
+    # border:1px solid #f8f9fa;border-radius:8px}`) carries its real face/border/
+    # rounding instead of the UA button-grey chrome. OFF the pinned SEG line.
+    #   SEGBTN <idx> bg<hex|-> bd<hex|-> rad<n|->
+    si5: uint64 = 0
+    while si5 < n_segs:
+        if seg_field[si5] == 2:
+            _o_str(cast[Ptr[uint8]]("SEGBTN "))
+            _o_dec(cast[int64](si5))
+            _o_str(cast[Ptr[uint8]](" bg"))
+            if seg_bg[si5] >= 0:
+                he_rgb_hex(seg_bg[si5], &hexline[0])
+                _o_str(&hexline[0])
+            else:
+                _o_ch(45)
+            _o_str(cast[Ptr[uint8]](" bd"))
+            if seg_btnbord[si5] >= 0:
+                he_rgb_hex(seg_btnbord[si5], &hexline[0])
+                _o_str(&hexline[0])
+            else:
+                _o_ch(45)
+            _o_str(cast[Ptr[uint8]](" rad"))
+            if seg_btnrad[si5] >= 0:
+                _o_dec(cast[int64](seg_btnrad[si5]))
+            else:
+                _o_ch(45)
+            _o_ch(10)
+            _o_flush()
+        si5 = si5 + 1
+
+    # PAGEBG — the <body>/<html> page-level background colour (whole viewport).
+    if g_page_bg >= 0:
+        _o_str(cast[Ptr[uint8]]("PAGEBG "))
+        he_rgb_hex(g_page_bg, &hexline[0])
+        _o_str(&hexline[0])
+        _o_ch(10)
+        _o_flush()
+
+    # FILL — one line per element background box: rows [top, bot), left/right
+    # pixel columns, colour. Painted UNDER the text (element backgrounds).
+    fi: int32 = 0
+    while fi < n_bfills:
+        _o_str(cast[Ptr[uint8]]("FILL "))
+        _o_dec(cast[int64](bfill_top[fi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_bot[fi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_lx[fi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_rx[fi]))
+        _o_ch(32)
+        he_rgb_hex(bfill_rgb[fi], &hexline[0])
+        _o_str(&hexline[0])
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_rad[fi]))              # border-radius px (0=square)
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_z[fi]))                # stacking z (paint order key)
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_padt[fi]))             # CSS pixel padding grown onto the fill
+        _o_ch(32)
+        _o_dec(cast[int64](bfill_padb[fi]))
+        # inline-block chip border: 'b#RRGGBB' when the box strokes a border, else
+        # 'b-' (no border). Appended LAST so the pinned FILL prefix is unchanged.
+        _o_ch(32)
+        _o_ch(98)                                       # 'b'
+        if bfill_bord[fi] >= 0:
+            he_rgb_hex(bfill_bord[fi], &hexline[0])
+            _o_str(&hexline[0])
+        else:
+            _o_ch(45)                                   # '-'
+        _o_ch(10)
+        _o_flush()
+        fi = fi + 1
+
+    # BBOX — one line per bordered box: rows [top, bot), left/right pixel
+    # columns, border colour, radius px. The 1px frame the pixel renderer strokes.
+    bxi: int32 = 0
+    while bxi < n_bboxes:
+        _o_str(cast[Ptr[uint8]]("BBOX "))
+        _o_dec(cast[int64](bbox_top[bxi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bbox_bot[bxi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bbox_lx[bxi]))
+        _o_ch(32)
+        _o_dec(cast[int64](bbox_rx[bxi]))
+        _o_ch(32)
+        he_rgb_hex(bbox_rgb[bxi], &hexline[0])
+        _o_str(&hexline[0])
+        _o_ch(32)
+        _o_dec(cast[int64](bbox_rad[bxi]))              # border-radius px (0=square)
+        _o_ch(10)
+        _o_flush()
+        bxi = bxi + 1
+
+    # RULE — one line per row carrying a horizontal rule (1=heading, 2=<hr>).
+    rr: uint64 = 0
+    while rr < total_rows:
+        if row_rule[rr] != 0:
+            _o_str(cast[Ptr[uint8]]("RULE row "))
+            _o_dec(cast[int64](rr))
+            _o_str(cast[Ptr[uint8]](" type "))
+            _o_dec(cast[int64](row_rule[rr]))
+            _o_ch(10)
+            _o_flush()
+        rr = rr + 1
+
+    # ROWA — one line per row carrying a NON-default text-align (2=center,
+    # 3=right). The engine centres a row on the 8px CELL_W grid, but the PNG
+    # visualizer flows real proportional advances (a large <h1> is far wider than
+    # the grid estimate), so it must re-derive the row's x-shift from the TRUE
+    # measure to keep the glyphs centred in the same container the engine used —
+    # mirrors _hpg_align_pass in lib/htmlpage.ad. Left/unaligned rows are omitted.
+    ra: uint64 = 0
+    while ra < total_rows:
+        av: int32 = cast[int32](row_align[ra])
+        if av == 2 or av == 3:
+            _o_str(cast[Ptr[uint8]]("ROWA row "))
+            _o_dec(cast[int64](ra))
+            _o_str(cast[Ptr[uint8]](" align "))
+            _o_dec(cast[int64](av))
+            _o_ch(10)
+            _o_flush()
+        ra = ra + 1
+
+
+# ---- ES-module resolver: read `<script type=module>` deps from the HTML file's
+# directory (host test only — the native browser fetches via http9). Mirrors the
+# js_host resolver; the engine copies the bytes out immediately, so one buffer
+# serves the whole graph.
+mod_entry_dir: Array[4096, uint8]
+mod_entry_dir_len: int32 = 0
+mod_path_buf: Array[4096, uint8]
+mod_src_buf: Array[262144, uint8]
+mod_src_bytes: int32 = 0
+
+
+def _mod_set_dir(path: Ptr[char]):
+    n: int32 = 0
+    last: int32 = -1
+    while path[n] != 0:
+        if path[n] == 47:
+            last = n
+        n = n + 1
+    mod_entry_dir_len = 0
+    i: int32 = 0
+    while i <= last:
+        mod_entry_dir[mod_entry_dir_len] = cast[uint8](path[i])
+        mod_entry_dir_len = mod_entry_dir_len + 1
+        i = i + 1
+
+
+def _mod_resolver(spec: Ptr[uint8], spec_len: int32, out_len: Ptr[int32]) -> Ptr[uint8]:
+    n: int32 = 0
+    i: int32 = 0
+    while i < mod_entry_dir_len:
+        mod_path_buf[n] = mod_entry_dir[i]
+        n = n + 1
+        i = i + 1
+    j: int32 = 0
+    if spec_len >= 2 and spec[0] == 46 and spec[1] == 47:     # "./"
+        j = 2
+    while j < spec_len:
+        mod_path_buf[n] = spec[j]
+        n = n + 1
+        j = j + 1
+    mod_path_buf[n] = 0
+    fd: int32 = sys_open(cast[Ptr[char]](&mod_path_buf[0]), 0, 0)
+    if fd < 0:
+        out_len[0] = 0
+        return cast[Ptr[uint8]](0)
+    mod_src_bytes = 0
+    while mod_src_bytes < 262143:
+        r: int64 = sys_read(fd, &mod_src_buf[mod_src_bytes], cast[uint64](262143 - mod_src_bytes))
+        if r <= 0:
+            break
+        mod_src_bytes = mod_src_bytes + cast[int32](r)
+    sys_close(fd)
+    out_len[0] = mod_src_bytes
+    return &mod_src_buf[0]
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    if argc < 2:
+        _writeall(2, cast[Ptr[uint8]]("usage: hambrowse_host FILE.html [WIDTH] [CLICK_ID]\n"))
+        return 2
+    path: Ptr[char] = cast[Ptr[char]](argv[1])
+    if _read_file(path) != 0:
+        _writeall(2, cast[Ptr[uint8]]("hambrowse_host: cannot open file\n"))
+        return 1
+    _mod_set_dir(path)
+    he_set_module_resolver(cast[Fn[Ptr[uint8], int32, Ptr[int32], Ptr[uint8]]](cast[uint64](_mod_resolver)))
+    if argc >= 3:
+        w: int32 = _atoi(cast[Ptr[uint8]](argv[2]))
+        if w >= 120:
+            bw = w
+
+    # Optional external stylesheet: "FILE WIDTH css SHEET.css" loads a local .css
+    # through the engine's <link rel=stylesheet> cascade (offline, no network).
+    css_loaded: int32 = 0
+    if argc >= 5:
+        a3c: Ptr[uint8] = cast[Ptr[uint8]](argv[3])
+        if _streq(a3c, cast[Ptr[uint8]]("css")) != 0:
+            if _read_css_file(cast[Ptr[char]](argv[4])) != 0:
+                _writeall(2, cast[Ptr[uint8]]("hambrowse_host: cannot open css\n"))
+                return 1
+            css_loaded = 1
+
+    src_ptr = &file_buf[0]
+    src_len = file_len
+    he_layout()
+    _dump()
+
+    if css_loaded != 0:
+        return 0
+
+    # Optional programmatic interaction after the initial dump. Two forms:
+    #   FILE WIDTH CLICK_ID              (legacy) click the element CLICK_ID
+    #   FILE WIDTH VERB ARG [ARG2]       drive a form control:
+    #       click  ID          — fire ID's click handler
+    #       setval ID VALUE    — set ID's value + fire oninput/onchange
+    #       check  ID 1|0      — set ID's checked + fire oninput/onchange
+    #       submit FORMID      — submit FORMID (onsubmit; serialize if allowed)
+    if argc >= 4:
+        a3: Ptr[uint8] = cast[Ptr[uint8]](argv[3])
+        if _streq(a3, cast[Ptr[uint8]]("setval")) != 0 and argc >= 6:
+            id2: Ptr[uint8] = cast[Ptr[uint8]](argv[4])
+            val: Ptr[uint8] = cast[Ptr[uint8]](argv[5])
+            _o_str(cast[Ptr[uint8]]("SETVAL "))
+            _o_str(id2)
+            _o_ch(61)
+            _o_str(val)
+            _o_ch(10)
+            _o_flush()
+            he_dom_set_value(id2, cast[int32](_slen(id2)), val, \
+                             cast[int32](_slen(val)))
+            _dump()
+        elif _streq(a3, cast[Ptr[uint8]]("check")) != 0 and argc >= 6:
+            id3: Ptr[uint8] = cast[Ptr[uint8]](argv[4])
+            cv: int32 = _atoi(cast[Ptr[uint8]](argv[5]))
+            _o_str(cast[Ptr[uint8]]("CHECK "))
+            _o_str(id3)
+            _o_ch(32)
+            _o_dec(cast[int64](cv))
+            _o_ch(10)
+            _o_flush()
+            he_dom_set_checked(id3, cast[int32](_slen(id3)), cv)
+            _dump()
+        elif _streq(a3, cast[Ptr[uint8]]("submit")) != 0 and argc >= 5:
+            id4: Ptr[uint8] = cast[Ptr[uint8]](argv[4])
+            _o_str(cast[Ptr[uint8]]("SUBMIT "))
+            _o_str(id4)
+            _o_ch(10)
+            _o_flush()
+            he_dom_submit(id4, cast[int32](_slen(id4)))
+            _dump()
+        elif _streq(a3, cast[Ptr[uint8]]("fieldnav")) != 0 and argc >= 6:
+            # Exercise the native pointer/type/submit INDEX chain the front-end
+            # runs: id->index, textfield classification, per-keystroke
+            # set-value-by-index, enclosing-<form> resolution, submit +
+            # GET-serialize into he_nav_*. Enable click-links + re-lay so the
+            # native wrapping path (fields wrapped in "#__evt_N") is exercised.
+            he_set_click_links(1)
+            he_layout()
+            fid: Ptr[uint8] = cast[Ptr[uint8]](argv[4])
+            fval: Ptr[uint8] = cast[Ptr[uint8]](argv[5])
+            fidx: int32 = he_dom_id_index(fid, cast[int32](_slen(fid)))
+            _o_str(cast[Ptr[uint8]]("FIELDNAV id="))
+            _o_str(fid)
+            _o_str(cast[Ptr[uint8]](" idx="))
+            _o_dec(cast[int64](fidx))
+            _o_str(cast[Ptr[uint8]](" textfield="))
+            _o_dec(cast[int64](he_dom_is_textfield(fidx)))
+            _o_ch(10)
+            _o_flush()
+            he_dom_get_value(fidx, &fieldnav_seed[0], 256)
+            he_dom_set_value_index(fidx, fval, cast[int32](_slen(fval)))
+            fform: int32 = he_dom_field_form(fidx)
+            _o_str(cast[Ptr[uint8]]("FIELDNAV form="))
+            _o_dec(cast[int64](fform))
+            _o_ch(10)
+            _o_flush()
+            he_dom_submit_index(fform)
+            if he_nav_present() != 0:
+                _o_str(cast[Ptr[uint8]]("FIELDNAV NAV "))
+                fnp: Ptr[uint8] = he_nav_ptr()
+                fnn: uint64 = he_nav_len()
+                fk: uint64 = 0
+                while fk < fnn:
+                    _o_ch(fnp[fk])
+                    fk = fk + 1
+                _o_ch(10)
+            else:
+                _o_str(cast[Ptr[uint8]]("FIELDNAV NAV-NONE\n"))
+            _o_flush()
+            _dump()
+        else:
+            # click: either "click ID" or the legacy bare "ID".
+            cid: Ptr[uint8] = a3
+            if _streq(a3, cast[Ptr[uint8]]("click")) != 0 and argc >= 5:
+                cid = cast[Ptr[uint8]](argv[4])
+            clen: int32 = cast[int32](_slen(cid))
+            _o_str(cast[Ptr[uint8]]("CLICK "))
+            _o_str(cid)
+            _o_ch(10)
+            _o_flush()
+            if he_dom_click(cid, clen) == 0:
+                _o_str(cast[Ptr[uint8]]("CLICK-NOHANDLER\n"))
+                _o_flush()
+            _dump()
+
+    return 0
