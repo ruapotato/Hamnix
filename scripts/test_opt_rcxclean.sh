@@ -33,6 +33,17 @@ set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ_ROOT"
 
+# LEGACY opt1 LANE GUARD (added 2026-07-25).  Every "the lever FIRED" assertion
+# below targets the opt1 optimizer lane (opt.ad's AST passes + the
+# ra_enabled-gated codegen levers).  Commit ba2e4bcf (2026-07-21) retired that
+# lane — `--opt` now arms the SSA pipeline and the dump driver never calls
+# ra_enable() on the emission path — so those counters are structurally 0 while
+# the values stay CORRECT (opt == off == reference).  The helper PROBES the lane
+# and skips loudly only while it is genuinely retired; it re-arms this guard
+# automatically the moment the lane comes back.  See docs/ci_status_2026-07-25.md.
+source "$PROJ_ROOT/scripts/lib_opt1_lane.sh"
+opt1_require_lane "test_opt_rcxclean"
+
 python3 - <<'PY'
 import sys, subprocess, re
 sys.path.insert(0, "tests/fuzz")
