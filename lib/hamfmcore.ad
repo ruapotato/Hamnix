@@ -282,16 +282,34 @@ def fmc_full_path_ptr(i: uint64) -> Ptr[uint8]:
     return &fmc_full_path[0]
 
 
+# Set the directory the model lists. An EMPTY argument is REJECTED (the path
+# is left untouched) instead of silently defaulting to "/": that default was
+# how a lost/clobbered path turned into a full ROOT listing — the USER-visible
+# "the desktop is showing root, not ~/Desktop" bug (hamdesktop's periodic
+# re-scan re-listed "/" and rebuilt the icon grid out of bin/etc/lib/usr).
+# A caller that genuinely wants the root passes "/" explicitly.
 def fmc_set_cur_path(s: Ptr[uint8]):
+    if s[0] == 0:
+        return                        # empty -> keep the current path
     i: uint64 = 0
     while s[i] != 0 and i < FMC_PATH_CAP - 1:
         fmc_cur_path[i] = s[i]
         i = i + 1
-    if i == 0:
-        fmc_cur_path[0] = 47
-        i = 1
     fmc_cur_path[i] = 0
     fmc_cur_path_len = i
+
+
+# Is the current path usable for a listing? A path must be non-empty AND
+# absolute; anything else means the model's path state was never set (or was
+# lost) and listing it would silently show the WRONG directory. Every listing
+# entry point gates on this so a bad path yields "no listing" (hosts keep the
+# view they already have) rather than a bogus one.
+def fmc_cur_path_ok() -> int32:
+    if fmc_cur_path_len == 0:
+        return 0
+    if fmc_cur_path[0] != 47:                            # not absolute
+        return 0
+    return 1
 
 
 def fmc_build_full_path(i: uint64):
@@ -464,6 +482,8 @@ def _fmc_model_signature() -> uint64:
 def fmc_scan_signature() -> uint64:
     acc: uint64 = 0
     cnt: uint64 = 0
+    if fmc_cur_path_ok() == 0:
+        return fmc_dir_sig               # no usable path -> "nothing changed"
     cap: uint64 = _fmc_ondisk_cap()
     fd: int32 = sys_open(cast[Ptr[char]](&fmc_cur_path[0]))
     if fd < 0:
@@ -564,6 +584,11 @@ def fmc_load_dir():
 
 
 def _fmc_load_dir_impl():
+    if fmc_cur_path_ok() == 0:
+        # No usable path: DON'T list (an empty path resolves to the root and
+        # would repopulate the model with bin/etc/lib/usr). Leave the model
+        # exactly as it is so the host keeps showing its current, correct set.
+        return
     fmc_n = 0
     fmc_has_up = 0
     fmc_sel = -1

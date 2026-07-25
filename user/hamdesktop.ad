@@ -94,7 +94,8 @@ from lib.hamscene import hamscene_length, hamscene_bufptr
 # display list — the flood-immune host repro for the "scene-DE-blank" --opt
 # miscompile. Writes the raw display-list bytes to argv[2].
 def _scene_dump(outp: Ptr[char]) -> int32:
-    _load_defaults()          # exercise the icon record-writing loop
+    if n_icons == 0:
+        _load_defaults()      # exercise the icon record-writing loop
     emit_scene(1)
     dl: Ptr[uint8] = hamscene_bufptr()
     dln: uint64 = hamscene_length()
@@ -540,8 +541,25 @@ def _wp_color_str(r: uint8, g: uint8, b: uint8, out: Ptr[uint8]):
 # collapses from 432 fills to ~1 per row), and (b) stops laying mosaic once the
 # buffer grows past (CAP - WP_ICON_RESERVE), so the icon layer ALWAYS fits. Any
 # rows left unpainted show the kernel root backdrop (graceful, icons preserved).
-WP_ICON_RESERVE: uint64 = 6144
-WP_SCENE_BUDGET: uint64 = 10240          # = 16384 - 6144 (literal: native/bare-metal globals need an integer initializer, not a BinaryExpr)
+# The icon+label layer of a FULL launcher set (16 icons, two-line labels) costs
+# ~7 KB even with the cheap two-run labels, so the mosaic must stop well before
+# the list is full: reserve HALF the list for the icons.
+WP_ICON_RESERVE: uint64 = 9216
+WP_SCENE_BUDGET: uint64 = 7168           # = 16384 - 9216 (literal: native/bare-metal globals need an integer initializer, not a BinaryExpr)
+
+# Host test hook: synthesize the WORST-CASE wallpaper — every mosaic cell a
+# different colour, so emit_wallpaper's run-coalescing never fires and the
+# mosaic spends its entire byte budget. A gate uses this to prove the icon +
+# label layer still fits in the shared display list.
+def _wp_fill_worst_case():
+    wp_w = 640
+    wp_h = 480
+    i: uint64 = 0
+    while i < 921600:
+        wp_rgb[i] = cast[uint8](i % 251)
+        i = i + 1
+    wp_loaded = 1
+
 
 def _wp_sample_col(gx: int64, syr: uint64) -> uint64:
     # Nearest-neighbour source column for mosaic column gx; returns the byte
@@ -670,6 +688,31 @@ def _load_defaults():
               hamscene_icon_code(cast[Ptr[uint8]]("system-file-manager")))
 
 
+# Host test hook: fill the icon model with a WORST-CASE launcher set — the
+# full MAX_ICONS count, every label long enough to WRAP onto two lines (the
+# shipped set has "Word Processor", "Package Manager", "Install Hamnix", ...).
+# That is the tightest case for the shared display list, so a gate can prove
+# every label still gets emitted (the "icons render with no text under them"
+# regression). The live desktop never takes this path.
+stress_label: Array[24, uint8]
+def _load_stress_icons():
+    n_icons = 0
+    k: uint64 = 0
+    while k < MAX_ICONS:
+        base: Ptr[uint8] = cast[Ptr[uint8]]("Wordy Processor")
+        i: uint64 = 0
+        while base[i] != 0:
+            stress_label[i] = base[i]
+            i = i + 1
+        stress_label[i] = cast[uint8](65 + k)      # 'A'..: unique per icon
+        i = i + 1
+        stress_label[i] = 0
+        _add_icon(&stress_label[0], i, 0,
+                  cast[Ptr[uint8]]("/bin/true"), 9, -1, -1,
+                  hamscene_icon_code(cast[Ptr[uint8]]("")))
+        k = k + 1
+
+
 # Live-medium probe (mirrors hampanelscene): /etc/installer-medium is
 # planted in the cpio ONLY by scripts/build_installer_img.sh, so it is
 # present on the LIVE/installer boot and absent on every installed boot. The
@@ -759,7 +802,28 @@ def _build_icons_from_fmc() -> uint64:
 def _load_icons_from_dir() -> uint64:
     fmc_set_cur_path(_desk_dir())
     fmc_load_dir()
-    return _build_icons_from_fmc()
+    n: uint64 = _build_icons_from_fmc()
+    _report_icon_source(n)
+    return n
+
+
+# Publish the icon SOURCE (the directory the grid was built from) + the icon
+# count so a gate can assert the desktop is showing the USER'S ~/Desktop and
+# never the filesystem root. stdout does not reach the serial console for a
+# compositor-spawned DE client, so this goes to a file the gate cats in-guest.
+# Best-effort: a read-only /tmp simply skips it.
+def _report_icon_source(n: uint64):
+    fd: int32 = sys_open_write(cast[Ptr[char]]("/tmp/.hamdesktop.src"))
+    if fd < 0:
+        return
+    _writeall(fd, cast[Ptr[uint8]]("src="))
+    _writeall(fd, _desk_dir())
+    _writeall(fd, cast[Ptr[uint8]](" n="))
+    nb: Array[24, uint8]
+    nl: uint64 = _u64_to_dec(n, &nb[0])
+    sys_write(fd, &nb[0], nl)
+    _writeall(fd, cast[Ptr[uint8]]("\n"))
+    sys_close(fd)
 
 
 # STARTUP load: scan the desktop dir, fall back to the built-in default set
@@ -797,6 +861,29 @@ def desk_refresh_should_keep(prev_count: uint64, scan_count: uint64,
     return 1                           # had icons, scan now empty/unreadable -> KEEP
 
 
+# MODEL-INTEGRITY self-heal. Every icon in a built model has a NON-EMPTY
+# label (a .desktop Name, a file name or a folder name — _add_icon is never
+# called with a zero-length label). So an icon whose label length is zero means
+# the icon model was damaged AFTER it was built, and the desktop would keep
+# painting a grid of icons with NO TEXT UNDER THEM until something happened to
+# change the directory listing. Detect that state cheaply on the redraw cadence
+# and rebuild from ~/Desktop — the same self-heal shape the backdrop already
+# uses for the compositor's startup race.
+#
+# (Damage source: a DE client that is written to by the kernel — e.g. the
+# per-pass /dev/wsys/wallpaper poll read — can lose the contents of the user
+# page holding the label table after a detached spawn. That is a kernel
+# frame-lifetime bug reported separately; this check keeps the desktop correct
+# and is cheap either way.)
+def _icons_look_damaged() -> int32:
+    i: uint64 = 0
+    while i < n_icons:
+        if ic_label_len[i] == 0:
+            return 1
+        i = i + 1
+    return 0
+
+
 # REFRESH rebuild: called after fmc_refresh_if_changed() has ALREADY re-listed
 # the directory (so we must NOT re-list — just rebuild the icon model from the
 # current fmc entries), then re-apply positions. _build_icons_from_fmc() zeroes
@@ -810,6 +897,7 @@ def _rebuild_after_refresh():
     if desk_refresh_should_keep(prev, built, 0) != 0:
         n_icons = prev
     _load_positions()
+    _report_icon_source(n_icons)
 
 
 # --- layout ----------------------------------------------------------
@@ -963,16 +1051,19 @@ def emit_gradient_bg():
         bi = bi + 1
 
 
-# Draw a desktop icon label as white glyphs over a soft dark outline so the
-# text reads clearly on any wallpaper (light OR dark). The outline is four
-# translucent-black copies offset by 1px in each direction plus a slightly
-# stronger drop shadow; the crisp white glyph paints on top.
+# Draw a desktop icon label as white glyphs over a dark drop shadow so the
+# text reads clearly on any wallpaper (light OR dark).
+#
+# SCENE-BUDGET: this used to emit SIX glyph runs per label line (a 4-way
+# outline + a drop shadow + the white text). The wallpaper mosaic, the icons
+# and the labels all share ONE 16384-byte display list, and a full launcher set
+# (16 icons, most with two-line labels like "Word Processor") spends ~5 KB on
+# outline alone — which overflowed the list. Labels are emitted LAST, so the
+# overflow silently DROPPED them: the grid rendered icons with NO TEXT under
+# them. Two runs (one dark drop shadow + the white glyphs) keep the text
+# legible on light AND dark wallpapers at a THIRD of the bytes, so every label
+# fits (guarded by scripts/test_de_desktop_label_budget_host.sh).
 def _label_outlined(x: int32, y: int32, s: Ptr[uint8]):
-    sh: Ptr[uint8] = cast[Ptr[uint8]]("#00000099")
-    hamscene_glyphs(x - 1, y, s, sh)
-    hamscene_glyphs(x + 1, y, s, sh)
-    hamscene_glyphs(x, y - 1, s, sh)
-    hamscene_glyphs(x, y + 1, s, sh)
     hamscene_glyphs(x + 1, y + 1, s, cast[Ptr[uint8]]("#000000cc"))
     hamscene_glyphs(x, y, s, cast[Ptr[uint8]]("#ffffff"))
 
@@ -1482,19 +1573,83 @@ def parse_pointer(s: Ptr[uint8], n: uint64, bx: Ptr[int64], by: Ptr[int64],
 # /home/live/Desktop — a writable home directory (unlike the read-only
 # cpio root `/`). Provisioned at build time (build_initramfs.py plants the
 # /etc/skel/Desktop/*.desktop launcher template there).
+#
+# The dir is resolved from $HOME (/env/HOME) exactly like the file manager
+# (user/hamfmscene.ad::_fm_apply_start_dir): the DE apps are spawned by the
+# COMPOSITOR, not by hamsh, so they inherit an ambient env whose HOME is the
+# "/" placeholder — a bare "/" HOME is REJECTED here (it would make the
+# desktop dir "/Desktop") and we fall back to /home/live, the live user's real
+# home. The resolved value is cached in DESK_DIR, and every call REVALIDATES
+# the cache (an absolute path starting with '/'): if the cached string is ever
+# lost, the next call rebuilds it instead of handing out an empty path, which
+# is what turned the icon grid into a ROOT listing.
 DESK_DIR: Array[64, uint8]
-DESK_DIR_INIT: int32 = 0
+
+
+def _desk_read_home(out: Ptr[uint8], cap: uint64) -> uint64:
+    fd: int32 = sys_open(cast[Ptr[char]]("/env/HOME"))
+    if fd < 0:
+        return 0
+    n: int64 = sys_read(fd, out, cap - 1)
+    sys_close(fd)
+    if n <= 0:
+        return 0
+    ln: uint64 = cast[uint64](n)
+    while ln > 0 and (out[ln - 1] == 0 or out[ln - 1] == 10 or \
+                      out[ln - 1] == 13 or out[ln - 1] == 32):
+        ln = ln - 1
+    out[ln] = 0
+    return ln
+
+
+def _desk_dir_exists(p: Ptr[uint8]) -> int32:
+    fd: int32 = sys_open(cast[Ptr[char]](p))
+    if fd < 0:
+        return 0
+    sys_close(fd)
+    return 1
+
+
+# Append "/Desktop" to `home` into DESK_DIR. Returns 1 if it fits + exists.
+def _desk_try_home(home: Ptr[uint8], hl: uint64) -> int32:
+    if hl <= 1 or home[0] != 47:                 # empty / relative / bare "/"
+        return 0
+    if hl + 9 > 64:                              # "/Desktop" + NUL must fit
+        return 0
+    i: uint64 = 0
+    while i < hl:
+        DESK_DIR[i] = home[i]
+        i = i + 1
+    if DESK_DIR[i - 1] == 47:                    # trailing slash -> drop it
+        i = i - 1
+    sfx: Ptr[uint8] = cast[Ptr[uint8]]("/Desktop")
+    j: uint64 = 0
+    while sfx[j] != 0:
+        DESK_DIR[i] = sfx[j]
+        i = i + 1
+        j = j + 1
+    DESK_DIR[i] = 0
+    return _desk_dir_exists(&DESK_DIR[0])
+
+
+def _desk_set_default():
+    src: Ptr[uint8] = cast[Ptr[uint8]]("/home/live/Desktop")
+    i: uint64 = 0
+    while src[i] != 0:
+        DESK_DIR[i] = src[i]
+        i = i + 1
+    DESK_DIR[i] = 0
 
 
 def _desk_dir() -> Ptr[uint8]:
-    if DESK_DIR_INIT == 0:
-        DESK_DIR_INIT = 1
-        src: Ptr[uint8] = cast[Ptr[uint8]]("/home/live/Desktop")
-        i: uint64 = 0
-        while src[i] != 0:
-            DESK_DIR[i] = src[i]
-            i = i + 1
-        DESK_DIR[i] = 0
+    if DESK_DIR[0] == 47:                        # cached + still absolute
+        return &DESK_DIR[0]
+    hbuf: Array[64, uint8]
+    hl: uint64 = _desk_read_home(&hbuf[0], 64)
+    if hl > 1:
+        if _desk_try_home(&hbuf[0], hl) != 0:
+            return &DESK_DIR[0]
+    _desk_set_default()                          # /home/live/Desktop
     return &DESK_DIR[0]
 
 
@@ -1854,6 +2009,19 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         # writes the raw display list, then exits — no /dev/wsys, no loop.
         if a[0] == 45 and a[1] == 45 and a[2] == 115 and a[3] == 99:  # "--sc"
             if argc > 2:
+                # Optional argv[3] "--stress" = a FULL worst-case launcher
+                # set (MAX_ICONS wrapping labels), argv[4] "--wall" = a
+                # worst-case wallpaper mosaic (every cell a different colour,
+                # so no run-coalescing). Together they measure the display
+                # list at its tightest — the label-budget gate.
+                if argc > 3:
+                    s3: Ptr[uint8] = cast[Ptr[uint8]](argv[3])
+                    if s3[0] == 45 and s3[1] == 45 and s3[2] == 115:
+                        _load_stress_icons()
+                if argc > 4:
+                    w4: Ptr[uint8] = cast[Ptr[uint8]](argv[4])
+                    if w4[0] == 45 and w4[1] == 45 and w4[2] == 119:
+                        _wp_fill_worst_case()
                 return _scene_dump(cast[Ptr[char]](argv[2]))
             return 2
         if a[0] == 45 and a[1] == 45 and a[2] == 100:    # "--d"(emo)
@@ -2188,7 +2356,19 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             nowj: uint64 = sys_get_jiffies()
             if nowj - last_refresh_jif >= REFRESH_JIF:
                 last_refresh_jif = nowj
-                if fmc_refresh_if_changed() != 0:
+                # RE-ASSERT the scan directory every pass. The shared browse
+                # core keeps the path in a global the desktop does not own; if
+                # that state is ever lost between passes the scan would target
+                # the WRONG directory. Re-stamping the desktop dir (cheap, a
+                # <64-byte copy) makes the periodic re-scan idempotently point
+                # at ~/Desktop — the icon grid can never drift to another
+                # directory (the "desktop shows root" bug).
+                fmc_set_cur_path(_desk_dir())
+                if _icons_look_damaged() != 0:
+                    # Icon model damaged (labels lost) -> full rebuild.
+                    _reload_icons()
+                    changed = 1
+                elif fmc_refresh_if_changed() != 0:
                     _rebuild_after_refresh()
                     changed = 1
                     _writeall(1, cast[Ptr[uint8]]("[hamdesktop] auto-refresh\n"))

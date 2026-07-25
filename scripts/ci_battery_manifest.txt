@@ -2298,6 +2298,23 @@ bash scripts/test_hamslides_host.sh
 # without KVM/OVMF/socat or a prebuilt build/hamnix-installer.img.
 bash scripts/test_de_office_suite.sh
 
+# test_de_desktop_icon_source: the desktop icon grid is built from the USER'S
+# ~/Desktop, NEVER the filesystem root (USER report: "the desktop is showing
+# root not ~/Desktop"). Boots the live image under OVMF/KVM, reads the icon
+# source hamdesktop publishes to /tmp/.hamdesktop.src (rewritten on every icon
+# rebuild, so it reflects the periodic re-scan, not just the startup one), and
+# asserts src is a Desktop dir with >= 4 icons + that the guest shell lists the
+# same launchers. HOST-GUARDED: SKIPs cleanly without KVM/OVMF/socat or a
+# prebuilt build/hamnix-installer.img.
+bash scripts/test_de_desktop_icon_source.sh
+
+# test_de_desktop_label_budget_host: the desktop icon LABELS survive the shared
+# 16 KB scene display list. Renders a worst-case full launcher set (MAX_ICONS
+# two-line labels) over a worst-case wallpaper mosaic on the HOST and asserts
+# the list stays under HAMSCENE_CAP with every label glyph run emitted —
+# guarding the "grid renders icons with no text under them" regression.
+bash scripts/test_de_desktop_label_budget_host.sh
+
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +
 # presents the full window set (presented>=5) + paints a non-blank frame.
