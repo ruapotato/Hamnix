@@ -320,5 +320,10 @@ assert_grep '^A2_HILITE 15'                     "the HIGHLIGHT survived the roun
 assert_grep '^A2_HEAD3 15'                      "the H3 heading level survived the round-trip"
 assert_grep '^A2_UNDO_AT_LOAD 0'                "opening a document resets the undo history"
 
+# --- a FULL-CAPACITY document round-trips (3 planes, 12303 bytes) ----------
+assert_grep '^BIG_FILE_LEN 12303'               "a 4096-char document serialises to 12303 bytes"
+assert_grep '^BIG_LEN 4096'                     "the full-capacity document reloaded intact"
+assert_grep '^BIG_COLOR 4096'                   "its colour plane reloaded intact"
+
 if [ "$fail" -ne 0 ]; then echo "[hamwrite-host] OVERALL FAIL"; exit 1; fi
 echo "[hamwrite-host] OVERALL PASS"

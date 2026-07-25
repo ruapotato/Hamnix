@@ -22,9 +22,11 @@
 # is joined onto that directory.
 #
 # FORMATTING NOTE: see the render-fidelity section of lib/hamwritecore.ad — the
-# document model stores every attribute (bold/italic/underline/heading, four
-# sizes, three alignments) and round-trips them all; the on-screen face is as
-# faithful as the compositor's size-less `glyphs` verb allows.
+# document model stores every attribute (bold/italic/underline, H1-H3 heading
+# levels, four sizes, three alignments, list kind + indent, text colour and
+# highlight) across TWO packed bytes per character and round-trips them all in
+# a HAMWRITE2 container; the on-screen face is as faithful as the compositor's
+# size-less `glyphs` verb allows.
 
 extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
@@ -124,7 +126,7 @@ def _winpath(out: Ptr[uint8], wid: int32, leaf: Ptr[uint8]):
 DOC_PATH_CAP: uint64 = 192
 doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
-ser_buf:  Array[8320, uint8]                            # magic+len + 2*CAP
+ser_buf:  Array[12416, uint8]  # magic+len + 3*CAP
 clip_buf: Array[4096, uint8]
 hw_quit:  int32 = 0
 
@@ -189,8 +191,8 @@ def _load_doc():
     if fd < 0:
         return
     total: uint64 = 0
-    while total < 8320:
-        r: int64 = sys_read(fd, &ser_buf[total], 8320 - total)
+    while total < 12416:
+        r: int64 = sys_read(fd, &ser_buf[total], 12416 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)

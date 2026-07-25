@@ -4,14 +4,18 @@
 # Drives the SAME core the native app ships (lib/hamwritecore.ad) AND exercises
 # the persistence end-to-end against the REAL host filesystem: it types a
 # document, selects a word and applies BOLD, renders the formatted page,
-# SAVES it (Ctrl-S -> a HAMWRITE1 container on disk), CLEARS the buffer, then
+# SAVES it (Ctrl-S -> a HAMWRITE2 container on disk), CLEARS the buffer, then
 # RE-OPENS the file off disk (Ctrl-O) — proving the text AND the bold span
-# survive a save->load round-trip. Two PPMs are written for a human/agent to
-# LOOK at, and the buffer lengths, bold-char counts + on-disk byte count are
-# dumped for asserts.
+# survive a save->load round-trip. It then drives the features a real user
+# leans on: MULTI-LEVEL UNDO/REDO (including a redo-branch truncation and an
+# undone FORMATTING change), FIND & REPLACE (hit counts, wrapping Find Next,
+# case-insensitivity, Replace All as ONE undo step) and BULLET/NUMBERED LISTS
+# with indent, text colour and highlight — round-tripping the SECOND attribute
+# plane through the container too. PPMs are written for a human/agent to LOOK
+# at, and every model counter is dumped for asserts.
 #
 # USAGE (built to build/host/hamwrite_host):
-#   hamwrite_host DOCPATH BEFORE.ppm AFTER.ppm [TEXT]
+#   hamwrite_host DOCPATH BEFORE.ppm AFTER.ppm [TEXT] [SHOW.ppm] [FIND.ppm]
 
 extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
@@ -117,7 +121,7 @@ def _render(w: int32, h: int32) -> int32:
 
 
 # ---- host-side persistence (mirrors user/hamwrite.ad) ---------------------
-ser_buf: Array[8320, uint8]                            # magic+len + 2*CAP
+ser_buf: Array[12416, uint8]  # magic+len + 3*CAP
 doc_path: Array[192, uint8]
 doc_path_len: uint64 = 0
 
@@ -147,8 +151,8 @@ def _load_doc():
         hamwrite_deserialize(&ser_buf[0], 0)
         return
     total: uint64 = 0
-    while total < 8320:
-        r: int64 = sys_read(fd, &ser_buf[total], 8320 - total)
+    while total < 12416:
+        r: int64 = sys_read(fd, &ser_buf[total], 12416 - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
@@ -157,7 +161,7 @@ def _load_doc():
 
 
 # On-disk byte count of the document file.
-raw_buf: Array[8320, uint8]
+raw_buf: Array[12416, uint8]
 
 
 def _file_len() -> int64:
@@ -165,8 +169,8 @@ def _file_len() -> int64:
     if fd < 0:
         return -1
     total: int64 = 0
-    while total < 8320:
-        r: int64 = sys_read(fd, &raw_buf[total], 8320 - cast[uint64](total))
+    while total < 12416:
+        r: int64 = sys_read(fd, &raw_buf[total], 12416 - cast[uint64](total))
         if r <= 0:
             break
         total = total + r
@@ -218,8 +222,8 @@ def _alt_len() -> int64:
     if fd < 0:
         return -1
     total: int64 = 0
-    while total < 8320:
-        r: int64 = sys_read(fd, &raw_buf[total], 8320 - cast[uint64](total))
+    while total < 12416:
+        r: int64 = sys_read(fd, &raw_buf[total], 12416 - cast[uint64](total))
         if r <= 0:
             break
         total = total + r
@@ -708,6 +712,33 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_ch(10)
     _o_str(cast[Ptr[uint8]]("A2_UNDO_AT_LOAD "))
     _o_dec(cast[int64](hamwrite_can_undo()))           # 0: a load resets history
+    _o_ch(10)
+    _o_flush()
+
+    # ---- (10b) FULL-CAPACITY round-trip -------------------------------
+    # A document at the 4096-char cap serialises to 10 + 5 + 3*4096 = 12303
+    # bytes across three planes — this is the case that overflows an
+    # under-sized ser_buf, so the gate pins it.
+    big: Array[4097, uint8]
+    bi: uint64 = 0
+    while bi < 4096:
+        big[bi] = 97 + cast[uint8](bi % 26)
+        bi = bi + 1
+    big[4096] = 0
+    hamwrite_set_text(&big[0], 4096)
+    _press(1)                                          # Ctrl-A
+    hamwrite_hit(298, 88)                              # colour swatch 1
+    _press(19)                                         # Ctrl-S
+    _o_str(cast[Ptr[uint8]]("BIG_FILE_LEN "))
+    _o_dec(_file_len())                                # 12303
+    _o_ch(10)
+    hamwrite_clear()
+    _press(15)                                         # Ctrl-O
+    _o_str(cast[Ptr[uint8]]("BIG_LEN "))
+    _o_dec(cast[int64](hamwrite_len()))                # 4096
+    _o_ch(10)
+    _o_str(cast[Ptr[uint8]]("BIG_COLOR "))
+    _o_dec(cast[int64](hamwrite_color_count(1)))       # 4096
     _o_ch(10)
     _o_flush()
 
