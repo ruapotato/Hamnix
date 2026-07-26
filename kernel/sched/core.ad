@@ -4450,6 +4450,37 @@ def create_user_thread(entry: uint64, name0: uint64,
         task_table[s].no_new_privs = 0
         task_table[s].ustack_lo = 0
         task_table[s].ustack_sz = 0
+    # RECORD THE OWN-ALLOCATED USER STACK AS A REGION (leak fix).
+    #
+    # A task created WITHOUT a caller-supplied RSP gets its own 4 KiB user
+    # stack (the `ustack = alloc_page()` above, remembered in ustack_base).
+    # Until now ustack_lo/ustack_sz were left 0 on that path, so this stack
+    # was the ONE writable user region with no RECORDED range — and every
+    # teardown in the system is range-driven:
+    #
+    #   * fork (do_rfork / do_clone) passes ust_lo == 0 to vm_cow_share_all,
+    #     which falls back to COW-sharing the single page holding the
+    #     parent's RSP (fs/elf.ad, the `elif sp_fallback` arm);
+    #   * the child therefore maps a COW page that lies in NO recorded
+    #     region, so the child's execve teardown (vma_release_forked_range
+    #     over image / interp / ustack) and task_reap's step 0c never walk
+    #     that VA;
+    #   * the first write on either side COW-copies it to a fresh
+    #     alloc_page() frame, and whichever side dies leaves its copy at
+    #     refcount 1 with nobody to release it: EXACTLY ONE order-0 page
+    #     lost per process lifecycle (measured 0.99 pages/task reaped with
+    #     80 x /bin/echo, no desktop involved).
+    #
+    # Recording the range here makes the native stack an ordinary region:
+    # fork COW-shares it by VA (same page as the fallback did), do_rfork /
+    # do_clone propagate the range to the child, and the child's existing
+    # COW-release teardown reclaims its private copy. do_execve overwrites
+    # both fields with the new image's stack prefix, so this is only ever
+    # the pre-exec value. Fork children / threads (user_rsp != 0, ustack
+    # == 0) keep 0 here and inherit the parent's recorded range instead.
+    if ustack != 0:
+        task_table[s].ustack_lo = ustack
+        task_table[s].ustack_sz = USTACK_SIZE
     # §1 / rfork RFNOWAIT: a fresh user task is attached (reapable) by
     # default. do_rfork sets detached=1 after this returns when the
     # RFNOWAIT bit asked to sever the parent link.
@@ -11317,6 +11348,20 @@ def task_phys_in_live_owner_run(phys: uint64) -> int32:
                 return 1
             up: uint64 = task_table[i].ustack_phys
             if up != 0 and phys >= up and phys < up + task_table[i].ustack_phys_sz:
+                return 1
+            # The OWN-ALLOCATED 4 KiB native stack (create_user_task's
+            # `ustack = alloc_page()`), freed WHOLESALE by this task's own
+            # reap via free_page(ustack_base). Same hazard as the eager
+            # stack run above, one page wide: once the parent COW-copies
+            # its stack page away the ORIGINAL frame drops to refcount 1
+            # held only by a fork child, which would otherwise look
+            # exactly like a child-private copy and be handed back to the
+            # buddy allocator while the parent's ustack_base still names
+            # it. Not reachable through ustack_phys — that field stays 0
+            # on this path (the page is an alloc_page(), not an
+            # alloc_pages() run).
+            ub: uint64 = task_table[i].ustack_base
+            if ub != 0 and phys >= ub and phys < ub + USTACK_SIZE:
                 return 1
         i = i + 1
     return 0

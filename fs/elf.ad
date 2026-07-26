@@ -3656,13 +3656,42 @@ def cow_resolve_pte(pte_slot: uint64, fault_va: uint64) -> int32:
 
     if cow_page_is_shared(old_phys) == 0:
         # Refcount 1 (or untracked): this task is the sole remaining
-        # owner. No copy — just clear COW, set RW, and drop the page's
-        # refcount back to "untracked" (0) so a later teardown frees it
-        # normally.
+        # holder. No copy — just clear COW and set RW in place.
+        #
+        # THE REFCOUNT IS DELIBERATELY LEFT ALONE (leak fix). This arm used
+        # to cow_drop_page() the frame "back to untracked (0)", which threw
+        # away the ONE bit of information every teardown needs:
+        #
+        #   refcount 1 -> a TRACKED frame with exactly one holder, i.e. a
+        #                 private COW copy this task owns and whose last
+        #                 mapper must free it;
+        #   refcount 0 -> UNTRACKED, which by the rule stated in
+        #                 mm/vma.ad::_cow_release_forked_range means "an
+        #                 owner-region frame somebody else reclaims
+        #                 wholesale — drop the reference, NEVER free".
+        #
+        # Zeroing the count therefore relabelled a task's own private copy
+        # as an owner frame, and the fork+exec teardown then refused to
+        # return it. That is EXACTLY ONE order-0 page lost per process
+        # lifecycle on the shell's fork+exec path: the parent COW-copies
+        # its stack page away (leaving the child sole holder at refcount
+        # 1), the child's first write takes THIS arm and zeroes the count,
+        # and the child's execve release walk sees "untracked" and leaks
+        # the frame. Measured at 0.99 pages per task reaped.
+        #
+        # Leaving the count at 1 states the truth (one tracked holder) and
+        # keeps every consumer correct: cow_page_is_shared() is still 0 (a
+        # later write to this now-RW page does not even fault),
+        # cow_share_page() on a re-fork still goes 1 -> 2,
+        # _vma_free_cow_range's cow_drop_page 1 -> 0 still reports "last
+        # holder" and frees, and both COW-copy reclaimers
+        # (_cow_release_forked_range, vma_free_cow_strays) now recognise
+        # the frame. An UNTRACKED frame reaching this arm (refcount 0 — an
+        # owner/region page taken over in place) is unchanged: nothing to
+        # drop, and it stays untracked so no reclaimer touches it.
         new_flags: uint64 = (flags & ~PT_FLAG_COW) | PT_FLAG_RW \
                             | PT_FLAG_P
         cast[Ptr[uint64]](pte_slot)[0] = old_phys | new_flags
-        cow_drop_page(old_phys)
         invlpg_one(page_va)
         return 1
 
