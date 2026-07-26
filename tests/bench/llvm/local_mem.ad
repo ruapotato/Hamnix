@@ -2,7 +2,7 @@
 # address-taken scalars, pointer load/store deref, and local (stack) arrays —
 # all modeled as SVO_ALLOCA + sized SVO_LOAD/SVO_STORE.  Every function here
 # BAILS the pre-memory subset (SBR_MEMORY) and EMITS after the widening.
-extern def print_u64(v: uint64) -> int64
+extern def print_u64(v: uint64) -> int32
 
 # address-of a scalar local + pointer read/write deref (`*p = *p + k`)
 def deref_rw(n: int64) -> int64:

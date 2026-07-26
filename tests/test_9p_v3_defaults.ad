@@ -24,7 +24,7 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_rfork(flags: int32) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 extern def syscall6(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
                     a3: uint64, a4: uint64, a5: uint64) -> int64
@@ -242,7 +242,7 @@ def main() -> int32:
         return 0
 
     # ----- PARENT -----
-    sys_waitpid(cast[uint64](pid))
+    sys_waitpid(cast[int32](pid))
     # /proc/1/ns must NOT carry the child's bind. We snapshot the
     # text and grep for "/n/etc" — absence is the test bar. Pre-bind,
     # the parent's mtab is empty; after the child's RFNAMEG-rfork +

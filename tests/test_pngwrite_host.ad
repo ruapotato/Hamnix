@@ -24,8 +24,8 @@ from lib.pngwrite import (
     pngw_put_u32_be,
 )
 
-extern def sys_open(path: Ptr[uint8]) -> int32
-extern def sys_open_write(path: Ptr[uint8]) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -51,7 +51,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         path = cast[Ptr[uint8]](argv[1])
 
     # O_WRONLY|O_CREAT|O_TRUNC = 1|64|512 = 577, mode 0644 = 420.
-    fd: int32 = sys_open_write(cast[Ptr[uint8]](path))
+    fd: int32 = sys_open_write(cast[Ptr[char]](path))
     if fd < 0:
         return 90
 

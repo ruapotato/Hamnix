@@ -30,7 +30,7 @@ extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_rfork_thread(flags: int32, child_stack: uint64,
                             tls: uint64) -> int32
 extern def sys_exit(code: uint64)
-extern def sys_yield()
+extern def sys_yield() -> int32
 
 # RF* bits (numerically identical to <plan9/libc.h> — see sysproc.ad).
 RFPROC:   int32 = 0x001

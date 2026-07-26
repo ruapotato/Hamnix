@@ -36,9 +36,9 @@ extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 extern def sys_pipe(fds: Ptr[int32]) -> int32
 extern def sys_rfork(flags: int32) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_get_jiffies() -> uint64
-extern def sys_nanosleep(req: Ptr[uint64], rem: uint64) -> int64
+extern def sys_nanosleep(req: Ptr[uint64], rem: Ptr[uint64]) -> int64
 extern def sys_waitfds(fds: Ptr[int32], nfds: uint64,
                        timeout_ms: int64) -> int64
 extern def sys_exit(code: uint64)
@@ -151,7 +151,7 @@ def _sleep_ms(ms: uint64):
     ts: Array[2, uint64]
     ts[0] = ms / 1000
     ts[1] = (ms % 1000) * 1000000
-    sys_nanosleep(&ts[0], 0)
+    sys_nanosleep(&ts[0], cast[Ptr[uint64]](0))
 
 
 def main() -> int32:
@@ -295,7 +295,7 @@ def main() -> int32:
             write_dec(1, welapsed)
             write_str(1, " (want >= 20) FAIL\n")
             fails = fails + 1
-        sys_waitpid(cast[uint64](rc))
+        sys_waitpid(cast[int32](rc))
 
     if fails == 0:
         write_str(1, "[test_wgw] PASS\n")

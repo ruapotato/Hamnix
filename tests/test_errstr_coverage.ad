@@ -30,11 +30,10 @@ extern def sys_exit(code: uint64)
 extern def sys_dup(oldfd: int32) -> int32
 extern def sys_dup2(oldfd: int32, newfd: int32) -> int32
 extern def sys_close(fd: int32) -> int32
-extern def p9_note(pid: uint64, sig: uint64) -> int32
 extern def sys_chdir(path: Ptr[char]) -> int32
-extern def sys_getcwd(buf: Ptr[uint8], n: uint64) -> int32
+extern def sys_getcwd(buf: Ptr[uint8], n: uint64) -> int64
 extern def sys_unlink(path: Ptr[char]) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_lseek(fd: int32, off: int64, whence: int32) -> int64
 
 
@@ -113,7 +112,7 @@ def main() -> int32:
 
     # 7. getcwd(buf, 0) -> "getcwd: buffer too small"
     clear_buf(&buf[0], 128)
-    rc = sys_getcwd(&buf[0], 0)
+    rc = cast[int32](sys_getcwd(&buf[0], 0))
     sys_errstr(&buf[0], 128)
     show("getcwd", &buf[0])
 

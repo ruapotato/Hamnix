@@ -103,8 +103,7 @@ extern def sys_srv_post(name: Ptr[char], srvfd: int32) -> int32
 extern def sys_srv_open(name: Ptr[char]) -> int32
 extern def sys_mount(srvfd: int32, afd: int32, old: Ptr[char],
                      flag: int32, spec: Ptr[char]) -> int32
-extern def sys_execve(path: Ptr[char], argv: Ptr[uint64],
-                      envp: Ptr[uint64]) -> int32
+extern def sys_execve(path: Ptr[char], argv: Ptr[uint64]) -> int32
 extern def sys_errstr(buf: Ptr[uint8], nbuf: uint64) -> int32
 from lib.p9 import spawn
 
@@ -453,13 +452,17 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     #    inheriting this task's fd table (including every srv fd and
     #    rx fd, which the kernel 9P connections keep using) and this
     #    task's private distrofs-backed namespace. argv[1..argc-1]
-    #    becomes the program's argv; envp forwarded as 0 (native exec
-    #    ignores it).
+    #    becomes the program's argv. This uses the 2-arg sys_execve
+    #    thunk, whose asm zeroes %rdx so the kernel sees envp == 0 —
+    #    the same "no env" contract nsrun always wanted. (A caller that
+    #    genuinely needs an env array must use sys_execve_env, the
+    #    3-arg thunk in user/runtime.S; declaring sys_execve itself as
+    #    3-arg was a landmine because the 2-arg thunk discards a2.)
     target: Ptr[char] = cast[Ptr[char]](argv[1])
     new_argv: Ptr[uint64] = cast[Ptr[uint64]](
         cast[uint64](argv) + cast[uint64](8))    # &argv[1]
     write_str(2, "[nsrun] exec target in namespace\n")
-    sys_execve(target, new_argv, cast[Ptr[uint64]](0))
+    sys_execve(target, new_argv)
 
     # Only reached if exec failed.
     write_errstr_line("nsrun: exec failed")

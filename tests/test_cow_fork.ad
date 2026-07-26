@@ -38,7 +38,7 @@
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_rfork(flags: int32) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 
 # Plan 9 POSIX-fork combo: new process + copy fd table + copy namespace
@@ -170,7 +170,7 @@ def main() -> int32:
 
         # --- parent ----------------------------------------------------
         # Wait for the child to finish its divergent writes + exit.
-        status: int64 = sys_waitpid(cast[uint64](rc))
+        status: int64 = sys_waitpid(cast[int32](rc))
         if status < 0:
             write_str(1, "[cow] FAIL: waitpid -errno at iter ")
             write_dec(1, iter)

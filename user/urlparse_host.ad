@@ -17,7 +17,7 @@
 # line per case and a final "[urlparse] RESULT: PASS|FAIL".
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_exit(code: int32) -> int32
+extern def sys_exit(code: uint64)
 
 from user.http9 import http_parse_url, http_parsed_scheme, \
     http_parsed_port, http_parsed_host, http_parsed_path, \

@@ -35,7 +35,7 @@ extern def sys_timerfd_settime(fd: int32, flags: int32,
                                new_val: Ptr[uint64], old_val: Ptr[uint64]) -> int64
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_yield() -> int32
-extern def sys_exit(code: int32)
+extern def sys_exit(code: uint64)
 
 # clockids
 CLOCK_REALTIME:  int32 = 0

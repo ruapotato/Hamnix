@@ -67,7 +67,7 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 extern def sys_pipe(fds: Ptr[int32]) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 extern def sys_srv_post(name: Ptr[char], srvfd: int32) -> int32
 extern def sys_srv_open(name: Ptr[char]) -> int32
@@ -364,7 +364,7 @@ def main() -> int32:
     sys_close(c2s_wfd)
     sys_close(s2c_rfd)
     p9_note(pid, cast[Ptr[uint8]]("kill"))
-    sys_waitpid(cast[uint64](pid))
+    sys_waitpid(cast[int32](pid))
 
     write_str(1, "[p9_realfd] PASS\n")
     return 0

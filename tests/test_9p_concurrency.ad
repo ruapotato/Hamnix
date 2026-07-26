@@ -63,7 +63,7 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 extern def sys_pipe(fds: Ptr[int32]) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 extern def sys_srv_post(name: Ptr[char], srvfd: int32) -> int32
 extern def sys_srv_open(name: Ptr[char]) -> int32
@@ -333,31 +333,31 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if seen == 0:
         write_str(1, "[9pconc] FAIL: reader never created ready file\n")
         p9_note(rdr_pid, cast[Ptr[uint8]]("kill"))
-        sys_waitpid(cast[uint64](rdr_pid))
+        sys_waitpid(cast[int32](rdr_pid))
         p9_note(srv_pid, cast[Ptr[uint8]]("kill"))
-        sys_waitpid(cast[uint64](srv_pid))
+        sys_waitpid(cast[int32](srv_pid))
         return 10
     write_str(1, "[9pconc] reader ready\n")
 
     # 7. Parent read loop, racing the child's.
     if read_loop("parent") < 0:
         p9_note(rdr_pid, cast[Ptr[uint8]]("kill"))
-        sys_waitpid(cast[uint64](rdr_pid))
+        sys_waitpid(cast[int32](rdr_pid))
         p9_note(srv_pid, cast[Ptr[uint8]]("kill"))
-        sys_waitpid(cast[uint64](srv_pid))
+        sys_waitpid(cast[int32](srv_pid))
         return 11
     write_str(1, "[9pconc] parent loop done\n")
 
     # 8. Reap the reader (its "[9pconc] reader done" marker is the
     #    child-side success signal the script greps for).
-    sys_waitpid(cast[uint64](rdr_pid))
+    sys_waitpid(cast[int32](rdr_pid))
 
     # 9. Teardown — close the transport ends, reap distrofs.
     sys_close(srv_fd)
     sys_close(c2s_wfd)
     sys_close(s2c_rfd)
     p9_note(srv_pid, cast[Ptr[uint8]]("kill"))
-    sys_waitpid(cast[uint64](srv_pid))
+    sys_waitpid(cast[int32](srv_pid))
 
     # 10. THE kernel-measured concurrency proof: /dev/9pmax renders
     #     9p_client.ad's high-water mark of simultaneously in-flight

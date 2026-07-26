@@ -10,7 +10,7 @@
 # line per case and a final "[dechunk] RESULT: PASS|FAIL".
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_exit(code: int32) -> int32
+extern def sys_exit(code: uint64)
 
 from lib.httpchunk import http_dechunk
 

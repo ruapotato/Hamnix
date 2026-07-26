@@ -39,9 +39,6 @@
 #               -3  glyph bitmap too tall (height > 32)
 #               -4  GLYPH_BITS_CAP overflow
 
-extern def kmalloc(n: uint64) -> Ptr[uint8]
-extern def kfree(p: Ptr[uint8])
-
 # ---- shared constants (also used by callers) -----------------------
 FONT_BDF_N_GLYPHS: uint64 = 95          # ASCII 0x20..0x7E
 FONT_BDF_BASE_CP:  uint64 = 32          # first encoded codepoint

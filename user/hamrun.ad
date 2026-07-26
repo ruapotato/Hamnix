@@ -52,8 +52,8 @@ extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_read_nb(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
-extern def sys_yield()
-extern def sys_exit(code: int32)
+extern def sys_yield() -> int32
+extern def sys_exit(code: uint64)
 
 
 # --- model storage --------------------------------------------------

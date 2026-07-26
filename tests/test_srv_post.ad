@@ -39,7 +39,7 @@ extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 extern def sys_pipe(fds: Ptr[int32]) -> int32
 extern def sys_rfork(flags: int32) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 extern def sys_srv_post(name: Ptr[char], srvfd: int32) -> int32
 extern def sys_srv_open(name: Ptr[char]) -> int32
@@ -164,7 +164,7 @@ def main() -> int32:
 
     # Wait for the child so its write is definitely flushed before
     # we drain the pipe. sys_waitpid blocks + reaps the slot.
-    wait_rc: int64 = sys_waitpid(cast[uint64](pid))
+    wait_rc: int64 = sys_waitpid(cast[int32](pid))
     if wait_rc < 0:
         dump_errstr("[srv_post] FAIL: waitpid errstr=")
         return 5

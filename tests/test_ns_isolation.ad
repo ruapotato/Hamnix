@@ -42,7 +42,7 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_rfork(flags: int32) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_exit(code: uint64)
 extern def syscall6(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
                     a3: uint64, a4: uint64, a5: uint64) -> int64
@@ -207,7 +207,7 @@ def main() -> int32:
     # returns, the only namespace row that ever had `/myalias->/bin`
     # is the child's; that row is eligible for ns_clone() reuse but
     # the parent's view (ns 0) has been untouched the whole time.
-    status: int64 = sys_waitpid(cast[uint64](pid))
+    status: int64 = sys_waitpid(cast[int32](pid))
     if status < 0:
         write_str(1, "[ns_isolation] FAIL: parent waitpid returned -errno\n")
         return 9

@@ -57,7 +57,7 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 extern def sys_socketpair(domain: int32, type: int32, protocol: int32,
                           sv: Ptr[int32]) -> int32
-extern def sys_waitpid(pid: uint64) -> int64
+extern def sys_waitpid(pid: int32) -> int64
 extern def sys_errstr(buf: Ptr[uint8], nbuf: uint64) -> int32
 extern def sys_mount(srvfd: int32, afd: int32, old: Ptr[char],
                      flag: int32, spec: Ptr[char]) -> int32
@@ -268,7 +268,7 @@ def main() -> int32:
     # surprise described above; SIGKILL sidesteps the dance). Then
     # close both socketpair ends so the slot is freed.
     p9_note(pid, cast[Ptr[uint8]]("kill"))
-    sys_waitpid(cast[uint64](pid))
+    sys_waitpid(cast[int32](pid))
     sys_close(kern_fd)
     sys_close(child_fd)
 

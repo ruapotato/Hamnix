@@ -31,7 +31,7 @@ extern def sys_close(fd: int32) -> int32
 extern def sys_get_jiffies() -> uint64
 extern def sys_yield() -> int32
 extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char], flag: int32) -> int32
-extern def sys_exit(code: int32)
+extern def sys_exit(code: uint64)
 
 from lib.hamsceneloop import hamscene_park, HAMSCENE_IDLE_MS
 from lib.hamui import hamscene_begin, hamscene_fill, hamscene_rect, \

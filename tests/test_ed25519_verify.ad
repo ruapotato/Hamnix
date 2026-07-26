@@ -21,7 +21,7 @@
 
 from lib.ed25519 import ed25519_verify
 
-extern def sys_open(path: Ptr[uint8]) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -35,7 +35,7 @@ msg_buf: Array[1048576, uint8]
 # Read exactly `want` bytes from `path` into `dst`; returns 0 on
 # success, negative on open/short-read failure.
 def _read_exact(path: Ptr[uint8], dst: Ptr[uint8], want: uint64) -> int64:
-    fd: int32 = sys_open(path)
+    fd: int32 = sys_open(cast[Ptr[char]](path))
     if fd < 0:
         return -1
     got: uint64 = 0
@@ -52,7 +52,7 @@ def _read_exact(path: Ptr[uint8], dst: Ptr[uint8], want: uint64) -> int64:
 
 # Read a whole file (up to cap) into dst; returns byte count or -1.
 def _read_all(path: Ptr[uint8], dst: Ptr[uint8], cap: uint64) -> int64:
-    fd: int32 = sys_open(path)
+    fd: int32 = sys_open(cast[Ptr[char]](path))
     if fd < 0:
         return -1
     total: uint64 = 0

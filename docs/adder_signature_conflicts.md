@@ -137,55 +137,33 @@ The gate has teeth, asserted every run:
 The baseline is **shrink-only**: a conflicting name that is not in it fails the
 build, and a baselined LANDMINE that becomes LIVE fails the build.
 
-## The current inventory: 356 conflicting names
+## The current inventory: 344 conflicting names
 
-`LIVE 3, LANDMINE 353. Arity conflicts 68 (0 of them live).`
+`LIVE 0, LANDMINE 344. Arity conflicts 67 (0 of them live). extern/ABI 0.`
 Full list with every site: `python3 scripts/sema_scan.py --mode conflicts`.
 Names only (the baseline format): add `--names-only`.
 
-### Tier 1 — LIVE (3). Debt, not policy.
+### Tiers 1 and 2 — RESOLVED
 
-None is an arity conflict, so no argument register is left uninitialised; all
-three are same-width type divergences on an `extern`, which means the callee's
-declared type is a lie in some translation unit but the register content is
-right. Ranked by blast radius:
+Every extern/ABI conflict (the `sys_open` tier) and every LIVE conflict is gone.
+The tree went from `LIVE 3 / extern-ABI 12` to `LIVE 0 / extern-ABI 0`. What was
+done, and why each spelling won:
 
-| name | disagreement | live link units |
-|---|---|---|
-| `sys_exit` | `(uint64) -> None` (125 sites) vs `(int32) -> None` (19) vs `(int32) -> int32` (2, `user/httpchunk_host.ad:13`, `user/urlparse_host.ad:20`) | 18 |
-| `sys_yield` | `() -> int32` (63 sites) vs `() -> None` (20) | 19 |
-| `p9_note` | `def (int32, Ptr[uint8]) -> int32` in `lib/p9.ad:581` vs `extern (uint64, uint64) -> int32` in `tests/test_errstr_coverage.ad:33` | 1 |
-
-**Unification, when someone owns the ABI files:** `sys_exit(code: int32)` and
-`sys_yield() -> int32` are the majority spellings; `p9_note` should drop its
-extern in favour of importing `lib.p9`. All three edits are in `user/`,
-`lib/` and `tests/` `.ad` files, outside this change's scope (`scripts/`,
-`docs/`), so they are baselined as LIVE rather than silently normalised — a
-baselined LIVE entry is a standing TODO, and the gate still fails if a *new*
-one appears.
-
-### Tier 2 — extern/ABI landmines (9). Fix these first.
-
-An `extern def` names a real runtime symbol that every module shares, so two
-spellings mean one of them is provably wrong about the ABI. This is the
-`sys_open` tier; it is what killed a day. Ranked:
-
-| name | disagreement |
+| name | resolution |
 |---|---|
-| `sys_execve` | **arity 2 vs 3** — `(Ptr[char], Ptr[uint64])` in `user/getty.ad:29`, `user/hamsession.ad:52`, `user/init.ad:53` vs `(Ptr[char], Ptr[uint64], Ptr[uint64])` in `user/nsrun.ad:106`. The only remaining extern arity conflict in the tree, and the direct analogue of `sys_open`: if `nsrun` ever shares a link unit with `init`, one of them calls execve with `%rdx` unset. |
-| `sys_nanosleep` | `(Ptr[uint64], Ptr[uint64])` vs `(Ptr[uint64], uint64)` — a POINTER argument declared as an integer in one place. |
-| `kmalloc` | `(uint64) -> Ptr[uint8]` vs `(uint64) -> uint64` |
-| `kfree` | `(Ptr[uint8]) -> None` vs `(uint64) -> None` |
-| `sys_open` | `(Ptr[char]) -> int32` (300 sites) vs `(Ptr[uint8]) -> int32` (3) — same width; unify on `Ptr[char]`. |
-| `sys_open_write` | `(Ptr[char]) -> int32` (176) vs `(Ptr[uint8]) -> int32` (2) — same. |
-| `sys_waitpid` | `(int32) -> int64` (17) vs `(uint64) -> int64` (13) |
-| `sys_getcwd` | `-> int64` (13) vs `-> int32` (1) |
-| `print_u64` | `-> int32` (11) vs `-> int64` (1) |
+| `sys_execve` | **Real landmine removed.** `user/runtime.S` defines TWO thunks: `sys_execve(path, argv)` — which *deliberately* `xorq %rdx, %rdx` so the kernel's SYS_EXECVE never snapshots a stale caller register as `envp` — and `sys_execve_env(path, argv, envp)`, the genuine 3-arg form. `user/nsrun.ad` declared `sys_execve` as 3-arg, so its third argument was written into `%rdx` and then unconditionally *discarded by the thunk*. nsrun passed 0, so behaviour was correct by luck; any future caller passing a real env array would have silently lost it. nsrun now uses the 2-arg form (the true ABI of that symbol), matching `getty.ad`, `init.ad` and `hamsession.ad`. Callers that need an env array must use `sys_execve_env`. |
+| `sys_exit` | Unified on `(code: uint64)` with **no return type**. The thunk `jmp`s to itself if the syscall ever returns, so `-> int32` (2 host harnesses) was a lie about a noreturn function; `uint64` is both the majority (125 sites) and matches the kernel reading `a0` as a 64-bit word. 21 minority decls rewritten. |
+| `sys_yield` | Unified on `() -> int32`. The thunk `ret`s with the syscall's `%rax`, and the kernel documents "returns 0", so a value genuinely comes back; `-> None` (20 sites) discarded a real return. Majority spelling (63 sites) also wins on count. |
+| `p9_note` | `tests/test_errstr_coverage.ad` declared `extern def p9_note(pid: uint64, sig: uint64)` *and* did `from lib.p9 import p9_note` in the same file. The extern was deleted; the real `def (int32, Ptr[uint8]) -> int32` in `lib/p9.ad:581` is authoritative, and the call site already passed a `Ptr[uint8]`. |
+| `sys_nanosleep` | Unified on `(Ptr[uint64], Ptr[uint64]) -> int64`. Both `req` and `rem` are user pointers to `struct timespec` per `user/runtime.S` and the SYS_NANOSLEEP kernel entry; the `rem: uint64` spelling was a pointer typed as an integer. |
+| `kmalloc` / `kfree` | `lib/font_bdf.ad` carried `extern` decls for both that **nothing in the file calls**, spelled with the userland `Ptr[uint8]` shape rather than `mm/slab.ad`'s `uint64` handle ABI. Dead declarations deleted; `mm/` untouched. |
+| `sys_open` / `sys_open_write` | Unified on `Ptr[char]` (300 / 176 sites). The 3+2 `Ptr[uint8]` decls in host test harnesses now cast at the call site. |
+| `sys_waitpid` | Unified on `(pid: int32) -> int64`. A pid is a signed 32-bit value everywhere else in the tree and the thunk zeroes `%esi` (flags) around a 32-bit pid; 12 `uint64` decls and their `cast[uint64]` call sites rewritten. |
+| `sys_getcwd` | Unified on `-> int64` (13 sites); the single `-> int32` truncated a 64-bit return. |
+| `print_u64` | Unified on `-> int32` (11 sites); the single `-> int64` was a bench-harness typo. |
 
-Every one of these is *trivially unifiable*: change the minority spelling to
-the majority one. They are one-line edits in `.ad` files and so are outside
-this change's file scope; they are listed here with exact counts so the edit is
-mechanical. Doing so would take LIVE-risk from 12 extern names to 3.
+What remains is Tier 3 and Tier 4 — same-named *local helpers* in unrelated
+applications. Those are not ABI bugs and are not unifiable; see below.
 
 ### Tier 3 — arity landmines among plain `def`s (67)
 

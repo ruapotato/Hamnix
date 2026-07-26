@@ -55,7 +55,7 @@ from lib.hamui import (
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_getcwd(buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_yield()
+extern def sys_yield() -> int32
 extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 from lib.p9 import spawn, p9_listdir, p9_chan_dir_mode
