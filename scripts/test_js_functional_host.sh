@@ -88,6 +88,28 @@ chrome_load_has() {   # page.html regex message
     fi
 }
 
+# Optional chromium cross-check of a CLICKED page: copy the fixture, append a
+# driver that clicks <id> and publishes the resulting #log text into the title,
+# then require that title to be exactly <expected>. This is a REAL oracle for an
+# interactive case — the same click, the same page, a real browser's answer.
+# Skipped (not a failure) when chromium is absent.
+chrome_click_log() {  # page.html id expected message
+    [ -n "$CHROMIUM" ] || { echo "[js-fn] SKIP chromium click xref: $4 (no chromium)"; return; }
+    local tmp; tmp="$(mktemp -d)"
+    cp "$PAGES/$1" "$tmp/p.html"
+    printf '<script>var e=document.getElementById("%s");if(e)e.click();document.title="LOG:"+document.getElementById("log").textContent;</script>\n' \
+        "$2" >>"$tmp/p.html"
+    local got
+    got="$("$CHROMIUM" --headless --no-sandbox --disable-gpu --dump-dom "file://$tmp/p.html" 2>/dev/null \
+           | grep -o '<title>[^<]*</title>' | head -1 | sed 's/<[^>]*>//g;s/^LOG://')"
+    rm -rf "$tmp"
+    if [ "$got" = "$3" ]; then
+        echo "[js-fn] PASS chromium click xref: $4 (chrome: $got)"
+    else
+        echo "[js-fn] FAIL chromium click xref: $4 (chrome: '$got' != expected '$3')"; fail=1
+    fi
+}
+
 echo "----- (1) counter: addEventListener('click') + textContent update -----"
 # Expected post-click DOM: #count text becomes 'C1'. Console: 'COUNTER now=1'.
 run counter.html click inc
@@ -178,6 +200,33 @@ else
     echo "[js-fn] PASS the status settled past IDLE/LOADING to LOADED-OK"
 fi
 assert_nogrep '^JSERR'                   "no uncaught JS error"
+
+echo "----- (9) livedom: clicks must reach nodes JavaScript built AFTER load -----"
+# THE LIVE-DOM KEYSTONE. Every clickable node on this page is created by script,
+# so a click can only work if event-target resolution reaches the created-node
+# registry, not just the parsed source. Each expectation below is the byte-exact
+# #log text real chromium produces for the same click (asserted by the
+# chrome_click_log cross-check alongside).
+run livedom.html click dynbtn
+assert_grep 'DYN-FIRED \| DOC-DELEG:dynbtn' "createElement+appendChild node is clickable (and bubbles to document)"
+assert_nogrep '^JSERR'                      "no uncaught JS error"
+chrome_click_log livedom.html dynbtn 'DYN-FIRED | DOC-DELEG:dynbtn' "created node click"
+
+run livedom.html click nestbtn
+assert_grep 'NEST-FIRED \| DOC-DELEG:nestbtn' "created node NESTED in a created parent is clickable (el.onclick)"
+chrome_click_log livedom.html nestbtn 'NEST-FIRED | DOC-DELEG:nestbtn' "nested created node click"
+
+run livedom.html click kid
+assert_grep 'DELEG-FIRED:kid \| DOC-DELEG:kid' "delegation: static container's listener fires with e.target = the dynamic child"
+chrome_click_log livedom.html kid 'DELEG-FIRED:kid | DOC-DELEG:kid' "delegated click on a dynamic child"
+
+# The mini-React case: the counter button is destroyed and rebuilt on every
+# render, so 'Count: 1' can only appear if the click resolved the CURRENT node.
+run livedom.html click inc
+assert_grep 'REACT-STATE=1 \| DOC-DELEG:inc' "re-rendering component advanced its state on click"
+assert_grep 'FLOW.*Count: 1'                 "the re-rendered button shows the new state"
+assert_nogrep '^JSERR'                       "no uncaught JS error"
+chrome_click_log livedom.html inc 'REACT-STATE=1 | DOC-DELEG:inc' "component re-render click"
 
 if [ "$fail" -ne 0 ]; then
     echo "[js-fn] RESULT: FAIL"; exit 1

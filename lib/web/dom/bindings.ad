@@ -319,6 +319,14 @@ js_had_error: int32 = 0
 js_ctx_live: int32 = 0               # a persistent JS context exists this render
 he_click_links: int32 = 0           # native: wrap handler elements in #__evt_N links
 
+# Event-target index space. A source-anchored element is addressed by its dom_
+# index (0..dom_n). A node that SCRIPT created (createElement/appendChild,
+# innerHTML, a framework's reconciler output) has no source anchor and lives in
+# the parallel cre_ registry, so it is addressed as CRE_IDX_BASE + cre id. Both
+# he_dom_click_index() and the synthetic "#__evt_N" pointer-link wrap use this
+# one space, which is what lets a user click reach a JS-created element.
+CRE_IDX_BASE: int32 = 1000000
+
 # rewritten source (only built when overrides exist)
 RW_CAP:  uint64 = 4194304
 rw_buf:  Array[4194304, uint8]

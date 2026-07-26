@@ -98,6 +98,27 @@ check "blank-area click focuses nothing (HITEL -1)" \
 check "blank-area click produces no FOCUSED line" \
     bash -c "! printf '%s' \"$D3\" | grep -q '^FOCUSED'"
 
+# ---- (4) LIVE-DOM: a pointer click must reach a button JS BUILT after load ----
+# The only control on this fixture is created by script (createElement +
+# appendChild + addEventListener). A coordinate click at its painted box must
+# resolve to it and run its handler, mutating #log LOGIDLE -> DYNCLICKED. Before
+# the created-node event-target index space existed, the hit-test returned -1
+# here: dynamic UI painted, but was dead to the pointer.
+FIX4="tests/fixtures/hambrowse_livedomclick.html"
+read -r CX4 CY4 < <("$BIN" "$FIX4" "$OUT/if_probe.ppm" 640 clickxy 0 0 X 2>/dev/null \
+    | awk '/^FIELDSEG kind 2 /{ print int(($5+$7)/2), int(($9+$11)/2); exit }')
+echo "[hb-if] created-button centre = (${CX4:-none},${CY4:-none})"
+D4="$("$BIN" "$FIX4" "$OUT/if_out.ppm" 640 clickxy "${CX4:-0}" "${CY4:-0}" 2>/dev/null)"
+echo "$D4" | grep -E '^(HITEL|CLICKED|SEGTXT)' | sed 's/^/[hb-if]   /'
+check "livedom: click resolves to the created node (HITEL >= CRE_IDX_BASE)" \
+    bash -c "printf '%s' \"$D4\" | grep -Eq '^HITEL 1[0-9]{6} '"
+check "livedom: the created node's handler ran" \
+    bash -c "printf '%s' \"$D4\" | grep -Eq '^CLICKED el 1[0-9]{6} ran 1$'"
+check "livedom: the handler's DOM mutation re-rendered (DYNCLICKED)" \
+    bash -c "printf '%s' \"$D4\" | grep -Fq 'SEGTXT DYNCLICKED'"
+check "livedom: the pre-click text is gone" \
+    bash -c "! printf '%s' \"$D4\" | grep -Fq 'SEGTXT LOGIDLE'"
+
 if [ "$fail" -ne 0 ]; then
     echo "[hb-if] RESULT: FAIL"; exit 1
 fi

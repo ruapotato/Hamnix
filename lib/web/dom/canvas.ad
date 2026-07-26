@@ -4475,6 +4475,70 @@ def _emit_cre_attr(co: int32, prop: Ptr[uint8], plen: uint64, aname: Ptr[uint8])
     _rw_ch(34)
 
 
+# Does this node's JS object carry a click listener of its own — an object-store
+# addEventListener('click', …) registration or an `onclick` property?
+def _obj_has_click(obj: int32) -> int32:
+    ln: int32 = _obj_lp_name(cast[Ptr[uint8]]("click"), 5)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) != 0 and js_array_len(arr) > 0:
+        return 1
+    if js_is_callable(js_get_prop(obj, cast[Ptr[uint8]]("onclick"), 7)) != 0:
+        return 1
+    return 0
+
+
+# Is created node `cid`'s tag name (case-insensitively) `s`?
+def _cre_tag_is(cid: int32, s: Ptr[uint8]) -> int32:
+    n: int32 = _cstr_len(s)
+    if cre_tag_len[cid] != n:
+        return 0
+    i: int32 = 0
+    while i < n:
+        if _hx_lower(dom_idbuf[cre_tag_off[cid] + i]) != _hx_lower(s[i]):
+            return 0
+        i = i + 1
+    return 1
+
+
+# Is created node `cid` a form control? Such an element paints as ONE control
+# box, so its "#__evt_N" link must wrap the tag from OUTSIDE (<a><button></a>) —
+# an inner wrap lands inside a box the hit-test never splits, which is why a
+# script-built <button> stayed unclickable while a script-built <div> worked.
+def _cre_is_control(cid: int32) -> int32:
+    if _cre_tag_is(cid, cast[Ptr[uint8]]("button")) != 0:
+        return 1
+    if _cre_tag_is(cid, cast[Ptr[uint8]]("input")) != 0:
+        return 1
+    if _cre_tag_is(cid, cast[Ptr[uint8]]("select")) != 0:
+        return 1
+    if _cre_tag_is(cid, cast[Ptr[uint8]]("textarea")) != 0:
+        return 1
+    return 0
+
+
+# Is created node `cid` a pointer-click target — i.e. would a click on it reach
+# ANY handler? True when it carries its own click listener, and also when an
+# ancestor does (event delegation: the listener sits on a static container and
+# the clicked node is the dynamic child). Walks the live parentNode chain, so it
+# crosses from created nodes onto source-anchored ancestors and stops there.
+def _cre_click_target(cid: int32) -> int32:
+    obj: int32 = cre_obj[cid]
+    depth: int32 = 0
+    while depth < 64:
+        el: int32 = _find_el_by_obj(obj)
+        if el >= 0:
+            if _el_has_handler(el) != 0:
+                return 1
+        elif _obj_has_click(obj) != 0:
+            return 1
+        pv: int32 = js_get_prop(obj, cast[Ptr[uint8]]("parentNode"), 10)
+        if js_type_of(pv) != 5:
+            return 0
+        obj = pv
+        depth = depth + 1
+    return 0
+
+
 # Emit a script-created node's markup, RECURSIVELY: a text node emits only its
 # escaped text; an element emits <tag id class style>inner</tag> where `inner`
 # is innerHTML (raw) if set, else the escaped textContent followed by its nested
@@ -4487,6 +4551,21 @@ def _emit_created(cid: int32):
     if cre_is_text[cid] != 0:
         _rw_js_escaped(js_get_prop(co, cast[Ptr[uint8]]("textContent"), 11))
         return
+    # native-only: a created node that a click would reach (its own listener, or
+    # a delegating ancestor's) gets the same synthetic "#__evt_N" link wrap the
+    # source elements get, addressed in the CRE_IDX_BASE half of the event-target
+    # index space — so the pointer hit-test resolves a JS-built button exactly
+    # like a parsed one. A form control is wrapped OUTSIDE its tag (its whole
+    # box then carries the link); anything else wraps its inner content.
+    wrap_evt: int32 = 0
+    wrap_outer: int32 = 0
+    if he_click_links != 0 and _cre_click_target(cid) != 0:
+        wrap_evt = 1
+        if _cre_is_control(cid) != 0:
+            wrap_outer = 1
+            _rw_cstr(cast[Ptr[uint8]]("<a href=\"#__evt_"))
+            _rw_dec(CRE_IDX_BASE + cid)
+            _rw_cstr(cast[Ptr[uint8]]("\">"))
     _rw_ch(60)                                            # '<'
     t: int32 = 0
     while t < cre_tag_len[cid]:
@@ -4495,6 +4574,10 @@ def _emit_created(cid: int32):
     _emit_cre_attr(co, cast[Ptr[uint8]]("id"), 2, cast[Ptr[uint8]]("id"))
     _emit_cre_attr(co, cast[Ptr[uint8]]("className"), 9, cast[Ptr[uint8]]("class"))
     _rw_ch(62)                                            # '>'
+    if wrap_evt != 0 and wrap_outer == 0:
+        _rw_cstr(cast[Ptr[uint8]]("<a href=\"#__evt_"))
+        _rw_dec(CRE_IDX_BASE + cid)
+        _rw_cstr(cast[Ptr[uint8]]("\">"))
     # Inline `.style.*` overrides are carried on an INNER <span> — some elements
     # (e.g. <li>, table cells) don't parse an inline style="" on their own tag,
     # whereas an inline <span> reliably honours color/bg/weight/align. className
@@ -4547,12 +4630,16 @@ def _emit_created(cid: int32):
             a = a + 1
     if has_style != 0:
         _rw_cstr(cast[Ptr[uint8]]("</span>"))
+    if wrap_evt != 0 and wrap_outer == 0:
+        _rw_cstr(cast[Ptr[uint8]]("</a>"))
     _rw_cstr(cast[Ptr[uint8]]("</"))
     t2: int32 = 0
     while t2 < cre_tag_len[cid]:
         _rw_ch(dom_idbuf[cre_tag_off[cid] + t2])
         t2 = t2 + 1
     _rw_ch(62)
+    if wrap_outer != 0:
+        _rw_cstr(cast[Ptr[uint8]]("</a>"))
 
 
 # Emit the merged inline style="" for an element's style overrides (or nothing).
@@ -5263,6 +5350,11 @@ def _dispatch_event(target_el: int32, kind: int32, evtobj: int32) -> int32:
             if _fire_handler(disp_path[i], kind, evtobj, EPHASE_BUBBLE) != 0:
                 ran = 1
             i = i + 1
+        # terminal hop: document-level delegation (document.addEventListener)
+        if g_stop_prop == 0:
+            g_stop_immediate = 0
+            if _fire_docel(kind, cast[Ptr[uint8]](0), 0, evtobj) != 0:
+                ran = 1
     _set_ephase(evtobj, EPHASE_NONE)
     if evtobj >= 0:
         js_set_prop(evtobj, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
@@ -5409,10 +5501,80 @@ def _obj_fire_type(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> i
     return ran
 
 
-# Dispatch event `evo` of `type` at created node `targetobj`: target phase then
-# (if bubbles) bubble up the live JS parentNode chain, firing object listeners at
-# each hop. Honours stopPropagation / stopImmediatePropagation. preventDefault
-# flips g_prevent_default (and evo.defaultPrevented via NID_PREVENT).
+# Fire the document/window-level (evl_el == DOC_EL) listeners for this event —
+# the terminal hop of every bubble chain. `kind` is the attribute-backed kind
+# (0 click / 1 input / 2 change / 3 submit) or -1, in which case GEN_KIND
+# listeners are matched by type string. `this` is the document. Event delegation
+# rooted at `document.addEventListener('click', …)` is one of the two dominant
+# real-page interaction idioms, so no bubble may stop below it.
+def _fire_docel(kind: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> int32:
+    ran: int32 = 0
+    tp: Ptr[uint8] = typep
+    tn: int32 = typen
+    if kind == 0:
+        tp = cast[Ptr[uint8]]("click")
+        tn = 5
+    elif kind == 1:
+        tp = cast[Ptr[uint8]]("input")
+        tn = 5
+    elif kind == 2:
+        tp = cast[Ptr[uint8]]("change")
+        tn = 6
+    elif kind == 3:
+        tp = cast[Ptr[uint8]]("submit")
+        tn = 6
+    if evo >= 0:
+        js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
+        js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_doc)
+    li: int32 = 0
+    while li < evl_n and g_stop_immediate == 0:
+        hit: int32 = 0
+        if evl_dead[li] == 0 and evl_el[li] == DOC_EL:
+            if kind >= 0 and evl_kind[li] == kind:
+                hit = 1
+            elif tn > 0 and evl_kind[li] == GEN_KIND and _evl_type_eq(li, tp, tn) != 0:
+                hit = 1
+        if hit != 0:
+            lfn: int32 = evl_fn[li]
+            if js_is_callable(lfn) != 0:
+                if evo >= 0:
+                    g_argv1[0] = evo
+                    js_call_fn(lfn, js_doc, &g_argv1[0], 1)
+                else:
+                    js_call_fn(lfn, js_doc, cast[Ptr[int32]](0), 0)
+                ran = 1
+                if evl_once[li] != 0:
+                    evl_dead[li] = 1
+        li = li + 1
+    # `document.onclick = fn` is an IDL handler PROPERTY, not an evl_ row, so it
+    # lives on the document object like any created node's would.
+    if tn > 0 and g_stop_immediate == 0 and _obj_fire_type(js_doc, tp, tn, evo) != 0:
+        ran = 1
+    return ran
+
+
+# Fire ONE hop of an object-chain dispatch. The two listener stores are disjoint
+# by construction: a SOURCE-anchored element keeps its registrations in the evl_
+# table (+ its on<evt> attribute slot), a CREATED node keeps them on its own JS
+# object under "@L:<type>". Firing the wrong store at a hop either misses the
+# listener (the live-DOM bug) or double-invokes it (el.onclick lives in BOTH the
+# object property and dom_onclick_fn), so dispatch by which registry owns `obj`.
+def _obj_fire_hop(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32, \
+                  kind: int32, phase: int32) -> int32:
+    el: int32 = _find_el_by_obj(obj)
+    if el >= 0:
+        if kind >= 0:
+            return _fire_handler(el, kind, evo, phase)
+        return _fire_generic(el, typep, typen, evo, phase)
+    return _obj_fire_type(obj, typep, typen, evo)
+
+
+# Dispatch event `evo` of `type` at node `targetobj` — a created node OR a
+# source-anchored element — target phase then (if bubbles) bubble up the live JS
+# parentNode chain, firing whichever listener store owns each hop, and finally
+# the document-level listeners. Honours stopPropagation /
+# stopImmediatePropagation. preventDefault flips g_prevent_default (and
+# evo.defaultPrevented via NID_PREVENT).
 def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
                   evo: int32, bubbles: int32) -> int32:
     g_prevent_default = 0
@@ -5423,34 +5585,71 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
         js_set_prop(evo, cast[Ptr[uint8]]("target"), 6, targetobj)
         js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
     ran: int32 = 0
+    kind: int32 = _evt_std_kind(typep, typen)
     # target phase
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, targetobj)
-    if _obj_fire_type(targetobj, typep, typen, evo) != 0:
+    _set_ephase(evo, EPHASE_TARGET)
+    if _obj_fire_hop(targetobj, typep, typen, evo, kind, EPHASE_TARGET) != 0:
         ran = 1
     # bubble phase
+    _set_ephase(evo, EPHASE_BUBBLE)
     cur: int32 = targetobj
     depth: int32 = 0
     while bubbles != 0 and g_stop_prop == 0 and depth < 256:
         pv: int32 = js_get_prop(cur, cast[Ptr[uint8]]("parentNode"), 10)
-        if js_type_of(pv) != 5:
+        if js_type_of(pv) != 5 or pv == js_doc:
             depth = 256
         else:
             cur = pv
             g_stop_immediate = 0
             if evo >= 0:
                 js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, cur)
-            if _obj_fire_type(cur, typep, typen, evo) != 0:
+            if _obj_fire_hop(cur, typep, typen, evo, kind, EPHASE_BUBBLE) != 0:
                 ran = 1
             depth = depth + 1
+    # terminal hop: document-level delegation
+    if bubbles != 0 and g_stop_prop == 0:
+        g_stop_immediate = 0
+        if _fire_docel(kind, typep, typen, evo) != 0:
+            ran = 1
+    _set_ephase(evo, EPHASE_NONE)
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
     g_cur_event = -1
     return ran
 
 
+# Settle the page after a dispatched event: drain deferred work, read the DOM
+# back and re-lay it out so the handler's mutations render.
+def _after_event_settle():
+    js_drain_timers()
+    _dom_readback()
+    _js_capture_console()
+    _relayout()
+
+
 def he_dom_click_index(idx: int32) -> int32:
-    if js_ctx_live == 0 or idx < 0 or idx >= dom_n:
+    if js_ctx_live == 0 or idx < 0:
+        return 0
+    # A SCRIPT-CREATED target (CRE_IDX_BASE + cre id) has no source anchor, so it
+    # cannot go through the tx-tree walk _dispatch_event does. It dispatches over
+    # the LIVE parentNode chain instead — which crosses back onto source-anchored
+    # ancestors (and the document) at _obj_fire_hop, so delegation to a static
+    # container still fires.
+    if idx >= CRE_IDX_BASE:
+        cid: int32 = idx - CRE_IDX_BASE
+        if cid >= cre_n or cre_gone[cid] != 0:
+            return 0
+        cev: int32 = _new_event_obj()
+        js_set_prop(cev, cast[Ptr[uint8]]("type"), 4, \
+                    js_new_string(cast[Ptr[uint8]]("click"), 5))
+        js_set_prop(cev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(1))
+        if _obj_dispatch(cre_obj[cid], cast[Ptr[uint8]]("click"), 5, cev, 1) == 0:
+            return 0
+        _after_event_settle()
+        return 1
+    if idx >= dom_n:
         return 0
     # a real click routes through the same bubbling dispatch core as
     # el.dispatchEvent(), so ancestor click listeners fire.
@@ -6080,13 +6279,42 @@ def he_dom_click(idp: Ptr[uint8], idn: int32) -> int32:
     # captured before dispatch.
     if js_ctx_live == 0:
         return 0
-    return he_dom_click_index(_lookup_or_register(idp, idn))
+    return he_dom_click_index(he_dom_evt_index(idp, idn))
 
 
-# Does the DOM element at `idx` carry a click handler?
+# Resolve an element id to an EVENT-TARGET index: a source-anchored element's
+# dom index, or CRE_IDX_BASE + cre id for a node script built after load
+# (createElement/appendChild, innerHTML, a framework re-render). Returns -1 when
+# the id names nothing. The source registry is consulted first so an id that
+# exists in the markup keeps its source identity.
+def he_dom_evt_index(idp: Ptr[uint8], idn: int32) -> int32:
+    if js_ctx_live == 0:
+        return -1
+    e: int32 = _lookup_or_register(idp, idn)
+    if e >= 0:
+        return e
+    co: int32 = _cre_find_by_id(idp, idn)
+    if co < 0:
+        return -1
+    cid: int32 = _find_cre_by_obj(co)
+    if cid < 0:
+        return -1
+    return CRE_IDX_BASE + cid
+
+
+# Does the DOM element at `idx` carry a click handler? Either an attribute-slot
+# handler (inline onclick="" / el.onclick = fn) OR a live addEventListener
+# registration — the latter lives in the evl_ table, never in the attribute slot,
+# so checking only the slot left every addEventListener-only element out of the
+# pointer-clickable set.
 def _el_has_handler(idx: int32) -> int32:
     if dom_onclick_fn[idx] >= 0 or dom_onclick_src[idx] >= 0:
         return 1
+    li: int32 = 0
+    while li < evl_n:
+        if evl_dead[li] == 0 and evl_el[li] == idx and evl_kind[li] == 0:
+            return 1
+        li = li + 1
     return 0
 
 

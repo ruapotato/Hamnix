@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><title>livedomclick</title></head><body>
+<!-- POINTER path for a JS-CREATED node: the only control on this page is built
+     by script after load, so a coordinate hit-test can only reach it if the
+     event-target index space covers created nodes (CRE_IDX_BASE). -->
+<div id="host"></div>
+<div id="log">LOGIDLE</div>
+<script>
+var b = document.createElement('button');
+b.id = 'dynbtn';
+b.textContent = 'press';
+b.addEventListener('click', function () {
+  document.getElementById('log').textContent = 'DYNCLICKED';
+});
+document.getElementById('host').appendChild(b);
+</script>
+</body></html>

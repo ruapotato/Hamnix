@@ -37,7 +37,7 @@ from lib.htmlengine import he_layout, he_n_images, he_img_name_ptr, \
     he_set_scroll_rows, he_seg_field, he_seg_appear, he_seg_ctrlrows, \
     he_seg_btnrad, he_seg_btnbord, he_set_click_links, he_link_evt_index, \
     he_dom_is_textfield, he_dom_is_submit, he_dom_set_value_index, \
-    he_dom_get_value
+    he_dom_get_value, he_dom_click_index
 from lib.jsengine import js_set_drain
 from lib.htmlpaint import htmlpaint_load_face, htmlpaint_width, \
     htmlpaint_height, htmlpaint_fb_ptr, htmlpaint_fb_bytes, htmlpaint_pixel, \
@@ -851,6 +851,18 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 while kk2 < fl:
                     _o_ch(fld[kk2])
                     kk2 = kk2 + 1
+                _o_ch(10)
+                _o_flush()
+            elif el >= 0:
+                # Not a typing target: the pointer hit resolved to a CLICK
+                # target (a parsed element OR — via the CRE_IDX_BASE half of the
+                # event-target index space — a node script created after load).
+                # Same call user/hambrowse.ad makes on a real pointer press, so
+                # this gate exercises the true coordinate->handler chain.
+                _o_str(cast[Ptr[uint8]]("CLICKED el "))
+                _o_dec(cast[int64](el))
+                _o_str(cast[Ptr[uint8]](" ran "))
+                _o_dec(cast[int64](he_dom_click_index(el)))
                 _o_ch(10)
                 _o_flush()
             acted = 1

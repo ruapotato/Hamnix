@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><title>livedom</title></head><body>
+<!-- LIVE-DOM interaction: every clickable thing on this page is built by
+     JavaScript AFTER load, the way a framework's reconciler builds a view.
+     A click must reach it exactly as it reaches parsed markup. -->
+<div id="host"></div>
+<div id="deleg"></div>
+<div id="app"></div>
+<div id="log">LOG-IDLE</div>
+<script>
+var log = [];
+function say(s) { log.push(s); document.getElementById('log').textContent = log.join(' | '); }
+
+// (a) createElement + appendChild, listener via addEventListener
+var b = document.createElement('button');
+b.id = 'dynbtn';
+b.textContent = 'dyn';
+b.addEventListener('click', function () { say('DYN-FIRED'); });
+document.getElementById('host').appendChild(b);
+
+// (b) a created element NESTED inside another created element, el.onclick
+var wrap = document.createElement('div');
+wrap.id = 'nest';
+var inner = document.createElement('button');
+inner.id = 'nestbtn';
+inner.textContent = 'nest';
+inner.onclick = function () { say('NEST-FIRED'); };
+wrap.appendChild(inner);
+document.body.appendChild(wrap);
+
+// (c) DELEGATION: the listener sits on a STATIC container, the target is a
+// node built later. e.target must be the dynamic child, not the container.
+document.getElementById('deleg').addEventListener('click', function (e) {
+  say('DELEG-FIRED:' + (e.target && e.target.id));
+});
+document.getElementById('deleg').innerHTML = '<button id="kid">kid</button>';
+
+// (d) DOCUMENT-level delegation — the other dominant real-page idiom.
+document.addEventListener('click', function (e) {
+  say('DOC-DELEG:' + (e.target && e.target.id));
+});
+
+// (e) a mini-React: state + a full re-render from JS on every click. The
+// button that advances the counter is destroyed and rebuilt each time, so a
+// click can only work if dispatch resolves the CURRENT dynamic node.
+var count = 0;
+function render() {
+  var app = document.getElementById('app');
+  app.innerHTML = '';
+  var btn = document.createElement('button');
+  btn.id = 'inc';
+  btn.textContent = 'Count: ' + count;
+  btn.addEventListener('click', function () { count++; render(); say('REACT-STATE=' + count); });
+  app.appendChild(btn);
+}
+render();
+</script>
+</body></html>
