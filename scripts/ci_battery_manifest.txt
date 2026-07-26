@@ -394,6 +394,26 @@ bash scripts/test_adder_own_move.sh
 # silent and still runs, ADDER_SEMA=0 bypasses, and codegen is byte-identical
 # with the checker on and off. Host-only (no QEMU).
 bash scripts/test_adder_sema.sh
+# ONE SYMBOL, ONE SIGNATURE — the blind spot behind ad33523f. `sys_open` was
+# declared 1-arg by the device runtime and 3-arg by linux-runtime.S; every
+# *_host.ad harness pulled in both, merge_programs kept one and silently
+# dropped the other, and lib/hamtextbox's clipboard read called the 3-arg
+# thunk with only %rdi set (garbage flags/mode into open(2)). The whole-tree
+# sema_scan could not see it: it DROPPED the 299 public names two modules
+# declare incompatibly, which is the bug itself. This gate is the cheap
+# (~40 s, no QEMU) half of the fix — a whole-tree signature-conflict detector
+# diffed against scripts/sema_conflicts_baseline.txt, so a NEW conflicting
+# declaration, or a baselined landmine that starts co-occurring in a real
+# link unit, fails the build. Has teeth: reconstructs the sys_open shape and
+# a fresh conflicting name and asserts both are caught.
+bash scripts/test_sema_signature_conflicts.sh
+# ... and the SOUND half: the full per-entry-point sweep. Resolves all ~570
+# `def main` modules through the real collect_all_imports -> merge_programs
+# path and type-checks each link unit separately, so a symbol is checked with
+# the signature its own program sees. ~3 min at 12-way parallelism, host-only
+# (no QEMU) — separated from the line above so the cheap detector still gates
+# every push if this one has to be shard-balanced away.
+bash scripts/test_sema_signature_conflicts.sh --full
 # App-ergonomics sugar (roadmap item 7): DEFAULT PARAMETER VALUES + KEYWORD
 # ARGUMENTS. A direct call to an in-unit `def` may omit trailing args (filled
 # from the parameter's declared default) and/or pass args by name; both desugar
