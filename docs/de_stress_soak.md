@@ -44,7 +44,8 @@ plus the live window table from `/dev/wsys/windows`):
 
 It also fails on the ways a desktop dies that are not leaks: a launch that maps
 no window, `newwindow: table full`, `create_user_task: no free task slot`, a
-`code=143` exit of a pid the gate did **not** kill, kernel `PANIC`/`TRAP`/`BUG`
+`code=143` exit the gate cannot **attribute** to a note it posted (see
+"SIGTERM accounting" below), kernel `PANIC`/`TRAP`/`BUG`
 /OOM markers, and a missed serial round-trip (the box wedged).
 
 ## Running it
@@ -77,16 +78,16 @@ hamsh over a serial FIFO for a long time.
 1. **`code=143` is not a failure when you are the one sending the note.**
    The gate closes apps with `/bin/kill <pid>`, i.e. the Plan 9 terminate
    note, and 143 *is* that note's normal exit status. A raw `code=143` counter
-   is therefore 100% false positives — it fired on cycle 1. The gate now
-   counts terminate notes *issued* against `code=143` exits *observed* and
-   fails only on the excess. Note that a **pid set** would have been the wrong
-   fix: pids recycle over a 30-minute soak, so a genuine unexpected 143 from a
-   recycled number would be masked.
+   is therefore 100% false positives — it fired on cycle 1. The first fix
+   counted notes *issued* against 143s *observed* and failed on the excess.
+   **That fix was itself wrong**, and was replaced — see "SIGTERM accounting"
+   below.
 
-2. **Waiting for an exit by grep *presence* is broken by pid recycling.**
-   `grep -q "task: pid $pid exited"` matches the exit of the *previous* holder
-   of that pid number and returns instantly, so a process that never died
-   looks closed. The gate compares occurrence *counts* before and after.
+2. **Waiting for an exit by grep *presence*.** `grep -q "task: pid $pid
+   exited"` can match an older line, so the gate compares occurrence *counts*
+   before and after rather than testing presence. (The original rationale
+   given here — "pid recycling" — was wrong; see below. Counting is still the
+   right shape, it is just cheap insurance rather than a necessity.)
 
 3. **hamsh's command echo contains your markers before the command runs.**
    hamsh echoes the line it is being fed one character at a time, redrawing
@@ -97,6 +98,86 @@ hamsh over a serial FIFO for a long time.
    finds that echo first and captures an empty region, silently parsing zero
    fields out of every sample. Markers must be anchored with `^...$` under
    `re.M` (and `\r` normalised first).
+
+## SIGTERM accounting: the "spurious SIGTERM" that never was
+
+A 61-cycle / 244-launch soak at `9263715b` reported, twice:
+
+```
+[soak] FAIL cycle 59: 262 code=143 exits but only 261 terminate notes issued —
+       something we did NOT kill took a SIGTERM: task: pid 794 exited (code=143)
+```
+
+That reads like processes being killed at random. **It was a gate bug**, and
+the raw serial log proves it exactly:
+
+| | |
+|---|---|
+| `/bin/kill <pid>` commands issued | 244 |
+| `exited (code=143)` lines | 271 |
+| surplus | **27** |
+
+Every one of the 27 surplus 143s satisfies all of:
+
+* it immediately follows a kill whose target was **`hamtermscene`** (27 of the
+  244 launches were hamtermscene — the app pool has 9 entries);
+* its pid is the kill target's pid **+ 1**;
+* its pid **never mapped a window**, so it was never a launch of ours.
+
+It is hamtermscene's inner `/bin/hamsh`, and killing it is *the whole point*:
+`/bin/kill` goes through `lib/p9.ad`'s **`p9_note_tree()`**, which notes a pid
+**and its attached descendants** precisely so a closed terminal does not
+strand a live shell (that leak is documented further down this file). One note
+issued, two processes correctly terminated. The old "one note ⇒ exactly one
+143" invariant was invalidated by the very fix that closed the leak, so it
+cried wolf once per hamtermscene close — and because it re-baselined its
+counter on each report, it also *masked* everything in between.
+
+There was **no** spurious kill: pid 794 was killed by `/bin/kill 794` on the
+line directly above it in the log. The named pids resolve as:
+
+```
+hamsh$ /bin/kill 794
+[runtime:kill] _start
+[023946] task: pid 800 exited (code=0)      <- the /bin/kill process itself
+[023947] task: pid 794 exited (code=143)    <- the app we asked to close
+```
+
+### The "pids recycle" premise was false
+
+Both the old check and defect 2 above justified themselves with pid recycling.
+HamnixOS pids **do not recycle**: `kernel/sched/core.ad` stamps every task from
+a monotonically increasing `next_pid` (`uint64`) that is set to 1 once at boot
+and only ever incremented. Task *slots* are reused; pid *numbers* are not. A
+pid therefore identifies one process for the whole life of the boot.
+
+Two consequences:
+
+* set-based accounting is **sound**, which is what the gate now does;
+* **`p9_note_tree` cannot mis-target via a stale ppid.** Its descendant walk
+  matches `/proc/<n>/stat`'s ppid field against the target pid, and a dead
+  parent's pid is never reissued, so a stale ppid on an orphan can never come
+  to alias a live, unrelated process.
+
+### What the gate checks now
+
+Per cycle, immediately before the close loop (the only moment the descendant
+cohort is knowable, since it is about to be killed):
+
+1. read `/proc/tasks` for the live pid set (one command);
+2. `cat /proc/<p>/stat` for the non-system pids to record `pid -> ppid` (one
+   command; ~5 files, so the guest's per-keystroke line redraw stays cheap).
+
+Then a `code=143` exit is **attributable** iff its pid is a pid we handed to
+`/bin/kill`, or is reachable downward through the accumulated parent map from
+one that was — the same closure `p9_note_tree` walks. Anything else fails the
+cycle by pid, not by count.
+
+Layered on top, and the assertion that actually matters: the **SYSTEM cohort**
+— every pid alive before the first app launch (`hamUId`, `hamdesktop`,
+`hampanel`, the driving `hamsh`, `init`) — is snapshotted at soak start and
+must never take a note at all. "A process nobody asked to kill got SIGTERMed"
+is now a direct, named assertion instead of an inference from two totals.
 
 ## The kernel bug the soak found on its first two cycles
 

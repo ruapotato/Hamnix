@@ -678,6 +678,24 @@ def p9_listdir(path: Ptr[char], buf: Ptr[uint8], count: uint64) -> int64:
 # too; the kernel's reap_orphan_zombies (kernel/sched/core.ad) reclaims
 # an orphaned zombie at the next task allocation, which is what returns
 # TasksLive / VmaNodesLive / PagesInUse to baseline.
+#
+# WHY A STALE ppid CANNOT MAKE THIS WALK KILL A STRANGER
+#
+# The obvious hazard in matching on a ppid NUMBER is aliasing: nothing
+# clears parent_pid when a parent exits (only rfork(RFNOWAIT) / detach
+# does, sysproc.ad), so an orphan keeps pointing at a dead pid. If pids
+# were reused, that dead number would eventually be reissued to an
+# unrelated app and closing it would drag the stale orphan down with it.
+#
+# It cannot happen here: kernel/sched/core.ad allocates every task from a
+# monotonically increasing next_pid (uint64), set to 1 once at boot and
+# only ever incremented. Task SLOTS are recycled; pid NUMBERS never are.
+# A dead parent's pid is therefore never handed out again, so p9_ppid(v)
+# == pid holds only for v's true parent. This was checked against a
+# 61-cycle desktop soak (docs/de_stress_soak.md): 244 notes produced 271
+# terminations, and all 27 extras were the intended attached shells of
+# hamtermscene — zero mis-targeted processes. Anything that ever makes
+# pids wrap or be reused MUST add a start-time/generation check here.
 _P9_TREE_MAX: uint64 = 64
 _p9_tree_kids:  Array[64, int32]
 _p9_tree_dir:   Array[4096, uint8]

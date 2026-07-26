@@ -46,7 +46,9 @@
 #   * a launch that maps no window            (DE can no longer open apps)
 #   * "newwindow: table full"                 (wid-slot exhaustion)
 #   * "create_user_task: no free task slot"   (pid-slot exhaustion)
-#   * an unexpected `exited (code=143)`       (something SIGTERMed itself)
+#   * an UNATTRIBUTABLE `exited (code=143)`   (a process nothing noted took a
+#                                              SIGTERM — see the accounting
+#                                              block further down)
 #   * kernel PANIC / TRAP / BUG / OOM markers
 #   * a missed serial round-trip              (the box wedged)
 #
@@ -208,22 +210,163 @@ sample() {
     return 1
 }
 
-# Unexpected-SIGTERM watch. We close apps with the Plan 9 terminate note, and
-# code=143 IS that note's normal exit status — so a raw `code=143` count is
-# 100% false positives here (it fired on cycle 1 of the first run).
+# ======================================================================
+# UNEXPECTED-SIGTERM WATCH — pid ATTRIBUTION, not a count
+# ======================================================================
+# We close apps with the Plan 9 terminate note and code=143 IS that note's
+# normal exit status, so a raw `code=143` count is 100% false positives here.
 #
-# Accounting by PID SET would be wrong over a soak: pids RECYCLE, so a pid we
-# killed in cycle 1 is a different process by cycle 40 and a genuine
-# unexpected 143 from a recycled number would be masked. Count instead: every
-# terminate note we issue is entitled to exactly one 143, so a total 143 count
-# ABOVE the number of notes we sent means something else took a SIGTERM.
-kills_issued=0
-count_143() { grep -ac "exited (code=143)" "$LOG"; }
+# THE COUNT-BASED CHECK THAT USED TO LIVE HERE WAS WRONG (2026-07-25).
+# It asserted "every terminate note we issue is entitled to exactly ONE 143,
+# so total143 > notes_issued means something else took a SIGTERM". That
+# invariant died the day /bin/kill started going through lib/p9.ad's
+# p9_note_tree(), which notes a pid AND ITS ATTACHED DESCENDANTS. One note to
+# hamtermscene legitimately produces TWO 143s: the scene AND the
+# /bin/hamsh it spawned for its terminal. The old check therefore cried wolf
+# once per hamtermscene close (27 times in a 61-cycle run) and, worse,
+# re-baselined itself each time — so it ALSO masked real events in between.
+#
+# THE PREMISE OF THE OLD COMMENT WAS ALSO FALSE. It claimed a pid SET can't
+# work because "pids RECYCLE". They do not: kernel/sched/core.ad allocates
+# from a monotonically increasing `next_pid` (uint64) and NEVER reuses a
+# number. A pid identifies a process for the whole life of the boot, which is
+# exactly what makes set-based attribution sound — and it is also why
+# p9_note_tree's ppid match cannot alias a recycled parent.
+#
+# WHAT WE CHECK INSTEAD: every code=143 exit must be ATTRIBUTABLE, i.e. its
+# pid is either (i) a pid we handed to /bin/kill, or (ii) a descendant of one
+# via the parent map we snapshot from /proc immediately before each close
+# loop. Anything else is a process nobody noted taking a SIGTERM. On top of
+# that, the SYSTEM cohort — every pid alive before the first app launch
+# (hamUId, hamdesktop, hampanel, the driving hamsh, init...) — must never
+# take a note at all; that is the failure mode this gate actually exists to
+# catch, and it is now asserted directly.
+KILLED_F="$OUT_DIR/killed_pids.txt"    # every pid we handed to /bin/kill
+PARENT_F="$OUT_DIR/parent_map.txt"     # "<pid> <ppid>", accumulated
+SYSPIDS_F="$OUT_DIR/system_pids.txt"   # pids alive before the first launch
+: > "$KILLED_F"; : > "$PARENT_F"; : > "$SYSPIDS_F"
+
+# guest_capture <shell-command> — run a SHORT command in the guest and echo
+# its output. The command is bracketed by unique markers.
+#
+# The READINESS TEST IS THE EXTRACTION ITSELF, not a grep for the closing
+# marker. hamsh redraws the whole command line after every keystroke, so the
+# log holds a line containing BOTH markers before the command has even run —
+# an unanchored `grep -q MARKER_E` therefore succeeds INSTANTLY, on the echo,
+# and we would parse a region that does not exist yet. (This is the same trap
+# the summary parser documents; it bites twice as hard here because the
+# result is consumed immediately rather than after the run.) So: poll the
+# ^-anchored two-marker match and only stop when it yields a real region.
+# Commands must stay short — every character costs a redrawn log line.
+#
+# The marker serial lives in a FILE, not a shell variable. This function is
+# called from command substitution (`x=$(guest_live_pids)`), which runs it in
+# a SUBSHELL — a `cap_n=$((cap_n+1))` would be discarded on return, every
+# capture would reuse marker 1, and the non-greedy `_B(.*?)_E` match would
+# hand back the FIRST such region in the log forever. That is not
+# hypothetical: it silently pinned every cycle's process listing to the
+# pre-launch baseline, so no app pid was ever seen and every descendant
+# looked unattributed.
+CAPN_F="$OUT_DIR/.capture_serial"
+echo 0 > "$CAPN_F"
+guest_capture() {
+    local n
+    n=$(( $(cat "$CAPN_F") + 1 ))
+    echo "$n" > "$CAPN_F"
+    local m="SOAKCAP${n}" out d
+    printf 'echo %s_B; %s; echo %s_E\n' "$m" "$1" "$m" >&3
+    d=$(( SECONDS + 30 ))
+    while [ "$SECONDS" -lt "$d" ]; do
+        if out=$(python3 - "$LOG" "$m" <<'PY'
+import re, sys
+t = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').replace('\r', '\n')
+m = re.search(r'^%s_B\s*$(.*?)^%s_E\s*$' % (sys.argv[2], sys.argv[2]),
+              t, re.S | re.M)
+if m is None or not m.group(1).strip():
+    sys.exit(1)
+sys.stdout.write(m.group(1))
+PY
+        ); then
+            printf '%s' "$out"
+            return 0
+        fi
+        kill -0 "$QEMU_PID" 2>/dev/null || return 1
+        sleep 1
+    done
+    echo "$TAG WARN: guest capture $m timed out ($1)" >&2
+    return 1
+}
+
+# guest_live_pids — the live pid set, one read of /proc/tasks
+# ("PID\tSTATE\tCOMM\tUTIME\tSTIME", fs/procfs.ad::render_tasks).
+guest_live_pids() {
+    guest_capture "cat /proc/tasks" \
+        | awk -F'\t' '$1 ~ /^[0-9]+$/ { print $1 }' | sort -un | tr '\n' ' '
+}
+
+# snapshot_parents <pids...> — append "<pid> <ppid>" to PARENT_F for each
+# given pid, from ONE `cat /proc/<p>/stat ...`. /proc/<pid>/stat is the
+# Linux-shape one-liner devproc renders: "pid (comm) state ppid ...", and
+# comm can hold spaces and parens, so ppid is found past the LAST ')'.
+snapshot_parents() {
+    local args="" p
+    for p in "$@"; do args="$args /proc/$p/stat"; done
+    [ -n "$args" ] || return 0
+    guest_capture "cat$args" | python3 -c '
+import re, sys
+for l in sys.stdin.read().split("\n"):
+    l = l.strip()
+    if not re.match(r"^\d+ \(", l):
+        continue
+    r = l.rfind(")")
+    f = l[r + 1:].split()
+    if len(f) >= 2 and f[1].isdigit():
+        print(l.split()[0], f[1])
+' >> "$PARENT_F"
+}
+
+# audit_143 <cycle> — every code=143 exit in the log so far must be
+# attributable to a note WE posted (directly or through p9_note_tree's
+# descendant walk). Prints the offending pids; empty output means sound.
+audit_143() {
+    python3 - "$LOG" "$KILLED_F" "$PARENT_F" "$SYSPIDS_F" <<'PY'
+import re, sys
+log, killed_f, parent_f, sys_f = sys.argv[1:5]
+text = open(log, 'rb').read().decode('utf-8', 'replace').replace('\r', '\n')
+# NOT ^-anchored: an exit line can be emitted mid-prompt ("hamsh$ task: pid
+# 121 exited (code=143)"), and dropping those would hide real events.
+got = [int(m.group(1)) for m in
+       re.finditer(r'task: pid (\d+) exited \(code=143\)', text)]
+killed = {int(x) for x in open(killed_f).read().split()}
+syspids = {int(x) for x in open(sys_f).read().split()}
+parent = {}
+for line in open(parent_f):
+    p = line.split()
+    if len(p) == 2:
+        parent[int(p[0])] = int(p[1])
+# Attributable = killed, closed transitively downwards through the parent
+# map (a child of an attributable pid is attributable: that is exactly what
+# p9_note_tree walks).
+ok = set(killed)
+changed = True
+while changed:
+    changed = False
+    for c, pp in parent.items():
+        if c not in ok and pp in ok:
+            ok.add(c)
+            changed = True
+bad = sorted({p for p in got if p not in ok})
+sysbad = sorted({p for p in got if p in syspids})
+if sysbad:
+    print("SYSTEM " + " ".join(str(x) for x in sysbad))
+if bad:
+    print("UNATTRIBUTED " + " ".join(str(x) for x in bad))
+PY
+}
 
 # wait_exit <pid> <timeout> — wait for a NEW "task: pid <pid> exited" line.
-# Presence alone is not enough for the same pid-recycling reason: `grep -q`
-# would match the exit of the PREVIOUS holder of this pid number and return
-# instantly, so a process that never died would look closed. Compare counts.
+# Counts rather than greps for presence: cheap insurance against a stale
+# match, and it costs nothing.
 wait_exit() {
     local pid="$1" base="$2" deadline=$(( SECONDS + $3 ))
     while [ "$SECONDS" -lt "$deadline" ]; do
@@ -247,6 +390,15 @@ APP_ARGS_hambrowse="--demo"
 
 snapshot 000_idle
 sample c0closed || say_fail "baseline sample timed out"
+
+# The SYSTEM cohort: everything alive before a single app has been launched.
+# None of these may ever take a terminate note.
+guest_live_pids | tr ' ' '\n' | grep -E '^[0-9]+$' > "$SYSPIDS_F"
+if [ ! -s "$SYSPIDS_F" ]; then
+    say_fail "could not read /proc/tasks — the SIGTERM audit would be blind"
+else
+    echo "$TAG system pids (never noteable): $(tr '\n' ' ' < "$SYSPIDS_F")"
+fi
 
 DEADLINE=$(( SECONDS + SOAK_MINUTES * 60 ))
 c=0
@@ -296,10 +448,24 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
     sample "c${c}open" || say_fail "cycle $c: OPEN sample timed out"
     [ $(( c % SNAP_EVERY )) -eq 0 ] && snapshot "c${c}_open"
 
+    # ---- snapshot parentage BEFORE closing ---------------------------
+    # p9_note_tree walks /proc for ppid == target, so the only moment the
+    # descendant cohort is knowable is while the apps are still alive. Only
+    # the NON-system pids are interesting (everything else predates the
+    # first launch and can never be a legitimate note target), which keeps
+    # this to one short `cat` of ~5 stat files.
+    new_pids=$(guest_live_pids | tr ' ' '\n' | grep -E '^[0-9]+$' \
+               | grep -vxF -f "$SYSPIDS_F" | tr '\n' ' ')
+    if [ -z "$new_pids" ]; then
+        say_fail "cycle $c: /proc/tasks showed no non-system pids while ${APPS_PER_CYCLE} apps are open — the SIGTERM audit is blind this cycle"
+    fi
+    # shellcheck disable=SC2086
+    snapshot_parents $new_pids
+
     # ---- close a bunch of apps ---------------------------------------
     for pid in $open_pids; do
         exit_base=$(grep -ac "task: pid $pid exited" "$LOG")
-        kills_issued=$((kills_issued+1))
+        echo "$pid" >> "$KILLED_F"
         printf '/bin/kill %s\n' "$pid" >&3
         if ! wait_exit "$pid" "$exit_base" 20; then
             say_fail "cycle $c: pid $pid survived the terminate note for 20s"
@@ -316,10 +482,22 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
     sample "c${c}closed" || say_fail "cycle $c: CLOSED sample timed out"
 
     # ---- per-cycle health --------------------------------------------
-    n143=$(count_143)
-    if [ "$n143" -gt "$kills_issued" ]; then
-        say_fail "cycle $c: $n143 code=143 exits but only $kills_issued terminate notes issued — something we did NOT kill took a SIGTERM: $(grep -a 'exited (code=143)' "$LOG" | tail -1)"
-        kills_issued=$n143      # re-baseline so one event is reported once
+    audit=$(audit_143)
+    if [ -n "$audit" ]; then
+        while IFS= read -r a; do
+            case "$a" in
+              SYSTEM*)
+                say_fail "cycle $c: a SYSTEM process took a terminate note — ${a#SYSTEM } (nothing may note the DE/shell cohort)"
+                stop=1 ;;
+              UNATTRIBUTED*)
+                # NOT fatal to the run: fail=1 is already set, and letting
+                # the soak continue still yields the leak series.
+                say_fail "cycle $c: code=143 exit(s) attributable to NO note we posted (not a kill target, not a descendant of one): ${a#UNATTRIBUTED }" ;;
+            esac
+        done <<< "$audit"
+        # Retire the offenders into the killed set so one event is reported
+        # exactly once instead of on every remaining cycle.
+        printf '%s\n' "$audit" | sed 's/^[A-Z]* //' | tr ' ' '\n' >> "$KILLED_F"
     fi
     assert_alive "cycle_$c" || stop=1
     if grep -aq "newwindow: table full" "$LOG"; then
@@ -520,7 +698,8 @@ echo "$TAG --------------------------------------------------------------"
 echo "$TAG cycles run     : $CYCLES_RUN over ${SOAK_SECONDS}s"
 echo "$TAG apps launched  : $launched_total   closed: $closed_total"
 echo "$TAG windows mapped : $(mapped_count)"
-echo "$TAG code=143 exits : $(grep -ac 'exited (code=143)' "$LOG")"
+echo "$TAG code=143 exits : $(grep -ao 'exited (code=143)' "$LOG" | wc -l) (notes posted: $(wc -l < "$KILLED_F"); the surplus is p9_note_tree's attached descendants)"
+echo "$TAG SIGTERM audit  : $(a=$(audit_143); [ -z "$a" ] && echo 'CLEAN — every code=143 attributable to a note we posted' || echo "$a")"
 echo "$TAG table-full hits: $(grep -ac 'newwindow: table full' "$LOG")"
 echo "$TAG artifacts      : $OUT_DIR"
 grep -q "VERDICT: LEAK" "$SUMMARY" && fail=1
