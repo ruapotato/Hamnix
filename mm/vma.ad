@@ -84,6 +84,7 @@ from kernel.sched.core import (
     task_is_linux_userspace_at, task_last_syscall_jiffies,
     task_wd_last_dump_jiffies, set_task_wd_last_dump_jiffies,
     task_image_lo, task_image_hi, task_interp_lo, task_interp_hi,
+    task_phys_in_live_owner_run,
     task_ustack_lo, task_ustack_sz,
     dump_linux_task_states, call_linux_futex_dump, task_last_syscall_nr,
     linux_group_status, dump_linux_group_full, linux_max_thread_group,
@@ -109,7 +110,7 @@ from kernel.rcu.rcu import (
 )
 from arch.x86.kernel.setup_percpu import get_cpu_id
 from mm.slab import kmalloc, kfree
-from mm.page_alloc import alloc_pages, alloc_page, free_pages, free_page, _pa_link_ok
+from mm.page_alloc import alloc_pages, alloc_page, free_pages, free_page, _pa_link_ok, page_alloc_owns
 from mm.cow import cow_drop_page, cow_pte_bit, cow_boot_cr3, \
     cow_ref_inc, cow_refcount
 from mm.swap import (
@@ -1736,6 +1737,17 @@ def _vma_free_cow_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
         vaddr = vaddr + VMA_PAGE_SIZE
 
 
+# Frames reclaimed by _cow_release_forked_range: a fork child's own
+# post-fork COW copies, returned at its execve / reap instead of leaking.
+# Exposed through /proc/meminfo (CowPrivReclaimed) so the desktop soak can
+# see the reclaim happening rather than inferring it from a slope.
+_cow_priv_reclaimed: uint64 = 0
+
+
+def cow_priv_reclaimed_total() -> uint64:
+    return _cow_priv_reclaimed
+
+
 def _cow_release_forked_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
     # Release a FORK CHILD's COW-share of a span that is OWNED by the
     # PARENT: the region-backed ELF image / PT_INTERP, or the parent's
@@ -1817,8 +1829,100 @@ def _cow_release_forked_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
                 # dirtied between fork and exec leaks until reboot — the
                 # SAME bounded leak the pre-dfd59371 rfork path already had
                 # (it skipped this teardown entirely), never a UAF.
-                cow_drop_page(phys)
+                #
+                # THAT RESIDUAL LEAK IS THE ONE FIXED HERE — and it was not
+                # bounded. Every DE app launch is rfork+execve: the child
+                # dirties a handful of stack/.data pages between the two, each
+                # write COW-copies to a fresh alloc_page() frame, and this
+                # walk zapped the PTE and dropped the count without ever
+                # returning the frame. Once the PTE is gone no later walk
+                # (_free_task_user_pagetables, vma_clear, task_reap) can find
+                # it, so ~6 order-0 pages went missing per launch, forever —
+                # the residual "+26 pages/cycle" the 30-minute desktop soak
+                # measured after the region-pool leak was fixed.
+                #
+                # The old comment's premise ("no forge-proof way to tell a
+                # child-private copy from an owner frame") was true only
+                # because the copy was born UNTRACKED, sharing refcount 0 with
+                # every owner frame. cow_resolve_pte now cow_ref_inc()s the
+                # copy at birth (fs/elf.ad), so the two states are distinct
+                # and the test is exact:
+                #
+                #   refcount 0  -> untracked OWNER frame (region-backed image
+                #                  .text, or a stack frame cow_resolve_pte's
+                #                  sole-owner branch took over in place).
+                #                  DROP ONLY. Freeing one is dfd59371's
+                #                  code=139.
+                #   refcount 1  -> this task is the only tracked holder: its
+                #                  own post-fork COW copy. FREE IT.
+                #   refcount >1 -> a live relative still maps it. DROP ONLY.
+                #
+                # page_alloc_owns() is the second, independent lock: it is
+                # exact about which allocator owns the frame (a per-PFN bit
+                # set when RAM enters the buddy pool), where the old
+                # _pa_link_ok bounds test could not separate the buddy pool
+                # from the region pool at all. Both must agree before a frame
+                # is returned, so a mis-set refcount alone can never push a
+                # region frame onto a buddy free list.
+                rc: uint64 = cow_refcount(phys)
+                last: int32 = cow_drop_page(phys)
+                if last != 0 and rc == 1 and page_alloc_owns(phys) != 0 \
+                        and task_phys_in_live_owner_run(phys) == 0:
+                    free_page(phys)
+                    _cow_priv_reclaimed = _cow_priv_reclaimed + 1
         vaddr = vaddr + VMA_PAGE_SIZE
+
+
+def vma_free_cow_strays(slot: uint64, vlo: uint64, vhi: uint64,
+                        own_lo: uint64, own_hi: uint64) -> uint64:
+    # Reclaim COW COPIES that displaced a PTE inside one of `slot`'s OWNER
+    # spans (its ELF image, its PT_INTERP, its eager user-stack prefix).
+    #
+    # WHY THE OWNER LEAKS TOO. task_reap returns an owner span WHOLESALE, by
+    # PHYSICAL base: region_free_cow_safe(image_phys, sz) and
+    # free_pages(ustack_phys, order). That is correct for the frames the
+    # loader installed — but a task that fork()ed and then WROTE to one of
+    # those pages no longer maps the original frame there. cow_resolve_pte
+    # repointed the PTE at a fresh alloc_page() copy, and the wholesale free
+    # of the owner RUN cannot see it: the copy is not inside the run, and no
+    # VmaNode covers an owner span. So every page an app dirties after
+    # fork()ing leaked one frame at its exit, forever.
+    #
+    # The walk therefore frees a frame only when ALL of:
+    #   * its PTE is present and the frame lies OUTSIDE [own_lo, own_hi) —
+    #     i.e. it is NOT part of the run about to be freed wholesale, so this
+    #     can never double-free with the caller's own reclaim;
+    #   * its COW refcount is EXACTLY 1 — a tracked frame with a single
+    #     holder, which is this dying task. refcount 0 (an untracked demand /
+    #     already-reclaimed frame — vma_clear's demand arm frees without
+    #     clearing the PTE, so stale present PTEs DO occur here) and
+    #     refcount > 1 (a live relative still maps it) are both left alone;
+    #   * page_alloc_owns() confirms the buddy allocator, not the region
+    #     pool, owns the frame.
+    # The PTE is zapped before the free so no later teardown walk can
+    # resurrect it.
+    if vhi <= vlo:
+        return 0
+    pml4: uint64 = task_pml4(cast[int32](slot))
+    if pml4 == 0:
+        return 0
+    n: uint64 = 0
+    va: uint64 = vlo
+    while va < vhi:
+        pte: uint64 = _vma_pte_raw_read(pml4, va)
+        if (pte & VMA_PT_FLAG_P) != 0:
+            phys: uint64 = pte & VMA_PT_ADDR_MASK
+            if phys != 0 and (phys < own_lo or phys >= own_hi):
+                if cow_refcount(phys) == 1 and page_alloc_owns(phys) != 0 \
+                        and task_phys_in_live_owner_run(phys) == 0:
+                    _vma_pte_raw_write(pml4, va, 0)
+                    invlpg_one(va)
+                    cow_drop_page(phys)
+                    free_page(phys)
+                    n = n + 1
+                    _cow_priv_reclaimed = _cow_priv_reclaimed + 1
+        va = va + VMA_PAGE_SIZE
+    return n
 
 
 def vma_release_forked_range(slot: uint64, vlo: uint64, vhi: uint64):

@@ -41,7 +41,10 @@ from mm.page_alloc import (
     region_quarantine_bytes, region_recovered_bytes,
 )
 from mm.slab import kmalloc_live_objects, kmalloc_live_slabs
-from mm.vma import vma_nodes_live, vma_hugepages_total, vma_hugepages_live
+from mm.vma import (
+    vma_nodes_live, vma_hugepages_total, vma_hugepages_live,
+    cow_priv_reclaimed_total,
+)
 from kernel.sched.core import (
     tasks_spawned_total, tasks_reaped_total, tasks_live_count,
 )
@@ -217,6 +220,13 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     pos = _emit_kb_line(out, pos, "RegionLeaked:   ", region_leaked_bytes())
     pos = _emit_kb_line(out, pos, "RegionQuarantine: ", region_quarantine_bytes())
     pos = _emit_kb_line(out, pos, "RegionRecovered: ", region_recovered_bytes())
+
+    # Frames a fork child's execve/reap teardown returned to the buddy
+    # allocator because they were its OWN post-fork COW copies
+    # (mm/vma.ad::_cow_release_forked_range). Before that reclaim existed
+    # every one of these leaked until reboot — ~6 pages per app launch on
+    # the desktop. A rising counter here is the fix working, not a leak.
+    pos = _emit_count_line(out, pos, "CowPrivReclaimed:", cow_priv_reclaimed_total())
 
     # §hugepage: 2 MiB MAP_HUGETLB accounting. HugePages_Total is the
     # cumulative count of 2 MiB huge PDEs ever demand-installed; the live

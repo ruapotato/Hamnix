@@ -3686,8 +3686,23 @@ def cow_resolve_pte(pte_slot: uint64, fault_va: uint64) -> int32:
     new_flags2: uint64 = (flags & ~PT_FLAG_COW) | PT_FLAG_RW \
                          | PT_FLAG_P
     cast[Ptr[uint64]](pte_slot)[0] = new_phys | new_flags2
-    # Drop our reference to the shared page. The fresh page is born
-    # untracked (refcount 0) — it has exactly one mapper now.
+    # BORN AT REFCOUNT 1, NOT UNTRACKED. The copy has exactly one mapper —
+    # this task — and cow_ref_inc says so (0 -> 1). This is the ONLY way a
+    # teardown can later tell a CHILD-PRIVATE COW copy apart from an
+    # untracked OWNER frame: mm/vma.ad::_cow_release_forked_range must free
+    # the former (else every page a fork child dirties between fork and
+    # exec leaks until reboot) and must never free the latter (a
+    # region-backed image .text frame the live parent still executes — the
+    # dfd59371 use-after-free). Leaving the copy at 0 made both cases
+    # indistinguishable, so the teardown had to refuse to free anything.
+    #
+    # Refcount 1 is also what every OTHER consumer already expects of a
+    # singly-mapped tracked frame: cow_page_is_shared() stays 0 (a later
+    # write still takes the no-copy sole-owner branch above), and
+    # _vma_free_cow_range's cow_drop_page 1 -> 0 still returns "last
+    # holder", so ordinary VMA/brk teardown is byte-for-byte unchanged.
+    cow_ref_inc(new_phys)
+    # Drop our reference to the shared page.
     cow_drop_page(old_phys)
     invlpg_one(page_va)
     return 1

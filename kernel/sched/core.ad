@@ -7620,6 +7620,72 @@ def task_reap(slot: int32):
         task_table[su].brk_base = 0
         task_table[su].brk_end  = 0
         task_table[su].brk_max  = 0
+    # 0c. A FORK CHILD THAT DIED WITHOUT EXEC'ING. do_clone COW-shared the
+    #     parent's image / interp / user stack into this task
+    #     (image_cow_shared != 0) and the child carries image_phys ==
+    #     interp_phys == ustack_phys == 0, so steps 1/2/2b below all skip it
+    #     and vma_clear only covers real VmaNodes. Nothing dropped those
+    #     inherited COW references, and nothing reclaimed the private copies
+    #     the child made of pages it wrote after the fork — a `fork(); exit()`
+    #     (or any child killed before its execve) leaked both.
+    #
+    #     The execve path already does exactly this teardown
+    #     (arch/x86/kernel/syscall.ad, gated on the same flag); doing it here
+    #     too makes reclaim independent of HOW the child ended. Same helper,
+    #     same rules: drop this task's COW reference on every frame, clear its
+    #     stale PTEs, and return ONLY frames the child itself COW-copied
+    #     (refcount 1 + buddy-owned — see mm/vma.ad::_cow_release_forked_range).
+    #     A parent-owned frame is never handed to an allocator here.
+    #
+    #     Runs BEFORE step 3 tears the page tables down, so the walk resolves.
+    if task_table[su].is_user != 0 and task_table[su].image_cow_shared != 0 \
+            and task_table[su].cr3 != 0:
+        rc_ilo: uint64 = task_table[su].image_lo
+        rc_ihi: uint64 = task_table[su].image_hi
+        if rc_ilo != 0 and rc_ihi > rc_ilo:
+            vma_release_forked_range(su, rc_ilo, rc_ihi)
+        rc_nlo: uint64 = task_table[su].interp_lo
+        rc_nhi: uint64 = task_table[su].interp_hi
+        if rc_nlo != 0 and rc_nhi > rc_nlo:
+            vma_release_forked_range(su, rc_nlo, rc_nhi)
+        rc_ulo: uint64 = task_table[su].ustack_lo
+        rc_usz: uint64 = task_table[su].ustack_sz
+        if rc_ulo != 0 and rc_usz != 0:
+            vma_release_forked_range(su, rc_ulo, rc_ulo + rc_usz)
+        task_table[su].image_cow_shared = 0
+    # 0d. COW COPIES SITTING INSIDE THIS TASK'S OWN OWNER SPANS. Steps 1/2/2b
+    #     below free the image, interp and stack-prefix WHOLESALE by physical
+    #     base — which misses every page this task dirtied AFTER fork()ing,
+    #     because cow_resolve_pte repointed that PTE at a fresh copy and the
+    #     original run no longer covers it. No VmaNode covers an owner span
+    #     either, so vma_clear cannot see them: those frames leaked for the
+    #     rest of the boot.
+    #
+    #     vma_free_cow_strays walks each span's PTEs and returns only frames
+    #     OUTSIDE the run about to be freed wholesale (so it can never
+    #     double-free with steps 1/2/2b) that are at COW refcount exactly 1
+    #     and buddy-owned. Runs BEFORE those steps, while the owner
+    #     coordinates and the page tables are both still valid.
+    if task_table[su].is_user != 0 and task_table[su].cr3 != 0:
+        if task_table[su].image_phys != 0 and task_table[su].image_lo != 0:
+            vma_free_cow_strays(su, task_table[su].image_lo,
+                                task_table[su].image_hi,
+                                task_table[su].image_phys,
+                                task_table[su].image_phys
+                                + task_table[su].image_phys_sz)
+        if task_table[su].interp_phys != 0 and task_table[su].interp_lo != 0:
+            vma_free_cow_strays(su, task_table[su].interp_lo,
+                                task_table[su].interp_hi,
+                                task_table[su].interp_phys,
+                                task_table[su].interp_phys
+                                + task_table[su].interp_phys_sz)
+        if task_table[su].ustack_phys != 0 and task_table[su].ustack_lo != 0:
+            vma_free_cow_strays(su, task_table[su].ustack_lo,
+                                task_table[su].ustack_lo
+                                + task_table[su].ustack_sz,
+                                task_table[su].ustack_phys,
+                                task_table[su].ustack_phys
+                                + task_table[su].ustack_phys_sz)
     # 1. ELF image region (physical) — back to the region pool, COW-safely.
     #    region_free_cow_safe drops this owner's per-PFN COW reference on
     #    every image frame BEFORE pooling: a frame a live forked relative
@@ -11215,6 +11281,45 @@ def set_task_ustack_range(slot: uint64, lo: uint64, sz: uint64):
 def set_task_image_phys(slot: uint64, phys: uint64, sz: uint64):
     task_table[slot].image_phys    = phys
     task_table[slot].image_phys_sz = sz
+
+
+def task_phys_in_live_owner_run(phys: uint64) -> int32:
+    # 1 iff `phys` lies inside a run that some LIVE task will later free
+    # WHOLESALE by physical base: its ELF image region, its PT_INTERP region,
+    # or its eager user-stack alloc_pages() run.
+    #
+    # THE HAZARD THIS CLOSES. A fork child COW-shares the parent's stack, so
+    # both map the SAME frames. If the parent then writes, cow_resolve_pte
+    # gives the parent a private copy and drops the original to refcount 1 —
+    # held only by the child. The child's fork+exec teardown
+    # (mm/vma.ad::_cow_release_forked_range) sees refcount 1 on a
+    # buddy-managed frame, which is otherwise exactly the signature of a
+    # child-private copy it should reclaim. But that frame is one PAGE OUT OF
+    # THE MIDDLE of the parent's live order-6 stack run: returning it to the
+    # buddy allocator hands out a page the parent still owns, and the
+    # parent's own task_reap then free_pages()es the whole run on top of it —
+    # an overlapping double free that self-cycles a free list.
+    #
+    # So the reclaim asks here first. Scanning every slot is fine: the caller
+    # only reaches this for a frame that already passed the refcount and
+    # buddy-ownership tests, i.e. a handful of frames per teardown.
+    if phys == 0:
+        return 0
+    i: uint64 = 0
+    while i < NTASKS:
+        st: uint64 = task_table[i].state
+        if st != STATE_FREE:
+            ip: uint64 = task_table[i].image_phys
+            if ip != 0 and phys >= ip and phys < ip + task_table[i].image_phys_sz:
+                return 1
+            np: uint64 = task_table[i].interp_phys
+            if np != 0 and phys >= np and phys < np + task_table[i].interp_phys_sz:
+                return 1
+            up: uint64 = task_table[i].ustack_phys
+            if up != 0 and phys >= up and phys < up + task_table[i].ustack_phys_sz:
+                return 1
+        i = i + 1
+    return 0
 
 
 def task_image_cow_shared(slot: uint64) -> uint64:

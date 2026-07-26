@@ -464,3 +464,115 @@ per-app churn and it repeats at a suspiciously identical magnitude.
 * **Close is reliable.** 140/140 apps in each run took the terminate note and
   exited; the only survivor was the app caught by finding #1.
 * **Boot is fast.** 6 s from QEMU start to DE handoff, both runs.
+
+---
+
+# RESIDUAL LEAK, 2026-07-25 (part 2): the fork+exec COW copies
+
+Finding #3 above — "~6 order-0 pages per app open/close" — is now attributed
+and mostly closed. A temporary per-order + per-callsite allocation histogram
+(a PFN-stamped live-page profiler wired into `alloc_pages`/`free_pages`,
+removed before commit) was driven by a short launch/close loop instead of the
+full soak. It splits the residual as follows.
+
+## order 0 — the real leak: a fork child's own COW copies
+
+Every DE app launch is `rfork` + `execve`. Between the two, the child (and the
+parent that keeps running) writes to COW-shared pages, and each write sends
+`cow_resolve_pte` (`fs/elf.ad`) down its copy branch: a fresh `alloc_page()`
+frame, memcpy, PTE repointed at the copy.
+
+`mm/vma.ad::_cow_release_forked_range` — the fork+exec teardown — zapped those
+PTEs and dropped the refcount but **never returned the frame**, and said so:
+
+> the residual cost is that a child-private COW copy of a page the child
+> dirtied between fork and exec **leaks until reboot** — the SAME bounded leak
+> the pre-dfd59371 rfork path already had
+
+It was not bounded: it recurred on every launch, and once the PTE is zapped no
+later walk (`_free_task_user_pagetables`, `vma_clear`, `task_reap`) can find
+the frame again.
+
+The teardown refused to free anything because it could not tell a
+child-private copy from an owner frame: `cow_resolve_pte` left the copy
+**untracked** (refcount 0), which is exactly the state of a region-backed
+image `.text` frame. Freeing one of those is the `dfd59371` regression — the
+live parent NX-faults on its own code (`code=139`).
+
+The fix makes the two states distinguishable and then adds two independent
+locks before any frame is returned:
+
+* `cow_resolve_pte` now `cow_ref_inc()`s the copy at birth, so **refcount 1 ==
+  "one tracked holder, and it is me"**, while refcount 0 stays "untracked
+  owner frame — never free". Every other consumer is unaffected: a singly-held
+  frame at 1 still takes the no-copy sole-owner branch, and
+  `_vma_free_cow_range`'s `cow_drop_page` 1 → 0 still reports "last holder".
+* `mm/page_alloc.ad::page_alloc_owns()` — a per-PFN bit set when RAM enters
+  the buddy pool (`_pa_grow_from_memblock` / `_pa_donate_raw`) — answers
+  *exactly* which allocator owns a frame. The old `_pa_link_ok` bounds test
+  could not separate the buddy pool from the region pool at all: both live
+  inside `[kernel_image_end(), memblock_region_top())`.
+* `kernel/sched/core.ad::task_phys_in_live_owner_run()` rejects a frame that
+  sits inside a run some LIVE task will free wholesale. This closes a real
+  hazard the refcount test alone would have opened: when the parent writes
+  after forking, the ORIGINAL frame falls to refcount 1 held only by the
+  child — and that frame is one page out of the middle of the parent's live
+  order-6 stack run.
+
+Two teardown paths were missing entirely and were added:
+
+* `task_reap` step 0c — a fork child that **exits without exec'ing** never
+  dropped its inherited COW references at all (`image_phys`/`interp_phys`/
+  `ustack_phys` are 0, so steps 1/2/2b all skip it and no VmaNode covers those
+  spans).
+* `task_reap` step 0d (`vma_free_cow_strays`) — an OWNER leaks too. task_reap
+  returns the image/interp/stack-prefix **wholesale by physical base**, which
+  cannot see a page the task dirtied after fork()ing: that PTE now points at a
+  copy outside the run. The new walk returns only frames outside the run about
+  to be freed, at refcount exactly 1, buddy-owned, and not inside any live
+  task's run.
+
+`/proc/meminfo` gained **`CowPrivReclaimed`** — frames this reclaim returned.
+A 30-minute soak (44 cycles, 176 launches) reports **704**, i.e. ~4 frames per
+launch that used to be lost forever.
+
+Measured, steady-state, on the CLOSED series (the per-cycle step between the
+one-time plateaus described below): **~26 pages/cycle → ~15 pages/cycle**, and
+the profiler's own launch/close loop measured the order-0 drift falling
+**4.27 → 1.5-2.1 pages per launch**.
+
+**Still open.** The profiler's VA-bucketed tags put the remainder in two
+places, and they are the next agent's starting point:
+
+* COW copies in the **7 GiB stack window** (`LINUX_USTACK_VBASE`), ~1.7 per
+  launch. The fork+exec release only walks the eager stack PREFIX
+  (`ustack_lo, ustack_sz` — 256 KiB); the demand TAIL below it is a separate
+  VMA, and copies made there are not covered by the same walk.
+* Demand-zero pages in the **0-1 GiB identity window** (native tasks'
+  BSS/heap), ~0.6 per launch, allocated by `mm/vma.ad`'s demand-fault path.
+
+## orders 4, 5 and 10 are PLATEAUS, not leaks — proven
+
+The brief's "+5 runs each at order 4/5, +5 runs at order 10" are one-time
+warm-up allocations, and the profiler shows them **flat across the steady-state
+window** while order 0 kept climbing:
+
+| order | what | evidence |
+|---|---|---|
+| 10 (4 MiB) | `WSYS_SHADOW_ORDER` present-shadow (a singleton, `a=1 f=0`), plus per-window layer-fb / backbuffer blocks that CYCLE (`a=44 f=41`, 3 live for the 3 long-lived DE windows) | zero drift over rounds 11-40; `_wsys_layer_fb_release` / `_wsys_backbuffer_release` are wired to `wsys_free_wid` and `wsys_reap_dead_wids` |
+| 5 (128 KiB) | tmpfs per-file chunk TABLE (`kmalloc(TMPFS_MAX_CHUNKS*8)` = 65536+8 → order 5) — one per data-holding tmpfs file | `a=11 f=1`, live 10 and flat: ten long-lived tmpfs files |
+| 4 (64 KiB) | task kernel stacks (`KSTACK_ORDER`, `a=117 f=104` — cycling with launches) plus a 10-entry one-shot set | flat |
+
+The soak's FITTED slope is nevertheless dominated by these, in two ways that
+are worth knowing before reading any single number off this gate:
+
+1. **A one-time step.** Cycle 29 → 30 of the run above jumps `PagesInUse`
+   6678 → 10793 (+4115 pages = 16 MiB) as four 4 MiB wsys blocks are claimed
+   at once, then the series resumes its ordinary ~+15/cycle. A least-squares
+   fit spreads that single step over every cycle.
+2. **A 4 MiB sawtooth.** Roughly every other CLOSED sample lands while one
+   4 MiB block is still held (`+1040` / `-1005`, alternating), which is a
+   sampling phase artefact, not drift.
+
+So on this gate a phase-separated or step-aware read of `meminfo_series.tsv`
+is the honest one; the headline `slope=` line is an upper bound.

@@ -99,6 +99,7 @@ PAGE_SIZE:  uint64 = 4096
 PAGE_SHIFT: int32  = 12
 MAX_ORDER:  int32  = 10            # 2^10 pages = 1024 = 4 MiB
 
+
 # --- BOOT-CR3 GUARD --------------------------------------------------
 #
 # Every free list in this file is INTRUSIVE: the `next` link lives in
@@ -209,6 +210,81 @@ def _pa_ram_top() -> uint64:
     if _pa_ram_top_cache == 0:
         _pa_ram_top_cache = memblock_region_top()
     return _pa_ram_top_cache
+
+
+# --- buddy-ownership bitmap ------------------------------------------
+#
+# WHICH ALLOCATOR OWNS THIS FRAME? memblock hands RAM to TWO disjoint
+# consumers: the buddy allocator (_pa_grow_from_memblock / _pa_donate_raw)
+# and the large-region pool (region_alloc, which backs every ELF image and
+# PT_INTERP). Both live inside [kernel_image_end(), memblock_region_top()),
+# so _pa_link_ok — a pure bounds test — CANNOT tell them apart. Any code
+# that decides "may I hand this frame to free_page?" from bounds alone is
+# guessing, and guessing wrong pushes a frame the loader still owns onto a
+# buddy free list, where it is handed out a second time.
+#
+# So record the truth at the only place it is known: every page that ever
+# enters the buddy pool sets its PFN bit here. page_alloc_owns() is then an
+# EXACT predicate, and mm/vma.ad's fork+exec COW teardown uses it to free a
+# child-private COW copy while provably never touching a region frame.
+#
+# One bit per 4 KiB frame of RAM (32 KiB of memblock for a 1 GiB machine),
+# carved on first use. Before that the predicate answers 0, which is the
+# safe direction: a caller declines to free rather than freeing wrongly.
+_pa_own_bm:     uint64 = 0
+_pa_own_frames: uint64 = 0
+
+
+def _pa_own_init():
+    if _pa_own_bm != 0:
+        return
+    top: uint64 = memblock_region_top()
+    if top == 0:
+        return
+    frames: uint64 = top >> 12
+    nbytes: uint64 = (frames + 7) >> 3
+    b: uint64 = memblock_alloc(nbytes, 8)
+    if b == 0:
+        return
+    i: uint64 = 0
+    while i < nbytes:
+        cast[Ptr[uint8]](b + i)[0] = 0
+        i = i + 1
+    _pa_own_frames = frames
+    _pa_own_bm = b
+
+
+def _pa_own_mark(base: uint64, npages: uint64):
+    # Record `npages` frames from `base` as buddy-managed. Called from the
+    # two (and only two) places RAM enters the buddy pool.
+    _pa_own_init()
+    if _pa_own_bm == 0:
+        return
+    pfn: uint64 = base >> 12
+    i: uint64 = 0
+    while i < npages:
+        p: uint64 = pfn + i
+        if p < _pa_own_frames:
+            byte_at: uint64 = _pa_own_bm + (p >> 3)
+            cur: uint64 = cast[uint64](cast[Ptr[uint8]](byte_at)[0])
+            cast[Ptr[uint8]](byte_at)[0] = \
+                cast[uint8](cur | (cast[uint64](1) << (p & 7)))
+        i = i + 1
+
+
+def page_alloc_owns(phys: uint64) -> int32:
+    # 1 iff `phys` lies in a frame the BUDDY allocator manages (as opposed
+    # to a region-pool frame or RAM memblock never donated). Conservative:
+    # 0 until the bitmap exists.
+    if _pa_own_bm == 0:
+        return 0
+    p: uint64 = phys >> 12
+    if p >= _pa_own_frames:
+        return 0
+    b: uint64 = cast[uint64](cast[Ptr[uint8]](_pa_own_bm + (p >> 3))[0])
+    if (b & (cast[uint64](1) << (p & 7))) != 0:
+        return 1
+    return 0
 
 
 def _pa_link_ok(addr: uint64) -> int32:
@@ -433,6 +509,7 @@ def _pa_donate_raw(base: uint64, len_bytes: uint64):
             k = k - 1
         run: uint64 = PAGE_SIZE << cast[uint64](k)
         ko: uint64 = cast[uint64](k)
+        _pa_own_mark(cur, cast[uint64](1) << ko)
         _pa_set_next(cur, free_pages_order[ko])
         free_pages_order[ko] = cur
         if k == 0:
@@ -481,6 +558,7 @@ def _pa_grow_from_memblock(order: int32) -> uint64:
     page: uint64 = memblock_alloc(size, size)
     if page != 0:
         nr_pages_total = nr_pages_total + (cast[uint64](1) << o)
+        _pa_own_mark(page, cast[uint64](1) << o)
         return page
     if order == 0:
         # An order-0 request is already page-aligned == page-sized; there is
@@ -496,6 +574,7 @@ def _pa_grow_from_memblock(order: int32) -> uint64:
     # The caller's run: count it as newly managed here; alloc_pages()'s
     # public wrapper adds it to nr_pages_live on the way out.
     nr_pages_total = nr_pages_total + (cast[uint64](1) << o)
+    _pa_own_mark(aligned, cast[uint64](1) << o)
     # The slack becomes free pool (donate bumps nr_pages_total itself).
     _pa_donate_raw(raw, head)
     _pa_donate_raw(aligned + size, tail)
