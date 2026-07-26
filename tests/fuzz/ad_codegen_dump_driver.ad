@@ -263,7 +263,7 @@ from compiler.regalloc import (
 # Linux open(2): a0=path a1=flags a2=mode. O_RDONLY = 0.
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_exit(code: uint64)
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -330,7 +330,7 @@ def dump_hex(buf: Ptr[uint8], n: uint32):
 
 
 def read_source(path: Ptr[char]) -> uint32:
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         return 0
     total: uint32 = 0

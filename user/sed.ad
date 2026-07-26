@@ -43,7 +43,7 @@ extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 # read-only; the host (x86_64-linux) thunk is a raw open(2) needing
 # flags/mode in %rsi/%rdx. Declaring all three args satisfies both — the
 # kernel ignores the extras, the host gets O_RDONLY (flags=0, mode=0).
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 
 
@@ -474,7 +474,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         fi: int32 = 0
         while fi < n_files:
             path: Ptr[char] = cast[Ptr[char]](files[fi])
-            fd: int32 = sys_open(path, 0, 0)
+            fd: int32 = sys_open(path)
             if fd < 0:
                 write_err("sed: cannot open ")
                 write_err(cast[Ptr[uint8]](path))

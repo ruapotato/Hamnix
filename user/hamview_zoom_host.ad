@@ -16,7 +16,8 @@
 #
 # USAGE:  hamview_zoom_host INPUT.png OUT100.ppm OUT200.ppm
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -77,7 +78,7 @@ png_bytes: Array[4194304, uint8]        # up to 4 MiB of PNG file
 
 
 def _slurp(path: Ptr[char]) -> int64:
-    fd: int32 = sys_open(path, 0, 0)                    # O_RDONLY
+    fd: int32 = sys_open(path)                    # O_RDONLY
     if fd < 0:
         return -1
     total: int64 = 0
@@ -165,7 +166,7 @@ def _render(path: Ptr[char], src: Ptr[uint8], sw: uint64, sh: uint64,
     hp = hp + 1
     ppm_hdr[hp] = 10
     hp = hp + 1
-    fd: int32 = sys_open(path, 577, 420)                # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)                # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return dw
     sys_write(fd, &ppm_hdr[0], hp)

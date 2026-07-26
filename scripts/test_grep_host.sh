@@ -7,7 +7,7 @@
 # It compiles user/grep.ad for the x86_64-linux Adder target (so the
 # SAME source that ships on-device runs as a host process — the runtime
 # maps sys_open/read/write/close to real syscalls; files are opened with
-# the 3-arg sys_open thunk so real file operands work), then for each
+# the 1-arg sys_open thunk so real file operands work), then for each
 # fixture asserts our stdout AND exit status are identical to GNU grep's.
 #
 # Fixtures cover EXACTLY the implemented ERE subset + flags:

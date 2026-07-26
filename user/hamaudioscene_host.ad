@@ -18,7 +18,8 @@
 # USAGE (built to build/host/hamaudio_host):
 #   hamaudio_host FILE.wav BEFORE.ppm AFTER.ppm
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -98,7 +99,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])
@@ -121,7 +122,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         return 2
 
     path: Ptr[char] = cast[Ptr[char]](argv[1])
-    fd: int32 = sys_open(path, 0, 0)                    # O_RDONLY
+    fd: int32 = sys_open(path)                    # O_RDONLY
     if fd < 0:
         _o_str(cast[Ptr[uint8]]("FAIL cannot open input\n"))
         _o_flush()

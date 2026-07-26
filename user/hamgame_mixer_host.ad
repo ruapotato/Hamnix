@@ -18,7 +18,7 @@
 # argv: 1 = path to a 16-bit mono WAV fixture.
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -152,7 +152,7 @@ _filebuf: Array[262144, uint8]
 
 
 def _read_file(path: Ptr[char]) -> int64:
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         return -1
     n: uint64 = 0

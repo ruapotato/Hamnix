@@ -12,7 +12,8 @@
 #
 # USAGE (build/host/vk2d_host):  vk2d_host OUT.ppm
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -130,7 +131,7 @@ ppm_hdr: Array[32, uint8]
 
 
 def _write_ppm(path: Ptr[char]):
-    fd: int32 = sys_open(path, 577, 420)     # O_WRONLY|O_CREAT|O_TRUNC, 0644
+    fd: int32 = sys_open_write(path)     # O_WRONLY|O_CREAT|O_TRUNC, 0644
     if fd < 0:
         return
     # header "P6\n64 64\n255\n"

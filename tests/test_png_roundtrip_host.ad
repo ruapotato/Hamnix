@@ -25,7 +25,8 @@ from lib.pngwrite import (
 from lib.png import png_decode, png_width, png_height, png_pixel
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_open(path: Ptr[uint8], flags: int64, mode: int64) -> int32
+extern def sys_open(path: Ptr[uint8]) -> int32
+extern def sys_open_write(path: Ptr[uint8]) -> int32
 extern def sys_close(fd: int32) -> int32
 
 # Big enough to hold a full 1920x1080 stored-DEFLATE PNG file in memory:
@@ -132,7 +133,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     # ---- optionally dump the encoded PNG for a standard-tool cross-check ----
     if argc > 3:
-        ofd: int32 = sys_open(cast[Ptr[uint8]](argv[3]), 577, 420)
+        ofd: int32 = sys_open_write(cast[Ptr[uint8]](argv[3]))
         if ofd >= 0:
             done: uint64 = 0
             while done < fp:

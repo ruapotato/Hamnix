@@ -15,7 +15,8 @@
 #   hamctl_resize_host OUTDIR
 # Writes OUTDIR/ctl_resize_<label>_{bug,fix}.ppm and prints PROBE lines.
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -105,7 +106,7 @@ def _write_ppm(dir: Ptr[uint8], label: Ptr[uint8], kind: Ptr[uint8]):
     p = _pstr(p, kind)
     p = _pstr(p, cast[Ptr[uint8]](".ppm"))
     path_buf[p] = 0
-    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&path_buf[0]))
     if fd < 0:
         return
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])

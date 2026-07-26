@@ -1,7 +1,7 @@
 # user/jpeg_probe.ad — host test shim for lib/jpeg.ad. Reads a JPEG file, decodes
 # it, and prints "RC rc", "DIM w h", and "PIX x y r g b" for each (x,y) pair in
 # argv, so a gate can assert decode dimensions and per-pixel colour accuracy.
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -67,7 +67,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         sys_write(2, cast[Ptr[uint8]]("usage: jpeg_probe FILE.jpg [x y ...]\n"), 37)
         return 2
     path: Ptr[char] = cast[Ptr[char]](argv[1])
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         sys_write(2, cast[Ptr[uint8]]("open failed\n"), 12)
         return 1

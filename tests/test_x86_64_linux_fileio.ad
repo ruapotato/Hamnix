@@ -9,9 +9,11 @@
 #
 # Syscall wrappers come from user/linux-runtime.S (standard Linux x86_64
 # numbers behind the raw `syscall` instruction). The path is passed as
-# argv[1].
+# argv[1]. This test deliberately drives the RAW 3-arg open(2) thunk
+# (sys_open3) rather than the portable 1-arg sys_open/sys_open_write pair,
+# because exercising real Linux open flags IS the point of the test.
 
-extern def sys_open(path: Ptr[uint8], flags: int64, mode: int64) -> int32
+extern def sys_open3(path: Ptr[uint8], flags: int64, mode: int64) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -44,7 +46,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     payload[4] = cast[uint8](32)
 
     # --- create + write -------------------------------------------------
-    wfd: int32 = sys_open(path, O_WRONLY | O_CREAT | O_TRUNC, 420)  # 0o644
+    wfd: int32 = sys_open3(path, O_WRONLY | O_CREAT | O_TRUNC, 420)  # 0o644
     if wfd < 0:
         return 91
     nw: int64 = sys_write(wfd, &payload[0], cast[uint64](5))
@@ -53,7 +55,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     sys_close(wfd)
 
     # --- reopen + read back ---------------------------------------------
-    rfd: int32 = sys_open(path, O_RDONLY, 0)
+    rfd: int32 = sys_open3(path, O_RDONLY, 0)
     if rfd < 0:
         return 93
     nr: int64 = sys_read(rfd, &rdbuf[0], cast[uint64](16))

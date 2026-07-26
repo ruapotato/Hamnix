@@ -18,7 +18,8 @@
 #
 # No sockets, no Plan 9: reads argv + writes files. TEST shim only.
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -91,7 +92,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])

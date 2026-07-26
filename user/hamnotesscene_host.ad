@@ -12,7 +12,8 @@
 # USAGE (built to build/host/hamnotes_host):
 #   hamnotes_host ROOTDIR BEFORE.ppm AFTER.ppm NEW.ppm RELOAD.ppm [TEXT]
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -92,7 +93,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])
@@ -118,7 +119,7 @@ tbuf: Array[64, uint8]
 
 def _save_current():
     hamnotes_notepath(&path_buf[0], hamnotes_cur_idx())
-    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&path_buf[0]))
     if fd < 0:
         return
     n: uint64 = hamnotes_serialize(&ser_buf[0])
@@ -129,7 +130,7 @@ def _save_current():
 
 def _load_current():
     hamnotes_notepath(&path_buf[0], hamnotes_cur_idx())
-    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 0, 0)   # O_RDONLY
+    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]))   # O_RDONLY
     if fd < 0:
         hamnotes_deserialize(&ser_buf[0], 0)
         return
@@ -148,7 +149,7 @@ def _refresh_titles():
     idx: int32 = 0
     while idx < hamnotes_count():
         hamnotes_notepath(&path_buf[0], idx)
-        fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 0, 0)
+        fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]))
         if fd >= 0:
             r: int64 = sys_read(fd, &tbuf[0], 63)
             sys_close(fd)
@@ -163,7 +164,7 @@ def _refresh_titles():
 
 def _save_state():
     hamnotes_statepath(&path_buf[0])
-    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&path_buf[0]))
     if fd < 0:
         return
     n: uint64 = hamnotes_state_encode(&state_buf[0])
@@ -177,7 +178,7 @@ raw_buf: Array[2048, uint8]
 
 def _read_file_len(idx: int32) -> int64:
     hamnotes_notepath(&path_buf[0], idx)
-    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 0, 0)
+    fd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]))
     if fd < 0:
         return -1
     total: int64 = 0
@@ -202,7 +203,7 @@ def _delete_current():
     i: int32 = di
     while i < n - 1:
         hamnotes_notepath(&path_buf[0], i + 1)
-        rfd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 0, 0)
+        rfd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]))
         total: uint64 = 0
         if rfd >= 0:
             while total < 2112:
@@ -212,13 +213,13 @@ def _delete_current():
                 total = total + cast[uint64](r)
             sys_close(rfd)
         hamnotes_notepath(&path_buf[0], i)
-        wfd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 577, 420)
+        wfd: int32 = sys_open_write(cast[Ptr[char]](&path_buf[0]))
         if wfd >= 0:
             sys_write(wfd, &ser_buf[0], total)
             sys_close(wfd)
         i = i + 1
     hamnotes_notepath(&path_buf[0], n - 1)
-    zfd: int32 = sys_open(cast[Ptr[char]](&path_buf[0]), 577, 420)
+    zfd: int32 = sys_open_write(cast[Ptr[char]](&path_buf[0]))
     if zfd >= 0:
         sys_close(zfd)
     hamnotes_delete_current()

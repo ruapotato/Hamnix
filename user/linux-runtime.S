@@ -111,17 +111,43 @@ sys_write:
     .size sys_write, .-sys_write
 
 
-    /* --- sys_open(path, flags, mode) -> int32 -----------------------
-     * Linux open(2): a0=path, a1=flags (O_RDONLY=0, O_WRONLY=1,
-     * O_CREAT=0x40, O_TRUNC=0x200, ...), a2=mode. 3 args fit rdi/rsi/rdx
-     * directly. Returns the fd or -errno. */
+    /* --- sys_open(path) -> int32 ------------------------------------
+     * Mirrors user/runtime.S's SYS_OPEN *exactly*: ONE argument, opened
+     * for READING. The host thunk loads the flags/mode itself (O_RDONLY,
+     * mode 0) so the SAME source that reads a file on-device reads a real
+     * host file under x86_64-linux -- the same contract sys_open_write
+     * (below) already had, and the same one scripts/net9_host_shim.c's
+     * C `sys_open(const char *path)` implements.
+     *
+     * This USED to take (path, flags, mode). That made `sys_open` the one
+     * symbol in the tree with two different signatures depending on the
+     * target, so a shared lib/ module (which declares the native 1-arg
+     * form) linked into a *_host.ad harness (which declared the 3-arg
+     * form) called it with garbage in %rsi/%rdx -- an open(2) with random
+     * flags. Callers that need explicit Linux flags use sys_open3 below. */
     .globl sys_open
     .type sys_open, @function
 sys_open:
+    xorl    %esi, %esi              /* O_RDONLY */
+    xorl    %edx, %edx              /* mode (unused without O_CREAT) */
     movq    $SYS_open, %rax
     syscall
     ret
     .size sys_open, .-sys_open
+
+
+    /* --- sys_open3(path, flags, mode) -> int32 ----------------------
+     * Raw Linux open(2) with caller-supplied flags: a0=path, a1=flags
+     * (O_RDONLY=0, O_WRONLY=1, O_CREAT=0x40, O_TRUNC=0x200, ...),
+     * a2=mode. HOST-ONLY (there is no on-device counterpart), so use it
+     * only from code that never compiles for x86_64-adder-user. */
+    .globl sys_open3
+    .type sys_open3, @function
+sys_open3:
+    movq    $SYS_open, %rax
+    syscall
+    ret
+    .size sys_open3, .-sys_open3
 
 
     /* --- sys_open_write(path) -> int32 ------------------------------

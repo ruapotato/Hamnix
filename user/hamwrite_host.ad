@@ -17,7 +17,8 @@
 # USAGE (built to build/host/hamwrite_host):
 #   hamwrite_host DOCPATH BEFORE.ppm AFTER.ppm [TEXT] [SHOW.ppm] [FIND.ppm]
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -111,7 +112,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])
@@ -143,7 +144,7 @@ def _set_docpath(s: Ptr[uint8]):
 
 
 def _save_doc():
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&doc_path[0]))
     if fd < 0:
         return
     n: uint64 = hamwrite_serialize(&ser_buf[0])
@@ -153,7 +154,7 @@ def _save_doc():
 
 
 def _load_doc():
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 0, 0)   # O_RDONLY
+    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]))   # O_RDONLY
     if fd < 0:
         hamwrite_deserialize(&ser_buf[0], 0)
         return
@@ -172,7 +173,7 @@ raw_buf: Array[12416, uint8]
 
 
 def _file_len() -> int64:
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 0, 0)
+    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]))
     if fd < 0:
         return -1
     total: int64 = 0
@@ -264,7 +265,7 @@ def _apply_pick():
             cut = k + 1
         k = k + 1
     hamwrite_set_fname(&alt_path[cut])
-    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&alt_path[0]))
     if fd < 0:
         return
     n: uint64 = hamwrite_serialize(&ser_buf[0])
@@ -274,7 +275,7 @@ def _apply_pick():
 
 
 def _alt_len() -> int64:
-    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 0, 0)
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]))
     if fd < 0:
         return -1
     total: int64 = 0

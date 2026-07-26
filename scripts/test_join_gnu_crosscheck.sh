@@ -5,7 +5,7 @@
 #
 # It compiles user/join.ad for the x86_64-linux Adder target (so the SAME
 # source that ships on-device runs as a host process — the runtime maps
-# sys_open/read/write/close to real syscalls, and the 3-arg sys_open trick
+# sys_open/read/write/close to real syscalls, and the 1-arg sys_open thunk
 # lets the host open real file operands), then for a battery of fixtures
 # compares our stdout against GNU join's with the same flags. Covers plain
 # join, per-file join fields (-1/-2/-j), -t separator, -a left/right/full

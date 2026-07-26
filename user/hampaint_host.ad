@@ -15,7 +15,8 @@
 # USAGE (built to build/host/hampaint_host):
 #   hampaint_host PNGPATH UI.ppm
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -97,7 +98,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     # "P6 W H 255\n"
@@ -172,7 +173,7 @@ def _wr_full(fd: int32, buf: Ptr[uint8], count: uint64) -> int32:
 
 
 def _save_png(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)
+    fd: int32 = sys_open_write(path)
     if fd < 0:
         return -1
     w: uint64 = cast[uint64](hp_canvas_w())
@@ -230,7 +231,7 @@ _raw: Array[2097152, uint8]                            # 2 MiB
 
 
 def _read_file(path: Ptr[char]) -> int64:
-    fd: int32 = sys_open(path, 0, 0)                   # O_RDONLY
+    fd: int32 = sys_open(path)                   # O_RDONLY
     if fd < 0:
         return -1
     total: uint64 = 0

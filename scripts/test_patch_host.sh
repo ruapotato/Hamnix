@@ -5,7 +5,7 @@
 #
 # It compiles user/patch.ad (and user/diff.ad) for the x86_64-linux Adder
 # target so the SAME source that ships on-device runs as a host process —
-# the 3-arg sys_open opens real file operands read-only and sys_open_write
+# sys_open opens real file operands read-only and sys_open_write
 # creates/truncates the real target file. Then:
 #
 #   ROUND-TRIP:  native diff -u A B -> patch.diff; native patch A < patch.diff

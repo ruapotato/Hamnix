@@ -4,7 +4,7 @@
 # tree-walk interpreter over the program text, extern-free apart from the
 # syscall thunks and lib/regex.ad. It compiles user/awk.ad for the
 # x86_64-linux Adder target (so the SAME source that ships on-device runs
-# as a host process; the 3-arg sys_open thunk opens real FILE operands),
+# as a host process; the 1-arg sys_open thunk opens real FILE operands),
 # then cross-checks its stdout BYTE-FOR-BYTE against GNU awk on fixtures
 # exercising exactly the implemented common subset:
 #

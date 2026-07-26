@@ -14,7 +14,8 @@
 #
 # No sockets, no Plan 9: it only reads argv + read/writes two files.
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -69,7 +70,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     in_name:  Ptr[char] = cast[Ptr[char]](argv[1])
     out_name: Ptr[char] = cast[Ptr[char]](argv[2])
 
-    in_fd: int32 = sys_open(in_name, 0, 0)          # O_RDONLY
+    in_fd: int32 = sys_open(in_name)          # O_RDONLY
     if in_fd < 0:
         return 1
     total: uint64 = 0
@@ -85,7 +86,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         total = total + cast[uint64](n)
     sys_close(in_fd)
 
-    out_fd: int32 = sys_open(out_name, 577, 420)    # O_WRONLY|O_CREAT|O_TRUNC
+    out_fd: int32 = sys_open_write(out_name)    # O_WRONLY|O_CREAT|O_TRUNC
     if out_fd < 0:
         return 1
 

@@ -21,7 +21,8 @@
 #                                       off the host FS into a new Surface
 #                                       (pygame.image.load, the path form)
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -55,7 +56,7 @@ _game_img_file: Array[4194304, uint8]
 # lib/hamgame.ad::game_load_image does the format dispatch + surface fill. The
 # device backend gets the equivalent from /dev when a game ships an asset.
 def game_host_load_image(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 0, 0)                     # O_RDONLY
+    fd: int32 = sys_open(path)                     # O_RDONLY
     if fd < 0:
         return -1
     total: uint64 = 0
@@ -87,7 +88,7 @@ def game_host_present(surf: int32) -> int32:
 
 def game_host_write_ppm(path: Ptr[char]) -> int32:
     # O_WRONLY|O_CREAT|O_TRUNC = 577, mode 0644 = 420.
-    fd: int32 = sys_open(path, 577, 420)
+    fd: int32 = sys_open_write(path)
     if fd < 0:
         return -1
     hlen: uint64 = hamsdl_vk_ppm_header(&_game_ppm_hdr[0])

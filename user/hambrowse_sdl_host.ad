@@ -39,7 +39,7 @@
 #     scripts/run_hambrowse_sdl_net.sh [PAGE-or-URL]  -> build/host/hambrowse_sdl_net
 #   hambrowse_sdl [PAGE.html]     # spoken to over the pipe by the bridge
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -160,7 +160,7 @@ def _dec(v: int32, out: Ptr[uint8]) -> uint64:
 
 
 def _slurp(path: Ptr[char], dst: Ptr[uint8], cap: uint64) -> int64:
-    fd: int32 = sys_open(path, 0, 0)                   # O_RDONLY
+    fd: int32 = sys_open(path)                   # O_RDONLY
     if fd < 0:
         return -1
     got: uint64 = 0

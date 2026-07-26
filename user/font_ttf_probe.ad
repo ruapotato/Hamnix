@@ -4,7 +4,7 @@
 # than 12px), (2) grayscale AA (intermediate coverage values, not just 0/255).
 # Also renders one glyph as ASCII art for eyeballing. x86_64-linux target.
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -53,7 +53,7 @@ def _o_flush():
 font_buf: Array[262144, uint8]
 
 def _slurp(path: Ptr[char], dst: Ptr[uint8], cap: uint64) -> int64:
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         return -1
     got: uint64 = 0

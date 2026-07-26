@@ -15,7 +15,7 @@
 # gate can assert what would have sounded. Real DAC output is proven separately
 # by the on-device capture gate (scripts/test_hamaudio_playback.sh style).
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -35,7 +35,7 @@ def sdl_audio_init() -> int32:
 
 
 def _sah_read_file(path: Ptr[char]) -> int64:
-    fd: int32 = sys_open(path, 0, 0)                    # O_RDONLY
+    fd: int32 = sys_open(path)                    # O_RDONLY
     if fd < 0:
         return -1
     n: uint64 = 0

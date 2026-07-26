@@ -18,7 +18,8 @@
 #   hamslides_host DOC.hamslides EDIT.ppm PRESENT.ppm TITLE.ppm \
 #                  PICTURE.ppm V1FILE
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -102,7 +103,7 @@ ppm_hdr: Array[64, uint8]
 
 
 def _write_ppm(path: Ptr[char]) -> int32:
-    fd: int32 = sys_open(path, 577, 420)               # O_WRONLY|O_CREAT|O_TRUNC
+    fd: int32 = sys_open_write(path)               # O_WRONLY|O_CREAT|O_TRUNC
     if fd < 0:
         return -1
     hlen: uint64 = hamui_host_ppm_header(&ppm_hdr[0])
@@ -134,7 +135,7 @@ def _copy_path(dst: Ptr[uint8], s: Ptr[uint8]) -> uint64:
 
 
 def _save_doc():
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&doc_path[0]))
     if fd < 0:
         return
     n: uint64 = hamslides_serialize(&ser_buf[0])
@@ -143,7 +144,7 @@ def _save_doc():
 
 
 def _load_path(p: Ptr[uint8]):
-    fd: int32 = sys_open(cast[Ptr[char]](p), 0, 0)     # O_RDONLY
+    fd: int32 = sys_open(cast[Ptr[char]](p))     # O_RDONLY
     if fd < 0:
         hamslides_deserialize(&ser_buf[0], 0)
         return
@@ -165,7 +166,7 @@ raw_buf: Array[24576, uint8]
 
 
 def _file_len() -> int64:
-    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]), 0, 0)
+    fd: int32 = sys_open(cast[Ptr[char]](&doc_path[0]))
     if fd < 0:
         return -1
     total: int64 = 0
@@ -255,7 +256,7 @@ def _apply_pick():
     if filepick_result_mode() == FILEPICK_OPEN:
         _load_path(&alt_path[0])
         return
-    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 577, 420)
+    fd: int32 = sys_open_write(cast[Ptr[char]](&alt_path[0]))
     if fd < 0:
         return
     n: uint64 = hamslides_serialize(&ser_buf[0])
@@ -274,7 +275,7 @@ def _alt_base() -> Ptr[uint8]:
 
 
 def _alt_len() -> int64:
-    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]), 0, 0)
+    fd: int32 = sys_open(cast[Ptr[char]](&alt_path[0]))
     if fd < 0:
         return -1
     total: int64 = 0

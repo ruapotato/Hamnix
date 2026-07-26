@@ -23,16 +23,16 @@
 # Exit status matches GNU grep: 0 = a line was selected, 1 = none, 2 =
 # an error (bad pattern or a file that could not be opened).
 #
-# Files are opened with the 3-arg sys_open thunk (like diff/sort/join)
-# so the QEMU-free host cross-check can open real files: the on-device
-# runtime reads only %rdi (path, O_RDONLY); the host thunk gets
-# flags=0/mode=0 == O_RDONLY.
+# Files are opened with the 1-arg sys_open thunk (like diff/sort/join)
+# so the QEMU-free host cross-check can open real files: both the
+# on-device runtime and the host thunk in user/linux-runtime.S open
+# %rdi (path) O_RDONLY.
 
 from lib.regex import (rx_compile, rx_search, rx_mstart, rx_mend)
 
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_close(fd: int32) -> int32
 
 
@@ -422,7 +422,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         fi: int32 = 0
         while fi < n_files:
             path: Ptr[char] = cast[Ptr[char]](files[fi])
-            fd: int32 = sys_open(path, 0, 0)
+            fd: int32 = sys_open(path)
             if fd < 0:
                 write_err("grep: cannot open ")
                 write_err(cast[Ptr[uint8]](path))

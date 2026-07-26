@@ -35,7 +35,7 @@ from compiler.ssa_llvm import (
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_exit(code: uint64)
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -74,7 +74,7 @@ def put_u32(v: uint32):
 
 
 def read_source(path: Ptr[char]) -> uint32:
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         return 0
     total: uint32 = 0

@@ -22,7 +22,7 @@
 # read-only; the host (x86_64-linux) thunk is a raw open(2) needing
 # flags/mode in %rsi/%rdx. Declaring all three args satisfies both — the
 # kernel ignores the extras, the host gets O_RDONLY (flags=0, mode=0).
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
@@ -109,7 +109,7 @@ def load_file(idx: uint64, path: Ptr[char]) -> int32:
         stdin = 1
     fd: int32 = 0
     if stdin == 0:
-        fd = sys_open(path, 0, 0)
+        fd = sys_open(path)
         if fd < 0:
             write_str(2, "paste: cannot open ")
             write_str(2, cast[Ptr[uint8]](path))

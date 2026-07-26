@@ -17,7 +17,8 @@
 #   sdl_host_advance(ms)                       advance the scripted clock
 #   sdl_host_ticks()                -> uint64  the scripted millisecond clock
 
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
@@ -46,7 +47,7 @@ def sdl_host_present(w: int32, h: int32) -> int32:
 
 def sdl_host_write_ppm(path: Ptr[char]) -> int32:
     # O_WRONLY|O_CREAT|O_TRUNC = 0x241, mode 0644 = 420.
-    fd: int32 = sys_open(path, 577, 420)
+    fd: int32 = sys_open_write(path)
     if fd < 0:
         return -1
     hlen: uint64 = hamsdl_vk_ppm_header(&_sdl_ppm_hdr[0])

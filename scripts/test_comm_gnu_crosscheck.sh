@@ -6,7 +6,7 @@
 #
 # It compiles user/comm.ad for the x86_64-linux Adder target (so the SAME
 # source that ships on-device runs as a host process — the runtime maps
-# sys_open/read/write/close to real syscalls, and the 3-arg sys_open trick
+# sys_open/read/write/close to real syscalls, and the 1-arg sys_open thunk
 # lets the host open real file operands), then for several fixtures compares
 # our stdout against GNU comm's with the same flags. Covers all three
 # columns, the composable -1/-2/-3 suppressors (-12, -23, -3) and a stdin

@@ -5,7 +5,7 @@
 #
 # It compiles user/paste.ad for the x86_64-linux Adder target (so the SAME
 # source that ships on-device runs as a host process — the runtime maps
-# sys_open/read/write/close to real syscalls, and the 3-arg sys_open trick
+# sys_open/read/write/close to real syscalls, and the 1-arg sys_open thunk
 # lets the host open real file operands), then for several fixtures compares
 # our stdout against GNU paste's with the same flags. Covers 2- and 3-file
 # column merge, -d LIST (single + cycled), -s serial mode, the backslash

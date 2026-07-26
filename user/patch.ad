@@ -16,14 +16,15 @@
 # the patch. Exit status: 0 all applied, 1 some hunk failed, 2 trouble.
 #
 # HOST cross-check (QEMU-free): compiled for x86_64-linux the SAME source
-# runs as a host process — the 3-arg sys_open opens real files read-only,
+# runs as a host process — sys_open opens real files read-only,
 # sys_open_write creates/truncates the real target. On-device it uses the
 # Hamnix SYS_OPEN / SYS_OPEN_WRITE syscalls.
 
-# 3-arg sys_open: host thunk is a raw open(2) (flags=0 => O_RDONLY); the
-# on-device thunk forwards to SYS_OPEN. Declaring all three args satisfies
-# both. sys_open_write opens-or-creates for write (truncating) on both.
-extern def sys_open(path: Ptr[char], flags: int32, mode: int32) -> int32
+# sys_open(path): read-only open on BOTH targets (the host thunk in
+# user/linux-runtime.S supplies O_RDONLY itself; the on-device thunk
+# forwards to SYS_OPEN). sys_open_write opens-or-creates for write
+# (truncating) on both.
+extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_open_write(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
@@ -151,7 +152,7 @@ def read_fd(fd: int32, b: Ptr[uint8]) -> int64:
 
 
 def load_file(b: Ptr[uint8], path: Ptr[char]) -> int64:
-    fd: int32 = sys_open(path, 0, 0)
+    fd: int32 = sys_open(path)
     if fd < 0:
         return -1
     total: int64 = read_fd(fd, b)
