@@ -131,13 +131,26 @@ grep -Eq "(^|[ ,])spawn([ ,]|$)" "$FM" \
 grep -q "/bin/hameditscene" "$FM" \
     && passed "hamfmscene launches /bin/hameditscene on a file" \
     || failed "hamfmscene does not launch the editor"
-grep -q "def _open_in_editor" "$FM" \
-    && passed "hamfmscene has the _open_in_editor launcher" \
-    || failed "hamfmscene _open_in_editor missing"
+# The launcher was renamed _open_in_editor -> _open_entry in 335821d1 when the
+# open path grew TYPE DISPATCH (images -> hamview, audio -> hamaudioscene,
+# everything else -> the editor). Assert the current entry point AND the
+# dispatch table, so the superseding behaviour is what's actually pinned.
+grep -q "def _open_entry" "$FM" \
+    && passed "hamfmscene has the _open_entry launcher" \
+    || failed "hamfmscene _open_entry launcher missing"
+grep -q "def _pick_app" "$FM" \
+    && passed "hamfmscene type-dispatches the open by extension (_pick_app)" \
+    || failed "hamfmscene _pick_app type dispatch missing"
+grep -q "/bin/hamview" "$FM" \
+    && passed "hamfmscene routes image files to /bin/hamview" \
+    || failed "hamfmscene does not route images to hamview"
+grep -q "/bin/hamaudioscene" "$FM" \
+    && passed "hamfmscene routes audio files to /bin/hamaudioscene" \
+    || failed "hamfmscene does not route audio to hamaudioscene"
 # A file click must call the launcher (not the old "not a directory" no-op).
-grep -q "_open_in_editor(u)" "$FM" \
-    && passed "a file click launches the editor (no 'not a directory' no-op)" \
-    || failed "file click not wired to _open_in_editor"
+grep -q "_open_entry(u)" "$FM" \
+    && passed "a file click launches the associated app (no 'not a directory' no-op)" \
+    || failed "file click not wired to _open_entry"
 # Compile the file manager too (the launch wiring must not break the build).
 compile_one hamfmscene
 

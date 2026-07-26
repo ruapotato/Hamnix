@@ -26,7 +26,7 @@ from lib.hampkgcore import hampkg_init, hampkg_build_scene, hampkg_reset_list, \
     hampkg_detail_reset, hampkg_detail_line, hampkg_set_search, \
     hampkg_hit, hampkg_count, hampkg_filt_count, hampkg_sel_pkg, \
     hampkg_selected_name, hampkg_selected_name_len, hampkg_set_status, \
-    hampkg_build_hud
+    hampkg_build_hud, hampkg_pkg_name, hampkg_pkg_name_len
 
 
 obuf: Array[512, uint8]
@@ -159,6 +159,18 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_str(cast[Ptr[uint8]]("FILT_ALL "))
     _o_dec(cast[int64](hampkg_filt_count()))
     _o_ch(10)
+    # STORED package IDs. The list/detail panes render the DISPLAY name (the
+    # redundant "hamnix-" vendor prefix stripped, lib/hampkgcore::_disp_name),
+    # but install/remove key on the FULL id — dump it so the gate can pin both.
+    i: int32 = 0
+    while i < hampkg_count():
+        _o_str(cast[Ptr[uint8]]("PKGID "))
+        _o_dec(cast[int64](i))
+        _o_ch(32)
+        _o_flush()
+        sys_write(1, hampkg_pkg_name(i), hampkg_pkg_name_len(i))
+        sys_write(1, cast[Ptr[uint8]]("\n"), 1)
+        i = i + 1
     _o_str(cast[Ptr[uint8]]("PIX 4 4 "))
     _o_dec(cast[int64](hamui_host_pixel(4, 4)))          # header bar pixel
     _o_ch(10)

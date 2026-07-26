@@ -57,8 +57,18 @@ python3 -m compiler.adder compile \
     -o "$ELF" >/dev/null
 
 echo "[hamaudio_interactive] (3/3) Boot QEMU with intel-hda -> wav backend"
+# TIMEOUT BUDGET: the bare-launch default track is no longer the ~2 s
+# test.wav — it is the shipped "Hamnix Music Demo" (2:19 = 139 s of
+# audio, user/hamaudioscene.ad::main). The player streams it in real
+# time, so "[hamaudio] EOF -> idle" cannot possibly arrive inside the old
+# 90 s window and this gate was red for a pure budgeting reason, not a
+# player bug. There is no way to hand the app a shorter clip here (it
+# runs AS /init, and the kernel passes init no argv), so the budget has
+# to cover the real track: 139 s of audio + boot + decode + margin.
+# Override with HAMAUDIO_TIMEOUT=<seconds> when profiling.
+QTIMEOUT="${HAMAUDIO_TIMEOUT:-300}"
 set +e
-timeout 90s qemu-system-x86_64 \
+timeout "${QTIMEOUT}s" qemu-system-x86_64 \
     -kernel "$ELF" \
     -smp 1 \
     -nographic \

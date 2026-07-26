@@ -35,8 +35,17 @@
 # bytes (ANSI escapes, the editor's CR repaints) that grep otherwise
 # samples as "binary", whereupon it suppresses ALL output — silently
 # turning every assertion into a false "absent". -a keeps it line-wise.
+# The CONTINUATION prompt ("> ", printed while a brace block is still
+# open) is a prompt too, and its echoed line must be dropped exactly like
+# the primary one. The old pattern only recognised it as `] > ` — i.e.
+# when it followed a kernel timestamp on the same line. A block typed at
+# a fresh line starts the log line with `> ` and slipped through, so
+# `echo IF_FALSE_BRANCH` merely TYPED into a not-taken else-branch read
+# as command output and any "this must NOT have run" assertion fired a
+# false positive (scripts/test_hamsh_blocks.sh, 2026-07-25). Anchor the
+# continuation prompt at line start as well.
 _ho_outlines() {
-    grep -a -vE 'hamsh\$|\] > ' "$1" 2>/dev/null || true
+    grep -a -vE 'hamsh\$|\] > |^> ' "$1" 2>/dev/null || true
 }
 
 # hamsh_ran <logfile> <marker> — succeeds iff <marker> appears in

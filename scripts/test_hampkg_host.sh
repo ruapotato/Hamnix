@@ -65,7 +65,14 @@ assert_grep 'glyphs .*\"6 packages in the index\"' "status line"
 # --- the package index parsed from `hpm search` -----------------------------
 assert_grep '^COUNT 6'                          "6 packages parsed from search output"
 assert_grep '^FILT_ALL 6'                       "no filter -> all 6 shown"
-assert_grep 'glyphs .*\"hamnix-base\"'          "package hamnix-base listed"
+# hamnix-base is rendered under its DISPLAY name: lib/hampkgcore::_disp_name
+# deliberately strips the redundant "hamnix-" vendor prefix in the UI (e3577e8b)
+# while the STORED id keeps the full package name (install/remove key on it).
+# Pin BOTH halves of that contract — the stripped label in the scene AND the
+# intact id in the model — so neither can silently rot.
+assert_grep 'glyphs .*\"base\"'                 "package hamnix-base listed (display name, hamnix- stripped)"
+assert_grep '^PKGID 0 hamnix-base$'             "stored package id keeps the full \"hamnix-base\" name"
+assert_grep '^PKGID 3 hamnix-hamnotes$'         "stored package id keeps the full \"hamnix-hamnotes\" name"
 assert_grep 'glyphs .*\"hambrowse\"'            "package hambrowse listed"
 assert_grep 'glyphs .*\"webkitgtk\"'            "package webkitgtk listed"
 assert_grep 'glyphs .*\"native web browser\"'   "short description rendered"

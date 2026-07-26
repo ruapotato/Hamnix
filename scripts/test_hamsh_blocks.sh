@@ -26,41 +26,100 @@ python3 -m compiler.adder compile \
     --target=x86_64-bare-metal init/main.ad -o "$ELF" >/dev/null
 
 LOG=$(mktemp)
-trap 'rm -f "$LOG"; INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null' EXIT
+IN=$(mktemp -u --tmpdir hamsh-blocks-in.XXXXXX)
+mkfifo "$IN"
+trap 'rm -f "$LOG" "$IN"; INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null' EXIT
 
+# --- READY-MARKER SYNCHRONISATION ------------------------------------
+#
+# This gate used to pipe the whole script into QEMU after a flat
+# `sleep 3`. Boot to the hamsh prompt takes far longer than that (the
+# guest is still in early kernel bring-up at t+3s), and bytes delivered
+# to the UART before the shell starts reading are DROPPED on the floor,
+# not queued. The result: every block statement was swallowed and only
+# the last couple of commands ever reached the shell, so the gate was
+# permanently red for a reason that had nothing to do with hamsh.
+# (Same trap as scripts/_hamsh_log.sh documents for the input echo:
+# drive on a marker, never on a sleep.)
+#
+# Now the driver opens a FIFO on QEMU's stdin and only types once the
+# shell has announced itself, waiting for each command's OUTPUT before
+# sending the next.
 set +e
-(
-    sleep 3
-    # multi-line if from the continuation prompt
-    printf 'if 5 > 2 {\necho IF_TRUE_BRANCH\n} else {\necho IF_FALSE_BRANCH\n}\n'
-    sleep 2
-    # multi-line for loop
-    printf 'for w in ["p", "q", "r"] {\necho FOR_ITEM $w\n}\n'
-    sleep 2
-    # multi-line while loop
-    printf 'c = 0\n'
-    sleep 1
-    printf 'while c < 2 {\necho WHILE_ITER $c\nc = c + 1\n}\n'
-    sleep 2
-    # def + call
-    printf 'def dbl(v) {\nreturn v + v\n}\n'
-    sleep 2
-    printf 'echo DEF_RESULT ${ dbl(21) }\n'
-    sleep 1
-    # mismatched braces: must report a clean parse error, not crash
-    printf 'echo BEFORE_BADBRACE\n'
-    sleep 1
-    printf 'if 1 > 0 { echo UNCLOSED\n'
-    sleep 1
-    printf '}\n'
-    sleep 1
-    printf 'echo AFTER_BADBRACE\n'
-    sleep 1
-    printf 'exit\n'
-    sleep 1
-) | timeout 35s qemu-system-x86_64 \
+timeout 180s qemu-system-x86_64 \
     -kernel "$ELF" -smp 2 -nographic -no-reboot -m 256M \
-    -monitor none -serial stdio > "$LOG" 2>&1
+    -monitor none -serial stdio < "$IN" > "$LOG" 2>&1 &
+QPID=$!
+exec 9>"$IN"
+
+send() { printf '%b' "$1" >&9 2>/dev/null; }
+
+# wait_log <marker> <timeout_s> — marker anywhere in the raw serial log.
+wait_log() {
+    local m="$1" t="$2" i=0
+    while [ "$i" -lt "$((t * 4))" ]; do
+        grep -a -q -F -- "$m" "$LOG" 2>/dev/null && return 0
+        kill -0 "$QPID" 2>/dev/null || return 1
+        sleep 0.25
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# wait_out <marker> <timeout_s> — marker in genuine command OUTPUT
+# (input echo filtered out by hamsh_ran).
+wait_out() {
+    local m="$1" t="$2" i=0
+    while [ "$i" -lt "$((t * 4))" ]; do
+        hamsh_ran "$LOG" "$m" && return 0
+        kill -0 "$QPID" 2>/dev/null || return 1
+        sleep 0.25
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# The shell prints this once its read loop is live.
+wait_log "[hamsh] M16.35 shell ready" 150
+
+# hamsh is known to drop the FIRST serial command it sees; burn one on a
+# sync echo and wait for it to come back before the real script starts.
+send 'echo SYNC_OK\n'
+wait_out "SYNC_OK" 20 || { send 'echo SYNC_OK\n'; wait_out "SYNC_OK" 20; }
+
+# multi-line if from the continuation prompt
+send 'if 5 > 2 {\necho IF_TRUE_BRANCH\n} else {\necho IF_FALSE_BRANCH\n}\n'
+wait_out "IF_TRUE_BRANCH" 25
+# multi-line for loop
+send 'for w in ["p", "q", "r"] {\necho FOR_ITEM $w\n}\n'
+wait_out "FOR_ITEM r" 25
+# multi-line while loop
+send 'c = 0\n'
+sleep 1
+send 'while c < 2 {\necho WHILE_ITER $c\nc = c + 1\n}\n'
+wait_out "WHILE_ITER 1" 25
+# def + call
+send 'def dbl(v) {\nreturn v + v\n}\n'
+sleep 2
+send 'echo DEF_RESULT ${ dbl(21) }\n'
+wait_out "DEF_RESULT 42" 25
+# mismatched braces: must report a clean parse error, not crash
+send 'echo BEFORE_BADBRACE\n'
+wait_out "BEFORE_BADBRACE" 20
+send 'if 1 > 0 { echo UNCLOSED\n'
+sleep 2
+send '}\n'
+sleep 2
+send 'echo AFTER_BADBRACE\n'
+wait_out "AFTER_BADBRACE" 20
+send 'exit\n'
+sleep 2
+exec 9>&-
+# The script is done; `exit` ends hamsh but the kernel keeps running, so
+# stop OUR qemu rather than idling until the timeout fires. (Only this
+# pid — never a global pkill.)
+kill "$QPID" 2>/dev/null
+wait "$QPID" 2>/dev/null
 set -e
 
 echo "[test_hamsh_blocks] --- captured ---"

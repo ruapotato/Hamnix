@@ -8,12 +8,22 @@
 # on a gen bump, parses the P6 PPM and repaints the desktop backdrop as a
 # nearest-neighbour mosaic of `fill` rects (no bitmap tier in the scene DE).
 #
-# This drives the LIVE DE: from the serial shell it applies the build-planted
-# /etc/wallpaper.ppm (a 640x480 gradient — the SAME PPM path the Settings app
-# swatches write, only a real image instead of a solid swatch) by writing
-# `wallpaper /etc/wallpaper.ppm` to /dev/wsys/ctl, then screendumps the
-# framebuffer BEFORE and AFTER. The desktop backdrop must visibly change from
-# the solid teal (#205060) fallback to the image colours.
+# This drives the LIVE DE the way a real user does: it spawns
+# `/bin/hamctl --wall 1` THROUGH THE DE LAUNCH QUEUE (/dev/wsys/run/launch),
+# which is the context a Control Center wallpaper click runs in. hamctl renders
+# the built-in image to /tmp/hamnix-wallpaper.ppm and writes the /dev/wsys/ctl
+# `wallpaper <path>` verb itself. The gate screendumps the framebuffer BEFORE
+# and AFTER; the desktop backdrop must visibly change from the solid teal
+# (#205060) fallback to the image colours.
+#
+# WHY NOT FROM THE SERIAL SHELL (2026-07-25): this gate used to `echo
+# 'wallpaper /etc/wallpaper.ppm' > /dev/wsys/ctl` from the interactive shell
+# handed off at the end of boot. That verb is hostowner-only and the serial
+# shell's session is NOT the DE's, so the kernel correctly REFUSED the write —
+# /dev/wsys/wallpaper stayed at gen 0 and the gate was permanently red. The
+# privilege check was right; the gate was driving the wrong seam. Fixed by
+# going through the launch queue (same mechanism scripts/
+# test_de_wallpaper_fullscreen.sh uses) rather than by weakening the check.
 #
 # Assertion: the AFTER frame differs from the BEFORE frame by a LARGE region
 # (the whole desktop backdrop repainted from teal to the gradient), and the
@@ -22,17 +32,6 @@
 #
 # SKIPS CLEANLY (exit 0) when /dev/kvm, OVMF, the image, or socat are
 # unavailable. rc=124 (host-load timeout) is NOT a fail.
-
-# KNOWN-RED, PRE-EXISTING (diagnosed 2026-07-25): this gate applies the
-# wallpaper by writing `wallpaper <path>` to /dev/wsys/ctl FROM THE SERIAL
-# SHELL, and that verb is hostowner-only — the interactive shell handed off at
-# the end of boot is not the DE's session, so the write is refused and
-# /dev/wsys/wallpaper still reads gen 0 ("before teal == after teal", diff ~13
-# px). It is NOT a hamdesktop regression: scripts/test_de_wallpaper_fullscreen.sh
-# drives the same pipeline through the DE launch queue (the context a Control
-# Center click runs in) and the backdrop repaints in full. Fixing this one needs
-# either a hostowner-side applier or a relaxed ctl gate — a privilege-model
-# decision, not a DE one.
 
 set -uo pipefail
 
@@ -261,17 +260,26 @@ try:
         screendump("before")
         time.sleep(0.5)
 
-        # Apply the build-planted /etc/wallpaper.ppm (a 640x480 gradient) as
-        # the wallpaper — the SAME /dev/wsys/ctl verb + PPM-path mechanism the
-        # Settings swatches use. hamdesktop polls /dev/wsys/wallpaper, sees the
-        # gen bump, parses the PPM and repaints the backdrop mosaic.
+        # Apply a built-in image wallpaper the way a Control Center click does:
+        # spawn hamctl VIA THE DE LAUNCH QUEUE (hostowner session). hamctl
+        # renders the image to /tmp/hamnix-wallpaper.ppm and writes the
+        # /dev/wsys/ctl `wallpaper <path>` verb; hamdesktop polls
+        # /dev/wsys/wallpaper, sees the gen bump, parses the PPM and repaints
+        # the backdrop mosaic. Driving this from the serial shell instead gets
+        # the ctl write (correctly) refused — see the header note.
         send("echo APPLY_WALLPAPER_BEGIN")
-        send("echo 'wallpaper /etc/wallpaper.ppm' > /dev/wsys/ctl")
+        send("echo '/bin/hamctl --wall 1' > /dev/wsys/run/launch")
+        if wait_for("[hamctl] wallpaper applied", 30):
+            print("[wp_gate] driver: hamctl applied the wallpaper",
+                  file=sys.stderr)
+        else:
+            print("[wp_gate] driver: hamctl apply marker not seen "
+                  "(continuing; visual diff is authoritative)", file=sys.stderr)
         # Confirm the kernel recorded it (gen should be non-zero now).
         time.sleep(0.5)
         send("echo WPRBB; cat /dev/wsys/wallpaper; echo; echo WPRBE")
         # hamdesktop polls on its redraw cadence; give it time to load + repaint.
-        if wait_for("[hamdesktop] wallpaper loaded", 20):
+        if wait_for("[hamdesktop] wallpaper loaded", 25):
             print("[wp_gate] driver: hamdesktop reported wallpaper loaded",
                   file=sys.stderr)
         else:
