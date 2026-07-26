@@ -7,7 +7,7 @@ from lib.web.dom.forms import _has_word
 from lib.htmlengine import he_media_match
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -540,6 +540,8 @@ def _cre_make_text(sval: int32) -> int32:
     js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#text"), 5))
     js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, sval)
+    js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, sval)
+    _node_identity(tco, g_proto_text)
     cre_obj[tcid] = tco
     cre_n = tcid + 1
     return tco
@@ -1586,10 +1588,237 @@ def _match_media() -> int32:
     return mql
 
 
+# ====================================================================
+# Framework-mount primitives (§5 of docs/hambrowse_real_web_review_2026-07-25.md)
+# ====================================================================
+# Is `v` a DocumentFragment? Fragments are NOT created-node-pool members (they
+# never render), so they are recognised by nodeType 11 alone.
+def _is_fragment(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return 0
+    if _find_cre_by_obj(v) >= 0:
+        return 0
+    ntv: int32 = js_get_prop(v, cast[Ptr[uint8]]("nodeType"), 8)
+    if js_type_of(ntv) != 3:                              # 3 == number tag
+        return 0
+    if cast[int32](js_to_number(ntv)) != 11:
+        return 0
+    return 1
+
+
+# Empty a fragment's child list after its children have been moved out.
+def _frag_clear(fragv: int32):
+    empty: int32 = js_new_array_v()
+    js_set_prop(fragv, cast[Ptr[uint8]]("children"), 8, empty)
+    js_set_prop(fragv, cast[Ptr[uint8]]("childNodes"), 10, empty)
+    js_set_prop(fragv, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+    js_set_prop(fragv, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+
+
+# Extend `parentv`'s live .textContent with an appended TEXT node's data.
+# Element children are deliberately excluded: they render through the
+# created-node emitter, and a textContent override on their parent would make
+# the readback flatten the whole subtree to escaped text.
+def _append_sync_text(parentv: int32, childv: int32):
+    cid2: int32 = _find_cre_by_obj(childv)
+    if cid2 < 0 or cre_is_text[cid2] == 0:
+        return
+    tsbuf: Array[8192, uint8]
+    tw: int32 = 0
+    exv: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("textContent"), 11)
+    exp2: Ptr[uint8] = js_str_ptr(exv)
+    exn: int32 = _cstr_len(exp2)
+    if _is_undef_str(exp2, exn) != 0:
+        exn = 0
+    i: int32 = 0
+    while i < exn and tw < 8191:
+        tsbuf[tw] = exp2[i]
+        tw = tw + 1
+        i = i + 1
+    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, \
+                                cast[Ptr[uint8]]("textContent"), 11))
+    nvn: int32 = _cstr_len(nvp)
+    if _is_undef_str(nvp, nvn) == 0:
+        j: int32 = 0
+        while j < nvn and tw < 8191:
+            tsbuf[tw] = nvp[j]
+            tw = tw + 1
+            j = j + 1
+    js_set_prop(parentv, cast[Ptr[uint8]]("textContent"), 11, \
+                js_new_string(&tsbuf[0], cast[uint64](tw)))
+
+
+# parent.appendChild(child) with explicit values — shared by the NID_APPEND
+# dispatch and the DocumentFragment flush (which replays each child through it).
+def _append_child_v(parentv: int32, childv: int32):
+    ch: int32 = _find_cre_by_obj(childv)
+    if ch >= 0:
+        cre_gone[ch] = 0                                  # (re)attach
+        par: int32 = _find_el_by_obj(parentv)
+        if par >= 0:
+            _ap_add(par, ch, -1)
+            # keep the parent's live JS .children/.childNodes in sync so a
+            # subsequent read sees the appended node, and give the child a
+            # parentNode back-link (round 2 real-tree mutation).
+            pch: int32 = js_get_prop(dom_obj[par], cast[Ptr[uint8]]("children"), 8)
+            if js_is_array(pch) != 0:
+                js_array_push(pch, childv)
+                _wire_sibling_links(pch, dom_obj[par])
+            js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par])
+            js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par])
+        else:
+            pcid: int32 = _find_cre_by_obj(parentv)
+            if pcid >= 0:
+                _cc_add(pcid, ch, -1)
+                # keep the CREATED parent's live JS .children/.childNodes in sync
+                # too (nesting: ul.appendChild(li) before ul is mounted) so
+                # ul.children.length reflects the append.
+                ccpch: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8)
+                if js_is_array(ccpch) != 0:
+                    js_array_push(ccpch, childv)
+                    _wire_sibling_links(ccpch, parentv)
+                js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+                js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+    _mo_record_childlist(parentv, childv, -1)
+    # A TEXT child extends the parent's live textContent. Without this an
+    # `appendChild(document.createTextNode("x"))` left `.textContent` at "" —
+    # which is exactly how React writes every string child, so a rendered React
+    # tree read back empty.
+    _append_sync_text(parentv, childv)
+
+
+# Build the `port1`/`port2` pair of a MessageChannel. Each port carries a hidden
+# `__peer` link; postMessage looks up the PEER's current `onmessage` and defers
+# it on the shared task queue, which is precisely the semantics React 18's
+# scheduler wants (a macrotask hop that runs after the current microtask drain).
+def _make_message_channel() -> int32:
+    chan: int32 = js_new_object_v()
+    p1: int32 = js_new_object_v()
+    p2: int32 = js_new_object_v()
+    _wire_message_port(p1, p2)
+    _wire_message_port(p2, p1)
+    js_set_prop(chan, cast[Ptr[uint8]]("port1"), 5, p1)
+    js_set_prop(chan, cast[Ptr[uint8]]("port2"), 5, p2)
+    return chan
+
+
+def _wire_message_port(port: int32, peer: int32):
+    js_set_prop(port, cast[Ptr[uint8]]("__peer"), 6, peer)
+    js_set_prop(port, cast[Ptr[uint8]]("onmessage"), 9, js_null())
+    js_set_prop(port, cast[Ptr[uint8]]("postMessage"), 11, \
+                js_new_native_fn(js_hbase + NID_MSGPORT_POST))
+    js_set_prop(port, cast[Ptr[uint8]]("start"), 5, \
+                js_new_native_fn(js_hbase + NID_MSGPORT_NOOP))
+    js_set_prop(port, cast[Ptr[uint8]]("close"), 5, \
+                js_new_native_fn(js_hbase + NID_MSGPORT_NOOP))
+
+
+# The framework-mount native methods (createComment / createDocumentFragment /
+# the CSSStyleDeclaration trio / MessageChannel). createElementNS is handled in
+# the main dispatcher because it shares createElement's node-building body.
+def _mount_dispatch(rel: int32) -> int32:
+    if rel == NID_CREATECOMMENT:
+        # A comment node: nodeType 8, never rendered (it is not a created-node
+        # pool member, so no emitter path can reach it) but a real object that
+        # can be appended and read back. React marks Suspense/portal boundaries
+        # with these.
+        cval: int32 = js_new_string(&dom_txtbuf[0], 0)
+        if js_arg_count() >= 1:
+            cval = js_arg(0)
+        cmt: int32 = js_new_object_v()
+        js_set_prop(cmt, cast[Ptr[uint8]]("nodeType"), 8, js_number(8.0))
+        js_set_prop(cmt, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#comment"), 8))
+        js_set_prop(cmt, cast[Ptr[uint8]]("nodeValue"), 9, cval)
+        js_set_prop(cmt, cast[Ptr[uint8]]("data"), 4, cval)
+        js_set_prop(cmt, cast[Ptr[uint8]]("textContent"), 11, cval)
+        js_set_prop(cmt, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+        _node_identity(cmt, g_proto_comm)
+        return cmt
+    if rel == NID_CREATEFRAG:
+        frag: int32 = js_new_object_v()
+        js_set_prop(frag, cast[Ptr[uint8]]("nodeType"), 8, js_number(11.0))
+        js_set_prop(frag, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#document-fragment"), 18))
+        js_set_prop(frag, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+        fkids: int32 = js_new_array_v()
+        js_set_prop(frag, cast[Ptr[uint8]]("children"), 8, fkids)
+        js_set_prop(frag, cast[Ptr[uint8]]("childNodes"), 10, fkids)
+        js_set_prop(frag, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+        js_set_prop(frag, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+        js_set_prop(frag, cast[Ptr[uint8]]("appendChild"), 11, \
+                    js_new_native_fn(js_hbase + NID_APPEND))
+        js_set_prop(frag, cast[Ptr[uint8]]("append"), 6, \
+                    js_new_native_fn(js_hbase + NID_APPEND_M))
+        js_set_prop(frag, cast[Ptr[uint8]]("querySelector"), 13, \
+                    js_new_native_fn(js_hbase + NID_QUERY))
+        js_set_prop(frag, cast[Ptr[uint8]]("querySelectorAll"), 16, \
+                    js_new_native_fn(js_hbase + NID_QUERYALL))
+        _node_identity(frag, g_proto_frag)
+        return frag
+    if rel == NID_STYLE_SETPROP:
+        # style.setProperty(name, value[, priority]). The style object stores
+        # camelCase members (that is what the cascade readback reads), so the CSS
+        # name is normalised first; `--custom` names pass through verbatim.
+        if js_arg_count() < 2:
+            return js_undefined()
+        spn: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
+        spcam: Array[256, uint8]
+        spl: int32 = _css_prop_camel(&dom_idtmp[0], spn, &spcam[0], 256)
+        spv: int32 = js_arg(1)
+        if js_type_of(spv) != 4:                          # 4 == string tag
+            spv = js_new_string(js_str_ptr(spv), \
+                                cast[uint64](_cstr_len(js_str_ptr(spv))))
+        js_set_prop(js_this(), &spcam[0], cast[uint64](spl), spv)
+        return js_undefined()
+    if rel == NID_STYLE_GETPROP:
+        if js_arg_count() < 1:
+            return js_new_string(&dom_txtbuf[0], 0)
+        gpn: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
+        gpcam: Array[256, uint8]
+        gpl: int32 = _css_prop_camel(&dom_idtmp[0], gpn, &gpcam[0], 256)
+        gv: int32 = js_get_prop(js_this(), &gpcam[0], cast[uint64](gpl))
+        gvp: Ptr[uint8] = js_str_ptr(gv)
+        if _is_undef_str(gvp, _cstr_len(gvp)) != 0:
+            return js_new_string(&dom_txtbuf[0], 0)       # "" for an unset property
+        return gv
+    if rel == NID_STYLE_REMPROP:
+        if js_arg_count() < 1:
+            return js_new_string(&dom_txtbuf[0], 0)
+        rpn: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
+        rpcam: Array[256, uint8]
+        rpl: int32 = _css_prop_camel(&dom_idtmp[0], rpn, &rpcam[0], 256)
+        old: int32 = js_get_prop(js_this(), &rpcam[0], cast[uint64](rpl))
+        js_set_prop(js_this(), &rpcam[0], cast[uint64](rpl), \
+                    js_new_string(&dom_txtbuf[0], 0))
+        oldp: Ptr[uint8] = js_str_ptr(old)
+        if _is_undef_str(oldp, _cstr_len(oldp)) != 0:
+            return js_new_string(&dom_txtbuf[0], 0)
+        return old
+    if rel == NID_MSGCHANNEL:
+        return _make_message_channel()
+    if rel == NID_MSGPORT_POST:
+        peer: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("__peer"), 6)
+        if js_type_of(peer) == TAG_OBJ:
+            handler: int32 = js_get_prop(peer, cast[Ptr[uint8]]("onmessage"), 9)
+            if js_is_callable(handler) != 0:
+                timer_schedule_fn(handler, 0.0)
+        return js_undefined()
+    if rel == NID_MSGPORT_NOOP:
+        return js_undefined()
+    # NID_NODE_CTOR — the DOM interface objects (Node, Element, …) exist to be
+    # branched on (`typeof Element`), read from (`Node.ELEMENT_NODE`) and tested
+    # against (`x instanceof Node`); calling one is a TypeError in a browser and
+    # a no-op here.
+    return js_undefined()
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
+    if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
+        return _mount_dispatch(rel)
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:
@@ -2185,10 +2414,18 @@ def _js_host_dispatch(id: int32) -> int32:
         cre_obj[clid] = clo
         cre_n = clid + 1
         return clo
-    if rel == NID_CREATE:
-        if js_arg_count() < 1 or cre_n >= CRE_MAX:
+    if rel == NID_CREATE or rel == NID_CREATE_NS:
+        # createElement(tag) and createElementNS(ns, tag) build the SAME node —
+        # only the argument slot and the resulting namespaceURI differ. The
+        # engine has one (HTML) layout model, so an SVG-namespaced element is
+        # still laid out as an unknown inline box; what matters for a framework
+        # mount is that the call returns a real, appendable node.
+        nsarg: int32 = 0
+        if rel == NID_CREATE_NS:
+            nsarg = 1
+        if js_arg_count() < nsarg + 1 or cre_n >= CRE_MAX:
             return js_null()
-        tn: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
+        tn: int32 = _arg_bytes(nsarg, &dom_idtmp[0], 256)
         cid: int32 = cre_n
         cre_tag_off[cid] = dom_idbuf_len
         k: int32 = 0
@@ -2227,6 +2464,8 @@ def _js_host_dispatch(id: int32) -> int32:
         # removeChild / remove / set|getAttribute / addEventListener, so a
         # script can build + nest a whole subtree before mounting it.
         _attach_el_methods(co)
+        if rel == NID_CREATE_NS:
+            js_set_prop(co, cast[Ptr[uint8]]("namespaceURI"), 12, js_arg(0))
         cre_obj[cid] = co
         cre_n = cid + 1
         return co
@@ -2249,6 +2488,10 @@ def _js_host_dispatch(id: int32) -> int32:
         js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
         js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, tval)
+        # `data` is the CharacterData alias React writes when it updates a text
+        # host (`u.stateNode.nodeValue = …` reads back through .data).
+        js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, tval)
+        _node_identity(tco, g_proto_text)
         cre_obj[tcid] = tco
         cre_n = tcid + 1
         return tco
@@ -2433,43 +2676,31 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_APPEND:
         # parent.appendChild(childNode). The parent may be a SOURCE element (a
         # top-level mount) or another CREATED node (nesting: table.appendChild(tr)).
+        # A DocumentFragment argument is not itself inserted: per spec its
+        # CHILDREN move into the parent and the fragment is left empty. Frameworks
+        # build an offscreen subtree in a fragment and commit it with one append.
+        if js_arg_count() >= 1 and _is_fragment(js_arg(0)) != 0:
+            fkids: int32 = js_get_prop(js_arg(0), cast[Ptr[uint8]]("children"), 8)
+            fn2: int32 = 0
+            if js_is_array(fkids) != 0:
+                fn2 = js_array_len(fkids)
+            fi: int32 = 0
+            while fi < fn2:
+                _append_child_v(js_this(), js_array_get(fkids, fi))
+                fi = fi + 1
+            _frag_clear(js_arg(0))
+            return js_arg(0)
+        # appending INTO a fragment: the fragment is not part of any render
+        # model, so only its JS child list + the back-links are maintained.
+        if js_arg_count() >= 1 and _is_fragment(js_this()) != 0:
+            tkids: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("children"), 8)
+            if js_is_array(tkids) != 0:
+                js_array_push(tkids, js_arg(0))
+                _wire_sibling_links(tkids, js_this())
+            js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, js_this())
+            return js_arg(0)
         if js_arg_count() >= 1:
-            ch: int32 = _find_cre_by_obj(js_arg(0))
-            if ch >= 0:
-                cre_gone[ch] = 0                          # (re)attach
-                par: int32 = _find_el_by_obj(js_this())
-                if par >= 0:
-                    _ap_add(par, ch, -1)
-                    # keep the parent's live JS .children/.childNodes in sync so
-                    # a subsequent read sees the appended node, and give the
-                    # child a parentNode back-link (round 2 real-tree mutation).
-                    pch: int32 = js_get_prop(dom_obj[par], \
-                                             cast[Ptr[uint8]]("children"), 8)
-                    if js_is_array(pch) != 0:
-                        js_array_push(pch, js_arg(0))
-                        _wire_sibling_links(pch, dom_obj[par])
-                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                dom_obj[par])
-                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentElement"), 13, \
-                                dom_obj[par])
-                else:
-                    pcid: int32 = _find_cre_by_obj(js_this())
-                    if pcid >= 0:
-                        _cc_add(pcid, ch, -1)
-                        # keep the CREATED parent's live JS .children/.childNodes
-                        # in sync too (nesting: ul.appendChild(li) before ul is
-                        # mounted) so ul.children.length reflects the append.
-                        ccpch: int32 = js_get_prop(js_this(), \
-                                                   cast[Ptr[uint8]]("children"), 8)
-                        if js_is_array(ccpch) != 0:
-                            js_array_push(ccpch, js_arg(0))
-                            _wire_sibling_links(ccpch, js_this())
-                        js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                    js_this())
-                        js_set_prop(js_arg(0), \
-                                    cast[Ptr[uint8]]("parentElement"), 13, js_this())
-        if js_arg_count() >= 1:
-            _mo_record_childlist(js_this(), js_arg(0), -1)
+            _append_child_v(js_this(), js_arg(0))
         return js_arg(0)
     if rel == NID_APPEND_M:
         # element.append(...nodes|strings) — created nodes are mounted; string
@@ -3126,6 +3357,83 @@ def _scan_title() -> int32:
 # DOM element (dedup via anchor lookup — same object getElementById returns), and
 # store it as `doc.prop`. If the page has no such tag the property is left unset
 # (source-anchored parser: html/head/body are not synthesized when absent).
+# Install one DOM interface object: a global constructor `name` whose
+# `.prototype` chains to `parent_proto` (0 = leave it on Object.prototype).
+# Returns the prototype value so callers can chain the next interface onto it.
+def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32:
+    ctor: int32 = js_new_native_fn(js_hbase + NID_NODE_CTOR)
+    js_global_set(name, nlen, ctor)
+    proto: int32 = js_fn_prototype(ctor)
+    if parent_proto != 0:
+        js_set_proto_v(proto, parent_proto)
+    return proto
+
+
+# The Node nodeType / DOCUMENT_POSITION constants, mirrored onto both `Node` and
+# every interface that inherits them (scripts read `Node.ELEMENT_NODE` and
+# `Element.ELEMENT_NODE` interchangeably; the spec puts them on both).
+def _node_constants(target: int32):
+    js_set_prop(target, cast[Ptr[uint8]]("ELEMENT_NODE"), 12, js_number(1.0))
+    js_set_prop(target, cast[Ptr[uint8]]("ATTRIBUTE_NODE"), 14, js_number(2.0))
+    js_set_prop(target, cast[Ptr[uint8]]("TEXT_NODE"), 9, js_number(3.0))
+    js_set_prop(target, cast[Ptr[uint8]]("CDATA_SECTION_NODE"), 18, js_number(4.0))
+    js_set_prop(target, cast[Ptr[uint8]]("ENTITY_REFERENCE_NODE"), 21, js_number(5.0))
+    js_set_prop(target, cast[Ptr[uint8]]("ENTITY_NODE"), 11, js_number(6.0))
+    js_set_prop(target, cast[Ptr[uint8]]("PROCESSING_INSTRUCTION_NODE"), 27, \
+                js_number(7.0))
+    js_set_prop(target, cast[Ptr[uint8]]("COMMENT_NODE"), 12, js_number(8.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_NODE"), 13, js_number(9.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_TYPE_NODE"), 18, js_number(10.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_FRAGMENT_NODE"), 22, \
+                js_number(11.0))
+    js_set_prop(target, cast[Ptr[uint8]]("NOTATION_NODE"), 13, js_number(12.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_DISCONNECTED"), 30, \
+                js_number(1.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_PRECEDING"), 27, \
+                js_number(2.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_FOLLOWING"), 27, \
+                js_number(4.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_CONTAINS"), 26, \
+                js_number(8.0))
+    js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_CONTAINED_BY"), 30, \
+                js_number(16.0))
+
+
+# Build the DOM class hierarchy (Node / Element / HTMLElement / CharacterData /
+# Text / Comment / DocumentFragment / Document) as real global constructors with
+# linked prototypes, and stash each prototype so every node the engine mints can
+# be branded. Called FIRST in _js_build_document, before any element object is
+# registered, so _attach_el_methods can link elements as they are created.
+def _build_dom_interfaces():
+    g_proto_node = _dom_interface(cast[Ptr[uint8]]("Node"), 4, 0)
+    nodector: int32 = js_global_get(cast[Ptr[uint8]]("Node"), 4)
+    _node_constants(nodector)
+    _node_constants(g_proto_node)
+    g_proto_elem = _dom_interface(cast[Ptr[uint8]]("Element"), 7, g_proto_node)
+    # HTMLElement inherits Element; elements are branded with the HTMLElement
+    # prototype so `el instanceof HTMLElement`, `instanceof Element` and
+    # `instanceof Node` are all true, exactly as in a browser.
+    g_proto_elem = _dom_interface(cast[Ptr[uint8]]("HTMLElement"), 11, g_proto_elem)
+    chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
+    g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
+    g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
+    g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
+                                  g_proto_node)
+    g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
+    _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
+    _dom_interface(cast[Ptr[uint8]]("HTMLInputElement"), 16, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLDivElement"), 14, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLAnchorElement"), 17, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("SVGElement"), 10, \
+                   js_fn_prototype(js_global_get(cast[Ptr[uint8]]("Element"), 7)))
+    # MessageChannel — React 18's scheduler prefers it over setTimeout for its
+    # "yield to the browser" hop (`"undefined"!==typeof MessageChannel`), and
+    # falls back to a 0ms timer otherwise. Ours delivers through the same task
+    # queue, so a posted message runs as a macrotask, after microtasks.
+    js_global_set(cast[Ptr[uint8]]("MessageChannel"), 14, \
+                  js_new_native_fn(js_hbase + NID_MSGCHANNEL))
+
+
 def _doc_set_el(doc: int32, prop: Ptr[uint8], plen: uint64, name: Ptr[uint8]):
     i: uint64 = 0
     while i < src_len:
@@ -3288,6 +3596,11 @@ def _js_build_document():
     _cssom_reset()                       # fresh CSSOM rule model for this page
     doc: int32 = js_new_object_v()
     js_doc = doc
+    # DOM interface objects FIRST: every element registered below is branded with
+    # HTMLElement.prototype as it is minted, so the class chain is complete
+    # without a second pass.
+    _build_dom_interfaces()
+    js_set_proto_v(doc, g_proto_doc)
     js_set_prop(doc, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](9)))
     js_set_prop(doc, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#document"), 9))
@@ -3297,6 +3610,20 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_CREATE))
     js_set_prop(doc, cast[Ptr[uint8]]("createTextNode"), 14, \
                 js_new_native_fn(js_hbase + NID_CTEXT))
+    # The rest of the node-factory surface a framework renderer calls. React
+    # creates SVG/MathML hosts through createElementNS, marks Suspense/portal
+    # boundaries with createComment, and batches offscreen subtrees into a
+    # DocumentFragment before a single mounting append.
+    js_set_prop(doc, cast[Ptr[uint8]]("createElementNS"), 15, \
+                js_new_native_fn(js_hbase + NID_CREATE_NS))
+    js_set_prop(doc, cast[Ptr[uint8]]("createComment"), 13, \
+                js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(doc, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
+                js_new_native_fn(js_hbase + NID_CREATEFRAG))
+    # A document's ownerDocument is null (it IS the document) — code that walks
+    # `n.ownerDocument || n` relies on the null, not on undefined.
+    js_set_prop(doc, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    _node_constants(doc)
     js_set_prop(doc, cast[Ptr[uint8]]("querySelector"), 13, \
                 js_new_native_fn(js_hbase + NID_QUERY))
     js_set_prop(doc, cast[Ptr[uint8]]("querySelectorAll"), 16, \
@@ -3355,6 +3682,12 @@ def _js_build_document():
     # load lifecycle together — see _fire_document / the _run_scripts tail).
     js_win = js_global_get(cast[Ptr[uint8]]("window"), 6)
     if js_type_of(js_win) == 5:                           # 5 == object tag
+        # document.defaultView === window. Frameworks resolve the owning window
+        # from a node this way — React's selection restore does
+        # `(c.ownerDocument||document).defaultView||window` — and a getSelection
+        # or event-constructor lookup off `undefined` is a hard throw.
+        js_set_prop(doc, cast[Ptr[uint8]]("defaultView"), 11, js_win)
+        js_set_prop(js_win, cast[Ptr[uint8]]("document"), 8, doc)
         js_set_prop(js_win, cast[Ptr[uint8]]("addEventListener"), 16, \
                     js_new_native_fn(js_hbase + NID_ADDEVT))
         js_set_prop(js_win, cast[Ptr[uint8]]("removeEventListener"), 19, \

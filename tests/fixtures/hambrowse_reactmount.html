@@ -1,0 +1,88 @@
+<!doctype html><html><head><title>reactmount</title></head><body>
+<!-- The DOM plumbing a real framework mount demands, isolated from any bundle.
+     Every line here reported `undefined` (or threw) in the 2026-07-25 real-web
+     review (docs/hambrowse_real_web_review_2026-07-25.md §5) and is what made
+     ReactDOM.createRoot() die before rendering anything. Pinned by
+     scripts/test_hambrowse_reactmount_host.sh; the paired end-to-end proof (real
+     React 18 UMD actually rendering) runs off tests/fixtures/realweb/react_spa.html. -->
+<div id="root"></div>
+<div id="work"></div>
+<script>
+var el = document.getElementById("work");
+
+// --- node identity -------------------------------------------------------
+console.log("OWNERDOC " + (el.ownerDocument === document));
+console.log("OWNERDOC-CREATED " + (document.createElement("div").ownerDocument === document));
+console.log("OWNERDOC-DOC " + (document.ownerDocument === null));
+console.log("NSURI " + el.namespaceURI);
+console.log("DEFAULTVIEW " + (document.defaultView === window));
+console.log("HEAD " + (document.head ? document.head.tagName : "NONE"));
+
+// --- interface objects + branding ----------------------------------------
+console.log("IFACE " + typeof Element + "/" + typeof Node + "/" + typeof HTMLElement +
+            "/" + typeof DocumentFragment + "/" + typeof Text + "/" + typeof Comment);
+console.log("NODECONST " + Node.ELEMENT_NODE + "," + Node.TEXT_NODE + "," +
+            Node.COMMENT_NODE + "," + Node.DOCUMENT_NODE + "," + Node.DOCUMENT_FRAGMENT_NODE);
+console.log("INSTOF-EL " + (el instanceof Element) + "/" + (el instanceof Node) +
+            "/" + (el instanceof HTMLElement));
+var tn = document.createTextNode("x");
+console.log("INSTOF-TEXT " + (tn instanceof Node) + "/" + (tn instanceof Text) +
+            "/" + (tn instanceof Element));
+console.log("INSTOF-DOC " + (document instanceof Node) + "/" + (document instanceof Document));
+
+// --- node factories ------------------------------------------------------
+var cm = document.createComment("boundary");
+console.log("COMMENT " + cm.nodeType + "/" + cm.nodeName + "/" + cm.nodeValue);
+var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+console.log("CREATENS " + svg.tagName.toLowerCase() + "/" + svg.namespaceURI);
+var frag = document.createDocumentFragment();
+console.log("FRAG " + frag.nodeType + "/" + frag.nodeName + "/" + frag.childNodes.length);
+frag.appendChild(document.createElement("i"));
+frag.appendChild(document.createElement("b"));
+console.log("FRAG-FILL " + frag.childNodes.length);
+el.appendChild(frag);
+console.log("FRAG-FLUSH " + el.children.length + "/" + frag.childNodes.length);
+
+// --- appended text nodes attach -----------------------------------------
+var d = document.createElement("div");
+d.appendChild(document.createTextNode("q"));
+console.log("TEXT-CREATED [" + d.textContent + "]");
+var d2 = document.getElementById("root");
+d2.appendChild(document.createTextNode("mounted"));
+console.log("TEXT-SOURCE [" + d2.textContent + "]");
+
+// --- CSSStyleDeclaration methods ----------------------------------------
+console.log("SETPROP " + typeof el.style.setProperty + "/" +
+            typeof el.style.getPropertyValue + "/" + typeof el.style.removeProperty);
+el.style.setProperty("background-color", "rgb(1, 2, 3)");
+console.log("SETPROP-KEBAB " + el.style.backgroundColor +
+            "/" + el.style.getPropertyValue("background-color"));
+el.style.setProperty("--brand", "7");
+console.log("SETPROP-CUSTOM " + el.style.getPropertyValue("--brand"));
+el.style.color = "red";
+el.style.removeProperty("color");
+console.log("REMOVEPROP [" + el.style.color + "]");
+
+// --- MessageChannel (React 18's scheduler macrotask hop) -----------------
+console.log("MSGCHAN " + typeof MessageChannel);
+var mc = new MessageChannel();
+mc.port1.onmessage = function () { console.log("MSGCHAN-DELIVERED"); };
+console.log("MSGCHAN-PORTS " + (typeof mc.port1.postMessage) + "/" + (typeof mc.port2.postMessage));
+mc.port2.postMessage(null);
+console.log("MSGCHAN-ASYNC");
+
+// --- var-in-switch hoisting (the miscompile that silently broke React) ----
+// A `var` declared in one switch clause and ASSIGNED bare in another must stay
+// FUNCTION-scoped. Minified React does exactly this in beginWork(); when the
+// declaration was not hoisted the bare assignment escaped to the global scope
+// and clobbered the page's own top-level `var e = React.createElement`.
+var e = "PAGE-GLOBAL";
+function sw(x) {
+  switch (x) {
+    case 1: var e = "local"; return e;
+    case 2: e = "clobber"; return e;
+  }
+}
+sw(2);
+console.log("SWITCH-HOIST " + e);
+</script></body></html>

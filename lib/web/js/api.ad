@@ -303,6 +303,38 @@ def js_new_native_fn(native_id: int32) -> int32:
     return v_new_native(native_id)
 
 
+# ---- prototype wiring (host classes) --------------------------------------
+# The embedder's host objects (DOM elements, text nodes, the document) are
+# ordinary objects with own properties, so `el instanceof Element` was always
+# false — instance_of() only walks [[Prototype]]. These two entry points let the
+# embedder build the real DOM class hierarchy: js_fn_prototype(Ctor) materialises
+# (and returns) `Ctor.prototype`, js_set_proto_v(obj, proto) links an instance —
+# or another prototype — to it. Enumeration (for-in / Object.keys / spread) walks
+# OWN properties only (see v_new_object), so nothing on a prototype leaks into it.
+def js_fn_prototype(fnv: int32) -> int32:
+    p: int32 = ensure_fn_prototype(fnv)
+    if tag_of(p) == TAG_OBJ:
+        return p
+    # ensure_fn_prototype only auto-creates for ORDINARY function declarations —
+    # a native function (which is what every host interface object is) is not
+    # constructable, so it never gets one. Mint it here; instance_of() then finds
+    # it as an own property on the next lookup.
+    if tag_of(fnv) != TAG_OBJ:
+        return v_undef()
+    proto: int32 = v_new_object()
+    obj_set(objid_of(proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), fnv)
+    obj_set(objid_of(fnv), str_from_cstr(cast[Ptr[uint8]]("prototype")), proto)
+    return proto
+
+
+def js_set_proto_v(objv: int32, protov: int32):
+    if tag_of(objv) != TAG_OBJ:
+        return
+    if tag_of(protov) != TAG_OBJ:
+        return
+    obj_proto[objid_of(objv)] = objid_of(protov)
+
+
 # ---- object / global manipulation ----
 def js_set_prop(objv: int32, name: Ptr[uint8], n: uint64, val: int32):
     member_set(objv, str_new(name, cast[int32](n)), val)

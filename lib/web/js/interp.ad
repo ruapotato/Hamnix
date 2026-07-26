@@ -2996,6 +2996,28 @@ def hoist_stmt(s: int32, env: int32):
         while s2 >= 0:
             hoist_stmt(s2, env)
             s2 = n_next[s2]
+    elif k == ND_SWITCH:
+        # `var` inside a switch CLAUSE is function-scoped like any other var.
+        # Missing this was a real miscompile, not a nicety: minified bundles
+        # declare a temp in one clause (`case 0: var e=b.pendingProps, …`) and
+        # ASSIGN it bare in another (`case 5: … e=b.pendingProps, …`). With the
+        # declaration unhoisted the bare assignment fell through to the GLOBAL
+        # scope, so React 18's beginWork() overwrote the page's own top-level
+        # `var e = React.createElement` mid-render and the app stopped rendering.
+        cs: int32 = n_b[s]
+        while cs >= 0:
+            cst: int32 = n_b[cs]
+            while cst >= 0:
+                hoist_stmt(cst, env)
+                cst = n_next[cst]
+            cs = n_next[cs]
+    elif k == ND_TRY:
+        # try / catch / finally blocks are not var scopes either.
+        hoist_stmt_child(n_a[s], env)
+        hoist_stmt_child(n_b[s], env)
+        hoist_stmt_child(n_c[s], env)
+    elif k == ND_LABELED:
+        hoist_stmt_child(n_a[s], env)
     elif k == ND_EXPORT:
         # `export <decl>` hoists exactly like the bare declaration would
         # (function decls become callable before the module body runs).

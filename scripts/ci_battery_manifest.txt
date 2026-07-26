@@ -624,6 +624,16 @@ bash scripts/test_hambrowse_googlebox_host.sh
 # and proves each tab keeps its own URL, scroll and Back/Forward history, then
 # composites the window and checks the new tab paints active (white).
 bash scripts/test_hambrowse_tabs_host.sh
+# scripts/test_hambrowse_reactmount_host.sh: the FRAMEWORK-MOUNT wall
+# (docs/hambrowse_real_web_review_2026-07-25.md §5). Real React 18 UMD used to
+# load and evaluate cleanly and then die inside ReactDOM.createRoot() on missing
+# DOM plumbing. Pins that plumbing (ownerDocument, namespaceURI, defaultView,
+# createComment/createDocumentFragment/createElementNS, the Node/Element
+# interface objects + instanceof branding, MessageChannel, style.setProperty,
+# appendChild(textNode) attaching) against chromium-verified values, plus the
+# var-in-switch hoisting fix, and END-TO-END that 142 KB of genuine React 18
+# renders chromium's exact DOM census on tests/fixtures/realweb/react_spa.html.
+bash scripts/test_hambrowse_reactmount_host.sh
 bash scripts/test_hambrowse_svgpctwidth.sh
 bash scripts/test_hambrowse_entities_host.sh
 bash scripts/test_hambrowse_entities2_host.sh

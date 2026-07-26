@@ -517,6 +517,44 @@ NID_CSSSHEET_CTOR: int32 = 106       # new CSSStyleSheet([{...}]) -> constructib
 NID_FONTS_LOAD:   int32 = 107        # document.fonts.load(font[, text]) -> Promise<FontFace[]>
 NID_FONTS_CHECK:  int32 = 108        # document.fonts.check(font[, text]) -> true
 NID_FONTS_NOOP:   int32 = 109        # add/delete/clear/forEach -> undefined (no-op)
+# --- Framework-mount primitives (real React 18 / Vue / Angular mount path) ----
+# The set `ReactDOM.createRoot()` + the first commit demand and that the engine
+# did not have: node factories for the non-element node types, the namespaced
+# element factory, the CSSOM setProperty/getPropertyValue/removeProperty trio
+# React uses for custom properties and `display:none !important`, and the
+# MessageChannel React 18's scheduler picks as its macrotask primitive.
+NID_CREATECOMMENT: int32 = 112       # document.createComment(data) -> Comment (nodeType 8)
+NID_CREATEFRAG:   int32 = 113        # document.createDocumentFragment() -> nodeType 11
+NID_CREATE_NS:    int32 = 114        # document.createElementNS(ns, tag)
+NID_STYLE_SETPROP: int32 = 115       # style.setProperty(name, value[, priority])
+NID_STYLE_GETPROP: int32 = 116       # style.getPropertyValue(name)
+NID_STYLE_REMPROP: int32 = 117       # style.removeProperty(name)
+NID_MSGCHANNEL:   int32 = 118        # new MessageChannel() -> {port1, port2}
+NID_MSGPORT_POST: int32 = 119        # port.postMessage(data) -> deliver to the peer
+NID_MSGPORT_NOOP: int32 = 120        # port.start() / port.close() -> undefined
+NID_NODE_CTOR:    int32 = 121        # Node/Element/... — interface objects (never called)
+
+# ---- DOM interface objects (Node, Element, HTMLElement, …) ------------------
+# Real frameworks feature-detect and branch on these THREE ways: `typeof Element`,
+# `Node.ELEMENT_NODE`, and `x instanceof Node`. The first two are just globals;
+# the third needs the instance's [[Prototype]] to reach the constructor's
+# `.prototype`, so every node object the engine mints is linked into this chain:
+#
+#   element  -> HTMLElement.prototype -> Element.prototype -> Node.prototype
+#   text     -> Text.prototype        -> CharacterData.prototype -> Node.prototype
+#   comment  -> Comment.prototype     -> CharacterData.prototype -> Node.prototype
+#   fragment -> DocumentFragment.prototype -> Node.prototype
+#   document -> Document.prototype    -> Node.prototype
+#
+# The prototypes stay EMPTY (the methods remain own properties on each node, as
+# before) so this is purely an identity/branding change: nothing moves, nothing
+# is enumerated differently (v_new_object's note: for-in walks own props only).
+g_proto_node:  int32 = 0             # Node.prototype
+g_proto_elem:  int32 = 0             # HTMLElement.prototype (elements link here)
+g_proto_text:  int32 = 0             # Text.prototype
+g_proto_comm:  int32 = 0             # Comment.prototype
+g_proto_frag:  int32 = 0             # DocumentFragment.prototype
+g_proto_doc:   int32 = 0             # Document.prototype
 
 # close-tag scan results
 g_close_lt:  uint64 = 0
@@ -562,6 +600,14 @@ def _dom_reset():
     canv_n = 0
     tx_n = 0
     tx_built = 0
+    # the DOM interface objects are per-JS-context (js_init wipes the heap), so
+    # drop the cached prototype handles; _js_build_document re-mints them.
+    g_proto_node = 0
+    g_proto_elem = 0
+    g_proto_text = 0
+    g_proto_comm = 0
+    g_proto_frag = 0
+    g_proto_doc = 0
     _cssom_reset()
     htmlcanvas_reset()
 

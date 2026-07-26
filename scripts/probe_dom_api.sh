@@ -150,6 +150,32 @@ probe computed_sheet_disp  'document.title=getComputedStyle(document.getElementB
 probe canvas_ctx           'var c=document.createElement("canvas");var ctx=c.getContext("2d");document.title=""+(ctx?"Y":"N")+"";'
 probe canvas_measure       'var c=document.createElement("canvas");var ctx=c.getContext("2d");document.title=""+(typeof ctx.measureText("hi").width)+"";'
 
+# ---- framework-mount plumbing (§5 of docs/hambrowse_real_web_review_2026-07-25) --
+# The exact surface real React 18 demands between `ReactDOM.createRoot(el)` and
+# its first commit. Every one of these read `undefined` (or threw) in the
+# 2026-07-25 review, and createRoot() died on the first of them.
+probe ownerDocument        'document.title=""+(document.getElementById("work").ownerDocument===document)+"";'
+probe ownerDocument_created 'document.title=""+(document.createElement("div").ownerDocument===document)+"";'
+probe ownerDocument_doc    'document.title=""+(document.ownerDocument===null)+"";'
+probe namespaceURI         'document.title=""+document.getElementById("work").namespaceURI+"";'
+probe defaultView          'document.title=""+(document.defaultView===window)+"";'
+probe document_head        'document.title=""+(document.head?document.head.tagName:"NONE")+"";'
+probe createComment        'var c=document.createComment("hi");document.title=c.nodeType+"/"+c.nodeValue;'
+probe createDocumentFragment 'var f=document.createDocumentFragment();document.title=f.nodeType+"/"+f.childNodes.length;'
+probe fragment_flush       'var f=document.createDocumentFragment();var a=document.createElement("i");var b=document.createElement("b");f.appendChild(a);f.appendChild(b);var w=document.getElementById("work");w.appendChild(f);document.title=w.children.length+"/"+f.childNodes.length;'
+probe createElementNS      'var s=document.createElementNS("http://www.w3.org/2000/svg","svg");document.title=s.tagName.toLowerCase()+"/"+s.namespaceURI;'
+probe Element_global       'document.title=""+(typeof Element)+"/"+(typeof Node)+"/"+(typeof HTMLElement)+"";'
+probe Node_constants       'document.title=Node.ELEMENT_NODE+","+Node.TEXT_NODE+","+Node.COMMENT_NODE+","+Node.DOCUMENT_FRAGMENT_NODE;'
+probe instanceof_Element   'var e=document.getElementById("work");document.title=""+(e instanceof Element)+"/"+(e instanceof Node)+"/"+(e instanceof HTMLElement)+"";'
+probe instanceof_Text      'var t=document.createTextNode("x");document.title=""+(t instanceof Node)+"/"+(t instanceof Text)+"/"+(t instanceof Element)+"";'
+probe MessageChannel       'document.title=""+(typeof MessageChannel)+"";'
+probe MessageChannel_post  'var m=new MessageChannel();m.port1.onmessage=function(){document.title="delivered"};m.port2.postMessage(1);'
+probe style_setProperty    'var e=document.getElementById("work");e.style.setProperty("background-color","rgb(1, 2, 3)");document.title=e.style.backgroundColor;'
+probe style_getPropertyValue 'var e=document.getElementById("work");e.style.color="red";document.title=e.style.getPropertyValue("color");'
+probe style_removeProperty 'var e=document.getElementById("work");e.style.color="red";e.style.removeProperty("color");document.title="["+e.style.color+"]";'
+probe appendChild_text     'var d=document.createElement("div");d.appendChild(document.createTextNode("q"));document.title="["+d.textContent+"]";'
+probe appendChild_text_src 'var w=document.getElementById("work");w.appendChild(document.createTextNode("qq"));document.title="["+w.textContent+"]";'
+
 # ---- web components ----
 probe customElements       'document.title=""+(typeof customElements)+"";'
 probe shadowdom            'var e=document.createElement("div");document.title=""+(typeof e.attachShadow)+"";'

@@ -85,6 +85,28 @@ def raf_schedule(base: int32, argc: int32) -> int32:
     return v_number(cast[float64](reg + 1))
 
 
+# Schedule an already-resolved callback VALUE as a macrotask. Unlike
+# timer_schedule() this needs no native call frame, so a HOST object can defer a
+# JS function it looked up itself — MessageChannel's port.postMessage, which is
+# React 18's scheduler's "yield back to the event loop" primitive. Returns the
+# timer id (reg+1), or 0 when the table is full.
+def timer_schedule_fn(fnv: int32, delay: float64) -> int32:
+    if timer_next >= TIMER_CAP:
+        return 0
+    reg: int32 = timer_next
+    timer_next = timer_next + 1
+    timer_fn[reg] = fnv
+    timer_delay[reg] = delay
+    timer_seq[reg] = timer_seq_ctr
+    timer_seq_ctr = timer_seq_ctr + 1
+    timer_active[reg] = cast[uint8](1)
+    timer_interval[reg] = cast[uint8](0)
+    timer_micro[reg] = cast[uint8](0)
+    timer_raf[reg] = cast[uint8](0)
+    timer_argc[reg] = 0
+    return reg + 1
+
+
 # Drain the task queue: pop due callbacks in (microtask-first, delay, insertion)
 # order and invoke them, capped at TIMER_DRAIN_CAP total invocations so a
 # self-re-enqueuing setInterval cannot spin forever. NOT wall-clock async.
