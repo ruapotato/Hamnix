@@ -55,9 +55,11 @@ require() {
         echo "[hamctl-wall] FAIL: missing marker: $1"; fail=1
     fi
 }
-require "IMG 0 NONUNIFORM PASS"
+# Images 1,2,3 = Sunset, Ocean, Tiles (image 0 is the Default gradient; the
+# harness renders each into the file it is named after).
 require "IMG 1 NONUNIFORM PASS"
 require "IMG 2 NONUNIFORM PASS"
+require "IMG 3 NONUNIFORM PASS"
 require "SOLID UNIFORM PASS"
 require "WALLPAPER_GATE PASS"
 

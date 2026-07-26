@@ -3134,7 +3134,7 @@ def _set_geometry_xy(ctlpath: Ptr[char], x: int64, y: int64, w: int64, h: int64)
 
 
 # Spawn a scene app by absolute path. Detached stdio (-2/-2).
-launch_argv: Array[2, uint64]
+launch_argv: Array[6, uint64]
 # pid of the most recent _launch() spawn (or <0 on failure). Read straight
 # after a _launch call to associate the spawned app with a tracked slot.
 last_launched_pid: int32 = 0
@@ -3152,6 +3152,49 @@ def _launch(prog: Ptr[char]):
         _writeall(1, cast[Ptr[uint8]]("[panel] launched "))
         _writeall(1, cast[Ptr[uint8]](prog))
         _writeall(1, cast[Ptr[uint8]]("\n"))
+
+
+# Spawn a queued launch line that carries ARGUMENTS: "/bin/prog a1 a2 ...".
+# `line` is a mutable, NUL-terminated copy of the queue payload; each space is
+# overwritten with a NUL in place so every token becomes its own C string, and
+# up to LAUNCH_MAX_ARGS-1 arguments are passed through to the app. A line with
+# no space takes the plain _launch path, byte-for-byte as before.
+#
+# WHY: the DE launch queue could only ever spawn argv[0]. Anything that needs a
+# parameter — `hamctl --wall 2` to apply a wallpaper, a viewer with a file —
+# had no way in, and running it from the serial shell instead is NOT the same
+# thing: the shell's session is not the DE's, so /dev/wsys/ctl verbs that the
+# DE may issue are refused there. Splitting here means an automated check can
+# exercise the app exactly as a click would.
+LAUNCH_MAX_ARGS: uint64 = 6
+def _launch_line(line: Ptr[uint8]):
+    n: uint64 = 0
+    launch_argv[0] = cast[uint64](line)
+    n = 1
+    i: uint64 = 0
+    while line[i] != 0:
+        if line[i] == 32:
+            line[i] = 0
+            j: uint64 = i + 1
+            while line[j] == 32:                        # collapse runs
+                j = j + 1
+            if line[j] != 0 and n + 1 < LAUNCH_MAX_ARGS:
+                launch_argv[n] = cast[uint64](&line[j])
+                n = n + 1
+            i = j
+        else:
+            i = i + 1
+    launch_argv[n] = 0
+    if n == 1:
+        _launch(cast[Ptr[char]](line))                   # no args: unchanged
+        return
+    pid: int32 = spawn_detached(cast[Ptr[char]](line), &launch_argv[0], -2, -2,
+                                cast[Ptr[uint64]](0))
+    last_launched_pid = pid
+    if pid >= 0:
+        _writeall(1, cast[Ptr[uint8]]("[panel] launched "))
+        _writeall(1, cast[Ptr[uint8]](line))
+        _writeall(1, cast[Ptr[uint8]](" (with args)\n"))
 
 
 # Is `pid` still the LIVE inbox popup we spawned? Reads /proc/<pid>/comm (the
@@ -3556,7 +3599,9 @@ def _drain_one_launch_queue(path: Ptr[char], last_serial: uint64) -> uint64:
             and _launch_q_buf[ps + 2] == 58:
         _launch_linux(cast[Ptr[char]](&_launch_q_buf[ps + 3]))
     else:
-        _launch(cast[Ptr[char]](&_launch_q_buf[ps]))
+        # "/bin/prog [args...]" — _launch_line splits on spaces (a bare path
+        # takes the identical no-args path it always did).
+        _launch_line(&_launch_q_buf[ps])
     return serial
 
 

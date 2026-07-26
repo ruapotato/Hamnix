@@ -110,19 +110,27 @@ def _slurp(path: Ptr[char]) -> uint64:
 
 
 # ---- wallpaper -----------------------------------------------------------
-ppm_buf: Array[9300, uint8]
+# The image wallpapers are rendered at WALL_W x WALL_H and written to
+# /tmp/hamnix-wallpaper.ppm; the desktop (user/hamdesktop.ad) uploads the
+# decoded pixels to the compositor's named-image store and blits them scaled
+# to the WHOLE screen. 256x192 is the 4:3 crop of the kernel image-store cap
+# (WSYS_IMG_MAX_W/H = 256), i.e. the sharpest backdrop the store can hold —
+# the old 64x48 reference was a thumbnail blown up 16x.
+WALL_W: int32 = 256
+WALL_H: int32 = 192
+ppm_buf: Array[147472, uint8]           # 256*192*3 + header slack
 
 
 def _write_wallpaper_ppm(r: int32, g: int32, b: int32) -> int32:
     p: uint64 = 0
-    hdr: Ptr[uint8] = cast[Ptr[uint8]]("P6\n64 48\n255\n")
+    hdr: Ptr[uint8] = cast[Ptr[uint8]]("P6\n256 192\n255\n")
     k: uint64 = 0
     while hdr[k] != 0:
         ppm_buf[p] = hdr[k]
         p = p + 1
         k = k + 1
     px: uint64 = 0
-    while px < 64 * 48:
+    while px < 256 * 192:
         ppm_buf[p] = cast[uint8](r)
         ppm_buf[p+1] = cast[uint8](g)
         ppm_buf[p+2] = cast[uint8](b)
@@ -137,11 +145,13 @@ def _write_wallpaper_ppm(r: int32, g: int32, b: int32) -> int32:
 
 
 # Render the procedurally-generated image `img` to the shared PPM buffer at
-# the 64x48 reference resolution (matches _write_wallpaper_ppm) and write it
-# to /tmp/hamnix-wallpaper.ppm. Same law as the capplet thumbnail + host gate.
+# the WALL_W x WALL_H wallpaper resolution (matches _write_wallpaper_ppm) and
+# write it to /tmp/hamnix-wallpaper.ppm. Same law as the capplet thumbnail +
+# host gate — hamctl_image_rgb is resolution-independent, so the picture you
+# picked is the picture the desktop paints, just at full backdrop resolution.
 def _write_wallpaper_image_ppm(img: int32) -> int32:
     p: uint64 = 0
-    hdr: Ptr[uint8] = cast[Ptr[uint8]]("P6\n64 48\n255\n")
+    hdr: Ptr[uint8] = cast[Ptr[uint8]]("P6\n256 192\n255\n")
     k: uint64 = 0
     while hdr[k] != 0:
         ppm_buf[p] = hdr[k]
@@ -149,10 +159,10 @@ def _write_wallpaper_image_ppm(img: int32) -> int32:
         k = k + 1
     rgb: Array[3, uint8]
     py: int32 = 0
-    while py < 48:
+    while py < WALL_H:
         px: int32 = 0
-        while px < 64:
-            hamctl_image_rgb(img, px, py, 64, 48, &rgb[0])
+        while px < WALL_W:
+            hamctl_image_rgb(img, px, py, WALL_W, WALL_H, &rgb[0])
             ppm_buf[p] = rgb[0]
             ppm_buf[p+1] = rgb[1]
             ppm_buf[p+2] = rgb[2]
@@ -863,8 +873,30 @@ def emit_scene(wid: int32):
 btn_down: int32 = 0
 
 
-def main() -> int32:
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
     sys_bind(cast[Ptr[char]]("/dev"), cast[Ptr[char]]("#c"), 0)
+    # HEADLESS wallpaper apply: `hamctl --wall <n>` renders built-in image `n`
+    # (0=Default 1=Sunset 2=Ocean 3=Tiles) and applies it through the EXACT
+    # sink the Appearance capplet's click uses (_apply_wallpaper_image), then
+    # exits. Used by the boot re-apply hook and by the visual wallpaper gate,
+    # which must select a background without steering the mouse.
+    if argc > 2:
+        a0: Ptr[uint8] = cast[Ptr[uint8]](argv[1])
+        if a0[0] == 45 and a0[1] == 45 and a0[2] == 119:      # "--w"(all)
+            nptr: Ptr[uint8] = cast[Ptr[uint8]](argv[2])
+            n: int32 = 0
+            k: uint64 = 0
+            while nptr[k] >= 48 and nptr[k] <= 57:
+                n = n * 10 + cast[int32](nptr[k]) - 48
+                k = k + 1
+            if n < 0 or n > 3:
+                n = 0
+            if _write_wallpaper_image_ppm(n) == 0:
+                _writeall(1, cast[Ptr[uint8]]("[hamctl] FAIL wallpaper ppm\n"))
+                return 1
+            _persist_wallpaper(1, n)
+            _wsys_wallpaper_apply()
+            return 0
     wid: int32 = _newwindow()
     if wid < 0:
         _writeall(1, cast[Ptr[uint8]]("[hamctl] FAIL newwindow\n"))

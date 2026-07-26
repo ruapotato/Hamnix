@@ -84,7 +84,7 @@ from lib.hamfmcore import fmc_set_cur_path, fmc_mkdir, \
 from lib.desktopentry import desktop_parse, desktop_name_ptr, \
     desktop_name_len, desktop_prog_ptr, desktop_prog_len, \
     desktop_liveonly, desktop_name_is_entry, desktop_icon_ptr
-from lib.hamscene import hamscene_length, hamscene_bufptr
+from lib.hamscene import hamscene_length, hamscene_bufptr, hamscene_image
 
 
 # --- host test hook: dump the desktop display list without any /dev/wsys I/O.
@@ -415,25 +415,37 @@ def _wp_load_path(path: Ptr[char]) -> int32:
     fd: int32 = sys_open(path)
     if fd < 0:
         return -1
-    # Transient read scratch: demand-zero anon mmap, freed before return so
-    # the ~900 KiB is never resident between wallpaper loads.
+    # Read scratch. FIRST CHOICE: a transient demand-zero anon mmap, freed
+    # before return. FALLBACK when mmap fails (a low-memory desktop must not
+    # silently lose its wallpaper — an mmap refusal here used to be an
+    # indistinguishable "backdrop never changed"): read into the TAIL of the
+    # decode buffer itself. _wp_ppm_parse_p6 copies pixels FORWARD from the
+    # header into wp_rgb[0..], and the source sits above the destination, so
+    # the in-place decode can never overtake its own input.
     rb64: int64 = sys_mmap(0, WP_FILE_CAP, WP_PROT_RW, WP_MAP_ANON, -1, 0)
+    mapped: int32 = 1
+    cap: uint64 = WP_FILE_CAP
+    rbuf: Ptr[uint8] = cast[Ptr[uint8]](0)
     if rb64 <= 0:
-        sys_close(fd)
-        return -1
-    rbuf: Ptr[uint8] = cast[Ptr[uint8]](rb64)
+        mapped = 0
+        cap = WP_MAX_BYTES / 2                           # tail half of wp_rgb
+        rbuf = cast[Ptr[uint8]](&wp_rgb[WP_MAX_BYTES - cap])
+    else:
+        rbuf = cast[Ptr[uint8]](rb64)
     total: uint64 = 0
-    while total < WP_FILE_CAP:
-        r: int64 = sys_read(fd, &rbuf[total], WP_FILE_CAP - total)
+    while total < cap:
+        r: int64 = sys_read(fd, &rbuf[total], cap - total)
         if r <= 0:
             break
         total = total + cast[uint64](r)
     sys_close(fd)
     if total == 0:
-        sys_munmap(cast[uint64](rb64), WP_FILE_CAP)
+        if mapped != 0:
+            sys_munmap(cast[uint64](rb64), WP_FILE_CAP)
         return -1
     rc: int32 = _wp_ppm_parse_p6(&rbuf[0], total)
-    sys_munmap(cast[uint64](rb64), WP_FILE_CAP)
+    if mapped != 0:
+        sys_munmap(cast[uint64](rb64), WP_FILE_CAP)
     if rc != 0:
         wp_loaded = 0
         wp_w = 0
@@ -450,6 +462,68 @@ def _wp_load_path(path: Ptr[char]) -> int32:
 # (the desktop only polls on its own slow redraw cadence already).
 wp_poll_buf: Array[320, uint8]
 wp_path_buf: Array[256, uint8]
+# The desktop's own window id, published for the wallpaper image upload
+# (_wp_upload_image needs a window to hang the named image off). 0 until
+# main() allocates the backdrop window; the --scene-dump host path leaves it 0
+# and falls back to the mosaic.
+wp_wid: int32 = 0
+
+
+# Publish the wallpaper pipeline's state to /tmp/hamdesktop-wp.status as
+#   "gen=<g> loaded=<0|1> w=<w> h=<h> img=<0|1>\n"
+# The desktop is spawned detached by rc.5, so its stdout goes nowhere: when a
+# picked wallpaper did not show up there was NO way to tell "file never
+# loaded" from "loaded but never painted" without rebuilding an instrumented
+# image. This one line makes the pipeline observable from a shell (and from
+# scripts/test_de_wallpaper_fullscreen.sh) at the cost of one small write per
+# wallpaper CHANGE.
+wp_status_buf: Array[96, uint8]
+def _wp_status(g: uint64):
+    p: uint64 = 0
+    pre: Ptr[uint8] = cast[Ptr[uint8]]("gen=")
+    k: uint64 = 0
+    while pre[k] != 0:
+        wp_status_buf[p] = pre[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(g, &wp_status_buf[p])
+    mid: Ptr[uint8] = cast[Ptr[uint8]](" loaded=")
+    k = 0
+    while mid[k] != 0:
+        wp_status_buf[p] = mid[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(cast[uint64](wp_loaded), &wp_status_buf[p])
+    m2: Ptr[uint8] = cast[Ptr[uint8]](" w=")
+    k = 0
+    while m2[k] != 0:
+        wp_status_buf[p] = m2[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(wp_w, &wp_status_buf[p])
+    m3: Ptr[uint8] = cast[Ptr[uint8]](" h=")
+    k = 0
+    while m3[k] != 0:
+        wp_status_buf[p] = m3[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(wp_h, &wp_status_buf[p])
+    m4: Ptr[uint8] = cast[Ptr[uint8]](" img=")
+    k = 0
+    while m4[k] != 0:
+        wp_status_buf[p] = m4[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(cast[uint64](wp_img_ok), &wp_status_buf[p])
+    wp_status_buf[p] = 10
+    p = p + 1
+    fd: int32 = sys_open_write(cast[Ptr[char]]("/tmp/hamdesktop-wp.status"))
+    if fd < 0:
+        return
+    sys_write(fd, &wp_status_buf[0], p)
+    sys_close(fd)
+
+
 def _wp_poll_kernel() -> int32:
     fd: int32 = sys_open(cast[Ptr[char]]("/dev/wsys/wallpaper"))
     if fd < 0:
@@ -468,6 +542,7 @@ def _wp_poll_kernel() -> int32:
     if g == 0:
         if wp_loaded != 0:
             wp_loaded = 0
+            wp_img_ok = 0
             wp_gen_seen = 0
             return 1
         return 0
@@ -492,11 +567,19 @@ def _wp_poll_kernel() -> int32:
     wp_path_buf[plen] = 0
     if _wp_load_path(cast[Ptr[char]](&wp_path_buf[0])) == 0:
         wp_gen_seen = g
+        # Push the decoded pixels to the window's named-image store so the
+        # backdrop is ONE compositor-scaled blit that always covers the whole
+        # screen. On failure wp_img_ok stays 0 and emit_wallpaper falls back to
+        # the (now full-coverage) fill mosaic.
+        _wp_upload_image(wp_wid)
+        _wp_status(g)
         return 1
     # Load failed: record the gen so we don't retry a bad file every pass, and
     # leave wp_loaded clear (solid-backdrop fallback). Signal a redraw so any
     # stale image is replaced by the fallback fill.
+    wp_img_ok = 0
     wp_gen_seen = g
+    _wp_status(g)
     return 1
 
 
@@ -561,49 +644,266 @@ def _wp_fill_worst_case():
     wp_loaded = 1
 
 
-def _wp_sample_col(gx: int64, syr: uint64) -> uint64:
-    # Nearest-neighbour source column for mosaic column gx; returns the byte
-    # index into wp_rgb of that (col,row) sample.
-    sxc: uint64 = cast[uint64](gx * cast[int64](wp_w) / WP_GRID_W)
+def _wp_sample_col(gx: int64, gw: int64, syr: uint64) -> uint64:
+    # Nearest-neighbour source column for mosaic column gx of a gw-wide grid;
+    # returns the byte index into wp_rgb of that (col,row) sample.
+    sxc: uint64 = cast[uint64](gx * cast[int64](wp_w) / gw)
     if sxc >= wp_w:
         sxc = wp_w - 1
     return (syr * wp_w + sxc) * 3
+
+
+def _wp_sample_row(gy: int64, gh: int64) -> uint64:
+    syr: uint64 = cast[uint64](gy * cast[int64](wp_h) / gh)
+    if syr >= wp_h:
+        syr = wp_h - 1
+    return syr
+
+
+# ---- full-screen wallpaper BLIT (#128 named image) -----------------------
+# THE fix for the user-reported "the background does not cover the full
+# screen and has a lot of black on the bottom, ~1/5 of the screen" (Sunset /
+# Ocean / Tiles; Default was fine).
+#
+# ROOT CAUSE: the fill-rect mosaic below is byte-bounded. Its cost is one
+# `fill` per RUN of equal-coloured cells per row, and it simply STOPPED
+# ("break") once the display list crossed WP_SCENE_BUDGET so the icon layer
+# would still fit. "Default" is a pure VERTICAL gradient — one run per row,
+# 18 fills, always fits, always covers. Sunset/Ocean/Tiles vary HORIZONTALLY
+# too, so every one of the 24 cells per row is its own fill: 432 fills ≈ 11 KB
+# against a 7 KB budget. The mosaic ran out of budget partway down and the
+# remaining rows were never painted — the black band at the bottom.
+#
+# THE FIX: stop approximating the picture in display-list text at all. The
+# compositor has a real raster tier (#128): upload the decoded pixels ONCE as
+# a per-window named image via the binary 'I' verb on /dev/wsys/<wid>/draw/ctl,
+# then reference it from the scene with a single `image 0 0 <scr_w> <scr_h>
+# wallpaper` op (~30 bytes). The compositor nearest-neighbour SCALES it to the
+# destination rect, so the wallpaper covers the FULL framebuffer by
+# construction, at full source resolution, and the icon layer keeps essentially
+# the whole scene buffer. The mosaic stays as the fallback for any path with no
+# window (the --scene-dump host gate) or a failed upload — and it now covers
+# the full height too (see emit_wallpaper).
+WP_IMG_DIM_MAX: uint64 = 256           # kernel WSYS_IMG_MAX_W / _MAX_H
+WP_IMG_VERB_CAP: uint64 = 262400       # 2 + 9 + 9 header + 256*256*4 pixels
+wp_img_ok: int32 = 0                   # 1 once the CURRENT image is uploaded
+wp_img_wid: int32 = 0                  # window the image was uploaded to
+
+
+def _wp_put_i32le(buf: Ptr[uint8], off: uint64, v: int64):
+    buf[off]     = cast[uint8](v & 255)
+    buf[off + 1] = cast[uint8]((v >> 8) & 255)
+    buf[off + 2] = cast[uint8]((v >> 16) & 255)
+    buf[off + 3] = cast[uint8]((v >> 24) & 255)
+
+
+# Upload the decoded wallpaper to window `wid`'s named-image store as
+# "wallpaper" (RGBA8888, downsampled to <= 256x256 — the kernel store cap).
+# Returns 1 on success. The staging buffer is TRANSIENT (demand-zero mmap,
+# munmapped before return) so a quarter-megabyte never stays resident.
+def _wp_upload_image(wid: int32) -> int32:
+    wp_img_ok = 0
+    if wp_loaded == 0 or wp_w == 0 or wp_h == 0 or wid <= 0:
+        return 0
+    tw: uint64 = wp_w
+    if tw > WP_IMG_DIM_MAX:
+        tw = WP_IMG_DIM_MAX
+    th: uint64 = wp_h
+    if th > WP_IMG_DIM_MAX:
+        th = WP_IMG_DIM_MAX
+    vb64: int64 = sys_mmap(0, WP_IMG_VERB_CAP, WP_PROT_RW, WP_MAP_ANON, -1, 0)
+    if vb64 <= 0:
+        return 0
+    vb: Ptr[uint8] = cast[Ptr[uint8]](vb64)
+    name: Ptr[uint8] = cast[Ptr[uint8]]("wallpaper")
+    nl: uint64 = 9
+    vb[0] = 73                                           # 'I'
+    vb[1] = cast[uint8](nl)
+    k: uint64 = 0
+    while k < nl:
+        vb[2 + k] = name[k]
+        k = k + 1
+    _wp_put_i32le(vb, 2 + nl, cast[int64](tw))
+    _wp_put_i32le(vb, 2 + nl + 4, cast[int64](th))
+    vb[2 + nl + 8] = 1                                   # WSYS_BLIT_FMT_RGBA8888
+    hdr: uint64 = 2 + nl + 9
+    y: uint64 = 0
+    while y < th:
+        sy: uint64 = y * wp_h / th
+        if sy >= wp_h:
+            sy = wp_h - 1
+        x: uint64 = 0
+        while x < tw:
+            sx: uint64 = x * wp_w / tw
+            if sx >= wp_w:
+                sx = wp_w - 1
+            si: uint64 = (sy * wp_w + sx) * 3
+            di: uint64 = hdr + (y * tw + x) * 4
+            vb[di]     = wp_rgb[si]
+            vb[di + 1] = wp_rgb[si + 1]
+            vb[di + 2] = wp_rgb[si + 2]
+            vb[di + 3] = 255
+            x = x + 1
+        y = y + 1
+    dp: Array[64, uint8]
+    _winpath(&dp[0], wid, cast[Ptr[uint8]]("/draw/ctl"))
+    fd: int32 = sys_open_write(cast[Ptr[char]](&dp[0]))
+    if fd < 0:
+        sys_munmap(cast[uint64](vb64), WP_IMG_VERB_CAP)
+        return 0
+    wr: int64 = sys_write(fd, &vb[0], hdr + tw * th * 4)
+    sys_close(fd)
+    sys_munmap(cast[uint64](vb64), WP_IMG_VERB_CAP)
+    if wr <= 0:
+        return 0
+    wp_img_ok = 1
+    wp_img_wid = wid
+    _writeall(1, cast[Ptr[uint8]]("[hamdesktop] wallpaper image uploaded\n"))
+    return 1
+
+
+# Total `fill` count a gw x gh mosaic would cost (one per run of equal-colour
+# adjacent cells per row). Pure counting — emits nothing.
+def _wp_mosaic_fills(gw: int64, gh: int64) -> int64:
+    total: int64 = 0
+    gy: int64 = 0
+    while gy < gh:
+        syr: uint64 = _wp_sample_row(gy, gh)
+        gx: int64 = 0
+        while gx < gw:
+            si: uint64 = _wp_sample_col(gx, gw, syr)
+            cr: uint8 = wp_rgb[si]
+            cg: uint8 = wp_rgb[si + 1]
+            cb: uint8 = wp_rgb[si + 2]
+            gxe: int64 = gx + 1
+            while gxe < gw:
+                se: uint64 = _wp_sample_col(gxe, gw, syr)
+                if wp_rgb[se] != cr or wp_rgb[se + 1] != cg \
+                        or wp_rgb[se + 2] != cb:
+                    break
+                gxe = gxe + 1
+            total = total + 1
+            gx = gxe
+        gy = gy + 1
+    return total
+
+
+# Candidate mosaic grids, FINEST first. emit_wallpaper picks the first one
+# whose measured fill count fits the byte budget, so the mosaic ALWAYS paints
+# every row down to scr_h — it coarsens instead of truncating.
+WP_CAND: uint64 = 9
+wp_cand_w: Array[9, int64]
+wp_cand_h: Array[9, int64]
+wp_cand_init: int32 = 0
+def _wp_cand_setup():
+    if wp_cand_init != 0:
+        return
+    wp_cand_init = 1
+    wp_cand_w[0] = 24
+    wp_cand_h[0] = 18
+    wp_cand_w[1] = 16
+    wp_cand_h[1] = 16
+    wp_cand_w[2] = 12
+    wp_cand_h[2] = 12
+    wp_cand_w[3] = 8
+    wp_cand_h[3] = 12
+    wp_cand_w[4] = 8
+    wp_cand_h[4] = 8
+    wp_cand_w[5] = 4
+    wp_cand_h[5] = 8
+    wp_cand_w[6] = 4
+    wp_cand_h[6] = 4
+    wp_cand_w[7] = 2
+    wp_cand_h[7] = 2
+    wp_cand_w[8] = 1
+    wp_cand_h[8] = 1
+
+
+# Bytes one mosaic `fill` costs at worst ("fill 1920 1080 1920 1080 #rrggbb\n").
+WP_FILL_BYTES: int64 = 34
+
+# Mean value of channel `ch` (0=R 1=G 2=B) over a coarse sample grid of the
+# decoded image — the base colour the full-screen blit is laid over.
+def _wp_avg(ch: uint64) -> uint8:
+    if wp_w == 0 or wp_h == 0:
+        return 0
+    acc: uint64 = 0
+    n: uint64 = 0
+    y: uint64 = 0
+    while y < 16:
+        sy: uint64 = y * wp_h / 16
+        x: uint64 = 0
+        while x < 16:
+            sx: uint64 = x * wp_w / 16
+            acc = acc + cast[uint64](wp_rgb[(sy * wp_w + sx) * 3 + ch])
+            n = n + 1
+            x = x + 1
+        y = y + 1
+    return cast[uint8](acc / n)
+
 
 wp_cell_color: Array[8, uint8]
 def emit_wallpaper() -> int32:
     if wp_loaded == 0 or wp_w == 0 or wp_h == 0:
         return 0
+    # Preferred path: ONE `image` op, compositor-scaled to the whole screen.
+    # It is laid over a full-screen fill of the image's AVERAGE colour: the
+    # scene `image` verb is a documented no-op for a name the compositor has
+    # not stored (forward-compatibility), so without the base fill an upload
+    # that did not land would leave the backdrop showing stale/black pixels —
+    # the very failure mode this whole change exists to kill. The fill costs
+    # ~30 bytes and is invisible under a successful blit.
+    if wp_img_ok != 0:
+        _wp_hex_init()
+        _wp_color_str(_wp_avg(0), _wp_avg(1), _wp_avg(2), &wp_cell_color[0])
+        hamscene_fill(0, 0, cast[int32](scr_w), cast[int32](scr_h),
+                      &wp_cell_color[0])
+        hamscene_image(0, 0, cast[int32](scr_w), cast[int32](scr_h),
+                       cast[Ptr[uint8]]("wallpaper"))
+        return 1
     _wp_hex_init()
+    _wp_cand_setup()
+    # Fallback mosaic. Choose the FINEST grid that fits the icon-reserved byte
+    # budget, measured exactly, so we never truncate mid-image (the black-band
+    # bug): a coarser-but-COMPLETE backdrop always beats a sharp half-painted
+    # one. The 1x1 candidate (a single full-screen fill) always fits.
+    avail: int64 = cast[int64](WP_SCENE_BUDGET) - cast[int64](hamscene_length())
+    budget: int64 = avail / WP_FILL_BYTES
+    gw: int64 = 1
+    gh: int64 = 1
+    ci: uint64 = 0
+    while ci < WP_CAND:
+        if _wp_mosaic_fills(wp_cand_w[ci], wp_cand_h[ci]) <= budget:
+            gw = wp_cand_w[ci]
+            gh = wp_cand_h[ci]
+            ci = WP_CAND
+        else:
+            ci = ci + 1
     gy: int64 = 0
-    while gy < WP_GRID_H:
-        # Icon-budget guard: never let the mosaic crowd out the icon layer.
-        if hamscene_length() >= WP_SCENE_BUDGET:
-            break
-        y0: int64 = gy * scr_h / WP_GRID_H
-        y1: int64 = (gy + 1) * scr_h / WP_GRID_H
-        if gy == WP_GRID_H - 1:
-            y1 = scr_h
-        syr: uint64 = cast[uint64](gy * cast[int64](wp_h) / WP_GRID_H)
-        if syr >= wp_h:
-            syr = wp_h - 1
+    while gy < gh:
+        y0: int64 = gy * scr_h / gh
+        y1: int64 = (gy + 1) * scr_h / gh
+        if gy == gh - 1:
+            y1 = scr_h                                   # last row -> screen bottom
+        syr: uint64 = _wp_sample_row(gy, gh)
         # Walk columns left-to-right, coalescing runs of identical source
         # colour into a single wide fill (huge byte win for solid/gradient).
         gx: int64 = 0
-        while gx < WP_GRID_W:
-            si: uint64 = _wp_sample_col(gx, syr)
+        while gx < gw:
+            si: uint64 = _wp_sample_col(gx, gw, syr)
             cr: uint8 = wp_rgb[si]
             cg: uint8 = wp_rgb[si + 1]
             cb: uint8 = wp_rgb[si + 2]
             gxe: int64 = gx + 1
-            while gxe < WP_GRID_W:
-                se: uint64 = _wp_sample_col(gxe, syr)
+            while gxe < gw:
+                se: uint64 = _wp_sample_col(gxe, gw, syr)
                 if wp_rgb[se] != cr or wp_rgb[se + 1] != cg \
                         or wp_rgb[se + 2] != cb:
                     break
                 gxe = gxe + 1
-            x0: int64 = gx * scr_w / WP_GRID_W
-            x1: int64 = gxe * scr_w / WP_GRID_W
-            if gxe >= WP_GRID_W:
+            x0: int64 = gx * scr_w / gw
+            x1: int64 = gxe * scr_w / gw
+            if gxe >= gw:
                 x1 = scr_w
             _wp_color_str(cr, cg, cb, &wp_cell_color[0])
             hamscene_fill(cast[int32](x0), cast[int32](y0),
@@ -2051,6 +2351,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _winpath(&evp[0], wid, cast[Ptr[uint8]]("/event"))
     _winpath(&keysp[0], wid, cast[Ptr[uint8]]("/keys"))
     demo_wid = wid
+    wp_wid = wid
 
     # Geometry. The REAL desktop is a full-screen backdrop pinned at the
     # screen origin. In --demo mode it is instead a normal decorated, RAISED

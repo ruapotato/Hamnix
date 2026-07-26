@@ -64,8 +64,32 @@ fi
 if ! grep -q "emit_wallpaper() == 0" "$DESK_SRC"; then
     fail_link "hamdesktop emit_scene no longer prefers emit_wallpaper() over the solid fill"
 fi
-if ! grep -q '"#205060"' "$DESK_SRC"; then
-    fail_link "hamdesktop solid teal backdrop FALLBACK fill gone"
+# The no-wallpaper FALLBACK backdrop. This used to be a flat teal #205060
+# fill; the desktop now paints emit_gradient_bg() (the banded out-of-box
+# gradient the "Default" wallpaper mirrors). Assert the fallback CALL, not the
+# retired colour literal — the literal-only check had been failing red on main
+# since the gradient landed.
+if ! grep -Eq "^def[[:space:]]+emit_gradient_bg" "$DESK_SRC" \
+        || ! grep -q "        emit_gradient_bg()" "$DESK_SRC"; then
+    fail_link "hamdesktop no-wallpaper gradient backdrop FALLBACK gone"
+fi
+
+# --- Full-coverage backdrop (user bug: black band at the bottom) ----------
+# The image backdrop must cover the WHOLE framebuffer. Two mechanisms:
+#   1. the compositor named-image blit (one `image 0 0 scr_w scr_h` op), and
+#   2. the fallback fill mosaic, which must COARSEN to fit its byte budget
+#      rather than stop partway down the screen.
+if ! grep -Eq "^def[[:space:]]+_wp_upload_image" "$DESK_SRC"; then
+    fail_link "hamdesktop _wp_upload_image() (named-image wallpaper blit) gone"
+fi
+if ! grep -q "hamscene_image(0, 0, cast\[int32\](scr_w), cast\[int32\](scr_h)" "$DESK_SRC"; then
+    fail_link "hamdesktop wallpaper blit no longer covers the full screen rect"
+fi
+if ! grep -Eq "^def[[:space:]]+_wp_mosaic_fills" "$DESK_SRC"; then
+    fail_link "hamdesktop mosaic fill-COUNTING (budget fit) gone — the mosaic can truncate again"
+fi
+if grep -q "if hamscene_length() >= WP_SCENE_BUDGET:" "$DESK_SRC"; then
+    fail_link "hamdesktop mosaic still BREAKS out mid-image on the byte budget (black band at the bottom)"
 fi
 
 # --- PPM byte-string parse smoke (the layout we hard-code must parse) -----

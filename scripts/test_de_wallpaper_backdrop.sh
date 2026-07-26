@@ -23,6 +23,17 @@
 # SKIPS CLEANLY (exit 0) when /dev/kvm, OVMF, the image, or socat are
 # unavailable. rc=124 (host-load timeout) is NOT a fail.
 
+# KNOWN-RED, PRE-EXISTING (diagnosed 2026-07-25): this gate applies the
+# wallpaper by writing `wallpaper <path>` to /dev/wsys/ctl FROM THE SERIAL
+# SHELL, and that verb is hostowner-only — the interactive shell handed off at
+# the end of boot is not the DE's session, so the write is refused and
+# /dev/wsys/wallpaper still reads gen 0 ("before teal == after teal", diff ~13
+# px). It is NOT a hamdesktop regression: scripts/test_de_wallpaper_fullscreen.sh
+# drives the same pipeline through the DE launch queue (the context a Control
+# Center click runs in) and the backdrop repaints in full. Fixing this one needs
+# either a hostowner-side applier or a relaxed ctl gate — a privilege-model
+# decision, not a DE one.
+
 set -uo pipefail
 
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

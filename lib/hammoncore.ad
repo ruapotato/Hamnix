@@ -221,6 +221,82 @@ def hammon_proc_add(pid: uint64, comm: Ptr[uint8], cpu_pct: int32):
     n_rows = n_rows + 1
 
 
+# --- process-table ORDER ---------------------------------------------
+# The driver appends rows in /proc/tasks (i.e. PID) order, which put the
+# busiest process wherever its pid happened to fall — the list read as
+# "sorted by CPU%, backwards". Every real monitor (top, Task Manager, MATE
+# System Monitor) puts the HEAVIEST consumer at the TOP, so sort here, at
+# the single choke point every renderer goes through.
+#
+# Order: CPU% DESCENDING, ties broken by PID ASCENDING. That tie-break makes
+# the order a TOTAL order on (cpu, pid) — two rows can never trade places
+# between frames while their samples are unchanged, so the table does not
+# jitter on redraw. Verbatim legacy rows (cpu == -1, the resize gate's
+# preformatted lines) carry no CPU key: they sort AFTER every structured row
+# and keep their relative order.
+def _row_before(a: uint64, b: uint64) -> int32:
+    ca: int32 = pr_cpu[a]
+    cb: int32 = pr_cpu[b]
+    if ca < 0 and cb < 0:
+        return 0                                         # both verbatim: keep
+    if ca < 0:
+        return 0                                         # verbatim sinks
+    if cb < 0:
+        return 1                                         # structured floats
+    if ca != cb:
+        if ca > cb:
+            return 1
+        return 0
+    if pr_pid[a] < pr_pid[b]:
+        return 1
+    return 0
+
+
+def _row_swap(a: uint64, b: uint64):
+    pa: Ptr[uint8] = row_ptr(a)
+    pb: Ptr[uint8] = row_ptr(b)
+    k: uint64 = 0
+    while k < ROW_CAP:
+        t: uint8 = pa[k]
+        pa[k] = pb[k]
+        pb[k] = t
+        k = k + 1
+    tp: uint64 = pr_pid[a]
+    pr_pid[a] = pr_pid[b]
+    pr_pid[b] = tp
+    tc: int32 = pr_cpu[a]
+    pr_cpu[a] = pr_cpu[b]
+    pr_cpu[b] = tc
+
+
+# Insertion sort (n <= MAX_ROWS = 24; already-sorted input costs one pass).
+def hammon_sort_procs():
+    i: uint64 = 1
+    while i < n_rows:
+        j: uint64 = i
+        while j > 0 and _row_before(j, j - 1) != 0:
+            _row_swap(j, j - 1)
+            j = j - 1
+        i = i + 1
+
+
+# Row accessors (gate-facing: assert the rendered ORDER, not just pixels).
+def hammon_row_count() -> uint64:
+    return n_rows
+
+
+def hammon_row_cpu(i: uint64) -> int32:
+    if i >= n_rows:
+        return -1
+    return pr_cpu[i]
+
+
+def hammon_row_pid(i: uint64) -> uint64:
+    if i >= n_rows:
+        return 0
+    return pr_pid[i]
+
+
 # ====================================================================
 # CLIENT-AREA SIZE + RESIZE
 # ====================================================================
@@ -337,20 +413,29 @@ def _plot_ring(ring: Ptr[uint8], n: uint64, gx: int32, gy: int32, gw: int32,
         i = i + 1
 
 
-# Plot a ring as filled vertical columns (area chart) — used for memory.
+# Plot a ring as a CONTINUOUS filled area (adjacent columns, no gaps).
+# Sample i owns the slot [gw*i/HIST, gw*(i+1)/HIST): every column's right
+# edge is the next column's left edge, so the series reads as one filled
+# area rather than a picket fence of spikes. (The old form paired a fixed
+# colw = gw/HIST with a (gw-colw)*i/HIST stride; whenever gw was not an
+# exact multiple of HIST the stride outran the width and punched a 1px gap
+# between consecutive samples.)
 def _area_ring(ring: Ptr[uint8], n: uint64, gx: int32, gy: int32, gw: int32,
                gh: int32, color: Ptr[uint8]):
     if n == 0:
         return
-    colw: int32 = cast[int32](cast[uint64](gw) / HIST)
-    if colw < 1:
-        colw = 1
     i: uint64 = 0
     while i < n:
         v: uint8 = ring[i]
         bh: int32 = cast[int32]((cast[uint64](v) * cast[uint64](gh - 1)) / 100)
-        cx: int32 = gx + cast[int32]((cast[uint64](gw - colw) * i) / HIST)
-        hamscene_fill(cx, gy + gh - bh, colw, bh, color)
+        if bh < 1:
+            bh = 1                                       # baseline at 0%
+        x0: int32 = gx + cast[int32]((cast[uint64](gw) * i) / HIST)
+        x1: int32 = gx + cast[int32]((cast[uint64](gw) * (i + 1)) / HIST)
+        cw: int32 = x1 - x0
+        if cw < 1:
+            cw = 1
+        hamscene_fill(x0, gy + gh - bh, cw, bh, color)
         i = i + 1
 
 
@@ -376,6 +461,9 @@ def _label_pct(out: Ptr[uint8], label: Ptr[uint8], pct: int32) -> uint64:
 # LAYOUT + RENDER
 # ====================================================================
 def hammon_build_scene():
+    # Heaviest process at the TOP (see hammon_sort_procs). Done here so EVERY
+    # renderer — native app, host gate — shows the same, deterministic order.
+    hammon_sort_procs()
     hamscene_begin()
     hamscene_fill(0, 0, WIN_W, WIN_H, cast[Ptr[uint8]]("#23272e"))
     hamscene_headerbar(0, 0, WIN_W, 26)

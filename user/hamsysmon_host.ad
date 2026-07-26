@@ -21,7 +21,7 @@ from lib.hamui_host import hamui_host_begin, hamui_host_rasterize, \
 from lib.hammoncore import hammon_set_uptime, hammon_set_mem, \
     hammon_tasks_clear, hammon_proc_add, hammon_build_scene, \
     hammon_set_win_size, hammon_set_cpu_total, hammon_set_core, \
-    hammon_set_ncores
+    hammon_set_ncores, hammon_row_count, hammon_row_cpu, hammon_row_pid
 from lib.sysmonspark import sysmon_spark
 
 
@@ -157,6 +157,39 @@ def _count(kind: int32, x0: int32, y0: int32, w: int32, h: int32) -> int64:
     return total
 
 
+# 1 if ANY pixel of column `x` in rows [y0,y0+h) matches `kind`.
+def _col_has(kind: int32, x: int32, y0: int32, h: int32) -> int32:
+    if _count(kind, x, y0, 1, h) > 0:
+        return 1
+    return 0
+
+
+# GAP metric for a filled series: scanning left-to-right across [x0,x0+w),
+# count the columns that have NO pixel of `kind` but sit BETWEEN two columns
+# that do. A continuous area chart has zero such holes; the old
+# fixed-width-plus-drifting-stride column layout left one per sample, which
+# is exactly what made the CPU graph read as detached spikes.
+def _gap_cols(kind: int32, x0: int32, y0: int32, w: int32, h: int32) -> int64:
+    first: int32 = -1
+    last: int32 = -1
+    xx: int32 = x0
+    while xx < x0 + w:
+        if _col_has(kind, xx, y0, h) != 0:
+            if first < 0:
+                first = xx
+            last = xx
+        xx = xx + 1
+    if first < 0:
+        return 0
+    gaps: int64 = 0
+    xx = first
+    while xx <= last:
+        if _col_has(kind, xx, y0, h) == 0:
+            gaps = gaps + 1
+        xx = xx + 1
+    return gaps
+
+
 def _report(tag: Ptr[uint8], v: int64):
     _o_str(cast[Ptr[uint8]]("COUNT "))
     _o_str(tag)
@@ -209,6 +242,20 @@ def _render_app(dir: Ptr[uint8]):
     _report(cast[Ptr[uint8]]("app_mem_blue"), _count(2, 12, 150, W - 24, 130))
     # Process list starts at y~251 (hot amber row near y~279); scan that band.
     _report(cast[Ptr[uint8]]("app_proc_amber"), _count(3, 8, 245, W - 16, 70))
+    # The memory area chart must be CONTINUOUS (no holes between columns).
+    _report(cast[Ptr[uint8]]("app_mem_gap_cols"),
+            _gap_cols(2, 12, 150, W - 24, 130))
+    # Process table ORDER: heaviest CPU% first, i.e. monotonically
+    # non-increasing down the rows, with the top row the busiest process.
+    desc: int64 = 1
+    i: uint64 = 1
+    while i < hammon_row_count():
+        if hammon_row_cpu(i) > hammon_row_cpu(i - 1):
+            desc = 0
+        i = i + 1
+    _report(cast[Ptr[uint8]]("app_proc_desc"), desc)
+    _report(cast[Ptr[uint8]]("app_proc_top_cpu"), cast[int64](hammon_row_cpu(0)))
+    _report(cast[Ptr[uint8]]("app_proc_top_pid"), cast[int64](hammon_row_pid(0)))
 
 
 # ====================================================================
@@ -233,6 +280,32 @@ def _render_applet(dir: Ptr[uint8]):
     _write_ppm(dir, cast[Ptr[uint8]]("sysmon_applet"))
     _report(cast[Ptr[uint8]]("applet_cpu_green"), _count(1, 2, 2, 112, 24))
     _report(cast[Ptr[uint8]]("applet_mem_blue"), _count(2, 2, 2, 112, 24))
+    # The CPU series must be a CONTINUOUS area: not one blank column between
+    # the first and last sample. Any hole here IS the "spikes, not a graph"
+    # bug the user reported in the panel applet.
+    _report(cast[Ptr[uint8]]("applet_cpu_gap_cols"), _gap_cols(1, 3, 3, 110, 22))
+
+
+# IDLE applet: the live desktop sits near 0% CPU, and a 0% sample used to
+# draw NOTHING — the sparkline degenerated into a scatter of dots wherever the
+# odd 1-2% sample landed. Every sample must still draw its baseline column, so
+# even a fully idle machine reads as one continuous line.
+def _render_applet_idle(dir: Ptr[uint8]):
+    n: uint64 = 48
+    i: uint64 = 0
+    while i < n:
+        spark_cpu[i] = 0
+        if i % 17 == 0:
+            spark_cpu[i] = 2
+        spark_mem[i] = 30
+        i = i + 1
+    W: int32 = 120
+    H: int32 = 28
+    hamui_host_begin(W, H)
+    sysmon_spark(&spark_cpu[0], &spark_mem[0], n, 48, 2, 2, 112, 24)
+    hamui_host_rasterize()
+    _write_ppm(dir, cast[Ptr[uint8]]("sysmon_applet_idle"))
+    _report(cast[Ptr[uint8]]("applet_idle_gap_cols"), _gap_cols(1, 3, 3, 110, 22))
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
@@ -244,4 +317,5 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _feed_app()
     _render_app(dir)
     _render_applet(dir)
+    _render_applet_idle(dir)
     return 0

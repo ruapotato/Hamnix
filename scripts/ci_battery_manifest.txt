@@ -2383,6 +2383,21 @@ bash scripts/test_spawn_detached_page.sh
 # guarding the "grid renders icons with no text under them" regression.
 bash scripts/test_de_desktop_label_budget_host.sh
 
+# test_de_wallpaper_coverage_host: the desktop wallpaper COVERS THE WHOLE
+# SCREEN. Host scene dump of the worst-case backdrop (every mosaic cell a
+# different colour) + a full icon set; asserts the union of the backdrop fills
+# leaves no uncovered scanline. Guards the user-reported "Sunset/Ocean/Tiles
+# leave a black band across the bottom ~1/5 of the screen" bug, where the
+# mosaic hit its icon-reserve byte budget and stopped mid-image.
+bash scripts/test_de_wallpaper_coverage_host.sh
+
+# test_de_wallpaper_fullscreen: the LIVE half of the same user bug. Boots the
+# image, applies each built-in wallpaper (Default/Sunset/Ocean/Tiles) through
+# the capplet's own sink via the DE launch queue, and asserts on the real
+# framebuffer that the bottom band is neither black nor darker than the rest,
+# and that each image actually repainted the desktop.
+bash scripts/test_de_wallpaper_fullscreen.sh
+
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +
 # presents the full window set (presented>=5) + paints a non-blank frame.

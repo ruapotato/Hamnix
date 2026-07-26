@@ -133,10 +133,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     fail: int32 = 0
     nimg: uint64 = hamctl_image_count()
-    i: uint64 = 0
-    while i < nimg and i < 3:
+    # Render images 1..3 (Sunset, Ocean, Tiles) — the three the output files
+    # are NAMED for. Image 0 is "Default" (the boot gradient) and used to be
+    # rendered here as "wall_sunset.ppm", shifting every picture one slot away
+    # from its filename and making the eyeball check lie.
+    i: uint64 = 1
+    while i <= nimg - 1 and i < 4:
         distinct: int32 = _render_image(cast[int32](i))
-        _write_ppm(cast[Ptr[char]](argv[1 + i]))
+        _write_ppm(cast[Ptr[char]](argv[i]))
         _o_str(cast[Ptr[uint8]]("IMG "))
         _o_dec(cast[int64](i))
         _o_str(cast[Ptr[uint8]](" DISTINCT "))

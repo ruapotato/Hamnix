@@ -19,17 +19,38 @@ def sysmon_spark(cpu: Ptr[uint8], mem: Ptr[uint8], n: uint64, hist: uint64,
         return
     ih: int32 = gh - 2
     iw: int32 = gw - 2
-    colw: int32 = iw / cast[int32](hist)
-    if colw < 1:
-        colw = 1
-    # CPU as filled columns (green) — the primary series.
+    # CPU as a CONTINUOUS filled area (green) — the primary series.
+    #
+    # Each sample owns the slot [iw*i/hist, iw*(i+1)/hist): the columns are
+    # derived from ADJACENT slot boundaries, so slot k's right edge IS slot
+    # k+1's left edge and the area is gapless. (The old form used a fixed
+    # colw = iw/hist with a separate (iw-colw)*i/hist stride: when iw was not
+    # an exact multiple of hist the stride ran ahead of the width and left a
+    # 1px hole between every pair of samples — the graph read as a row of
+    # SPIKES instead of a filled area.)
+    # A brighter 1px cap on top of each column gives the area a crisp
+    # "graph line" edge, the way a real system monitor draws it.
     i: uint64 = 0
     while i < n:
         v: int32 = cast[int32](cpu[i])
         bh: int32 = (v * ih) / 100
-        cx: int32 = gx + 1 + (iw - colw) * cast[int32](i) / cast[int32](hist)
-        hamscene_fill(cx, gy + 1 + ih - bh, colw, bh,
+        if bh < 1:
+            bh = 1                                       # 0% still draws the
+                                                         # baseline, so an IDLE
+                                                         # machine shows a flat
+                                                         # line — not a row of
+                                                         # detached dots where
+                                                         # the odd 2% sample
+                                                         # happened to land.
+        x0: int32 = gx + 1 + iw * cast[int32](i) / cast[int32](hist)
+        x1: int32 = gx + 1 + iw * (cast[int32](i) + 1) / cast[int32](hist)
+        cw: int32 = x1 - x0
+        if cw < 1:
+            cw = 1
+        hamscene_fill(x0, gy + 1 + ih - bh, cw, bh,
                       cast[Ptr[uint8]]("#57bb6e"))
+        hamscene_fill(x0, gy + 1 + ih - bh, cw, 1,
+                      cast[Ptr[uint8]]("#a8e6b4"))
         i = i + 1
     # Memory as a polyline (blue) overlaid on top.
     if n >= 2:

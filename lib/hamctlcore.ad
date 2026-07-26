@@ -206,7 +206,21 @@ def hamctl_image_rgb(img: int32, px: int32, py: int32, w: int32, h: int32,
         b = 50 + ny * 160 / 255
     elif img == 2:                        # Ocean: teal, diagonal + ripple band
         d: int32 = (nx + ny) / 2
-        rp: int32 = ((px + py) % 32) * 30 / 32 - 15
+        # Ripple phase in REFERENCE-field units, not raw source pixels, so the
+        # band spacing is identical whether the law is sampled for the 64x48
+        # capplet thumbnail or the full-resolution wallpaper PPM. (A raw
+        # (px+py)%32 would shrink the ripple to a shimmer at 256x192.)
+        rx: int32 = px * IMG_REF_W / w
+        ry: int32 = py * IMG_REF_H / h
+        # TRIANGLE wave, not a sawtooth: a raw ((rx+ry) % 32) snaps from +15
+        # back to -15 once per period, which at full backdrop resolution drew
+        # a hard diagonal staircase across the desktop. Folding the phase
+        # (0..15..0) makes the ripple continuous, so the bands read as soft
+        # diagonal swells.
+        rt: int32 = (rx + ry) % 32
+        if rt > 16:
+            rt = 32 - rt
+        rp: int32 = rt * 30 / 16 - 15
         r = 20 + d * 40 / 255
         g = 100 + d * 80 / 255 + rp
         b = 170 - d * 50 / 255 + rp
