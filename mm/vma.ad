@@ -2124,6 +2124,15 @@ def _vma_node_free(slot: uint64, node: uint64, pml4_phys: uint64):
                     _vma_pte_raw_write(pml4_phys, fsa, 0)
                     freed_fs = freed_fs + 1
                 elif fphys != 0:
+                    # ZAP-BEFORE-FREE (see _vma_free_cow_range): clear the
+                    # leaf FIRST so no present user PTE survives this node's
+                    # teardown. Without it a page-cache frame this task was
+                    # the LAST mapper of went back to the buddy pool while its
+                    # user PTE stayed PRESENT — a live mapping of a pooled
+                    # frame, which is precisely what the ZAP-BEFORE-FREE rule
+                    # exists to forbid (the next allocator hand-out of that
+                    # PFN is then aliased by a stale user leaf).
+                    _vma_pte_raw_write(pml4_phys, fsa, 0)
                     if cow_drop_page(fphys) != 0:
                         vma_pgc_drop_frame(fphys)
                         free_page(fphys)
@@ -2212,6 +2221,22 @@ def _vma_node_free(slot: uint64, node: uint64, pml4_phys: uint64):
             if pte != 0:
                 dphys: uint64 = pte & VMA_PT_ADDR_MASK
                 if dphys != 0:
+                    # ZAP-BEFORE-FREE. This arm used to free the frame and
+                    # leave the leaf PRESENT, breaking the invariant every
+                    # other teardown arm states explicitly (_vma_free_cow_range,
+                    # _vma_zap_priv_range: "a present PTE always means the frame
+                    # is NOT yet freed"). vma_free_cow_strays already has to
+                    # document working AROUND the stale present PTEs this arm
+                    # leaves behind, and any future teardown/audit walk that
+                    # trusts the invariant would double-free through one. The
+                    # frames here are private demand pages nobody else maps, so
+                    # clearing the leaf costs one store and an invlpg on a path
+                    # that is already freeing the page. (free_pages itself
+                    # resets the frame's LRU link and rmap word —
+                    # mm/page_alloc.ad::_free_pages_raw — so only the PTE needs
+                    # clearing here.)
+                    _vma_pte_raw_write(pml4_phys, daddr, 0)
+                    invlpg_one(daddr)
                     free_page(dphys)
                     freed_pages = freed_pages + 1
             else:
