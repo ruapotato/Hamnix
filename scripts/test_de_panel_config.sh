@@ -240,26 +240,72 @@ def screendump(label):
         if os.path.exists(ppm) and os.path.getsize(ppm) > 0: break
         time.sleep(0.1)
 
-RELOAD = "[panel] config reload"
+def load_ppm(path):
+    f = open(path, 'rb')
+    assert f.readline().strip() == b'P6'
+    l = f.readline()
+    while l.startswith(b'#'): l = f.readline()
+    w, h = map(int, l.split()); f.readline()
+    return w, h, f.read()
+
+def band_delta(a, b):
+    # Differing pixels in the top and bottom 26-row bands, x 200..600 — the
+    # two regions every assertion below reads. Comparing only these keeps the
+    # settle detector blind to the animated clock/CPU meter at the far right.
+    (w, h, A), (w2, h2, B) = a, b
+    if (w, h) != (w2, h2): return 999999
+    n = 0
+    for y in list(range(0, 26)) + list(range(h - 30, h)):
+        for x in range(200, 600):
+            i = (y * w + x) * 3
+            if abs(A[i]-B[i]) + abs(A[i+1]-B[i+1]) + abs(A[i+2]-B[i+2]) > 40:
+                n += 1
+    return n
+
+# The frame the previous step ended on — the baseline "has anything happened
+# yet?" is measured against.
+settled = [None]
 
 def apply_config(tag, conf, label):
-    # Write the runtime override, WAIT for the shell to finish echoing and
-    # running the command, then WAIT for hampanelscene to report that it
-    # actually re-read and re-applied the config. No blind sleeps: the old
-    # gate's fixed 5 s lost the race on a loaded host and screendumped the
-    # PRE-change desktop.
-    want = count(RELOAD) + 1
+    # Write the runtime override, wait for the shell to finish echoing and
+    # RUNNING the command, then wait for the DESKTOP ITSELF to change and
+    # settle before dumping.
+    #
+    # Never a fixed sleep. The old gate slept 5 s after pushing a
+    # ~130-character printf down the console; hamsh echoes that back one
+    # character at a time, and on a loaded host four of five screendumps in a
+    # run captured the PRE-change desktop — which is the whole reason its
+    # numbers swung between (10400,0), (0,10400) and (0,0) across three runs
+    # of the same image. Nor can we wait on a log line: hampanelscene's stdout
+    # stops reaching the serial console at the rl5 desktop flip, so everything
+    # it prints after startup is invisible here. The framebuffer is the only
+    # honest signal, so we poll it.
     send("printf '%s' > /tmp/hamnix-panel.conf" % conf)
     send("echo %s" % tag)
     if not wait_for(tag, 60):
         print("[panel_config] driver: shell never acked %s" % tag, file=sys.stderr)
-    if not wait_count(RELOAD, want, 60):
-        print("[panel_config] driver: panel never reported a reload for %s" % tag,
-              file=sys.stderr)
-    # One settle beat so the reload's presents have reached scanout, then
-    # two dumps (QMP's first dump after a frame change can be stale).
-    time.sleep(2)
-    screendump(label); screendump(label)
+    path = os.path.join(outdir, label + ".ppm")
+    base = settled[0]
+    prev = None
+    changed = base is None
+    deadline = time.time() + 60
+    while True:
+        screendump(label)          # ~2.2 s per call: paces the loop for us
+        try: cur = load_ppm(path)
+        except Exception: cur = None
+        if cur is not None:
+            if not changed and band_delta(base, cur) > 1500:
+                changed = True
+            if changed and prev is not None and band_delta(prev, cur) < 400:
+                settled[0] = cur
+                return
+            prev = cur
+        if time.time() > deadline:
+            print("[panel_config] driver: desktop never settled after %s "
+                  "(changed=%s) — asserting on the last frame anyway"
+                  % (tag, changed), file=sys.stderr)
+            settled[0] = cur
+            return
 
 rc = 2
 try:
@@ -274,6 +320,8 @@ try:
             send("echo PCFG_WARM")
             if wait_for("PCFG_WARM", 4): break
         screendump("default"); screendump("default")
+        try: settled[0] = load_ppm(os.path.join(outdir, "default.ppm"))
+        except Exception: pass
         # A: ONE panel, BOTTOM edge, in a colour that exists nowhere else on
         # the desktop. Shrinks the shipped two-panel default to one, so it
         # also exercises the surplus-window teardown.
@@ -323,7 +371,7 @@ PYDRV
     # "nothing is here" are both directly expressible, so a stale ghost
     # window can no longer satisfy the assertion the real panel should.
     count_kind() {
-        python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+        python3 - "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
 import sys
 def load(p):
     f=open(p,'rb'); assert f.readline().strip()==b'P6'
