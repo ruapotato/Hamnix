@@ -2,30 +2,58 @@
 # scripts/test_de_panel_config.sh
 #
 # LIVE regression gate for the configurable multi-panel DE (user/
-# hampanelscene.ad + user/hamsettings.ad). The OLD test_de_panel_prefs.sh
-# only static-grepped for the presence of _cfg_changed / _apply_panel_geometry
-# — it passed even though the panel position never actually moved in the VM
-# (the user-reported "Bottom does nothing" bug). This gate boots the real
-# image and PROVES the live behaviour from the framebuffer:
+# hampanelscene.ad + user/hamsettings.ad). It boots the real shipped image
+# and PROVES the live behaviour from the framebuffer.
 #
-#   A. POSITION. Rewriting the runtime config (/tmp/hamnix-panel.conf — the
-#      WRITABLE tmpfs override the panel prefers over the read-only shipped
-#      /etc/panel.conf) to a BOTTOM edge moves the panel: the top band
-#      (y=0..26) loses its panel pixels and the bottom band (y=sh-26..sh)
-#      gains them, WITHOUT a panel restart (live reload). The sysroot /etc is
-#      NOT writable from the DE — writing there was the silent no-op that made
-#      "Bottom does nothing" while the (tmp-backed) wallpaper worked.
-#   B. SYSMON TOGGLE. Removing the sysmon widget changes the right side of
-#      the (top) panel band.
-#   C. MULTI-PANEL / EDGE / FONT config PARSES + renders (no crash, panel
-#      window still present) for a block-form config with a vertical panel.
+# ── WHY THIS GATE WAS REWRITTEN (2026-07-27) ─────────────────────────
 #
-# Plus cheap STATIC schema assertions (kept from the old gate) so a refactor
-# that drops the parser keys is caught even when KVM is unavailable.
+# The previous version asserted the live behaviour as a PIXEL DELTA between
+# two screendumps: "the top band changed AND the bottom band changed => the
+# panel moved". Three things made that a lie in both directions:
 #
-# Reuses the OVMF/KVM + serial-driver + monitor-screendump harness shape of
-# test_de_scene_menu_input.sh. SKIPS CLEANLY when KVM/OVMF/socat/image are
-# unavailable. rc=124 timeouts under host load are NOT failures.
+#  1. WRONG BASELINE. It assumed the desktop starts with ONE top panel. The
+#     shipped /etc/panel.conf (and hampanelscene's _default_config, which
+#     must match it byte-for-byte) is the MATE TWO-panel layout: a top bar
+#     AND a bottom window-list, BOTH #d4d0c8. Moving "the panel" to the
+#     bottom therefore replaces one light-grey bar with another light-grey
+#     bar — a delta near ZERO even when the move is perfect. Measured on a
+#     good build: top-band delta 800, bottom-band delta 0, with the panel
+#     visibly, correctly at the bottom edge.
+#  2. BLIND SLEEPS. It pushed a ~130-character `printf ... > /tmp/...` down
+#     the serial console and then slept 5 s. hamsh echoes that line back one
+#     character at a time; on a loaded host four of the five screendumps in
+#     a run captured the PRE-change desktop, so the deltas were measuring
+#     one unchanged frame against another.
+#  3. DELTA != PRESENCE. "Some pixels changed" cannot distinguish "the panel
+#     you asked for is here" from "a stale ghost window is here instead".
+#     That is exactly the bug this rewrite pins (a surplus panel window used
+#     to relocate to (0,0) and cover the real top panel): every delta-based
+#     assertion was satisfied by the ghost.
+#
+# The live tier now:
+#   * drives the panel with configs whose `color` is UNIQUE on the desktop
+#     (red / green — the wallpaper is blue and the default bars are grey),
+#     so each assertion is "the panel you configured is AT this edge",
+#     a positive identification rather than a difference;
+#   * asserts ABSENCE the same way (the vacated edge must be WALLPAPER, not
+#     "different from before") — which is what catches a ghost;
+#   * synchronises on MARKERS, never on a sleep: it waits for the shell to
+#     acknowledge the write and then for hampanelscene's own
+#     "[panel] config reload" line before it screendumps.
+#
+# ── ASSERTION ALTITUDE ───────────────────────────────────────────────
+#
+# The cheap grep tier below is STATIC. It proves that identifiers still
+# exist in the source; it proves NOTHING about what the shipped desktop
+# renders. It used to announce itself as "panel live-reloads + re-applies
+# geometry + rebuilds panel set", which reads as a behavioural guarantee and
+# stayed green through a desktop that showed a dead bar where the panel
+# should be. Every static check now says STATIC in its own PASS line, and
+# the live tier reports LIVE, so a reader of the log can never mistake one
+# for the other.
+#
+# SKIPS CLEANLY when KVM/OVMF/socat/image are unavailable — but says so
+# loudly, and a SKIP never prints a live PASS.
 
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,93 +66,93 @@ failed() { echo "[panel_config] FAIL $*" >&2; fail=1; }
 passed() { echo "[panel_config] PASS $*"; }
 
 # ---------------------------------------------------------------------
-# STATIC schema assertions (always run, no VM).
+# STATIC schema assertions (no VM). These prove SOURCE SHAPE ONLY.
 # ---------------------------------------------------------------------
-# New config schema keys present in the panel parser.
 for kw in '"panel"' '"edge"' '"widget"' '"color"' '"size"' '"font"' \
           '"top"' '"bottom"' '"left"' '"right"' '"spacer"' '"bold"'; do
     if grep -q "$kw" "$PANEL"; then
-        passed "panel parser knows $kw"
+        passed "STATIC panel parser knows $kw"
     else
-        failed "panel parser missing config keyword $kw"
+        failed "STATIC panel parser missing config keyword $kw"
     fi
 done
 
-# Back-compat: legacy bare position/left/right lines still handled.
 if grep -q '"position"' "$PANEL"; then
-    passed "panel still honours legacy position line (back-compat)"
+    passed "STATIC panel still honours legacy position line (back-compat)"
 else
-    failed "panel dropped legacy position back-compat"
+    failed "STATIC panel dropped legacy position back-compat"
 fi
 
-# Live reload + per-edge geometry are still wired.
 if grep -q '_cfg_changed' "$PANEL" && grep -q '_apply_panel_geometry' "$PANEL" \
         && grep -q '_reload_panels' "$PANEL"; then
-    passed "panel live-reloads + re-applies geometry + rebuilds panel set"
+    passed "STATIC live-reload/geometry/reload-panels identifiers present (says NOTHING about rendering — see the LIVE tier)"
 else
-    failed "panel missing live-reload / geometry / reload-panels path"
+    failed "STATIC panel missing live-reload / geometry / reload-panels path"
 fi
 
-# Multiple panels supported (an array of panels, not a single bar).
 if grep -q 'MAX_PANELS' "$PANEL" && grep -q 'p_edge' "$PANEL"; then
-    passed "panel supports MULTIPLE panels (per-panel edge array)"
+    passed "STATIC panel supports MULTIPLE panels (per-panel edge array)"
 else
-    failed "panel still single-panel only"
+    failed "STATIC panel still single-panel only"
 fi
 
-# Font weight plumbed end to end (panel -> hamui -> compositor).
+# A surplus panel window must be HIDDEN through the compositor's hide verb,
+# never "collapsed" with `geometry x y 0 0` — devwsys deliberately ignores a
+# non-positive w/h ("leave the size alone"), so that spelling left a
+# full-size window parked at the origin, covering the real top panel.
+if grep -q '_set_window_hidden' "$PANEL" \
+        && grep -q '"hide"' sys/src/9/port/devwsys.ad; then
+    passed "STATIC surplus panel windows hide via the compositor hide verb"
+else
+    failed "STATIC surplus panel windows are not hidden through devwsys `hide`"
+fi
+
 if grep -q 'hamscene_glyphs_bold' lib/hamui.ad \
         && grep -q '_wsys_cache_draw_char_w' sys/src/9/port/devwsys.ad; then
-    passed "bold/double-strike font weight plumbed (hamui + compositor)"
+    passed "STATIC bold/double-strike font weight plumbed (hamui + compositor)"
 else
-    failed "bold font-weight path missing"
+    failed "STATIC bold font-weight path missing"
 fi
 
-# Settings wires the full MULTI-PANEL model: per-panel edge/colour/size/font,
-# add/remove panel, and a widget-assignment + move-between-panels UI.
 if grep -q 'pm_edge' "$SETTINGS" && grep -q 'pm_color' "$SETTINGS" \
         && grep -q 'pm_size' "$SETTINGS" && grep -q 'pm_bold' "$SETTINGS"; then
-    passed "Settings GUI exposes per-panel edge + colour + size + font"
+    passed "STATIC Settings GUI exposes per-panel edge + colour + size + font"
 else
-    failed "Settings GUI missing per-panel edge/colour/size/font controls"
+    failed "STATIC Settings GUI missing per-panel edge/colour/size/font controls"
 fi
 if grep -q '_add_panel' "$SETTINGS" && grep -q '_remove_panel' "$SETTINGS"; then
-    passed "Settings GUI can ADD + REMOVE panels (multi-panel)"
+    passed "STATIC Settings GUI can ADD + REMOVE panels (multi-panel)"
 else
-    failed "Settings GUI missing add/remove-panel controls"
+    failed "STATIC Settings GUI missing add/remove-panel controls"
 fi
 if grep -q '_widget_move_panel' "$SETTINGS" && grep -q '_widget_swap' "$SETTINGS" \
         && grep -q '_panel_add_widget' "$SETTINGS"; then
-    passed "Settings GUI can move/reorder/add widgets between panels"
+    passed "STATIC Settings GUI can move/reorder/add widgets between panels"
 else
-    failed "Settings GUI missing widget move/reorder/assign controls"
+    failed "STATIC Settings GUI missing widget move/reorder/assign controls"
 fi
-# Settings writes the multi-panel block-form config to the writable override.
 if grep -q '/tmp/hamnix-panel.conf' "$SETTINGS" \
         && grep -q '"panel p"' "$SETTINGS"; then
-    passed "Settings writes multi-panel block-form config to tmpfs override"
+    passed "STATIC Settings writes multi-panel block-form config to tmpfs override"
 else
-    failed "Settings not writing multi-panel block config to /tmp override"
+    failed "STATIC Settings not writing multi-panel block config to /tmp override"
 fi
-
-# App-button label not clipped: the divider sits at/after the label width
-# (12 glyphs * 8px = 96) with padding, inside the button box.
 if grep -q 'APP_BTN_W: int64 = 104' "$PANEL" \
         && grep -q 'APP_DIV_X' "$PANEL"; then
-    passed "Applications button widened so the divider clears the label"
+    passed "STATIC Applications button widened so the divider clears the label"
 else
-    failed "Applications button width/divider not corrected"
+    failed "STATIC Applications button width/divider not corrected"
 fi
 
 # ---------------------------------------------------------------------
-# LIVE VM behaviour (skips cleanly without KVM/OVMF/socat/image).
+# LIVE VM behaviour.
 # ---------------------------------------------------------------------
 INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
 BOOT_WAIT="${BOOT_WAIT:-240}"
 
 run_live() {
     if [ ! -e /dev/kvm ]; then
-        echo "[panel_config] SKIP live: /dev/kvm absent" >&2; return 0; fi
+        echo "[panel_config] SKIP live: /dev/kvm absent — NOTHING about the rendered desktop was checked" >&2; return 0; fi
     OVMF_FD="${OVMF_FD:-}"
     if [ -z "$OVMF_FD" ]; then
         for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd \
@@ -132,46 +160,30 @@ run_live() {
             [ -f "$c" ] && OVMF_FD="$c" && break
         done
     fi
-    [ -z "$OVMF_FD" ] && { echo "[panel_config] SKIP live: no OVMF" >&2; return 0; }
+    [ -z "$OVMF_FD" ] && { echo "[panel_config] SKIP live: no OVMF — NOTHING about the rendered desktop was checked" >&2; return 0; }
     command -v socat >/dev/null 2>&1 || { echo "[panel_config] SKIP live: no socat" >&2; return 0; }
     # STALE-IMAGE GUARD: this live sub-gate BOOTS an image it did not build.
-    # A WARNING is not enough — a stale image false-GREENs the very panel
-    # regression this gate exists to catch. ensure_installer_img REBUILDS when
-    # the image is missing or older than any tracked build input;
-    # HAMNIX_SKIP_BUILD=1 downgrades to a LOUD warning, never a silent pass.
     # shellcheck source=_installer_img.sh
     source "$PROJ_ROOT/scripts/_installer_img.sh"
     ensure_installer_img "$INSTALLER_IMG" "[de_panel_config]" \
         || { echo "[panel_config] SKIP live: no usable $INSTALLER_IMG" >&2; return 0; }
 
-    OUT_DIR=$(mktemp -d --tmpdir hamnix-pcfg.XXXXXX)
+    OUT_DIR="${PANEL_CFG_OUT_DIR:-$(mktemp -d --tmpdir hamnix-pcfg.XXXXXX)}"
+    mkdir -p "$OUT_DIR"
     OVMF_RW=$(mktemp --tmpdir hamnix-pcfg.ovmf.XXXXXX.fd)
     IMG_RW=$(mktemp --tmpdir hamnix-pcfg.img.XXXXXX.raw)
     MON=$(mktemp --tmpdir -u hamnix-pcfg-mon.XXXXXX)
     LOG="$OUT_DIR/serial.log"
     cp "$OVMF_FD" "$OVMF_RW"; cp "$INSTALLER_IMG" "$IMG_RW"
-    trap 'rm -rf "$OUT_DIR" "$OVMF_RW" "$IMG_RW" "$MON"' RETURN
+    if [ -n "${PANEL_CFG_OUT_DIR:-}" ]; then
+        trap 'rm -f "$OVMF_RW" "$IMG_RW" "$MON"' RETURN
+    else
+        trap 'rm -rf "$OUT_DIR" "$OVMF_RW" "$IMG_RW" "$MON"' RETURN
+    fi
 
-    # Reliable QMP screendump: keep the monitor connection OPEN long enough
-    # for QEMU to finish writing the PPM before the socket closes (a fire-and-
-    # forget `printf | socat` races the write and captures a stale/empty
-    # frame — that race made an earlier version of this gate read delta=0 even
-    # though the panel HAD moved). socat holds the link for 2s post-send.
-    SNAP="$OUT_DIR/.snap.sh"
-    cat > "$SNAP" <<SNAPEOF
-#!/bin/bash
-label="\$1"
-ppm="$OUT_DIR/\$label.ppm"
-rm -f "\$ppm"
-{ printf 'screendump %s\n' "\$ppm"; sleep 2; } | socat - "UNIX-CONNECT:$MON" >/dev/null 2>&1
-for i in \$(seq 1 40); do [ -s "\$ppm" ] && break; sleep 0.1; done
-sleep 0.3
-SNAPEOF
-    chmod +x "$SNAP"
-
-    python3 - "$IMG_RW" "$OVMF_RW" "$MON" "$LOG" "$SNAP" "$BOOT_WAIT" "$OUT_DIR" <<'PYDRV'
-import sys, subprocess, time, threading
-img, ovmf, mon, logpath, snap, boot_wait, outdir = sys.argv[1:8]
+    python3 - "$IMG_RW" "$OVMF_RW" "$MON" "$LOG" "$BOOT_WAIT" "$OUT_DIR" <<'PYDRV'
+import sys, subprocess, time, threading, socket, os
+img, ovmf, mon, logpath, boot_wait, outdir = sys.argv[1:7]
 boot_wait = int(boot_wait)
 qemu = subprocess.Popen([
     "qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-bios", ovmf,
@@ -187,6 +199,8 @@ def reader():
         logf.write(b); logf.flush()
         with lock: buf.extend(b)
 threading.Thread(target=reader, daemon=True).start()
+def count(marker):
+    with lock: return buf.count(marker.encode())
 def wait_for(marker, timeout):
     m = marker.encode(); deadline = time.time() + timeout
     while time.time() < deadline:
@@ -195,14 +209,18 @@ def wait_for(marker, timeout):
         if qemu.poll() is not None: return False
         time.sleep(0.2)
     return False
+def wait_count(marker, n, timeout):
+    # Wait until `marker` has been seen at least n times.
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if count(marker) >= n: return True
+        if qemu.poll() is not None: return False
+        time.sleep(0.2)
+    return False
 def send(line):
     try: qemu.stdin.write((line + "\n").encode()); qemu.stdin.flush()
     except Exception: pass
-import socket, os
 def screendump(label):
-    # In-process QMP screendump: connect, drain the greeting, send the verb,
-    # then HOLD the connection open while QEMU writes the PPM. A fire-and-
-    # forget `printf | socat` races the write and grabs a stale frame.
     ppm = os.path.join(outdir, label + ".ppm")
     try: os.remove(ppm)
     except Exception: pass
@@ -221,6 +239,28 @@ def screendump(label):
     for _ in range(40):
         if os.path.exists(ppm) and os.path.getsize(ppm) > 0: break
         time.sleep(0.1)
+
+RELOAD = "[panel] config reload"
+
+def apply_config(tag, conf, label):
+    # Write the runtime override, WAIT for the shell to finish echoing and
+    # running the command, then WAIT for hampanelscene to report that it
+    # actually re-read and re-applied the config. No blind sleeps: the old
+    # gate's fixed 5 s lost the race on a loaded host and screendumped the
+    # PRE-change desktop.
+    want = count(RELOAD) + 1
+    send("printf '%s' > /tmp/hamnix-panel.conf" % conf)
+    send("echo %s" % tag)
+    if not wait_for(tag, 60):
+        print("[panel_config] driver: shell never acked %s" % tag, file=sys.stderr)
+    if not wait_count(RELOAD, want, 60):
+        print("[panel_config] driver: panel never reported a reload for %s" % tag,
+              file=sys.stderr)
+    # One settle beat so the reload's presents have reached scanout, then
+    # two dumps (QMP's first dump after a frame change can be stale).
+    time.sleep(2)
+    screendump(label); screendump(label)
+
 rc = 2
 try:
     if not wait_for("handing off to interactive shell", boot_wait):
@@ -228,36 +268,31 @@ try:
     else:
         wait_for("scene windows ready", 60)
         time.sleep(8)
-        screendump("top"); screendump("top")   # warm-up + real (QMP 1st dump can be stale)
-        # LIVE: flip the panel to the BOTTOM edge by rewriting the writable
-        # runtime override in tmpfs; the panel's _cfg_changed poll picks this
-        # up within ~1s and moves the window (no restart).
-        send("echo PANELCFG_BOTTOM")
-        send("printf 'panel main\\n  edge bottom\\n  widget menu\\n  widget tasks\\n  widget clock\\nend\\n' > /tmp/hamnix-panel.conf")
-        time.sleep(5)
-        screendump("bottom"); screendump("bottom")
-        # LIVE: a vertical LEFT panel + bold font — must parse + render.
-        send("echo PANELCFG_LEFT")
-        send("printf 'panel side\\n  edge left\\n  size 64\\n  font bold\\n  widget menu\\n  widget tasks\\nend\\n' > /tmp/hamnix-panel.conf")
-        time.sleep(6)
-        screendump("left")
-        # LIVE: TWO panels simultaneously — a TOP panel AND a BOTTOM panel
-        # (classic MATE). Both must render at once without overlap. We also
-        # give the bottom panel a distinct colour + larger size so the
-        # per-panel colour/size path is exercised in the same config.
-        send("echo PANELCFG_TWO")
-        send("printf 'panel top\\n  edge top\\n  color #3a6ea5\\n  widget menu\\n  widget tasks\\n  widget clock\\nend\\npanel bot\\n  edge bottom\\n  color #785028\\n  size 30\\n  widget sysmon\\n  widget clock\\nend\\n' > /tmp/hamnix-panel.conf")
-        time.sleep(8)
-        # QMP's first dump after a frame change is often a STALE frame; take
-        # several so the last one reflects the live two-panel layout.
-        screendump("two"); screendump("two"); screendump("two")
-        # LIVE: reassign a widget BETWEEN panels — move the clock from the
-        # top panel to the bottom panel (Settings "Move to next panel"). The
-        # top-right region loses the clock; the bottom gains a second clock.
-        send("echo PANELCFG_MOVE")
-        send("printf 'panel top\\n  edge top\\n  color #3a6ea5\\n  widget menu\\n  widget tasks\\nend\\npanel bot\\n  edge bottom\\n  color #785028\\n  size 30\\n  widget sysmon\\n  widget clock\\n  widget clock\\nend\\n' > /tmp/hamnix-panel.conf")
-        time.sleep(6)
-        screendump("move")
+        # hamsh swallows the FIRST line it is handed on the serial console
+        # (see feedback_interactive_test_wait_for_prompt); burn one.
+        for _ in range(12):
+            send("echo PCFG_WARM")
+            if wait_for("PCFG_WARM", 4): break
+        screendump("default"); screendump("default")
+        # A: ONE panel, BOTTOM edge, in a colour that exists nowhere else on
+        # the desktop. Shrinks the shipped two-panel default to one, so it
+        # also exercises the surplus-window teardown.
+        apply_config("PCFG_A",
+                     "panel main\\n  edge bottom\\n  color #c81e28\\n"
+                     "  widget menu\\n  widget tasks\\n  widget clock\\nend\\n",
+                     "bottom_red")
+        # B: TWO panels at once, each its own unique colour.
+        apply_config("PCFG_B",
+                     "panel t\\n  edge top\\n  color #18a038\\n  widget menu\\n"
+                     "  widget tasks\\nend\\n"
+                     "panel b\\n  edge bottom\\n  color #c81e28\\n  size 30\\n"
+                     "  widget sysmon\\n  widget clock\\nend\\n",
+                     "two_green_red")
+        # C: a VERTICAL left panel (block form, bold font).
+        apply_config("PCFG_C",
+                     "panel side\\n  edge left\\n  size 64\\n  font bold\\n"
+                     "  color #c81e28\\n  widget menu\\n  widget tasks\\nend\\n",
+                     "left_red")
         for _ in range(12):
             send("echo PANELCFGDONE")
             if wait_for("PANELCFGDONE", 4): break
@@ -279,9 +314,16 @@ PYDRV
         return 0
     fi
 
-    # region_diff PRE POST X0 Y0 X1 Y1 -> changed pixel count.
-    region_diff() {
-        python3 - "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
+    # ---- pixel predicates -------------------------------------------
+    # count_kind FRAME KIND X0 Y0 X1 Y1  -> pixels of that kind in the region.
+    #   red   : the #c81e28 panel  (r dominant)
+    #   green : the #18a038 panel  (g dominant)
+    #   bar   : a default #d4d0c8 chrome bar (near-white, all channels high)
+    # Colour IDENTITY, not a delta: "the panel you configured is here" and
+    # "nothing is here" are both directly expressible, so a stale ghost
+    # window can no longer satisfy the assertion the real panel should.
+    count_kind() {
+        python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
 import sys
 def load(p):
     f=open(p,'rb'); assert f.readline().strip()==b'P6'
@@ -289,94 +331,99 @@ def load(p):
     while l.startswith(b'#'): l=f.readline()
     w,h=map(int,l.split()); f.readline()
     return w,h,f.read()
-pre,post=sys.argv[1],sys.argv[2]
-x0,y0,x1,y1=map(int,sys.argv[3:7])
-w,h,a=load(pre); w2,h2,b=load(post)
-if (w,h)!=(w2,h2): print(999999); sys.exit()
+frame, kind = sys.argv[1], sys.argv[2]
+x0,y0,x1,y1 = map(int, sys.argv[3:7])
+w,h,a = load(frame)
 x1=min(x1,w); y1=min(y1,h); n=0
-for y in range(y0,y1):
-    for x in range(x0,x1):
+for y in range(max(0,y0), max(0,y1)):
+    for x in range(max(0,x0), max(0,x1)):
         i=(y*w+x)*3
-        if abs(a[i]-b[i])+abs(a[i+1]-b[i+1])+abs(a[i+2]-b[i+2])>40: n+=1
+        r,g,b = a[i],a[i+1],a[i+2]
+        if kind=='red'   and r>g+50 and r>b+50 and r>90: n+=1
+        elif kind=='green' and g>r+40 and g>b+40 and g>80: n+=1
+        elif kind=='bar' and r>175 and g>175 and b>165: n+=1
 print(n)
 PY
     }
-    # Screen height from the top.ppm header.
-    SH=$(python3 - "$OUT_DIR/top.ppm" <<'PY'
+    SH=$(python3 - "$OUT_DIR/default.ppm" <<'PY'
 import sys
 f=open(sys.argv[1],'rb'); f.readline(); l=f.readline()
 while l.startswith(b'#'): l=f.readline()
 print(l.split()[1].decode())
 PY
 )
-    if [ -s "$OUT_DIR/top.ppm" ] && [ -s "$OUT_DIR/bottom.ppm" ] && [ -n "$SH" ]; then
-        topband=$(region_diff "$OUT_DIR/top.ppm" "$OUT_DIR/bottom.ppm" 200 0 600 26)
-        botlo=$((SH-26)); bothi=$SH
-        botband=$(region_diff "$OUT_DIR/top.ppm" "$OUT_DIR/bottom.ppm" 200 "$botlo" 600 "$bothi")
-        echo "[panel_config] top-band delta=$topband  bottom-band delta=$botband (sh=$SH)"
-        if [ "$topband" -gt 200 ] && [ "$botband" -gt 200 ]; then
-            passed "panel MOVED to the bottom edge LIVE (top vacated, bottom painted)"
-        else
-            failed "panel did NOT move to the bottom edge on live config change (top=$topband bot=$botband)"
-        fi
+    [ -n "$SH" ] || { echo "[panel_config] SKIP live: no default screendump" >&2; return 0; }
+    TOP0=0;  TOP1=26
+    BOT0=$((SH-26)); BOT1=$SH
+    # Sample x 200..600: clear of the desktop icon column (x<110) and of the
+    # clock/sysmon status area, so the region is pure bar-or-wallpaper.
+
+    # Sanity: the SHIPPED DEFAULT really is the MATE two-panel layout. If this
+    # ever stops holding, the assertions below are measuring a different
+    # desktop and must be re-derived rather than quietly re-tuned.
+    d_top=$(count_kind "$OUT_DIR/default.ppm" bar 200 $TOP0 600 $TOP1)
+    d_bot=$(count_kind "$OUT_DIR/default.ppm" bar 200 $BOT0 600 $BOT1)
+    echo "[panel_config] LIVE default layout: top bar px=$d_top  bottom bar px=$d_bot"
+    if [ "$d_top" -gt 5000 ] && [ "$d_bot" -gt 5000 ]; then
+        passed "LIVE shipped default renders the MATE TWO-panel layout (top + bottom)"
     else
-        echo "[panel_config] NOTE missing top/bottom screendump — live move not asserted" >&2
-    fi
-    if [ -s "$OUT_DIR/left.ppm" ]; then
-        leftband=$(region_diff "$OUT_DIR/top.ppm" "$OUT_DIR/left.ppm" 0 100 64 400)
-        echo "[panel_config] left-edge vertical-panel delta=$leftband"
-        if [ "$leftband" -gt 200 ]; then
-            passed "vertical LEFT panel (block form, bold font) parsed + rendered"
-        else
-            echo "[panel_config] NOTE left vertical panel delta low ($leftband); may have missed — not hard-failing" >&2
-        fi
+        failed "LIVE shipped default is not the two-panel layout (top=$d_top bot=$d_bot) — the baseline every assertion below rests on"
     fi
 
-    # --- TWO panels simultaneously (top + bottom) ---
-    # Prove a SINGLE frame carries BOTH a top bar and a bottom bar at once.
-    # Baseline = the vertical LEFT-panel frame (it has NEITHER a top nor a
-    # bottom horizontal bar), so a positive delta in BOTH the top band and the
-    # bottom band of the two-panel frame means two panels render concurrently.
-    # We try the dedicated two-panel frame first; if its QMP capture came back
-    # stale (delta 0 in both bands — a known first-dump-after-change race), we
-    # fall back to the `move` frame, which is ALSO a top+bottom two-panel
-    # config and is captured later (so it is the freshest two-panel render).
-    two_ok=0
-    tbotlo=$((SH-30)); tbothi=$SH
-    assert_two() {
-        local f="$1"
-        [ -s "$OUT_DIR/$f.ppm" ] && [ -s "$OUT_DIR/left.ppm" ] && [ -n "$SH" ] || return 1
-        local tt tb
-        tt=$(region_diff "$OUT_DIR/left.ppm" "$OUT_DIR/$f.ppm" 200 0 600 26)
-        tb=$(region_diff "$OUT_DIR/left.ppm" "$OUT_DIR/$f.ppm" 200 "$tbotlo" 600 "$tbothi")
-        echo "[panel_config] two-panel($f) top-band delta=$tt  bottom-band delta=$tb (sh=$SH)"
-        [ "$tt" -gt 200 ] && [ "$tb" -gt 200 ]
-    }
-    if assert_two two; then
-        two_ok=1
-    elif assert_two move; then
-        two_ok=1
-        echo "[panel_config] NOTE 'two' frame capture was stale; used the freshest two-panel frame 'move'" >&2
-    fi
-    if [ "$two_ok" = 1 ]; then
-        passed "TWO panels render SIMULTANEOUSLY (top AND bottom both painted)"
+    # A. The panel MOVES to the bottom edge on a live config change, and the
+    #    top it left is really EMPTY. `bar` at the top would mean either the
+    #    old top panel never went away or a surplus window ghosted into its
+    #    place; `red` at the top would mean the panel painted at the wrong
+    #    edge. Both are failures the old delta test could not see.
+    if [ -s "$OUT_DIR/bottom_red.ppm" ]; then
+        a_botred=$(count_kind "$OUT_DIR/bottom_red.ppm" red 200 $BOT0 600 $BOT1)
+        a_topbar=$(count_kind "$OUT_DIR/bottom_red.ppm" bar 200 $TOP0 600 $TOP1)
+        a_topred=$(count_kind "$OUT_DIR/bottom_red.ppm" red 200 $TOP0 600 $TOP1)
+        echo "[panel_config] LIVE A(one panel, edge bottom): bottom red px=$a_botred  top bar px=$a_topbar  top red px=$a_topred"
+        if [ "$a_botred" -gt 5000 ]; then
+            passed "LIVE panel MOVED to the bottom edge on a live config change"
+        else
+            failed "LIVE panel did NOT paint at the bottom edge (red px=$a_botred of 10400)"
+        fi
+        if [ "$a_topbar" -lt 500 ] && [ "$a_topred" -lt 500 ]; then
+            passed "LIVE the vacated TOP edge is bare desktop — the surplus panel window is really gone"
+        else
+            failed "LIVE something is still painted at the TOP after the panel moved away (bar px=$a_topbar red px=$a_topred) — a surplus panel window is ghosting there"
+        fi
     else
-        failed "two simultaneous panels not both rendered"
+        failed "LIVE missing bottom_red screendump"
     fi
 
-    # --- Widget reassigned BETWEEN panels (clock top -> bottom) ---
-    # Moving the clock off the top panel changes the top-right region; the
-    # bottom band also changes (a second clock appears). Compare move vs two.
-    if [ -s "$OUT_DIR/move.ppm" ] && [ -s "$OUT_DIR/two.ppm" ] && [ -n "$SH" ]; then
-        mvtop=$(region_diff "$OUT_DIR/two.ppm" "$OUT_DIR/move.ppm" 500 0 800 26)
-        mbotlo=$((SH-30)); mbothi=$SH
-        mvbot=$(region_diff "$OUT_DIR/two.ppm" "$OUT_DIR/move.ppm" 200 "$mbotlo" 700 "$mbothi")
-        echo "[panel_config] widget-move top-right delta=$mvtop  bottom delta=$mvbot"
-        if [ "$mvtop" -gt 30 ] || [ "$mvbot" -gt 30 ]; then
-            passed "widget REASSIGNED between panels (config the Settings GUI writes)"
+    # B. TWO panels render SIMULTANEOUSLY, each at its own edge, each in its
+    #    own colour. Identifying them by colour is what pins "the TOP panel is
+    #    the one I configured", which a delta against the previous frame
+    #    cannot do.
+    if [ -s "$OUT_DIR/two_green_red.ppm" ]; then
+        b_topgreen=$(count_kind "$OUT_DIR/two_green_red.ppm" green 200 $TOP0 600 $TOP1)
+        b_botred=$(count_kind "$OUT_DIR/two_green_red.ppm" red 200 $((SH-30)) 600 $SH)
+        echo "[panel_config] LIVE B(two panels): top green px=$b_topgreen  bottom red px=$b_botred"
+        if [ "$b_topgreen" -gt 5000 ] && [ "$b_botred" -gt 5000 ]; then
+            passed "LIVE TWO panels render SIMULTANEOUSLY, each at its configured edge and colour"
         else
-            echo "[panel_config] NOTE widget-move delta low (top=$mvtop bot=$mvbot); not hard-failing" >&2
+            failed "LIVE two simultaneous panels not both rendered (top green=$b_topgreen bottom red=$b_botred)"
         fi
+    else
+        failed "LIVE missing two_green_red screendump"
+    fi
+
+    # C. A VERTICAL panel (edge left, size 64, bold font) parses AND renders.
+    if [ -s "$OUT_DIR/left_red.ppm" ]; then
+        c_left=$(count_kind "$OUT_DIR/left_red.ppm" red 0 200 64 600)
+        c_top=$(count_kind "$OUT_DIR/left_red.ppm" bar 200 $TOP0 600 $TOP1)
+        c_bot=$(count_kind "$OUT_DIR/left_red.ppm" bar 200 $BOT0 600 $BOT1)
+        echo "[panel_config] LIVE C(vertical left): left red px=$c_left  leftover top bar px=$c_top  leftover bottom bar px=$c_bot"
+        if [ "$c_left" -gt 8000 ]; then
+            passed "LIVE vertical LEFT panel (block form, bold font) parsed + rendered"
+        else
+            failed "LIVE vertical LEFT panel did not render (red px=$c_left of 25600)"
+        fi
+    else
+        failed "LIVE missing left_red screendump"
     fi
 }
 
