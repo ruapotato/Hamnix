@@ -141,6 +141,7 @@ from mm.slab import kmalloc, kfree
 # wsys_layer_fb_page / wsys_backbuffer_page declarations below.
 from mm.page_alloc import alloc_pages, free_pages
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
+extern def memcpy(dst: Ptr[uint8], src: Ptr[uint8], n: uint64) -> Ptr[uint8]
 # F2 #447: /dev/wsys/ctl `frame <wid> <n>` calls the kernel software
 # rasterizer the same way SYS_VK_WINDOW_FRAME does — vk_window_demo
 # is the in-tree native demo renderer that GPU track #181 ships.
@@ -8749,16 +8750,27 @@ def _wsys_cache_fillrect(cache: Ptr[uint8], x: int64, y: int64,
     stride: uint64 = cast[uint64](_wsys_rast_w) * 4
     row: int64 = y0
     if a >= 255:
+        # Opaque: build the span ONCE in the first row with 32-bit stores,
+        # then memcpy it down. The cache is packed RGBA8888 and x86 is
+        # little-endian, so a single uint32 write lands r,g,b,255 in that
+        # byte order — a quarter of the stores the byte-at-a-time form did,
+        # and every row after the first is a straight-line copy.
+        pix: uint32 = cast[uint32](r) \
+            | (cast[uint32](g) << 8) \
+            | (cast[uint32](b) << 16) \
+            | (cast[uint32](255) << 24)
+        span: uint64 = cast[uint64](x1 - x0) * 4
+        first: uint64 = cast[uint64](y0) * stride + cast[uint64](x0) * 4
+        w0: uint64 = first
+        cx: int64 = x0
+        while cx < x1:
+            cast[Ptr[uint32]](cast[uint64](&cache[w0]))[0] = pix
+            w0 = w0 + 4
+            cx = cx + 1
+        row = y0 + 1
         while row < y1:
             off: uint64 = cast[uint64](row) * stride + cast[uint64](x0) * 4
-            cx: int64 = x0
-            while cx < x1:
-                cache[off] = r
-                cache[off + 1] = g
-                cache[off + 2] = b
-                cache[off + 3] = 255
-                off = off + 4
-                cx = cx + 1
+            memcpy(&cache[off], &cache[first], span)
             row = row + 1
         return
     # Translucent: alpha-over, identical arithmetic to _wsys_cache_putpixel.
