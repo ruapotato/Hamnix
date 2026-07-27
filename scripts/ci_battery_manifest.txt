@@ -2479,6 +2479,20 @@ bash scripts/test_de_wallpaper_fullscreen.sh
 # hostowner gate and hamctl reported success anyway).
 bash scripts/test_de_wallpaper_themes.sh
 
+# test_de_panel_config: THE PANEL YOU CONFIGURED IS THE PANEL YOU GET.
+# This gate has existed since 2026-06-20 and has never been in the battery, so
+# nothing ran it — and it had been failing since e18dc60f, ONE COMMIT after it
+# was written, when /etc/panel.conf became the MATE two-panel layout and its
+# single-top-panel baseline stopped being true. When it was finally run on
+# 2026-07-27 it found a real defect: a surplus panel window "collapsed" with
+# `geometry 0 0 0 0` kept its full size (the verb reads a non-positive w/h as
+# "leave that dimension alone") and merely moved to (0,0), where it covered
+# the real top panel and swallowed its clicks. Live tier only: it identifies
+# each panel by a COLOUR unique on the desktop, so "the panel is at this edge"
+# and "the edge it left is bare" are both asserted positively — a delta could
+# not tell the configured panel from a ghost squatting in its place.
+bash scripts/test_de_panel_config.sh
+
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +
 # presents the full window set (presented>=5) + paints a non-blank frame.
