@@ -89,14 +89,27 @@ else
     echo "[hb-boxr2] FAIL flex shorthand basis not applied (width=$fxw)"; fail=1
 fi
 
-# ---- (E) position:sticky distinct from static --------------------------------
+# ---- (E) position:sticky stays in flow at scroll 0 ---------------------------
+# CORRECTED 2026-07-27. This block used to demand that `position:sticky;left:60px`
+# render 60px right of an otherwise identical static box. That is NOT what a
+# browser does: a sticky box's inset offsets only bite once its scroll container
+# has scrolled past the corresponding threshold, and an unscrolled page has no
+# horizontal scrolling at all, so `left` is inert. `chromium --headless` on THIS
+# fixture reports both boxes at x=8.0 (getBoundingClientRect):
+#     DIV(sticky left:60px top:0) x=8.0 y=116.0
+#     DIV(static left:60px)       x=8.0 y=134.0
+# The engine already renders both at x=8, i.e. it was CORRECT and the old
+# assertion pinned a browser-contradicting expectation. Assert the real invariant
+# instead: sticky lays out in normal flow at scroll 0 — same inline position as a
+# static sibling, one flow row below it — so a sticky header does not jump
+# sideways before the user scrolls.
 skx=$(seg_x StickyEl)
 stx=$(seg_x StaticEl)
-echo "[hb-boxr2] sticky x=$skx  static x=$stx (expect sticky shifted +60, static unshifted)"
-if [ -n "$skx" ] && [ -n "$stx" ] && [ "$((skx - stx))" -eq 60 ]; then
-    echo "[hb-boxr2] PASS position:sticky applies its left:60px offset (static ignores it)"
+echo "[hb-boxr2] sticky x=$skx  static x=$stx (expect equal — the left inset is inert at scroll 0, as in Chrome)"
+if [ -n "$skx" ] && [ -n "$stx" ] && [ "$skx" -eq "$stx" ]; then
+    echo "[hb-boxr2] PASS position:sticky lays out in flow at scroll 0 (left inset inert, matches Chrome)"
 else
-    echo "[hb-boxr2] FAIL sticky/static offset (sticky=$skx static=$stx)"; fail=1
+    echo "[hb-boxr2] FAIL sticky moved out of flow at scroll 0 (sticky=$skx static=$stx)"; fail=1
 fi
 
 # ---- (F) vertical-align / text-indent parse without regressing the render ----

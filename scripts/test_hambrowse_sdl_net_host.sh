@@ -79,8 +79,12 @@ else
 fi
 
 # ---- (4) headless live-fetch navigation ------------------------------------
+# RE-PROBED 2026-07-27: (200,28) predated the Chrome-shaped window chrome (a
+# 34px TAB STRIP above a 44px TOOLBAR, lib/web/state.ad), so the click landed
+# on the tab strip and the omnibox never took focus — every keystroke below
+# went nowhere and the page never navigated. The toolbar spans y=34..78.
 cat > "$SCRIPT" <<'EVENTS'
-click 200 28
+click 300 56
 ctrlkey 97
 key 8
 text https://example.com/
@@ -114,7 +118,10 @@ def load(p):
         assert f.readline().strip()==b"P6"
         w,h=map(int,f.readline().split()); f.readline()
         return w,h,f.read(w*h*3)
-def sig(w,h,b): return hashlib.sha1(b[40*w*3:]).hexdigest()
+# content region = below the chrome. RE-PINNED 2026-07-27 from y>=40 to the
+# real CONTENT_Y (78): the old cut still included the omnibox, so the typed
+# URL's keystrokes registered as "content" changes.
+def sig(w,h,b): return hashlib.sha1(b[78*w*3:]).hexdigest()
 frames=[load(p) for p in paths]
 sigs=[sig(*fr) for fr in frames]
 home=sigs[0]; distinct=set(sigs)

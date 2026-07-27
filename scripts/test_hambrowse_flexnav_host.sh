@@ -78,8 +78,13 @@ fi
 # 100px inset exists) and contradicted both this gate's own "full-width" comment
 # and the engine's documented full-bleed nav convention that
 # test_hambrowse_fullwidth_host.sh asserts green (nav bg spans ~0..viewport).
-if grep -Eq 'FILL [0-9]+ [0-9]+ 0 800 #223344' "$D0"; then
-    echo "[hb-flexnav] PASS flex nav paints its full-bleed background bar (0..800)"
+# STALE-ORIGIN RE-PIN (2026-07-27): the bar's LEFT column moved 0 -> 8 when the
+# engine started honouring the UA 8px body margin instead of laying prose out
+# from x=0. `chromium --headless` reports the nav's border box at x=8 (w=784)
+# for this fixture, so 8 is the Chrome-correct origin; the full-bleed RIGHT
+# edge this gate is really about is unchanged.
+if grep -Eq 'FILL [0-9]+ [0-9]+ 8 800 #223344' "$D0"; then
+    echo "[hb-flexnav] PASS flex nav paints its full-bleed background bar (8..800)"
 else
     echo "[hb-flexnav] FAIL flex nav background bar missing"; fail=1
 fi

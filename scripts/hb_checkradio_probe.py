@@ -64,7 +64,30 @@ def main():
     # cluster into control row-bands (rows separated by a vertical gap). The
     # window stops before the text label so a wide glyph run can't be mistaken
     # for a control box.
-    XLO, XHI = 22, 46
+    # Control COLUMN auto-detection. This window used to be pinned to a fixed
+    # x range that dated from the old centred-strip page origin (the ~128px
+    # "readable measure" gutter that commit 6491eebd removed) — once plain prose
+    # rendered full-width from the UA 8px body margin like Chrome, the window sat
+    # entirely to the RIGHT of the widgets and the probe classified LABEL GLYPHS
+    # instead of controls. Derive the column from the render instead: the form
+    # controls are the LEFTMOST ink on the page, so anchor the window on the
+    # smallest inked x and take the ~22px the widget occupies. Verified against
+    # `chromium --headless`: Chrome paints these inputs at x=12..25 (body margin
+    # 8 + the UA 3px/4px control margin); the engine paints them at x=8..21.
+    xmin = None
+    for y in range(h):
+        for x in range(w):
+            if ink(x, y):
+                if xmin is None or x < xmin:
+                    xmin = x
+                break
+    if xmin is None:
+        xmin = 0
+    # narrow window for ROW-band detection (must exclude the label glyphs,
+    # else every text row inks and the bands merge); wider window for the
+    # per-band x extent, which the contiguous-cluster cut below trims.
+    XLO, XHI = max(0, xmin - 2), min(w, xmin + 18)
+    XWIDE = min(w, xmin + 40)
     rows_with_ink = []
     for y in range(h):
         for x in range(XLO, XHI):
@@ -75,7 +98,12 @@ def main():
     bands = []
     cur = []
     for y in rows_with_ink:
-        if cur and y - cur[-1] > 5:
+        # split on ANY blank row: consecutive controls in this fixture are only
+        # ~4 blank rows apart, so the old >5 threshold merged all four into one
+        # over-tall band that the size filter then discarded (0 controls found).
+        # A control's own side borders ink every one of its rows, so a single
+        # blank row is always a real inter-control gap.
+        if cur and y - cur[-1] > 1:
             bands.append(cur)
             cur = []
         cur.append(y)
@@ -88,12 +116,21 @@ def main():
         # bbox of ink in the widget window over this band
         xs = []
         for y in range(y0, y1 + 1):
-            for x in range(XLO, XHI):
+            for x in range(XLO, XWIDE):
                 if ink(x, y):
                     xs.append(x)
         if not xs:
             continue
-        bx0, bx1 = min(xs), max(xs)
+        # The window is generous enough to also catch the first LABEL glyph, so
+        # keep only the contiguous ink cluster that starts at the leftmost column
+        # (the widget); a gap of more than 3 blank columns ends it.
+        cols = sorted(set(xs))
+        bx0 = cols[0]
+        bx1 = cols[0]
+        for c in cols[1:]:
+            if c - bx1 > 3:
+                break
+            bx1 = c
         bw = bx1 - bx0 + 1
         bh = y1 - y0 + 1
         # a control box is a small square/circle; ignore stray text glyph runs.

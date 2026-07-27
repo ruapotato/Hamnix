@@ -50,9 +50,15 @@ gxc=$(seg_x "Gamma card body text")
 ayr=$(seg_row "Alpha card body text")
 byr=$(seg_row "Beta card body text")
 echo "[hb-flexwrap] row1 cards: Alpha(row=$ayr x=$axc) Beta(row=$byr x=$bxc) Gamma(x=$gxc)"
+# BORDER-BOX ADVANCE (re-pinned 2026-07-27): 178, not 176. A flex item's main
+# size is its BORDER box, so `.card{width:160px;border:1px solid}` steps
+# 160 + 2*1 border + 16 gap = 178. `chromium --headless` puts the cards at
+# x = 8 / 186 / 364 / 542 (w=162 each) — a 178px step. The old 176 was the
+# engine's pre-fix advance, which ignored the item's padding/border on the wrap
+# path and therefore drew each card 2px into its neighbour.
 if [ -n "$axc" ] && [ "$ayr" = "$byr" ] && \
-   [ "$((bxc - axc))" -eq 176 ] && [ "$((gxc - bxc))" -eq 176 ]; then
-    echo "[hb-flexwrap] PASS three cards share a line at their CSS width (advance 160w+16gap)"
+   [ "$((bxc - axc))" -eq 178 ] && [ "$((gxc - bxc))" -eq 178 ]; then
+    echo "[hb-flexwrap] PASS three cards share a line at their CSS border-box width (advance 160w+2border+16gap)"
 else
     echo "[hb-flexwrap] FAIL cards not laid out at CSS width (advance $((bxc-axc)))"; fail=1
 fi

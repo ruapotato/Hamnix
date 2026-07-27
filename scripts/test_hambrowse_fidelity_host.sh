@@ -97,7 +97,14 @@ fi
 read QX0 QY0 QX1 QY1 QCOL < <(awk '/^POSFILL/ {x0=y0=x1=y1=c="";for(i=1;i<=NF;i++){if($i=="x0")x0=$(i+1);if($i=="y0")y0=$(i+1);if($i=="x1")x1=$(i+1);if($i=="y1")y1=$(i+1);if($i=="col")c=$(i+1)} if(c=="#8f9cb4"){print x0,y0,x1,y1,c;exit}}' "$DUMP")
 if [ -n "${QX0:-}" ]; then
     barw=$((QX1 - QX0)); barh=$((QY1 - QY0))
-    if [ "$barw" -ge 2 ] && [ "$barw" -le 10 ] && [ "$barh" -ge 20 ]; then
+    # RE-PINNED 2026-07-27: the bar must be at least ONE text row tall, not 20px.
+    # The old floor assumed the quote wrapped onto two lines, which it only did
+    # inside the retired ~584px centred "readable measure" strip. At this gate's
+    # 880px viewport `chromium --headless` reports the BLOCKQUOTE as a single
+    # 18px-tall line box (x=48 y=468.1 w=784 h=18), so a 2-row accent bar would
+    # be the WRONG render. The bar's real invariant is that it is thin and spans
+    # the quote's full height.
+    if [ "$barw" -ge 2 ] && [ "$barw" -le 10 ] && [ "$barh" -ge 14 ]; then
         pass "blockquote left accent bar painted (${barw}px wide, ${barh}px tall, $QCOL) at x=$QX0"
     else
         bad "blockquote accent bar has wrong shape (w=$barw h=$barh)"
@@ -108,7 +115,13 @@ fi
 
 # ---- (3) LIST MARKERS: ul discs (inked, indented) + ol numbers --------------
 read LN LDISC LITEMX < <(awk '/^LIST markers/ {print $3, $5, $7; exit}' "$DUMP")
-if [ "${LN:-0}" -ge 2 ] && [ "${LDISC:-#ffffff}" != "#ffffff" ] && [ "${LITEMX:-0}" -gt 150 ]; then
+# RE-PINNED 2026-07-27: the <li> text hang is ~40px, not >150px. The old floor
+# encoded the retired centred "readable measure" strip, which pushed the whole
+# list ~128px right. `chromium --headless` puts these <li> boxes at x=48.0
+# (body margin 8 + the UA 40px list indent); the engine hangs them at x=40, i.e.
+# the same 40px marker gutter. The invariant is that the text hangs clear of the
+# bullet gutter, not that the page is inset.
+if [ "${LN:-0}" -ge 2 ] && [ "${LDISC:-#ffffff}" != "#ffffff" ] && [ "${LITEMX:-0}" -ge 30 ]; then
     pass "ul disc bullets inked ($LDISC), $LN markers, item text hangs at x=$LITEMX"
 else
     bad "ul markers wrong (n=${LN:-?} disc=${LDISC:-?} itemx=${LITEMX:-?})"

@@ -61,12 +61,21 @@ fi
 echo "[test_hambrowse_sdl] PASS device hambrowse still compiles (dual-target intact)"
 
 # ---- scripted synthetic events -------------------------------------------
-# Default window is 900x640. A click at (100,186) lands on the home page's
-# "the second page" link (probed). Then focus the URL bar, clear it, type the
-# home page path + Enter to navigate back, then resize short + wheel to scroll.
+# Default window is 900x640. A click at (100,207) lands on the home page's
+# "the second page" link. RE-PROBED 2026-07-27: the old (100,186) predated the
+# prose-full-width + 18px-row-height layout changes and landed a whole line box
+# ABOVE the link, so the click navigated nowhere. The link's ink now occupies
+# doc-space y=122..136 (x=47..169) in the shared pixel render, and the window
+# maps doc y to CONTENT_Y (78) + doc_y at scroll 0 -> window y=200..214.
+# Then focus the URL bar, clear it, type the home page path + Enter to navigate
+# back, then resize short + wheel to scroll.
 cat > "$SCRIPT" <<'EVENTS'
-click 100 186
-click 200 28
+click 100 207
+# focus the omnibox. RE-PROBED 2026-07-27: (200,28) predated the Chrome-shaped
+# chrome (a 34px TAB STRIP above a 44px TOOLBAR, lib/web/state.ad), so y=28 hit
+# the tab strip and the address bar never took focus. The toolbar spans
+# ADDR_Y=34 .. ADDR_Y+ADDR_H=78; click its middle, clear of the nav buttons.
+click 300 56
 ctrlkey 97
 key 8
 text tests/fixtures/hambrowse_sdl_home.html
@@ -100,10 +109,14 @@ def load(p):
         body = f.read(w*h*3)
     return w, h, body
 
-# Content region = pixels below the chrome (y >= 40), hashed per frame so we can
-# count DISTINCT page contents independent of chrome (address bar / nav buttons).
+# Content region = pixels below the chrome, hashed per frame so we can count
+# DISTINCT page contents independent of chrome (address bar / nav buttons).
+# RE-PINNED 2026-07-27 from y>=40 to y>=78: the window grew a Chrome-shaped
+# 34px TAB STRIP + 44px TOOLBAR (CONTENT_Y == 78 in lib/web/state.ad), so the
+# old 40px cut still included the omnibox — every keystroke of the typed address
+# changed the "content" hash and the home page's signature could never recur.
 def content_sig(w, h, body):
-    off = 40 * w * 3
+    off = 78 * w * 3
     return hashlib.sha1(body[off:]).hexdigest()
 
 frames = [load(p) for p in paths]

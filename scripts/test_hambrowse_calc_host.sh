@@ -49,6 +49,14 @@ echo "[hb-calc] PASS native hambrowse still compiles"
 
 fail=0
 D0="$OUT/calc.txt"
+# STALE-ORIGIN RE-PIN (2026-07-27): the box LEFT column below moved from 0 to 8.
+# Plain prose used to render inside a centred "readable measure" strip and the
+# UA 8px body margin was not honoured, so every block fill started at x=0. The
+# engine now lays the page out full-width from the real body margin, which is
+# what Chrome does: `chromium --headless` reports getBoundingClientRect().x == 8
+# for every block in this fixture. Only the LEFT column moved — every right edge
+# below is unchanged, so each assertion still pins exactly the same computed
+# width it always did.
 assert_grep() {   # pattern message
     if grep -Eq -- "$1" "$D0"; then
         echo "[hb-calc] PASS $2"
@@ -60,14 +68,14 @@ assert_grep() {   # pattern message
 "$BIN" "$FIX" 800 >"$D0" 2>&1 || { echo "[hb-calc] FAIL: render exited non-zero"; cat "$D0"; exit 1; }
 grep -E 'FILL' "$D0" | grep -Ei '#111111|#222222|#333333|#444444|#555555|#666666|#777777|#888888' || true
 
-assert_grep 'FILL [0-9]+ [0-9]+ 0 166 #111111'  "calc(100px + 50px) -> 150px"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 760 #222222'  "calc(100% - 40px) -> 744px (percentage)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 46 #333333'  "calc(10px * 3) -> 30px (multiply)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 58 #444444'  "calc(2rem + 10px) -> 42px (rem operand)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 36 #555555'  "calc(10px + 2px * 5) -> 20px (precedence)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 40 #666666'  "calc((10px + 2px) * 2) -> 24px (nested parens)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 316 #777777'  "calc(50vw - 100px) -> 300px (viewport unit)"
-assert_grep 'FILL [0-9]+ [0-9]+ 0 792 #888888'  "calc(100% - var(--g)) -> 776px (var() inside calc)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 166 #111111'  "calc(100px + 50px) -> 150px"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 760 #222222'  "calc(100% - 40px) -> 744px (percentage)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 46 #333333'  "calc(10px * 3) -> 30px (multiply)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 58 #444444'  "calc(2rem + 10px) -> 42px (rem operand)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 36 #555555'  "calc(10px + 2px * 5) -> 20px (precedence)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 40 #666666'  "calc((10px + 2px) * 2) -> 24px (nested parens)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 316 #777777'  "calc(50vw - 100px) -> 300px (viewport unit)"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 792 #888888'  "calc(100% - var(--g)) -> 776px (var() inside calc)"
 
 if [ "$fail" -ne 0 ]; then
     echo "[hb-calc] RESULT: FAIL"; exit 1

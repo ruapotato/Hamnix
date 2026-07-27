@@ -48,6 +48,14 @@ fi
 grep -E '^FILL|^SEG ' "$DUMP" | grep -Ei 'ffcc00|33aa33|2255aa|cc00cc|eeeeee' || true
 
 fail=0
+# STALE-ORIGIN RE-PIN (2026-07-27): the box LEFT column below moved from 0 to 8.
+# Plain prose used to render inside a centred "readable measure" strip and the
+# UA 8px body margin was not honoured, so every block fill started at x=0. The
+# engine now lays the page out full-width from the real body margin, which is
+# what Chrome does: `chromium --headless` reports getBoundingClientRect().x == 8
+# for every block in this fixture. Only the LEFT column moved — every right edge
+# below is unchanged, so each assertion still pins exactly the same computed
+# width it always did.
 assert_grep() {
     local pat="$1" msg="$2"
     if grep -Eq -- "$pat" "$DUMP"; then
@@ -65,17 +73,17 @@ assert_grep 'LAYOUT segs=[1-9][0-9]* rows=[1-9][0-9]* ' "layout produced segment
 # and the text would start at x=8, not x=20. The 240px fill (200 width + 24px
 # horizontal padding + 16 chrome) and the text at x=20 (8 + 12px left padding)
 # both prove the fractional 0.75rem resolved to 12px.
-assert_grep '^FILL [0-9]+ [0-9]+ 0 240 #ffcc00'  "padding:0.75rem -> 12px (240px fill = 200 + 24 pad + 16, not 216)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 240 #ffcc00'  "padding:0.75rem -> 12px (240px fill = 200 + 24 pad + 16, not 216)"
 assert_grep '^SEG [0-9]+ 20 #[0-9a-f]+ b0 u0 s0 l-1 bg#ffcc00 .Padded 0.75rem box.' \
     "padding:0.75rem -> text at x=20 (8 + 12px left padding, not x=8)"
 
 # --- 33.3% width -> right edge WIDER than an integer 33% --------------
 # 33.3% of 784 = 261.1 -> 261px width -> x1 277 (33% -> ~259 -> x1 275).
-assert_grep '^FILL [0-9]+ [0-9]+ 0 277 #33aa33'  "width:33.3% -> 277px right edge (33% would be 275)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 277 #33aa33'  "width:33.3% -> 277px right edge (33% would be 275)"
 
 # --- 25.5% width -> a fractional percentage box ----------------------
 # 25.5% of 784 = 199.9 -> 199px width -> x1 215 (25% -> 196 -> x1 212).
-assert_grep '^FILL [0-9]+ [0-9]+ 0 215 #2255aa'  "width:25.5% -> 215px right edge (fractional %)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 215 #2255aa'  "width:25.5% -> 215px right edge (fractional %)"
 
 # --- decimal em/rem font-size boxes render (value path exercised) ----
 assert_grep '^SEG 0 8 #[0-9a-f]+ b1 u0 s0 l-1 bg#eeeeee .Heading at 1.5rem.' \

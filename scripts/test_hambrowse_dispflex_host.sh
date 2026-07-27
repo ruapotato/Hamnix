@@ -48,6 +48,14 @@ fail=0
 D0="$OUT/dispflex.txt"
 "$BIN" "$FIX" 800 >"$D0" 2>&1 || { echo "[hb-dispflex] FAIL: render exited non-zero"; cat "$D0"; exit 1; }
 
+# STALE-ORIGIN RE-PIN (2026-07-27): the box LEFT column below moved from 0 to 8.
+# Plain prose used to render inside a centred "readable measure" strip and the
+# UA 8px body margin was not honoured, so every block fill started at x=0. The
+# engine now lays the page out full-width from the real body margin, which is
+# what Chrome does: `chromium --headless` reports getBoundingClientRect().x == 8
+# for every block in this fixture. Only the LEFT column moved — every right edge
+# below is unchanged, so each assertion still pins exactly the same computed
+# width it always did.
 assert_grep() {   # pattern message
     if grep -Eq -- "$1" "$D0"; then
         echo "[hb-dispflex] PASS $2"
@@ -77,7 +85,7 @@ fi
 # FULL-WIDTH SCOPING: this page uses display:flex, so the readable-measure gutter
 # is disabled and the block box spans the true body width (0..800) like Firefox,
 # not the old 584px-centred strip (was 100..700 at width 800). More-correct.
-assert_grep 'FILL [0-9]+ [0-9]+ 0 800 #ffcc00' "display:block span paints its full-width box"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 800 #ffcc00' "display:block span paints its full-width box"
 
 # ---- (2) flex span navbar spreads + container bar + column direction -------
 hx=$(seg_x "Home")
@@ -90,7 +98,7 @@ else
 fi
 # FULL-WIDTH SCOPING (as above): the flex container's background bar now spans
 # the true body width (0..800) like Firefox, not the 584px-centred strip.
-assert_grep 'FILL [0-9]+ [0-9]+ 0 800 #223344' "flex container paints its full-width background bar"
+assert_grep 'FILL [0-9]+ [0-9]+ 8 800 #223344' "flex container paints its full-width background bar"
 # flex-direction:column stacks children on DIFFERENT rows (not side-by-side).
 s1=$(seg_row "Stacked one")
 s2=$(seg_row "Stacked two")

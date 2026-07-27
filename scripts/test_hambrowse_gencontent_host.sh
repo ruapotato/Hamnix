@@ -78,11 +78,18 @@ assert_flow() {   # exact-visual-line message
     fi
 }
 
+# STALE-ORIGIN RE-PIN (2026-07-27): the FLOW row indent below dropped from 14
+# monospace columns to 1. Prose used to be laid out inside a centred ~128px
+# "readable measure" strip; the engine now renders plain prose full-width from
+# the UA 8px body margin (= exactly one 8px CELL_W column), which is what Chrome
+# does — `chromium --headless` reports getBoundingClientRect().x == 8 for every
+# <p> in this fixture. Only the leading indent changed; the generated-content
+# text each row must carry is untouched.
 # content:"* " -> a bold ORANGE star box before the tag text, distinct segment.
 assert_seg '\*'     '#ff8800'  "::before string emits its own segment"
 assert_seg '\*'     ' b1 '     "::before applies the pseudo font-weight:bold"
 assert_seg ' Widget' '#101010' "element's own text follows the ::before box"
-assert_flow 'FLOW              * Widget' x "::before renders inline ahead of the text"
+assert_flow 'FLOW  * Widget' x "::before renders inline ahead of the text"
 
 # content:" >>" -> a BLUE arrow box after the link; pseudo colour beats link blue.
 assert_seg ' >>'    '#0088ff'  "::after string emits after the element text"
@@ -91,14 +98,14 @@ assert_seg 'Docs'   '#1a4fd0'  "link's own text keeps the link role colour"
 
 # content:attr(data-x) -> the attribute value, in the pseudo's green.
 assert_seg 'SKU42-' '#11aa22'  "::before content:attr(x) emits the attribute value"
-assert_flow 'FLOW              SKU42-Gizmo' x "attr() content renders ahead of the text"
+assert_flow 'FLOW  SKU42-Gizmo' x "attr() content renders ahead of the text"
 
 # content:"" -> empty inline box: no glyphs, the element text is untouched.
-assert_flow 'FLOW              Plain' x "empty content generates no visible glyphs"
+assert_flow 'FLOW  Plain' x "empty content generates no visible glyphs"
 
 # content:none -> nothing generated; the .quiet rule's #ff0000 must never paint.
 assert_nogrep '#ff0000'        "content:none suppresses the generated box"
-assert_flow 'FLOW              Silent' x "content:none leaves the element text intact"
+assert_flow 'FLOW  Silent' x "content:none leaves the element text intact"
 
 if [ "$fail" -ne 0 ]; then
     echo "[hb-gencontent] RESULT: FAIL"; exit 1

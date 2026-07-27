@@ -100,27 +100,38 @@ def main():
     else:
         print("CARD1 ink_rows=0 bleed_px=-1 gutter=0-0")
 
-    # ---- (2) nav gap: cluster the yellow link glyphs into items ---------------
-    navbb = _bbox(px, W, H, C_NAV, tol=70)
+    # ---- (2) nav gap: read the ITEMS off the engine's own display list --------
+    # This used to cluster yellow ink columns in the PREVIEW png. That render
+    # draws PROPORTIONAL glyphs at the engine's 8px-char-grid x positions, so an
+    # item's ink is narrower than the cell run it was laid out in and the leftover
+    # slack lands in the inter-item gutter — two neighbours merged into one
+    # "item" and the measured gutters came out as 16/20 instead of 20/20/20.
+    # (Same host-preview trap the framediff docs warn about.) The flex `gap` is a
+    # LAYOUT property, so assert it on the layout: each nav link is its own SEG
+    # at the link ink colour, and the gap is the distance from one segment's
+    # mono-grid right edge to the next segment's left edge.
+    # Chrome (`getBoundingClientRect`) puts the four links at x = 8 / 67.1 /
+    # 127.1 / 178.2 — i.e. a 20px gutter between adjacent border boxes, exactly
+    # what the engine lays out at 8 / 60 / 120 / 172 with its narrower mono runs.
+    CELL_W = 8
+    nav_hex = "#%02x%02x%02x" % C_NAV
     items = []
-    if navbb:
-        _, ny0, _, ny1, _ = navbb
-        cols = set()
-        for y in range(ny0, ny1 + 1):
-            for x in range(W):
-                if _close(px[x, y], C_NAV, 70):
-                    cols.add(x)
-        xs = sorted(cols)
-        # cluster columns into ITEMS: a gap wider than the intra-item glyph spacing
-        # (a few px) starts a new nav item.
-        THRESH = 12
-        if xs:
-            s = p = xs[0]
-            for x in xs[1:]:
-                if x - p > THRESH:
-                    items.append((s, p)); s = x
-                p = x
-            items.append((s, p))
+    for ln in dump.splitlines():
+        if not ln.startswith("SEG "):
+            continue
+        t = ln.split(" ", 4)
+        if len(t) < 5 or t[3].lower() != nav_hex:
+            continue
+        bar = ln.find("|")
+        if bar < 0 or not ln.endswith("|"):
+            continue
+        text = ln[bar + 1:-1]
+        try:
+            x = int(t[2])
+        except ValueError:
+            continue
+        items.append((x, x + len(text) * CELL_W))
+    items.sort()
     gaps = [items[i + 1][0] - items[i][1] for i in range(len(items) - 1)]
     print("NAV items=%d gaps=%s" % (len(items), ",".join(str(g) for g in gaps)))
 

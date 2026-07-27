@@ -59,26 +59,36 @@ else
     echo "[hb-gridr2] FAIL minmax track geometry (rail=$mmstep fr=$frstep rows u$ur d$dr t$tr)"; fail=1
 fi
 
-# ---- (B) repeat(auto-fill, minmax(120px,1fr)) -> 4 columns / row --------------
+# ---- (B) repeat(auto-fill, minmax(120px,1fr)) -> 5 columns / row --------------
+# RE-PINNED 2026-07-27 from 4 columns to 5. auto-fill's track count is
+# floor(container / min-track), and the container is now the FULL body content
+# width (624px at this gate's 640px viewport) rather than the old ~584px centred
+# "readable measure" strip — 624/120 = 5, where 584/120 = 4. `chromium
+# --headless` at window width 640 reports five .afc boxes of w=124.8 at
+# x = 8 / 132.8 / 257.6 / 382.4 / 507.2 on the first row, with Item6..Item8
+# wrapping to x = 8 / 132.8 / 257.6 on the second. The engine lays out
+# 8 / 136 / 264 / 392 / 520 then wraps Item6..Item8 to 8 / 136 / 264 — the same
+# 5-column grid.
 i1r=$(seg_row Item1); i1x=$(seg_x Item1)
 i2r=$(seg_row Item2); i2x=$(seg_x Item2)
 i4r=$(seg_row Item4); i4x=$(seg_x Item4)
 i5r=$(seg_row Item5); i5x=$(seg_x Item5)
-i8r=$(seg_row Item8); i8x=$(seg_x Item8)
-echo "[hb-gridr2] autofill row0: I1(r$i1r x$i1x) I2(r$i2r x$i2x) I4(r$i4r x$i4x)"
-echo "[hb-gridr2] autofill row1: I5(r$i5r x$i5x) I8(r$i8r x$i8x)"
-# (B1) four items share the first row, the fifth wraps to a new row.
+i6r=$(seg_row Item6); i6x=$(seg_x Item6)
+i7r=$(seg_row Item7); i7x=$(seg_x Item7)
+echo "[hb-gridr2] autofill row0: I1(r$i1r x$i1x) I2(r$i2r x$i2x) I4(r$i4r x$i4x) I5(r$i5r x$i5x)"
+echo "[hb-gridr2] autofill row1: I6(r$i6r x$i6x) I7(r$i7r x$i7x)"
+# (B1) five items share the first row, the sixth wraps to a new row.
 if [ -n "$i1r" ] && [ "$i1r" = "$i2r" ] && [ "$i2r" = "$i4r" ] && \
-   [ -n "$i5r" ] && [ "$i5r" -gt "$i1r" ]; then
-    echo "[hb-gridr2] PASS auto-fill computed 4 columns (Item5 wraps to row 2)"
+   [ "$i4r" = "$i5r" ] && [ -n "$i6r" ] && [ "$i6r" -gt "$i1r" ]; then
+    echo "[hb-gridr2] PASS auto-fill computed 5 columns (Item6 wraps to row 2)"
 else
-    echo "[hb-gridr2] FAIL auto-fill column count (rows i1$i1r i2$i2r i4$i4r i5$i5r)"; fail=1
+    echo "[hb-gridr2] FAIL auto-fill column count (rows i1$i1r i2$i2r i4$i4r i5$i5r i6$i6r)"; fail=1
 fi
-# (B2) the column x-positions repeat down rows (Item1 over Item5, Item4 over Item8).
-if [ "$i1x" = "$i5x" ] && [ "$i4x" = "$i8x" ] && [ "$i1x" -lt "$i4x" ]; then
-    echo "[hb-gridr2] PASS auto-fill track columns reused across rows (col0=$i1x col3=$i4x)"
+# (B2) the column x-positions repeat down rows (Item1 over Item6, Item2 over Item7).
+if [ "$i1x" = "$i6x" ] && [ "$i2x" = "$i7x" ] && [ "$i1x" -lt "$i4x" ]; then
+    echo "[hb-gridr2] PASS auto-fill track columns reused across rows (col0=$i1x col1=$i2x)"
 else
-    echo "[hb-gridr2] FAIL auto-fill columns not reused (i1$i1x i4$i4x i5$i5x i8$i8x)"; fail=1
+    echo "[hb-gridr2] FAIL auto-fill columns not reused (i1$i1x i2$i2x i6$i6x i7$i7x)"; fail=1
 fi
 # (B3) equal auto-fill tracks -> uniform column spacing.
 afsp=$((i2x - i1x))

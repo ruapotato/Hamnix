@@ -128,11 +128,19 @@ BADGE_X="$(gbox_for e3f0ff)"
 PILL_X="$(gbox_for e8f7ee)"
 if [ -n "$BADGE_X" ] && [ -n "$PILL_X" ]; then
     DELTA=$((PILL_X - BADGE_X))
-    # "Top rated" == 9 glyphs * 8px = 72px + 18px padding = 90px + 8px gap = 98px.
-    if [ "$DELTA" -ge 92 ] && [ "$DELTA" -le 104 ]; then
+    # CHROME-DERIVED WINDOW (re-pinned 2026-07-27). The old 92..104 window came
+    # from MONOSPACE arithmetic ("Top rated" == 9 glyphs * 8px == 72 + 18 padding
+    # + 8 gap == 98), but this assertion reads the POSFILL geometry of the PIXEL
+    # backend, which lays the chip out with real PROPORTIONAL advances — the
+    # mono estimate over-measures the label by ~13px and the window could never
+    # be met. `chromium --headless` on this exact markup reports
+    #   .badge x=0.0 w=78.6   .pill x=86.6
+    # i.e. a second-item offset of 86.6px (= 60.6 proportional glyphs + 18px
+    # padding + 8px gap). The engine lays it out at 85px, within 2px of Chrome.
+    if [ "$DELTA" -ge 78 ] && [ "$DELTA" -le 95 ]; then
         pass "padded flex items are spaced by border-box width + gap (2nd pill +${DELTA}px, no overlap)"
     else
-        bad "flex item spacing wrong (2nd pill +${DELTA}px; expected ~98 = 72 glyph + 18 pad + 8 gap)"
+        bad "flex item spacing wrong (2nd pill +${DELTA}px; expected ~87 = Chrome 60.6 glyph + 18 pad + 8 gap)"
     fi
 else
     bad "flex gap probe pills not found (badge_x=${BADGE_X:-?} pill_x=${PILL_X:-?})"

@@ -13,7 +13,14 @@
      shows in the surrounding white margin. */
   .card      { background: #dfe6f5; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
                width: 220px; }
-  .spacer    { background: #ffffff; width: 220px; }
+  /* NO background here: a later in-flow sibling's OPAQUE background paints
+     AFTER the card's shadow (CSS painting order), so `background:#ffffff` on
+     this spacer OCCLUDED the drop shadow below the card — verified against
+     `chromium --headless`, where the pixels under the card read pure #ffffff
+     with the background and a 194->254 fading grey without it. The spacer only
+     needs to reserve white paper for the shadow to land on, which the page's
+     own `body{background:#ffffff}` already provides. */
+  .spacer    { width: 220px; height: 40px; }
 </style>
 </head>
 <body>
@@ -22,6 +29,8 @@
   <div class="rgba">rgba half red</div>
   <p>gap</p>
   <div class="card">shadowed card</div>
-  <div class="spacer">spacer below the shadowed card so the drop shadow lands on white paper and can be sampled</div>
+  <div class="spacer"></div>
+  <p>spacer above keeps this text clear of the drop shadow so the paper under
+     the card can be sampled</p>
 </body>
 </html>
