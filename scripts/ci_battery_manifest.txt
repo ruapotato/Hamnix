@@ -1808,6 +1808,14 @@ bash scripts/ci_run_gate.sh scripts/test_devstat_split.sh
 bash scripts/ci_run_gate.sh scripts/test_devnet_local.sh
 bash scripts/ci_run_gate.sh scripts/test_devmouse_write.sh
 bash scripts/ci_run_gate.sh scripts/test_de_cursor_hotspot.sh
+# test_wsys_anim_frames: SUSTAINED frame delivery, not correctness-at-an-instant.
+# 30 consecutive frames of the real animating-client shape (pixels delivered out
+# of band via the 'I' image store / 'B' backbuffer, display list byte-identical)
+# must produce 30 presents, while a genuinely idle window must still fast-skip
+# all 30. The 2026-07-27 "snake draws one frame / video shows one frame /
+# browser barely repaints" freeze passed every other gate because frame 1 was
+# always correct — this is the gate that measures frame 2..N.
+bash scripts/ci_run_gate.sh scripts/test_wsys_anim_frames.sh
 bash scripts/ci_run_gate.sh scripts/test_dup.sh
 bash scripts/ci_run_gate.sh scripts/test_srv_post.sh
 bash scripts/ci_run_gate.sh scripts/test_devdiskstats.sh

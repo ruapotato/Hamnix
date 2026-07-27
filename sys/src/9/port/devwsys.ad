@@ -1134,6 +1134,13 @@ def _wsys_reset_rings(wid: int32):
     wsys_win_serial[u] = 0
     _wsys_dirty_clear(wid)
     _wsys_draw_listing_cache_gen[u] = 0
+    # A recycled wid must never inherit the previous tenant's present
+    # snapshot: a stale (geometry, content-serial) match would let the commit
+    # damage diff conclude "nothing changed" against pixels that belong to a
+    # window that no longer exists. Invalidating forces a full first present.
+    wsys_content_serial[u] = 0
+    wsys_scene_pres_content[u] = 0
+    wsys_scene_pres_valid[u] = 0
 
 
 # --- ASCII formatting helpers ----------------------------------------
@@ -6549,6 +6556,25 @@ wsys_bb_dy1: Array[32, int64]
 # read this to skip windows that have not changed since the last frame.
 wsys_bb_serial: Array[32, uint64]
 
+# Per-window OUT-OF-BAND CONTENT serial. Bumped whenever pixel content for
+# this window arrives through a channel the scene DISPLAY LIST cannot
+# describe:
+#
+#   * the 'I' verb (named-image store) — an animating client re-uploads new
+#     pixels under a STABLE name, so the scene line that blits it
+#     ("image frame 0 0 ...") is byte-identical frame to frame;
+#   * the 'B' verb (v2 backbuffer blit) — the scene carries a single
+#     "buffer 0 0 <w> <h>" line whose text never changes either.
+#
+# _wsys_scene_commit_damage diffs the committed scene TEXT against the
+# previously presented text. With no record of these channels it concluded
+# "nothing changed" for every frame after the first and skipped the present
+# outright (its `return 2`), which is why an 'I'/'B' client rendered exactly
+# ONE frame and then froze. Snapshotting this counter at present time and
+# comparing it on the next commit makes that fast-skip content-aware: a
+# window whose pixels changed out of band always presents.
+wsys_content_serial: Array[32, uint64]
+
 # Per-window cursor sprite. Cap 32x32 RGBA = 4 KiB per slot = 128 KiB
 # total. Plenty for the rio-shape per-window focus cursor (the global
 # pointer cursor stays on the existing daemon_pump_mouse save-under
@@ -6800,6 +6826,13 @@ def _wsys_img_store(wid: int32, name: Ptr[uint8], nlen: uint64,
         dst[doff + 2] = b
         dst[doff + 3] = a
         i = i + 1
+    # New pixels landed for this window through a channel the scene display
+    # list does not describe (the blit line naming this image is unchanged).
+    # Bump the content serial so the next commit's damage diff cannot mistake
+    # the byte-identical scene text for "nothing to paint".
+    wu: uint64 = cast[uint64](wid)
+    if wu > 0 and wu < WSYS_SCENE_SLOTS:
+        wsys_content_serial[wu] = wsys_content_serial[wu] + 1
     return 1
 
 
@@ -7295,6 +7328,12 @@ def _wsys_blit_parse(wid: int32, buf: Ptr[uint8], count: uint64) -> int64:
                           cast[int64](bx1), cast[int64](by1))
         _wsys_mark_dirty(wid, cast[int64](bx0), cast[int64](by0),
                          cast[int64](bx1), cast[int64](by1))
+        # Out-of-band pixels: the scene line that composites this backbuffer
+        # ("buffer 0 0 <w> <h>") is byte-identical every frame, so the commit
+        # damage diff needs this counter to know the window really changed.
+        bu: uint64 = cast[uint64](wid)
+        if bu > 0 and bu < WSYS_SCENE_SLOTS:
+            wsys_content_serial[bu] = wsys_content_serial[bu] + 1
         return cast[int64](18 + pix_bytes)
 
     # 'C' hx hy w h fmt <pixels> — cursor sprite update. 18 byte header.
@@ -7515,6 +7554,11 @@ wsys_scene_pres_oy:    Array[32, int64]
 wsys_scene_pres_ow:    Array[32, int64]
 wsys_scene_pres_oh:    Array[32, int64]
 wsys_scene_pres_odeco: Array[32, int32]
+# The out-of-band content serial AS OF the last present of this window. When
+# it differs from wsys_content_serial the window's pixels changed through the
+# 'I'/'B' channels since we last painted, and the scene-text diff alone must
+# NOT be trusted to say "nothing changed".
+wsys_scene_pres_content: Array[32, uint64]
 
 # Per-window geometry / stacking / decoration, set via the window `ctl`
 # leaf (geometry/z/decorate). Defaults: a window starts at the origin
@@ -10150,6 +10194,15 @@ def _wsys_scene_commit_damage(wid: int32, ox0: Ptr[int64], oy0: Ptr[int64],
         return 0
     if wsys_scene_pres_odeco[u] != wsys_win_decorate[u]:
         return 0
+    # OUT-OF-BAND CONTENT GUARD. An 'I' (named image) or 'B' (v2 backbuffer)
+    # write puts new pixels in this window without changing one byte of its
+    # scene display list. The line-by-line text diff below would then find
+    # nothing different and return 2 = "skip the present entirely", freezing
+    # the window on its first frame forever — the animation bug that hit the
+    # hamGame snake, the video player and the browser. Their pixels DID
+    # change, so force a full present and let the snapshot re-sync.
+    if wsys_content_serial[u] != wsys_scene_pres_content[u]:
+        return 0
     nlen: uint64 = wsys_scene_len[u]
     plen: uint64 = wsys_scene_prev_len[u]
     if nlen == 0 or plen == 0:
@@ -10281,6 +10334,7 @@ def _wsys_record_present_snapshot(u: uint64):
     wsys_scene_pres_ow[u] = cw
     wsys_scene_pres_oh[u] = ch
     wsys_scene_pres_odeco[u] = wsys_win_decorate[u]
+    wsys_scene_pres_content[u] = wsys_content_serial[u]
     wsys_scene_pres_valid[u] = 1
 
 
@@ -12996,6 +13050,7 @@ def wsys_close_box_selftest() -> int32:
     wsys_titlebar_buttons_selftest()
     wsys_focus_titlebar_selftest()
     wsys_geom_reset_selftest()
+    wsys_anim_frames_selftest()
     return 1
 
 
@@ -13027,6 +13082,104 @@ def _wsys_windows_list_has(wid: int32) -> int32:
             at_line_start = 1
         i = i + 1
     return 0
+
+
+WSYS_ANIM_FRAMES: int32 = 30
+
+
+def wsys_anim_frames_selftest() -> int32:
+    # SUSTAINED FRAME DELIVERY over time (the "renders exactly ONE frame" bug).
+    #
+    # Every other compositor gate here asserts correctness at ONE INSTANT, which
+    # is exactly why the freeze shipped: frame 1 was always right. This gate
+    # runs WSYS_ANIM_FRAMES consecutive frames of the real animating-client
+    # shape and requires a present EVERY frame.
+    #
+    # The client shape under test is the one hamGame's snake, the video player
+    # and the browser all use: pixels are delivered OUT OF BAND (the 'I'
+    # named-image store or the 'B' v2 backbuffer blit) while the scene display
+    # list stays BYTE-IDENTICAL frame to frame ("image frame 0 0 64 64" /
+    # "buffer 0 0 <w> <h>"). _wsys_scene_commit_damage used to diff only the
+    # scene TEXT, find it unchanged, and return 2 = "skip the present", so
+    # those clients froze on frame 1 forever.
+    #
+    # BOTH directions are pinned, because the cheap way to "fix" the freeze is
+    # to delete the no-change fast-skip — which would hand back the 3.5 ms
+    # full-window repaint per input event that the skip was added to remove:
+    #   (a) content serial bumped  -> MUST present (all N frames);
+    #   (b) content serial static  -> MUST still skip (the optimisation lives).
+    fake_pid: uint64 = 990931
+    wid: int32 = wsys_alloc_wid(fake_pid)
+    if wid < 2:
+        printk0("[ANIM_FRAMES] PASS (skip: table full)\n")
+        return 1
+    u: uint64 = cast[uint64](wid)
+    # A committed, presented window with stable geometry — the state an
+    # animating client is in from its second frame onward.
+    wsys_win_geo_init[u] = 1
+    wsys_win_w[u] = 64
+    wsys_win_h[u] = 64
+    wsys_win_x[u] = 10
+    wsys_win_y[u] = 10
+    wsys_win_decorate[u] = 0
+    base: uint64 = u * WSYS_SCENE_SIZE
+    line: Ptr[uint8] = cast[Ptr[uint8]]("image frame 0 0 64 64\n")
+    ln: uint64 = 0
+    while line[ln] != 0:
+        wsys_scene_buf[base + ln] = line[ln]
+        wsys_scene_prev_buf[base + ln] = line[ln]
+        ln = ln + 1
+    wsys_scene_len[u] = ln
+    wsys_scene_prev_len[u] = ln
+    wsys_content_serial[u] = 0
+    _wsys_record_present_snapshot(u)
+
+    dx0: int64 = 0
+    dy0: int64 = 0
+    dx1: int64 = 0
+    dy1: int64 = 0
+
+    # (a) N frames of new pixels under an UNCHANGED display list.
+    presented: int32 = 0
+    f: int32 = 0
+    while f < WSYS_ANIM_FRAMES:
+        # The client uploads this frame's pixels ('I' / 'B' verb).
+        wsys_content_serial[u] = wsys_content_serial[u] + 1
+        # ...then re-commits its (identical) scene.
+        if _wsys_scene_commit_damage(wid, &dx0, &dy0, &dx1, &dy1) != 2:
+            presented = presented + 1
+            _wsys_record_present_snapshot(u)
+        f = f + 1
+    if presented != WSYS_ANIM_FRAMES:
+        printk2(cast[Ptr[char]]("[ANIM_FRAMES] FAIL only %d of %d"),
+                cast[uint64](presented), cast[uint64](WSYS_ANIM_FRAMES))
+        printk0(" frames presented; an out-of-band-pixel client is frozen\n")
+        wsys_scene_len[u] = 0
+        wsys_scene_prev_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # (b) NEGATIVE control: a genuinely idle window must STILL fast-skip, or
+    # the no-change optimisation has been thrown away to buy (a).
+    skipped: int32 = 0
+    g: int32 = 0
+    while g < WSYS_ANIM_FRAMES:
+        if _wsys_scene_commit_damage(wid, &dx0, &dy0, &dx1, &dy1) == 2:
+            skipped = skipped + 1
+        g = g + 1
+    wsys_scene_len[u] = 0
+    wsys_scene_prev_len[u] = 0
+    wsys_free_wid(wid)
+    if skipped != WSYS_ANIM_FRAMES:
+        printk2(cast[Ptr[char]]("[ANIM_FRAMES] FAIL idle window presented %d of %d"),
+                cast[uint64](WSYS_ANIM_FRAMES - skipped),
+                cast[uint64](WSYS_ANIM_FRAMES))
+        printk0(" frames; the no-change fast-skip regressed\n")
+        return 0
+    printk2(cast[Ptr[char]]("[ANIM_FRAMES] PASS %d/%d animated frames presented,"),
+            cast[uint64](presented), cast[uint64](WSYS_ANIM_FRAMES))
+    printk0(" idle frames still skipped\n")
+    return 1
 
 
 def wsys_geom_reset_selftest() -> int32:
