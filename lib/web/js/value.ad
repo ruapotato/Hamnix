@@ -189,6 +189,49 @@ def emit_i64(v: int64):
         emit_u64(cast[uint64](v))
 
 
+# ---- shortest round-tripping fraction digits (ECMAScript Number::toString) ---
+# Scratch used by emit_num: g_fd holds the raw extracted fractional digit VALUES
+# (0..9), g_fdout the candidate after optional round-half-up of the last kept
+# digit, and g_fdcarry records a carry that propagated OUT of the fraction (e.g.
+# 0.999... -> 1.0), which bumps the integer part.
+g_fd:    Array[24, uint8]
+g_fdout: Array[24, uint8]
+g_fdcarry: int32 = 0
+
+
+# Rebuild the float64 that the first `k` fractional digits denote (optionally
+# rounding the k-th digit UP with carry) so emit_num can pick the SHORTEST digit
+# count that reproduces the input exactly. Horner from the last digit keeps every
+# intermediate exact-ish and mirrors how a reader would parse the printed text.
+def _fdigits_recon(ip: float64, k: int32, roundup: int32) -> float64:
+    i: int32 = 0
+    while i < k:
+        g_fdout[i] = g_fd[i]
+        i = i + 1
+    g_fdcarry = 0
+    if roundup != 0:
+        carry: int32 = 1
+        j: int32 = k - 1
+        while j >= 0 and carry != 0:
+            v: int32 = cast[int32](g_fdout[j]) + 1
+            if v > 9:
+                g_fdout[j] = cast[uint8](0)
+                carry = 1
+            else:
+                g_fdout[j] = cast[uint8](v)
+                carry = 0
+            j = j - 1
+        g_fdcarry = carry
+    f: float64 = 0.0
+    j2: int32 = k - 1
+    while j2 >= 0:
+        f = (f + cast[float64](cast[int32](g_fdout[j2]))) / 10.0
+        j2 = j2 - 1
+    if g_fdcarry != 0:
+        return ip + 1.0 + f
+    return ip + f
+
+
 def emit_num(x: float64):
     if is_nan(x) != 0:
         emit_cstr(cast[Ptr[uint8]]("NaN"))
@@ -207,6 +250,49 @@ def emit_num(x: float64):
         x = 0.0 - x
     ip: float64 = f_floor(x)
     frac: float64 = x - ip
+    # SHORTEST ROUND-TRIP fraction (ECMAScript 7.1.12.1 Number::toString prints
+    # the fewest digits that read back as the same double). The old code emitted
+    # a hard 12 fractional digits, so any value needing more was SILENTLY
+    # TRUNCATED — `Math.PI` printed 3.141592653589 (13 significant digits),
+    # losing 793 and turning an exact double into a different number. Extract a
+    # generous 18 digits, then take the shortest prefix (truncated OR rounded up)
+    # that reconstructs x exactly.
+    pick: int32 = 0
+    if frac > 0.0:
+        fn: int32 = 0
+        tmp: float64 = frac
+        while fn < 18:
+            tmp = tmp * 10.0
+            d: int32 = cast[int32](f_floor(tmp))
+            if d > 9:
+                d = 9
+            if d < 0:
+                d = 0
+            g_fd[fn] = cast[uint8](d)
+            fn = fn + 1
+            tmp = tmp - cast[float64](d)
+        pickup: int32 = 0
+        k: int32 = 1
+        while k <= fn:
+            if _fdigits_recon(ip, k, 0) == x:
+                pick = k
+                pickup = 0
+                break
+            if _fdigits_recon(ip, k, 1) == x:
+                pick = k
+                pickup = 1
+                break
+            k = k + 1
+        if pick == 0:
+            pick = fn
+            pickup = 0
+        # re-materialise the winning candidate into g_fdout (+ its carry flag).
+        _fdigits_recon(ip, pick, pickup)
+        if g_fdcarry != 0:
+            ip = ip + 1.0
+        # trim trailing zeros (a carry-out leaves all zeros -> no fraction at all)
+        while pick > 0 and g_fdout[pick - 1] == cast[uint8](0):
+            pick = pick - 1
     if neg != 0:
         emit_c(45)
     # integer part
@@ -214,29 +300,11 @@ def emit_num(x: float64):
         emit_u64(cast[uint64](ip))
     else:
         emit_cstr(cast[Ptr[uint8]]("1e19"))     # absurdly large; rare
-    if frac > 0.0:
+    if pick > 0:
         emit_c(46)                               # '.'
-        # up to 12 significant fractional digits, trailing zeros trimmed
-        fbuf: Array[16, uint8]
-        fn: int32 = 0
-        k: int32 = 0
-        while k < 12:
-            frac = frac * 10.0
-            d: int32 = cast[int32](f_floor(frac))
-            if d > 9:
-                d = 9
-            fbuf[fn] = cast[uint8](d) + 48
-            fn = fn + 1
-            frac = frac - cast[float64](d)
-            k = k + 1
-            if frac <= 0.0:
-                break
-        # trim trailing zeros
-        while fn > 1 and fbuf[fn - 1] == 48:
-            fn = fn - 1
         j: int32 = 0
-        while j < fn:
-            emit_c(fbuf[j])
+        while j < pick:
+            emit_c(g_fdout[j] + 48)
             j = j + 1
 
 
@@ -318,15 +386,31 @@ def parse_num_bytes(p: Ptr[uint8], n: int32) -> float64:
             val = val * 10.0 + cast[float64](cast[int32](p[i]) - 48)
             any2 = 1
         i = i + 1
+    # FRACTION: accumulate the digits into the SAME integer mantissa and scale
+    # ONCE at the end. The old loop added `digit * scale` with scale stepping
+    # 0.1, 0.01, ... — every one of those scales is inexact in binary, so the
+    # error compounded and the literal `0.3` parsed to 0.30000000000000004 and
+    # `123456789.123456` to 123456789.12345600128. A single divide by an EXACT
+    # power of ten (10^k is exact through 10^22) gives the correctly-rounded
+    # double the spec asks for. Digits past the 17 a double can carry no longer
+    # move the mantissa, so stop scaling then and just consume them.
     if i < n and p[i] == 46:
         i = i + 1
-        scale: float64 = 0.1
+        fdig: int32 = 0
         while i < n and (is_digit(p[i]) != 0 or p[i] == 95):
             if p[i] != 95:
-                val = val + cast[float64](cast[int32](p[i]) - 48) * scale
-                scale = scale * 0.1
+                if fdig < 22:
+                    val = val * 10.0 + cast[float64](cast[int32](p[i]) - 48)
+                    fdig = fdig + 1
                 any2 = 1
             i = i + 1
+        if fdig > 0:
+            pw: float64 = 1.0
+            fk: int32 = 0
+            while fk < fdig:
+                pw = pw * 10.0
+                fk = fk + 1
+            val = val / pw
     if any2 == 0:
         return 0.0 / 0.0
     if i < n and (p[i] == 101 or p[i] == 69):    # e / E
