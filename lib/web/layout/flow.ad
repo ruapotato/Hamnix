@@ -196,7 +196,7 @@ def _register_pos(seg0: int32, mode: int32, fxk: int32, ox: int32, ort: int32, \
     return ri
 
 
-def _posctx_push(x: int32, rt: int32, row: int32):
+def _posctx_push(x: int32, rt: int32, row: int32, padr: int32):
     if posctx_sp < 64:
         posctx_x[posctx_sp]   = x
         posctx_rt[posctx_sp]  = rt
@@ -208,8 +208,14 @@ def _posctx_push(x: int32, rt: int32, row: int32):
         # its background out to rt + CELL_W, so that is the padding-box right edge.
         # Captured here (not from a paint record) so `right:` anchoring works even
         # when the ancestor has a gradient/transparent/image background.
+        # ...plus the ancestor's own padding-RIGHT: an absolutely positioned
+        # child's containing block is its ancestor's PADDING box (CSS 2.1 §10.1),
+        # but `rt` is the ancestor's CONTENT right, already pulled in by that
+        # padding. Without adding it back, a `right:8` badge inside a
+        # `padding:14px` hero anchored 14px too far left (hambrowse_abswidth:
+        # x1=738 where Chrome pins the badge's right edge at panel_right-8).
         if g_last_posrun >= 0:
-            pos_cb_rx[g_last_posrun] = rt + CELL_W
+            pos_cb_rx[g_last_posrun] = rt + CELL_W + padr
 
 
 def _posctx_pop():
@@ -238,7 +244,13 @@ def _apply_positioned():
     # Fresh per layout: no run is block-fill-covered until flagged below.
     zc: int32 = 0
     while zc < n_segs:
-        seg_bgcov[zc] = 0
+        # value 2 = "covered by an enclosing ROUNDED block fill", stamped during
+        # layout by _block_box_close (box.ad). That is a property of the box tree,
+        # not of this positioning pass, so it must SURVIVE the reset — clearing it
+        # here let the square per-run strip repaint over the corner arc a rounded
+        # background had just cut away (square left corners on a rounded card).
+        if seg_bgcov[zc] != cast[uint8](2):
+            seg_bgcov[zc] = 0
         zc = zc + 1
     i: int32 = 0
     while i < pos_n:

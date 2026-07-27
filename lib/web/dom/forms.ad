@@ -1668,7 +1668,10 @@ def _handle_tag(ts: uint64, te: uint64):
                     box_posrun_stack[aidx]  = runa
                     box_pretrow_stack[aidx] = abs_ret
                     box_pushedctx_stack[aidx] = 1
-                _posctx_push(indent_x, blk_right_cur, cast[int32](cur_row))
+                apadr: int32 = 0
+                if aidx >= 0:
+                    apadr = box_padx_stack[aidx] / 2
+                _posctx_push(indent_x, blk_right_cur, cast[int32](cur_row), apadr)
                 if fdisp == 2 or fdisp == 6:
                     if _flex_container_open(te + 1, el_sp) != 0:
                         idxa: int32 = box_sp - 1
@@ -1851,12 +1854,37 @@ def _handle_tag(ts: uint64, te: uint64):
                         # `width` (cards) or its pre-measured natural content width
                         # (nav pills). Start a new line when it no longer fits.
                         cw: int32 = flex_meas_w[fcol]
+                        # `cw` is the CONTENT width handed to _block_box_open (which
+                        # draws the padding OUTWARD); `cwbox` is the BORDER-box width
+                        # the line cursor must step by. _flex_measure_children +
+                        # _flex_grow_scan already folded padding/border into the
+                        # measured widths, but an item with an explicit CSS `width`
+                        # replaced that with the bare content width and then stepped
+                        # the cursor by it — so a padded card row overlapped by
+                        # exactly its padding (`.card{width:240px;padding:20px}` in a
+                        # wrapping row advanced 260px per card while painting each
+                        # 288px wide). Chrome steps 300px there (280 border-box + the
+                        # 20px gap). Re-add the item's own horizontal padding+border
+                        # for the cursor only; box-sizing:border-box has already been
+                        # resolved out of m_wd, so this is the used border-box size.
+                        cwbox: int32 = cw
                         if fwd >= 0:
                             cw = fwd
+                            cwbox = fwd
+                            fpbx: int32 = 0
+                            if m_padx > 0:
+                                fpbx = fpbx + m_padx
+                            if d_padx > 0:
+                                fpbx = d_padx
+                            if m_bordw > 0:
+                                fpbx = fpbx + 2 * m_bordw
+                            cwbox = cwbox + fpbx
                         if cw < CELL_W:
                             cw = CELL_W
+                        if cwbox < cw:
+                            cwbox = cw
                         if flex_cur_x[top] > 0 and \
-                           flex_cur_x[top] + cw > flex_avail[top]:
+                           flex_cur_x[top] + cwbox > flex_avail[top]:
                             # New flex line: drop below the previous line's bottom
                             # plus the container's row-gap (0 when unset).
                             flex_line_top[top] = flex_line_bot[top] + flex_rowgap[top]
@@ -1864,7 +1892,7 @@ def _handle_tag(ts: uint64, te: uint64):
                             flex_cur_x[top] = 0
                         coloff = flex_cur_x[top]
                         ccw = cw
-                        flex_cur_x[top] = flex_cur_x[top] + cw + flex_rawgap[top]
+                        flex_cur_x[top] = flex_cur_x[top] + cwbox + flex_rawgap[top]
                         cur_row = cast[uint64](flex_line_top[top])
                     elif flex_natural[top] != 0:
                         coloff = flex_child_x[top * FLEX_MAX + fcol]
@@ -1978,7 +2006,8 @@ def _handle_tag(ts: uint64, te: uint64):
                         box_posrun_stack[ridx]  = runr
                         box_pushedctx_stack[ridx] = 1
                         _posctx_push(indent_x, blk_right_cur, \
-                                     box_srow_stack[ridx])
+                                     box_srow_stack[ridx], \
+                                     box_padx_stack[ridx] / 2)
             # A <p> is now open — remember it so a following block start tag with
             # an omitted </p> synthesises the close (_hx_implicit_close_p).
             if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("p")) != 0:

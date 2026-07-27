@@ -1496,6 +1496,9 @@ def _seg_ensure():
         # own colour (author `a{color:…}` / inline) — then that colour wins.
         seg_rgb[n_segs] = g_link_rgb
     seg_bg[n_segs]    = g_bg
+    # fresh run: not yet covered by any block fill (the enclosing rounded-box
+    # stamp below is applied at box CLOSE, and value 2 survives _apply_positioned).
+    seg_bgcov[n_segs] = cast[uint8](0)
     seg_bold[n_segs]  = cast[uint8](g_bold)
     seg_uline[n_segs] = cast[uint8](g_uline)
     seg_link[n_segs]  = g_link
@@ -3015,6 +3018,31 @@ def _block_box_close():
             bfill_rad[n_bfills] = bordr
             bfill_filter[n_bfills] = bfilt
             bfill_bord[n_bfills] = -1        # block borders come from the bbox registry
+            # ROUNDED BOX vs per-run background STRIP: every text run inside this
+            # box also carries the inherited background as seg_bg, and the painter
+            # draws that as a SQUARE rectangle behind the glyphs. On a box with
+            # border-radius the run strip starting at the box's left edge paints
+            # straight over the corner arc the rounded fill just cut away — the
+            # box rendered with rounded RIGHT corners and square LEFT ones (the
+            # `borderradius` gate's top-left/bottom-left probes). The block fill
+            # registered here already covers [srow, bfbot) in exactly this colour,
+            # so the per-run strip is pure redundancy: mark the descendant runs
+            # that share the box's own background as already-covered (the same
+            # seg_bgcov mechanism a positioned box's z-sorted fill uses). Guarded
+            # to bordr > 0, so every square box is byte-identical.
+            if bordr > 0:
+                # The box's LAST run is usually still the OPEN segment at index
+                # n_segs (_word_flush drained the pen into it, but only _close_seg
+                # bumps n_segs), so cover it too — for a one-line card that run IS
+                # the whole content.
+                cvend: int32 = cast[int32](n_segs)
+                if seg_open != 0 and cvend < MAX_SEGS:
+                    cvend = cvend + 1
+                cvs: int32 = seg0
+                while cvs < cvend:
+                    if seg_bg[cast[uint64](cvs)] == bgc:
+                        seg_bgcov[cast[uint64](cvs)] = cast[uint8](2)
+                    cvs = cvs + 1
             n_bfills = n_bfills + 1
     if bord != 0:
         _soft_newline()
@@ -4627,9 +4655,22 @@ def _flex_container_open(content_after: uint64, eldepth: int32) -> int32:
                 if flex_wpct100[oc] != 0:
                     anyfull = 1
                 oc = oc + 1
+            # KEEP the border-box widths _flex_grow_scan just folded in (content +
+            # horizontal padding + border). Restoring the bare content measure here
+            # made a WRAPPING flex row space its items by glyph width alone while
+            # the paint drew them padding-wide, so a padded card row overlapped:
+            # `.cards{display:flex;flex-wrap:wrap;gap:20px} .card{width:240px;
+            # padding:20px}` advanced 260px per card but painted each 288px wide, a
+            # 28px overlap on every neighbour (the landing gate's middle card
+            # sampled its neighbour's TEXT instead of its own background). Chrome
+            # puts those cards at x=40 and x=340 — a 300px step, exactly the
+            # border-box 280 + the 20px gap. Only a wrap frame whose items declare
+            # NO padding/border is unaffected (pbx == 0, so the fold is a no-op and
+            # the widths are the same values the restore used to put back).
             sv = 0
             while sv < nc and sv < FLEX_MAX:
-                flex_meas_w[sv] = flex_meas_save[sv]
+                if flex_meas_w[sv] < 0:
+                    flex_meas_w[sv] = flex_meas_save[sv]
                 sv = sv + 1
             if omin != omax or anyfull != 0:
                 wrap_reloc = 1
