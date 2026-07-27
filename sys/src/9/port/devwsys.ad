@@ -157,8 +157,10 @@ from lib.hammouse_cfg import (
 # All injection callers now write absolute-move lines to /dev/mouse; cursor-
 # FPS accounting moved into the compositor (user/hamUId.ad `[de_perf]
 # cursor_fps=N`), so no auxmouse / jiffy / printk2 imports are needed here.
-from kernel.printk.printk import printk0, printk1, printk2, printk_set_level
-from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN
+from kernel.printk.printk import printk0, printk1, printk2, printk3, \
+    printk_set_level
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN, \
+    PRINTK_LEVEL_EMERG
 # End-to-end keyboard-delivery measurement self-test (DE input lag/loss
 # investigation). Drives the FULL physical-keystroke path:
 #   atkbd_process_byte (scancode->ASCII into kbd_fifo)
@@ -211,7 +213,7 @@ from lib.font_ttf import (
 from lib.browserfonts import browserfonts_load
 # HZ=100 jiffy counter (1 jiffy = 10 ms). Used to time the titlebar
 # double-click window for the MATE-style maximize/restore toggle.
-from arch.x86.kernel.time import get_jiffies
+from arch.x86.kernel.time import get_jiffies, tsc_monotonic_ns
 
 
 # --- per-wid table ---------------------------------------------------
@@ -3071,6 +3073,25 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         # taskbar fix). Keep wsys_last_alloc_wid as a legacy fallback too.
         _wsys_pending_put(mypid, nw)
         wsys_last_alloc_wid = nw
+        return cast[int64](count)
+
+    # `perf 0|1` — arm/disarm the present-path profiler. Like `newwindow`
+    # and `desktop` this is parsed BEFORE the hostowner gate: the whole
+    # point is to measure a LIVE desktop session, whose apps run as the
+    # default NOBODY uid, and a diagnostic you cannot turn on from the
+    # session you are diagnosing is not a diagnostic.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "perf") == 1:
+        pv: int64 = 0
+        if _wsys_scene_next_int(buf, &p0, count, &pv) == 0:
+            pv = 1
+        _wsys_perf_reset()
+        if pv != 0:
+            wsys_perf_on = 1
+        else:
+            wsys_perf_on = 0
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk1(cast[Ptr[char]]("[wsysperf] armed=%d\n"),
+                cast[uint64](wsys_perf_on))
         return cast[int64](count)
 
     # `desktop` — the rl5 flip: latch the scene compositor as the SOLE
@@ -8516,6 +8537,81 @@ _wsys_rast_base_y1: int64 = 0
 # quantify the win. MUST be 0 in the shipped/committed tree.
 WSYS_DMG_DEBUG: int32 = 0
 
+# ---- PRESENT-PATH PROFILER (#2048-fps) ---------------------------------
+#
+# A per-commit present is SYNCHRONOUS inside the client's write() — the
+# client's frame rate is exactly 1/(present time + its own compute). When a
+# user reports "2048 runs at 3 fps" the only way to find the ~300 ms is to
+# split the present into its phases and print real nanoseconds, so this
+# profiler is a PERMANENT, runtime-armable diagnostic rather than a
+# compile-time flag somebody has to remember to flip and then rebuild.
+#
+# Arm it with `perf 1` on /dev/wsys/ctl (`perf 0` disarms, `perf 2` also
+# arms the per-frame line). Every WSYS_PERF_WINDOW presents it emits ONE
+# accumulated line at PRINTK_LEVEL_EMERG, which is the only level that
+# survives console_set_interactive()'s post-boot INFO gate — an INFO print
+# here would be invisible on exactly the live desktop we need to measure.
+#
+# Cost when disarmed: one `if` per present. Nothing else is compiled out,
+# so the diagnostic cannot bit-rot away from the code it measures.
+wsys_perf_on: int32 = 0
+WSYS_PERF_WINDOW: uint64 = 32
+wsys_perf_n:          uint64 = 0     # presents accumulated this window
+wsys_perf_raster_ns:  uint64 = 0
+wsys_perf_recomp_ns:  uint64 = 0
+wsys_perf_flush_ns:   uint64 = 0
+wsys_perf_cursor_ns:  uint64 = 0
+wsys_perf_total_ns:   uint64 = 0
+wsys_perf_diff_ns:    uint64 = 0     # damage-diff decision time
+wsys_perf_tight:      uint64 = 0     # commits that proved a tight box
+wsys_perf_full:       uint64 = 0     # commits that fell back to full
+wsys_perf_skip:       uint64 = 0     # commits skipped (byte-identical)
+wsys_perf_px:         uint64 = 0     # composited pixels (recompose rect)
+
+
+def _wsys_perf_reset():
+    wsys_perf_n = 0
+    wsys_perf_raster_ns = 0
+    wsys_perf_recomp_ns = 0
+    wsys_perf_flush_ns = 0
+    wsys_perf_cursor_ns = 0
+    wsys_perf_total_ns = 0
+    wsys_perf_diff_ns = 0
+    wsys_perf_tight = 0
+    wsys_perf_full = 0
+    wsys_perf_skip = 0
+    wsys_perf_px = 0
+
+
+def _wsys_perf_report():
+    # One EMERG line per WSYS_PERF_WINDOW presents. All times are MICROSECONDS
+    # per present (mean over the window) so a 3 fps frame reads as ~330000.
+    n: uint64 = wsys_perf_n
+    if n == 0:
+        return
+    # printk_set_level arms the level for exactly ONE message, so every call
+    # below must re-arm it — otherwise the continuation fields fall back to
+    # INFO and are swallowed by console_set_interactive() on a live desktop,
+    # which is precisely where this profiler has to work. (Learned the hard
+    # way: the first measuring boot printed only "n=.. total=.. raster=..".)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[wsysperf] n=%d total_us=%d raster_us=%d\n"),
+            n, wsys_perf_total_ns / n / 1000,
+            wsys_perf_raster_ns / n / 1000)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[wsysperf] recomp_us=%d flush_us=%d cursor_us=%d\n"),
+            wsys_perf_recomp_ns / n / 1000,
+            wsys_perf_flush_ns / n / 1000,
+            wsys_perf_cursor_ns / n / 1000)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[wsysperf] diff_us=%d px=%d tight=%d\n"),
+            wsys_perf_diff_ns / n / 1000, wsys_perf_px / n,
+            wsys_perf_tight)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2(cast[Ptr[char]]("[wsysperf] full=%d skip=%d\n"),
+            wsys_perf_full, wsys_perf_skip)
+    _wsys_perf_reset()
+
 
 def _wsys_hex_nibble(c: uint8) -> int32:
     if c >= 48 and c <= 57:
@@ -8595,15 +8691,79 @@ def _wsys_cache_putpixel(cache: Ptr[uint8], x: int64, y: int64,
 def _wsys_cache_fillrect(cache: Ptr[uint8], x: int64, y: int64,
                          w: int64, h: int64,
                          r: uint8, g: uint8, b: uint8, a: uint8):
-    yy: int64 = y
-    ylim: int64 = y + h
-    while yy < ylim:
-        xx: int64 = x
-        xlim: int64 = x + w
-        while xx < xlim:
-            _wsys_cache_putpixel(cache, xx, yy, r, g, b, a)
-            xx = xx + 1
-        yy = yy + 1
+    # CLIP ONCE, then run a tight inner loop over the surviving span.
+    #
+    # This used to call _wsys_cache_putpixel per pixel. That is six signed
+    # comparisons, a 64-bit multiply and a call for EVERY pixel — and `fill`
+    # is what a scene is mostly made of: one 2048 animation frame paints
+    # ~360k filled pixels (360x470 background + the 334x334 board + 16
+    # tiles). The present-path profiler measured 21.4 ms of a 33.1 ms
+    # present inside the rasterizer, which is the whole reason the game ran
+    # at a few frames per second: a commit is SYNCHRONOUS inside the
+    # client's write(), so raster time IS frame time.
+    #
+    # The clip rect and the cache bounds are loop-INVARIANT, so intersecting
+    # them with the requested rect up front produces exactly the same pixel
+    # set the per-pixel gate did, with none of the per-pixel work. Behaviour
+    # is bit-identical: same clip semantics, same opaque store, same
+    # alpha-over composition (kept inline so the two paths cannot drift).
+    x0: int64 = x
+    y0: int64 = y
+    x1: int64 = x + w
+    y1: int64 = y + h
+    if x0 < _wsys_rast_clip_x0:
+        x0 = _wsys_rast_clip_x0
+    if y0 < _wsys_rast_clip_y0:
+        y0 = _wsys_rast_clip_y0
+    if x1 > _wsys_rast_clip_x1:
+        x1 = _wsys_rast_clip_x1
+    if y1 > _wsys_rast_clip_y1:
+        y1 = _wsys_rast_clip_y1
+    if x0 < 0:
+        x0 = 0
+    if y0 < 0:
+        y0 = 0
+    if x1 > _wsys_rast_w:
+        x1 = _wsys_rast_w
+    if y1 > _wsys_rast_h:
+        y1 = _wsys_rast_h
+    if x1 <= x0 or y1 <= y0:
+        return
+    stride: uint64 = cast[uint64](_wsys_rast_w) * 4
+    row: int64 = y0
+    if a >= 255:
+        while row < y1:
+            off: uint64 = cast[uint64](row) * stride + cast[uint64](x0) * 4
+            cx: int64 = x0
+            while cx < x1:
+                cache[off] = r
+                cache[off + 1] = g
+                cache[off + 2] = b
+                cache[off + 3] = 255
+                off = off + 4
+                cx = cx + 1
+            row = row + 1
+        return
+    # Translucent: alpha-over, identical arithmetic to _wsys_cache_putpixel.
+    ia: uint32 = 255 - cast[uint32](a)
+    sr: uint32 = cast[uint32](r) * cast[uint32](a)
+    sg: uint32 = cast[uint32](g) * cast[uint32](a)
+    sb: uint32 = cast[uint32](b) * cast[uint32](a)
+    while row < y1:
+        off2: uint64 = cast[uint64](row) * stride + cast[uint64](x0) * 4
+        cx2: int64 = x0
+        while cx2 < x1:
+            dr: uint32 = cast[uint32](cache[off2])
+            dg: uint32 = cast[uint32](cache[off2 + 1])
+            db: uint32 = cast[uint32](cache[off2 + 2])
+            da: uint32 = cast[uint32](cache[off2 + 3])
+            cache[off2] = cast[uint8]((sr + dr * ia) / 255)
+            cache[off2 + 1] = cast[uint8]((sg + dg * ia) / 255)
+            cache[off2 + 2] = cast[uint8]((sb + db * ia) / 255)
+            cache[off2 + 3] = cast[uint8](cast[uint32](a) + da * ia / 255)
+            off2 = off2 + 4
+            cx2 = cx2 + 1
+        row = row + 1
 
 
 # ---- rounded rectangle (shared AA corner formula, see lib/hamui_host.ad) --
@@ -10357,7 +10517,18 @@ def _wsys_present_commit(wid: int32) -> int32:
     dy0: int64 = 0
     dx1: int64 = 0
     dy1: int64 = 0
+    t_diff0: uint64 = 0
+    if wsys_perf_on != 0:
+        t_diff0 = tsc_monotonic_ns()
     dmg: int32 = _wsys_scene_commit_damage(wid, &dx0, &dy0, &dx1, &dy1)
+    if wsys_perf_on != 0:
+        wsys_perf_diff_ns = wsys_perf_diff_ns + (tsc_monotonic_ns() - t_diff0)
+        if dmg == 2:
+            wsys_perf_skip = wsys_perf_skip + 1
+        elif dmg == 1:
+            wsys_perf_tight = wsys_perf_tight + 1
+        else:
+            wsys_perf_full = wsys_perf_full + 1
     if dmg == 2:
         # Byte-identical re-commit of an unmoved window: the screen already
         # shows exactly this scene. Presenting again would burn a full
@@ -10391,6 +10562,11 @@ def _wsys_present_commit_impl(wid: int32, tight: int32, dx0: int64,
         wsys_bg_painted = 1
         _wsys_flush_rect(0, 0, cast[int64](fb_get_width()),
                          cast[int64](fb_get_height()))
+    t_all0: uint64 = 0
+    t_ph0: uint64 = 0
+    if wsys_perf_on != 0:
+        t_all0 = tsc_monotonic_ns()
+        t_ph0 = t_all0
     # Re-rasterize this window's cache from its committed scene.
     if wsys_scene_len[u] > 0:
         if tight == 1:
@@ -10427,12 +10603,32 @@ def _wsys_present_commit_impl(wid: int32, tight: int32, dx0: int64,
         rh = dy1 - dy0
     else:
         _wsys_win_screen_extent(u, &rx, &ry, &rw, &rh)
+    if wsys_perf_on != 0:
+        now1: uint64 = tsc_monotonic_ns()
+        wsys_perf_raster_ns = wsys_perf_raster_ns + (now1 - t_ph0)
+        t_ph0 = now1
+        wsys_perf_px = wsys_perf_px + cast[uint64](rw * rh)
     _wsys_recompose_rect(rx, ry, rw, rh)
+    if wsys_perf_on != 0:
+        now2: uint64 = tsc_monotonic_ns()
+        wsys_perf_recomp_ns = wsys_perf_recomp_ns + (now2 - t_ph0)
+        t_ph0 = now2
     # DOUBLE-BUFFER: flush the composited region to scanout in one pass
     # (tear-free) before the cursor overlay.
     _wsys_flush_rect(rx, ry, rw, rh)
+    if wsys_perf_on != 0:
+        now3: uint64 = tsc_monotonic_ns()
+        wsys_perf_flush_ns = wsys_perf_flush_ns + (now3 - t_ph0)
+        t_ph0 = now3
     _wsys_present_cursor_locked()
     _wsys_record_present_snapshot(u)
+    if wsys_perf_on != 0:
+        now4: uint64 = tsc_monotonic_ns()
+        wsys_perf_cursor_ns = wsys_perf_cursor_ns + (now4 - t_ph0)
+        wsys_perf_total_ns = wsys_perf_total_ns + (now4 - t_all0)
+        wsys_perf_n = wsys_perf_n + 1
+        if wsys_perf_n >= WSYS_PERF_WINDOW:
+            _wsys_perf_report()
     spinlock_unlock(&wsys_present_lock)
     local_irq_restore(fl)
     return 1
