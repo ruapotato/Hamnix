@@ -472,15 +472,27 @@ def boolean_proto_method(bv: int32, name: int32, base: int32, argc: int32) -> in
 def proto_add_method(protov: int32, name: Ptr[uint8], dispatch_id: int32):
     fv: int32 = v_new_native(dispatch_id)
     obj_p_a[objid_of(fv)] = str_from_cstr(name)
-    obj_set(objid_of(protov), str_from_cstr(name), fv)
+    key: int32 = str_from_cstr(name)
+    obj_set(objid_of(protov), key, fv)
+    # ES: every built-in prototype method is { writable, configurable, NOT
+    # enumerable }. Left enumerable they show up in Object.keys(Array.prototype)
+    # and in every `for (k in [])` — a classic framework-breaking leak.
+    obj_mark_nonenum(objid_of(protov), key)
 
 
 # Wire g_ctor.prototype = protov and protov.constructor = g_ctor (both cheap).
 def proto_link_ctor(ctorv: int32, protov: int32):
     if ctorv == 0:
         return
-    obj_set(objid_of(ctorv), str_from_cstr(cast[Ptr[uint8]]("prototype")), protov)
-    obj_set(objid_of(protov), str_from_cstr(cast[Ptr[uint8]]("constructor")), ctorv)
+    pk: int32 = str_from_cstr(cast[Ptr[uint8]]("prototype"))
+    ck: int32 = str_from_cstr(cast[Ptr[uint8]]("constructor"))
+    obj_set(objid_of(ctorv), pk, protov)
+    # ES: a built-in constructor's `prototype` is { NOT writable, NOT enumerable,
+    # NOT configurable }; `Ctor.prototype.constructor` is writable+configurable
+    # but never enumerable.
+    obj_mark_flags(objid_of(ctorv), pk, 0)
+    obj_set(objid_of(protov), ck, ctorv)
+    obj_mark_nonenum(objid_of(protov), ck)
 
 
 # Build the real builtin prototype objects. Called at the end of install_builtins

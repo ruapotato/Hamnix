@@ -668,11 +668,46 @@ def obj_get_cstr(o: int32, s: Ptr[uint8]) -> int32:
     return v_undef()
 
 
+PF_ENUM:  int32 = 1
+PF_WRITE: int32 = 2
+PF_CONF:  int32 = 4
+PF_ALL:   int32 = 7
+
+
+# [[Enumerable]] of property slot `p` — the single predicate every enumeration
+# site (for-in, Object.keys/values/entries, JSON, assign/spread/rest) consults.
+def prop_is_enum(p: int32) -> int32:
+    if (cast[int32](p_flags[p]) & PF_ENUM) != 0:
+        return 1
+    return 0
+
+
+# Clear [[Enumerable]] on an own property that was just installed with obj_set /
+# obj_define_accessor. Used for the spec's non-enumerable built-ins: every
+# builtin method, `F.prototype`, `F.prototype.constructor` and class members.
+def obj_mark_nonenum(o: int32, key: int32):
+    p: int32 = obj_find_prop(o, key)
+    if p >= 0:
+        p_flags[p] = cast[uint8](cast[int32](p_flags[p]) & (PF_ALL - PF_ENUM))
+
+
+# Set an own property's full attribute mask outright. Engine-internal only: it is
+# how the built-ins get the exact { writable, enumerable, configurable } triples
+# the spec gives them (e.g. `F.prototype` is writable but NOT configurable, and
+# `Math.PI` is none of the three).
+def obj_mark_flags(o: int32, key: int32, flags: int32):
+    p: int32 = obj_find_prop(o, key)
+    if p >= 0:
+        p_flags[p] = cast[uint8](flags)
+
+
 def obj_set(o: int32, key: int32, val: int32):
     if obj_frozen[o] != 0:             # Object.freeze: writes and additions are no-ops
         return
     p: int32 = obj_find_prop(o, key)
     if p >= 0:
+        if p_acc[p] == 0 and (cast[int32](p_flags[p]) & PF_WRITE) == 0:
+            return                     # non-writable data property: silent no-op (sloppy mode)
         p_acc[p] = cast[uint8](0)      # a plain data write demotes any accessor
         p_get[p] = -1
         p_set[p] = -1
@@ -689,6 +724,7 @@ def obj_set(o: int32, key: int32, val: int32):
     p_acc[np] = cast[uint8](0)
     p_get[np] = -1
     p_set[np] = -1
+    p_flags[np] = cast[uint8](PF_ALL)
     p_next[np] = obj_head[o]
     obj_head[o] = np
     n_props = n_props + 1
@@ -710,6 +746,7 @@ def obj_define_accessor(o: int32, key: int32, getter: int32, setter: int32):
         p_val[p] = v_undef()
         p_get[p] = -1
         p_set[p] = -1
+        p_flags[p] = cast[uint8](PF_ALL)
         p_next[p] = obj_head[o]
         obj_head[o] = p
         n_props = n_props + 1
@@ -729,6 +766,8 @@ def obj_del_prop(o: int32, key: int32) -> int32:
     p: int32 = obj_head[o]
     while p >= 0:
         if str_eq(p_key[p], key) != 0:
+            if (cast[int32](p_flags[p]) & PF_CONF) == 0:
+                return 0               # non-configurable: `delete` fails (sloppy mode: false)
             if prev < 0:
                 obj_head[o] = p_next[p]
             else:
@@ -744,6 +783,20 @@ def obj_get(o: int32, key: int32) -> int32:
     if p >= 0:
         return p_val[p]
     return v_undef()
+
+
+# [[Get]] on own property slot `p` of `ownerv`: a data slot yields its value, an
+# accessor slot INVOKES its getter with this=ownerv (Object.values/entries see the
+# getter's result, not the empty accessor slot). Callers must have `ownerv` pinned.
+def prop_read(p: int32, ownerv: int32) -> int32:
+    if p_acc[p] == 0:
+        return p_val[p]
+    if p_get[p] < 0:
+        return v_undef()
+    gb: int32 = call_top
+    r: int32 = invoke(p_get[p], ownerv, gb, 0)
+    call_top = gb
+    return r
 
 
 # copy own (enumerable) props of src into dst, preserving insertion order.
@@ -766,6 +819,8 @@ def copy_own_props_rec(p: int32, dst: int32, srcv: int32):
         return
     copy_own_props_rec(p_next[p], dst, srcv)
     if ctl == CTL_THROW or err_flag != 0:
+        return
+    if prop_is_enum(p) == 0:               # CopyDataProperties: own ENUMERABLE only
         return
     if p_acc[p] != 0:
         val: int32 = v_undef()

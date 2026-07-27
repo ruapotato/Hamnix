@@ -550,8 +550,14 @@ def ensure_fn_prototype(fnv: int32) -> int32:
     if cast[int32](n_kind[node]) != ND_FUNC:      # arrows/methods captured as arrows
         return v_undef()
     proto: int32 = v_new_object()
-    obj_set(objid_of(proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), fnv)
+    ck: int32 = str_from_cstr(cast[Ptr[uint8]]("constructor"))
+    obj_set(objid_of(proto), ck, fnv)
+    obj_mark_nonenum(objid_of(proto), ck)   # ES: F.prototype.constructor is NON-enumerable
     obj_set(fo, pk, proto)
+    # ES 10.2.5: an ordinary function's `prototype` is { writable: true,
+    # enumerable: false, configurable: false } — `F.prototype = x` is allowed,
+    # `delete F.prototype` is not.
+    obj_mark_flags(fo, pk, PF_WRITE)
     return proto
 
 
@@ -1092,15 +1098,17 @@ def eval_object_lit(node: int32, env: int32) -> int32:
 
 
 def eval_delete(tgt: int32, env: int32) -> int32:
-    # `delete obj.key` / `delete obj[key]`. Returns true (delete rarely fails
-    # in the code we run). Non-reference operands are a no-op that yields true.
+    # `delete obj.key` / `delete obj[key]`. Returns false only when the own
+    # property exists and is NON-configurable (obj_del_prop refuses it);
+    # deleting a missing key, or a non-reference operand, yields true.
     tk: int32 = cast[int32](n_kind[tgt])
     if tk == ND_MEMBER:
         objv: int32 = eval_expr(n_a[tgt], env)
         if tag_of(objv) == TAG_OBJ:
             if obj_proxy_target[objid_of(objv)] >= 0:
                 return v_boolv(proxy_delete(objv, n_str[tgt]))
-            obj_del_prop(objid_of(objv), n_str[tgt])
+            if obj_find_prop(objid_of(objv), n_str[tgt]) >= 0:
+                return v_boolv(obj_del_prop(objid_of(objv), n_str[tgt]))
         return v_boolv(1)
     if tk == ND_INDEX:
         objv2: int32 = eval_expr(n_a[tgt], env)
@@ -1114,7 +1122,9 @@ def eval_delete(tgt: int32, env: int32) -> int32:
                 if idx >= 0 and idx < arr_len[o]:
                     arr_set(o, idx, v_undef())
                     return v_boolv(1)
-            obj_del_prop(o, strid_of(to_string_val(keyv)))
+            dk: int32 = strid_of(to_string_val(keyv))
+            if obj_find_prop(o, dk) >= 0:
+                return v_boolv(obj_del_prop(o, dk))
         return v_boolv(1)
     return v_boolv(1)
 
@@ -1309,6 +1319,8 @@ def objlit_rest_rec(tgt: int32, p: int32, resto: int32):
     if p < 0:
         return
     objlit_rest_rec(tgt, p_next[p], resto)
+    if prop_is_enum(p) == 0:               # object spread copies own ENUMERABLE only
+        return
     if objlit_has_key(tgt, p_key[p]) == 0:
         obj_set(resto, p_key[p], p_val[p])
 
@@ -2101,8 +2113,14 @@ def eval_class(node: int32, env: int32) -> int32:
         obj_fn_super[co] = superv
         if tag_of(superv) == TAG_OBJ:
             obj_proto[co] = objid_of(superv)   # static inheritance
-    obj_set(co, str_from_cstr(cast[Ptr[uint8]]("prototype")), protov)
-    obj_set(proto_o, str_from_cstr(cast[Ptr[uint8]]("constructor")), classv)
+    pk_c: int32 = str_from_cstr(cast[Ptr[uint8]]("prototype"))
+    ck_c: int32 = str_from_cstr(cast[Ptr[uint8]]("constructor"))
+    obj_set(co, pk_c, protov)
+    # ES 15.7.14: a class's `prototype` is { writable: false, enumerable: false,
+    # configurable: false } — unlike a plain function's, it cannot be reassigned.
+    obj_mark_flags(co, pk_c, 0)
+    obj_set(proto_o, ck_c, classv)
+    obj_mark_nonenum(proto_o, ck_c)         # ES: C.prototype.constructor is NON-enumerable
     obj_class_node[co] = node               # remember members for instance-field init
     # install methods on the prototype (or the class, if static)
     m2: int32 = n_b[node]
@@ -2120,6 +2138,10 @@ def eval_class(node: int32, env: int32) -> int32:
                 obj_define_accessor(mtarget, n_str[m2], -1, mfnv)
             else:
                 obj_set(mtarget, n_str[m2], mfnv)
+            # ES: class methods and accessors are NON-enumerable (only class
+            # FIELDS are enumerable), so Object.keys(C.prototype) is empty and
+            # Object.assign(x, C.prototype) copies nothing.
+            obj_mark_nonenum(mtarget, n_str[m2])
         m2 = n_next[m2]
     # static elements in SOURCE ORDER: `static x = expr` fields and `static { }`
     # initializer blocks, both evaluated with `this` = the class object. They run
@@ -2502,6 +2524,8 @@ def obj_rest_rec(pat: int32, p: int32, resto: int32):
     if p < 0:
         return
     obj_rest_rec(pat, p_next[p], resto)
+    if prop_is_enum(p) == 0:               # rest pattern copies own ENUMERABLE only
+        return
     if objpat_has_key(pat, p_key[p]) == 0:
         obj_set(resto, p_key[p], p_val[p])
 
@@ -2680,6 +2704,8 @@ def forin_props(p: int32, name: int32, node: int32, loopenv: int32, env: int32):
     if ctl != CTL_NONE:
         return
     if is_hidden_key(p_key[p]) != 0:       # skip private/#... and @@symbol keys
+        return
+    if prop_is_enum(p) == 0:               # for-in visits ENUMERABLE own keys only
         return
     keyv: int32 = v_string_id(p_key[p])
     forin_bind(name, keyv, loopenv, env)

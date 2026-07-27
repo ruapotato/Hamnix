@@ -593,7 +593,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
                 obj_proto[objid_of(sarg)] = -1
         return sarg
     if id == NAT_OBJECT_GETOWNNAMES:
-        return object_keys(arg_or(base, argc, 0))
+        return object_own_names(arg_or(base, argc, 0))
     if id == NAT_OBJECT_ISFROZEN:
         farg: int32 = arg_or(base, argc, 0)
         if tag_of(farg) != TAG_OBJ:
@@ -951,11 +951,18 @@ def make_error(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
     if tag_of(ev) != TAG_OBJ:
         ev = v_new_object()             # allow `Error(...)` without `new`
     o: int32 = objid_of(ev)
-    obj_set(o, str_from_cstr(cast[Ptr[uint8]]("name")), v_string_cstr(err_name_of(id)))
+    nk: int32 = str_from_cstr(cast[Ptr[uint8]]("name"))
+    obj_set(o, nk, v_string_cstr(err_name_of(id)))
+    obj_mark_nonenum(o, nk)
     msg: int32 = v_string_cstr(cast[Ptr[uint8]](""))
     if argc > 0:
         msg = to_string_val(call_args[base])
-    obj_set(o, str_from_cstr(cast[Ptr[uint8]]("message")), msg)
+    mk: int32 = str_from_cstr(cast[Ptr[uint8]]("message"))
+    obj_set(o, mk, msg)
+    # ES: an Error's own `message` (and the `name` we mirror onto the instance)
+    # are non-enumerable, so JSON.stringify(err) is "{}" and Object.keys(err)
+    # is empty — matching node/chromium.
+    obj_mark_nonenum(o, mk)
     return ev
 
 
@@ -985,15 +992,23 @@ def object_values(v: int32) -> int32:
             arr_push(objid_of(ro), arr_get(o, i))
             i = i + 1
         return ro
-    object_values_rec(obj_head[o], objid_of(ro))
+    gsv: int32 = gc_top
+    gc_push(v)
+    gc_push(ro)
+    object_values_rec(obj_head[o], objid_of(ro), v)
+    gc_popto(gsv)
     return ro
 
 
-def object_values_rec(p: int32, ro: int32):
+def object_values_rec(p: int32, ro: int32, ownerv: int32):
     if p < 0:
         return
-    object_values_rec(p_next[p], ro)
-    arr_push(ro, p_val[p])
+    object_values_rec(p_next[p], ro, ownerv)
+    if prop_is_enum(p) == 0:
+        return
+    if is_hidden_key(p_key[p]) != 0:
+        return
+    arr_push(ro, prop_read(p, ownerv))
 
 
 # Object.entries -> array of [key, value] pairs (insertion order).
@@ -1012,18 +1027,30 @@ def object_entries(v: int32) -> int32:
             arr_push(ro, pair)
             i = i + 1
         return res
-    object_entries_rec(obj_head[o], ro)
+    gse: int32 = gc_top
+    gc_push(v)
+    gc_push(res)
+    object_entries_rec(obj_head[o], ro, v)
+    gc_popto(gse)
     return res
 
 
-def object_entries_rec(p: int32, ro: int32):
+def object_entries_rec(p: int32, ro: int32, ownerv: int32):
     if p < 0:
         return
-    object_entries_rec(p_next[p], ro)
+    object_entries_rec(p_next[p], ro, ownerv)
+    if prop_is_enum(p) == 0:
+        return
+    if is_hidden_key(p_key[p]) != 0:
+        return
+    gsp: int32 = gc_top
+    ev: int32 = prop_read(p, ownerv)       # getter first: it can allocate/collect
+    gc_push(ev)                            # ... and the pair alloc below can collect IT
     pair: int32 = v_new_array()
     arr_push(objid_of(pair), v_string_id(p_key[p]))
-    arr_push(objid_of(pair), p_val[p])
+    arr_push(objid_of(pair), ev)
     arr_push(ro, pair)
+    gc_popto(gsp)
 
 
 # Object.fromEntries([[k,v],...]) -> object.
@@ -1154,32 +1181,88 @@ def object_keys(v: int32) -> int32:
             arr_push(ro, v_string_id(num_to_strid(cast[float64](i))))
             i = i + 1
         return res
-    object_keys_rec(obj_head[o], ro)
+    object_keys_rec(obj_head[o], ro, 1)
     return res
 
 
-def object_keys_rec(p: int32, ro: int32):
+# `only_enum` = 1 for Object.keys/values/entries (own ENUMERABLE string keys);
+# 0 for Object.getOwnPropertyNames, which lists non-enumerable slots too.
+def object_keys_rec(p: int32, ro: int32, only_enum: int32):
     if p < 0:
         return
-    object_keys_rec(p_next[p], ro)
+    object_keys_rec(p_next[p], ro, only_enum)
     if is_hidden_key(p_key[p]) != 0:
         return
+    if only_enum != 0 and prop_is_enum(p) == 0:
+        return
     arr_push(ro, v_string_id(p_key[p]))
+
+
+# Object.getOwnPropertyNames(obj) — like Object.keys but WITHOUT the enumerable
+# filter (that difference is exactly what `Object.getOwnPropertyDescriptor` users
+# such as React's inputValueTracking rely on).
+def object_own_names(v: int32) -> int32:
+    res: int32 = object_keys(v)
+    if tag_of(v) != TAG_OBJ:
+        return res
+    o: int32 = objid_of(v)
+    if obj_proxy_target[o] >= 0:
+        return res
+    if cast[int32](obj_ta_kind[o]) != 0 or cast[int32](obj_kind[o]) == OK_ARRAY:
+        return res                     # index keys already listed by object_keys
+    res = v_new_array()
+    object_keys_rec(obj_head[o], objid_of(res), 0)
+    return res
+
+
+# ES OrdinaryDefineOwnProperty attribute defaulting: an attribute the descriptor
+# does NOT mention defaults to FALSE on a brand-new property and is LEFT AS-IS on
+# an existing one. `have` is the pre-existing flag mask (0 when the property is
+# new), `existed` says which of the two rules applies.
+def desc_flags(d: int32, have: int32, existed: int32) -> int32:
+    f: int32 = 0
+    if existed != 0:
+        f = have
+    f = desc_flag_bit(d, cast[Ptr[uint8]]("enumerable"), PF_ENUM, f)
+    f = desc_flag_bit(d, cast[Ptr[uint8]]("writable"), PF_WRITE, f)
+    f = desc_flag_bit(d, cast[Ptr[uint8]]("configurable"), PF_CONF, f)
+    return f
+
+
+def desc_flag_bit(d: int32, name: Ptr[uint8], bit: int32, f: int32) -> int32:
+    p: int32 = obj_find_prop(d, str_from_cstr(name))
+    if p < 0:
+        return f                       # absent: default already folded into `f`
+    if to_bool(p_val[p]) != 0:
+        return f | bit
+    return f & (PF_ALL - bit)
 
 
 # Object.defineProperty(obj, key, descriptor). A data descriptor's `value` is
 # stored directly; an accessor descriptor's `get`/`set` are stored LIVE (invoked
 # on member read/write with this=receiver), the shape transpiled `_createClass`
-# accessors and framework reactivity emit.
+# accessors and framework reactivity emit. The enumerable/writable/configurable
+# ATTRIBUTES are honoured — React 18's dev build installs non-enumerable warning
+# getters on `Component.prototype` and on element props, and enumerating them
+# (Object.assign / for-in) fires spurious warnings and copies the wrong slots.
 def object_define_property(objv: int32, keyv: int32, descv: int32) -> int32:
     if tag_of(objv) != TAG_OBJ:
         throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("Object.defineProperty called on non-object"))
         return objv
     o: int32 = objid_of(objv)
     key_sid: int32 = strid_of(to_string_val(keyv))
+    pre: int32 = obj_find_prop(o, key_sid)
+    existed: int32 = 0
+    have: int32 = 0
+    if pre >= 0:
+        existed = 1
+        have = cast[int32](p_flags[pre])
+        p_flags[pre] = cast[uint8](cast[int32](p_flags[pre]) | PF_WRITE)  # defineProperty overrides [[Writable]]
+    newflags: int32 = PF_ALL
     val: int32 = v_undef()
     if tag_of(descv) == TAG_OBJ:
         d: int32 = objid_of(descv)
+        newflags = desc_flags(d, have, existed)
         vp: int32 = obj_find_prop(d, str_from_cstr(cast[Ptr[uint8]]("value")))
         if vp >= 0:
             val = p_val[vp]
@@ -1198,17 +1281,23 @@ def object_define_property(objv: int32, keyv: int32, descv: int32) -> int32:
                 obj_frozen[o] = cast[uint8](0)
                 obj_define_accessor(o, key_sid, getter, setter)
                 obj_frozen[o] = fsave
+                ap: int32 = obj_find_prop(o, key_sid)
+                if ap >= 0:
+                    p_flags[ap] = cast[uint8](newflags & (PF_ALL - PF_WRITE))
                 return objv
     frozen_save: uint8 = obj_frozen[o]
     obj_frozen[o] = cast[uint8](0)     # defineProperty bypasses a prior freeze intent for this write
+    stored: int32 = 0
     if cast[int32](obj_kind[o]) == OK_ARRAY:
         idx: int32 = str_as_index(key_sid)
         if idx >= 0:
-            arr_set(o, idx, val)
-        else:
-            obj_set(o, key_sid, val)
-    else:
+            arr_set(o, idx, val)       # dense element slot: carries no attributes
+            stored = 1
+    if stored == 0:
         obj_set(o, key_sid, val)
+        dp: int32 = obj_find_prop(o, key_sid)
+        if dp >= 0:
+            p_flags[dp] = cast[uint8](newflags)
     obj_frozen[o] = frozen_save
     return objv
 
@@ -1218,19 +1307,36 @@ def object_define_properties(objv: int32, propsv: int32) -> int32:
         p: int32 = obj_head[objid_of(propsv)]
         # obj_head is newest-first; order is not observable for defineProperties
         while p >= 0:
-            object_define_property(objv, v_string_id(p_key[p]), p_val[p])
+            if prop_is_enum(p) != 0:
+                object_define_property(objv, v_string_id(p_key[p]), p_val[p])
             p = p_next[p]
     return objv
 
 
 # Object.getOwnPropertyDescriptor(obj, key) -> {value, writable, enumerable, configurable} | undefined
 def make_data_descriptor(val: int32, writable: int32) -> int32:
+    return make_data_descriptor_f(val, writable, PF_ENUM | PF_CONF)
+
+
+# `flags` is the property slot's real attribute mask; `writable` additionally
+# folds in a whole-object freeze (Object.freeze clears writability without
+# touching the per-slot masks).
+def make_data_descriptor_f(val: int32, writable: int32, flags: int32) -> int32:
     dv: int32 = v_new_object()
     dobj: int32 = objid_of(dv)
+    w: int32 = 0
+    if writable != 0 and (flags & PF_WRITE) != 0:
+        w = 1
+    en: int32 = 0
+    if (flags & PF_ENUM) != 0:
+        en = 1
+    cf: int32 = 0
+    if writable != 0 and (flags & PF_CONF) != 0:
+        cf = 1
     obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("value")), val)
-    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("writable")), v_boolv(writable))
-    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("enumerable")), v_boolv(1))
-    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("configurable")), v_boolv(writable))
+    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("writable")), v_boolv(w))
+    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("enumerable")), v_boolv(en))
+    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("configurable")), v_boolv(cf))
     return dv
 
 
@@ -1245,10 +1351,16 @@ def make_accessor_descriptor(pp: int32) -> int32:
         getv = p_get[pp]
     if p_set[pp] >= 0:
         setv = p_set[pp]
+    aen: int32 = 0
+    if (cast[int32](p_flags[pp]) & PF_ENUM) != 0:
+        aen = 1
+    acf: int32 = 0
+    if (cast[int32](p_flags[pp]) & PF_CONF) != 0:
+        acf = 1
     obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("get")), getv)
     obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("set")), setv)
-    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("enumerable")), v_boolv(1))
-    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("configurable")), v_boolv(1))
+    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("enumerable")), v_boolv(aen))
+    obj_set(dobj, str_from_cstr(cast[Ptr[uint8]]("configurable")), v_boolv(acf))
     return dv
 
 
@@ -1268,7 +1380,7 @@ def object_get_own_descriptor(objv: int32, keyv: int32) -> int32:
     if pp >= 0:
         if p_acc[pp] != 0:                 # accessor: reflect get/set, not value
             return make_accessor_descriptor(pp)
-        return make_data_descriptor(p_val[pp], writable)
+        return make_data_descriptor_f(p_val[pp], writable, cast[int32](p_flags[pp]))
     return v_undef()
 
 
@@ -1277,7 +1389,7 @@ def object_get_own_descriptors(objv: int32) -> int32:
     if tag_of(objv) != TAG_OBJ:
         return res
     ro: int32 = objid_of(res)
-    keys: int32 = object_keys(objv)
+    keys: int32 = object_own_names(objv)
     ko: int32 = objid_of(keys)
     i: int32 = 0
     while i < arr_len[ko]:
@@ -1597,6 +1709,8 @@ def json_transform_props(p: int32, holder: int32, dst: int32):
     if p < 0:
         return
     json_transform_props(p_next[p], holder, dst)
+    if prop_is_enum(p) == 0:              # JSON serializes own ENUMERABLE keys only
+        return
     if ctl == CTL_THROW or err_flag != 0:
         return
     if is_hidden_key(p_key[p]) != 0:      # private/#... and @@symbol keys never serialize
@@ -1708,6 +1822,8 @@ def json_resolve_props(p: int32, holderv: int32, no: int32, depth: int32):
     if p < 0:
         return
     json_resolve_props(p_next[p], holderv, no, depth)
+    if prop_is_enum(p) == 0:
+        return
     if ctl == CTL_THROW or err_flag != 0:
         return
     if is_hidden_key(p_key[p]) != 0:
@@ -1822,6 +1938,8 @@ def json_emit_props(p: int32, is_last: int32):
     if p < 0:
         return
     json_emit_props(p_next[p], 0)
+    if prop_is_enum(p) == 0:
+        return
     v: int32 = p_val[p]
     if tag_of(v) == TAG_UNDEF or is_callable(v) != 0:
         return

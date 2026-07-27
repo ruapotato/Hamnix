@@ -634,6 +634,16 @@ bash scripts/test_hambrowse_tabs_host.sh
 # var-in-switch hoisting fix, and END-TO-END that 142 KB of genuine React 18
 # renders chromium's exact DOM census on tests/fixtures/realweb/react_spa.html.
 bash scripts/test_hambrowse_reactmount_host.sh
+# scripts/test_react18_host.sh: the INTERACTIVE half of the React 18 story.
+# test_hambrowse_reactmount_host.sh pins the FIRST FRAME (and notes that clicking
+# React's buttons could not advance state); this one pins the whole loop —
+# unmodified upstream react/react-dom 18.3.1 UMD (tests/jsfunc/vendor/, byte-
+# identical to the npm tarballs) mounting a hooks tree (useState/useReducer/
+# useEffect+cleanup/useMemo/useCallback/useRef/useContext/memo/Fragment/keyed
+# list/conditional subtree/SVG-via-createElementNS) and RE-RENDERING on a click.
+# Both the load-time and the post-click report lines are compared BYTE-FOR-BYTE
+# against `chromium --headless` running the identical page.
+bash scripts/test_react18_host.sh
 bash scripts/test_hambrowse_svgpctwidth.sh
 bash scripts/test_hambrowse_entities_host.sh
 bash scripts/test_hambrowse_entities2_host.sh

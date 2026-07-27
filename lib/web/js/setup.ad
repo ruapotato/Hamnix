@@ -1636,12 +1636,27 @@ def def_global_native(name: Ptr[uint8], native_id: int32):
     env_define(g_env, str_from_cstr(name), v_new_native(native_id), 0)
 
 
+# ES: every built-in method (on a prototype OR on a namespace like Math/JSON) is
+# { writable: true, enumerable: FALSE, configurable: true }. Enumerable builtins
+# leak into Object.keys(Array.prototype) / Object.assign(x, SomeProto).
 def obj_add_native(objv: int32, name: Ptr[uint8], native_id: int32):
-    obj_set(objid_of(objv), str_from_cstr(name), v_new_native(native_id))
+    key: int32 = str_from_cstr(name)
+    o: int32 = objid_of(objv)
+    obj_set(o, key, v_new_native(native_id))
+    obj_mark_nonenum(o, key)
 
 
 def obj_add_num(objv: int32, name: Ptr[uint8], x: float64):
     obj_set(objid_of(objv), str_from_cstr(name), v_number(x))
+
+
+# A mathematical CONSTANT on a namespace object: ES gives Math.PI & friends
+# { writable: false, enumerable: false, configurable: false }, so Object.keys(Math)
+# is [] in node/chromium.
+def obj_add_const(objv: int32, name: Ptr[uint8], x: float64):
+    key: int32 = str_from_cstr(name)
+    obj_set(objid_of(objv), key, v_number(x))
+    obj_mark_flags(objid_of(objv), key, 0)
 
 
 # Create an Error-family constructor with a .prototype. Returns the ctor value.
@@ -1650,12 +1665,16 @@ def obj_add_num(objv: int32, name: Ptr[uint8], x: float64):
 def install_error(name: Ptr[uint8], native_id: int32, super_ctor: int32) -> int32:
     fv: int32 = v_new_native(native_id)
     proto: int32 = v_new_object()
-    obj_set(objid_of(proto), str_from_cstr(cast[Ptr[uint8]]("name")), v_string_cstr(name))
+    pnk: int32 = str_from_cstr(cast[Ptr[uint8]]("name"))
+    obj_set(objid_of(proto), pnk, v_string_cstr(name))
+    obj_mark_nonenum(objid_of(proto), pnk)
     if super_ctor >= 0:
         basep: int32 = obj_get(objid_of(super_ctor), str_from_cstr(cast[Ptr[uint8]]("prototype")))
         if tag_of(basep) == TAG_OBJ:
             obj_proto[objid_of(proto)] = objid_of(basep)
-    obj_set(objid_of(fv), str_from_cstr(cast[Ptr[uint8]]("prototype")), proto)
+    epk: int32 = str_from_cstr(cast[Ptr[uint8]]("prototype"))
+    obj_set(objid_of(fv), epk, proto)
+    obj_mark_nonenum(objid_of(fv), epk)
     env_define(g_env, str_from_cstr(name), fv, 0)
     return fv
 
@@ -1694,14 +1713,14 @@ def install_builtins():
     obj_add_native(g_math, cast[Ptr[uint8]]("atan"), NAT_MATH_ATAN)
     obj_add_native(g_math, cast[Ptr[uint8]]("atan2"), NAT_MATH_ATAN2)
     obj_add_native(g_math, cast[Ptr[uint8]]("random"), NAT_MATH_RANDOM)
-    obj_add_num(g_math, cast[Ptr[uint8]]("PI"), 3.141592653589793)
-    obj_add_num(g_math, cast[Ptr[uint8]]("E"), 2.718281828459045)
-    obj_add_num(g_math, cast[Ptr[uint8]]("LN2"), 0.6931471805599453)
-    obj_add_num(g_math, cast[Ptr[uint8]]("LN10"), 2.302585092994046)
-    obj_add_num(g_math, cast[Ptr[uint8]]("LOG2E"), 1.4426950408889634)
-    obj_add_num(g_math, cast[Ptr[uint8]]("LOG10E"), 0.4342944819032518)
-    obj_add_num(g_math, cast[Ptr[uint8]]("SQRT2"), 1.4142135623730951)
-    obj_add_num(g_math, cast[Ptr[uint8]]("SQRT1_2"), 0.7071067811865476)
+    obj_add_const(g_math, cast[Ptr[uint8]]("PI"), 3.141592653589793)
+    obj_add_const(g_math, cast[Ptr[uint8]]("E"), 2.718281828459045)
+    obj_add_const(g_math, cast[Ptr[uint8]]("LN2"), 0.6931471805599453)
+    obj_add_const(g_math, cast[Ptr[uint8]]("LN10"), 2.302585092994046)
+    obj_add_const(g_math, cast[Ptr[uint8]]("LOG2E"), 1.4426950408889634)
+    obj_add_const(g_math, cast[Ptr[uint8]]("LOG10E"), 0.4342944819032518)
+    obj_add_const(g_math, cast[Ptr[uint8]]("SQRT2"), 1.4142135623730951)
+    obj_add_const(g_math, cast[Ptr[uint8]]("SQRT1_2"), 0.7071067811865476)
     env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("Math")), g_math, 0)
     # JSON
     g_json = v_new_object()

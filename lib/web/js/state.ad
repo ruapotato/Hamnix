@@ -361,6 +361,18 @@ p_val:  Array[150000, int32]
 p_acc:  Array[150000, uint8]      # 1 = accessor property (p_get/p_set), 0 = data (p_val)
 p_get:  Array[150000, int32]      # accessor getter function VALUE handle, or -1
 p_set:  Array[150000, int32]      # accessor setter function VALUE handle, or -1
+# ES property ATTRIBUTES, one bitmask per property slot:
+#   bit0 PF_ENUM  — [[Enumerable]]: shows in for-in / Object.keys|values|entries /
+#                   JSON.stringify / Object.assign / object spread / rest.
+#   bit1 PF_WRITE — [[Writable]]: a plain data write is a silent no-op without it.
+#   bit2 PF_CONF  — [[Configurable]]: `delete` is a no-op without it.
+# Ordinary assignment creates 7 (all set). Object.defineProperty is the ONLY way
+# to clear a bit from JS, and — per ES OrdinaryDefineOwnProperty — an ABSENT
+# attribute in a descriptor defaults to FALSE for a NEW property and LEAVES the
+# existing value alone for an existing one. Engine-internal installs (builtin
+# methods, `Function.prototype.constructor`, class methods) clear PF_ENUM to
+# match the spec's non-enumerable built-ins.
+p_flags: Array[150000, uint8]
 n_props: int32 = 0
 
 MAX_ENV: int32 = 80000
