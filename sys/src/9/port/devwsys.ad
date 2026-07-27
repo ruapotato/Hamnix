@@ -8215,29 +8215,7 @@ def devwsys_winctl_write(wid: int32, buf: Ptr[uint8],
         if hs == he or _wsys_ctl_parse_u64(buf, hs, he, &hv) == 0:
             set_current_errstr("/dev/wsys/ctl: hide: bad arg")
             return -1
-        if hv == 0:
-            if wsys_win_hidden[u] != 0:
-                wsys_win_hidden[u] = 0
-                _wsys_present_window_scoped(wid)
-        else:
-            if wsys_win_hidden[u] == 0:
-                wsys_win_hidden[u] = 1
-                # A hidden window must not keep keyboard focus.
-                if wsys_focus_wid == wid:
-                    wsys_focus_wid = 0
-                hrx: int64 = 0
-                hry: int64 = 0
-                hrw: int64 = 0
-                hrh: int64 = 0
-                _wsys_win_screen_extent(u, &hrx, &hry, &hrw, &hrh)
-                if fb_get_initialized() != 0:
-                    fl_hide: uint64 = local_irq_save()
-                    spinlock_lock(&wsys_present_lock)
-                    _wsys_recompose_rect(hrx, hry, hrw, hrh)
-                    _wsys_flush_rect(hrx, hry, hrw, hrh)
-                    _wsys_present_cursor_locked()
-                    spinlock_unlock(&wsys_present_lock)
-                    local_irq_restore(fl_hide)
+        _wsys_set_win_hidden(wid, cast[int32](hv))
         return cast[int64](count)
 
     # blend <0|1> : opt this window into TRANSLUCENT (source-over) present. Each
@@ -11996,6 +11974,46 @@ def _wsys_tb_update_hover(sx: int64, sy: int64):
     local_irq_restore(fl_hov)
 
 
+def _wsys_set_win_hidden(wid: int32, hidden: int32):
+    # Body of the `hide <0|1>` ctl verb, split out so the boot-time self-test
+    # can drive it: at boot:37 there is no owning task, so devwsys_winctl_write
+    # rejects a synthetic window's writes at the ownership gate and a test
+    # that went through the file would assert nothing.
+    #
+    # Hiding repaints the vacated footprint straight from the scene sources
+    # (backdrop + lower windows), exactly as _wsys_minimize does, so the
+    # window's pixels really leave the screen instead of lingering until
+    # something else happens to recompose over them.
+    u: uint64 = cast[uint64](wid)
+    if u == 0 or u >= WSYS_SCENE_SLOTS:
+        return
+    if hidden == 0:
+        if wsys_win_hidden[u] == 0:
+            return
+        wsys_win_hidden[u] = 0
+        _wsys_present_window_scoped(wid)
+        return
+    if wsys_win_hidden[u] != 0:
+        return
+    wsys_win_hidden[u] = 1
+    # A hidden window must not keep keyboard focus.
+    if wsys_focus_wid == wid:
+        wsys_focus_wid = 0
+    hrx: int64 = 0
+    hry: int64 = 0
+    hrw: int64 = 0
+    hrh: int64 = 0
+    _wsys_win_screen_extent(u, &hrx, &hry, &hrw, &hrh)
+    if fb_get_initialized() != 0:
+        fl_hide: uint64 = local_irq_save()
+        spinlock_lock(&wsys_present_lock)
+        _wsys_recompose_rect(hrx, hry, hrw, hrh)
+        _wsys_flush_rect(hrx, hry, hrw, hrh)
+        _wsys_present_cursor_locked()
+        spinlock_unlock(&wsys_present_lock)
+        local_irq_restore(fl_hide)
+
+
 def _wsys_minimize(wid: int32):
     # #281. Hide the window from every compose pass (wsys_win_minimized gates
     # _wsys_win_visible) while keeping its slot in_use so the taskbar still
@@ -13376,18 +13394,22 @@ def wsys_surplus_hide_selftest() -> int32:
     # the desktop answered with a dead full-width bar parked at the origin,
     # on top of the real top panel, eating its clicks.
     #
-    # Both halves are pinned here, because fixing only one leaves the bug:
-    #   (a) `geometry <x> <y> 0 0` STILL means "move, keep the size" — that is
-    #       a deliberate contract other clients rely on, so this asserts it
-    #       rather than quietly changing it. This is the trap: the spelling
-    #       the panel used cannot ever hide anything.
-    #   (b) `hide 1` on an UNDECORATED window really removes it from compose
-    #       AND from hit-testing, and `hide 0` brings it back. `minimize`
-    #       could not do this: _wsys_win_visible gates it on decorate != 0,
-    #       so it is a no-op for exactly the decorate-0 chrome that needs it.
+    # WHAT IS PINNED:
+    #   (b) hiding an UNDECORATED window really removes it from compose AND
+    #       from hit-testing, and unhiding brings both back; a freed wid does
+    #       not inherit the flag. `minimize` could not do any of this:
+    #       _wsys_win_visible gates it on decorate != 0, so it is a no-op for
+    #       exactly the decorate-0 chrome that needs it.
+    #   (a) `geometry <x> <y> 0 0` STILL means "move, keep the size" — a
+    #       deliberate contract other clients rely on, and the trap the panel
+    #       fell into, so it is asserted rather than quietly changed. It runs
+    #       only when this context may write the ctl file (at boot:37 there is
+    #       no owning task, so the ownership gate rejects a synthetic window's
+    #       writes); when it cannot, the test SAYS so instead of counting a
+    #       denied write as a passing assertion. The behavioural cover for
+    #       that half is scripts/test_de_panel_config.sh, which drives the
+    #       real panel through the real ctl file on a booted desktop.
     _wsys_init_if_needed()
-    # Own the wid from THIS task so the verbs go through the real owner gate
-    # in devwsys_winctl_write rather than relying on a hostowner bypass.
     wid: int32 = wsys_alloc_wid(current_task_pid())
     if wid <= 1:
         printk0("[SURPLUS_HIDE] PASS (skip: table full)\n")
@@ -13402,27 +13424,34 @@ def wsys_surplus_hide_selftest() -> int32:
     wsys_win_w[u] = 1280
     wsys_win_h[u] = 26
 
-    # (a) the zero-size "collapse" the panel used to write is a size no-op.
+    # (a) the zero-size "collapse" the panel used to write is a size NO-OP.
+    # Driven through the real ctl file when this context is allowed to write
+    # it. At boot:37 there is no owning task, so the ownership gate rejects a
+    # synthetic window's writes; say so rather than let a denied write look
+    # like a passing assertion.
     c0: Ptr[uint8] = cast[Ptr[uint8]]("geometry 0 0 0 0\n")
-    devwsys_winctl_write(wid, c0, 17)
-    if _wsys_win_def_w(u) != 1280 or _wsys_win_def_h(u) != 26:
-        printk0("[SURPLUS_HIDE] FAIL `geometry x y 0 0` changed the size;")
-        printk0(" the move-without-restating-size contract regressed\n")
-        wsys_scene_len[u] = 0
-        wsys_free_wid(wid)
-        return 0
-    if _wsys_win_visible(u) == 0:
-        printk0("[SURPLUS_HIDE] FAIL a zero-size geometry hid the window;")
-        printk0(" that is not what the verb means\n")
-        wsys_scene_len[u] = 0
-        wsys_free_wid(wid)
-        return 0
+    grc: int64 = devwsys_winctl_write(wid, c0, 17)
+    if grc < 0:
+        printk0("[SURPLUS_HIDE] NOTE ctl file not writable from this context;")
+        printk0(" the geometry-contract half was not driven\n")
+    else:
+        if _wsys_win_def_w(u) != 1280 or _wsys_win_def_h(u) != 26:
+            printk0("[SURPLUS_HIDE] FAIL `geometry x y 0 0` changed the size;")
+            printk0(" the move-without-restating-size contract regressed\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        if _wsys_win_visible(u) == 0:
+            printk0("[SURPLUS_HIDE] FAIL a zero-size geometry hid the window;")
+            printk0(" that is not what the verb means\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
 
-    # (b) `hide 1` withdraws an undecorated window from compose AND clicks.
-    c1: Ptr[uint8] = cast[Ptr[uint8]]("hide 1\n")
-    devwsys_winctl_write(wid, c1, 7)
+    # (b) hiding withdraws an undecorated window from compose AND from clicks.
+    _wsys_set_win_hidden(wid, 1)
     if wsys_win_hidden[u] == 0 or _wsys_win_visible(u) != 0:
-        printk0("[SURPLUS_HIDE] FAIL `hide 1` did not withdraw a decorate-0")
+        printk0("[SURPLUS_HIDE] FAIL hide did not withdraw a decorate-0")
         printk0(" window from compose\n")
         wsys_scene_len[u] = 0
         wsys_free_wid(wid)
@@ -13433,11 +13462,10 @@ def wsys_surplus_hide_selftest() -> int32:
         wsys_free_wid(wid)
         return 0
 
-    # ...and `hide 0` puts it back, both on screen and under the pointer.
-    c2: Ptr[uint8] = cast[Ptr[uint8]]("hide 0\n")
-    devwsys_winctl_write(wid, c2, 7)
+    # ...and un-hiding puts it back, both on screen and under the pointer.
+    _wsys_set_win_hidden(wid, 0)
     if wsys_win_hidden[u] != 0 or _wsys_win_visible(u) == 0:
-        printk0("[SURPLUS_HIDE] FAIL `hide 0` did not restore the window\n")
+        printk0("[SURPLUS_HIDE] FAIL unhide did not restore the window\n")
         wsys_scene_len[u] = 0
         wsys_free_wid(wid)
         return 0
@@ -13447,18 +13475,17 @@ def wsys_surplus_hide_selftest() -> int32:
         wsys_free_wid(wid)
         return 0
 
-    # A recycled wid must not inherit `hide 1` (else a fresh window is born
-    # invisible and the desktop loses a panel for good).
-    c3: Ptr[uint8] = cast[Ptr[uint8]]("hide 1\n")
-    devwsys_winctl_write(wid, c3, 7)
+    # A recycled wid must not inherit the hidden flag (else a fresh window is
+    # born invisible and the desktop loses a panel for good).
+    _wsys_set_win_hidden(wid, 1)
     wsys_scene_len[u] = 0
     wsys_free_wid(wid)
     if wsys_win_hidden[u] != 0:
         printk0("[SURPLUS_HIDE] FAIL a freed wid kept its hidden flag;")
         printk0(" the next tenant would never appear\n")
         return 0
-    printk0("[SURPLUS_HIDE] PASS zero-size geometry is a size no-op; `hide`")
-    printk0(" withdraws + restores a decorate-0 panel window\n")
+    printk0("[SURPLUS_HIDE] PASS hide withdraws + restores a decorate-0 panel")
+    printk0(" window (compose + hit-test)\n")
     return 1
 
 
