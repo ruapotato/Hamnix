@@ -199,21 +199,11 @@ def reader():
         logf.write(b); logf.flush()
         with lock: buf.extend(b)
 threading.Thread(target=reader, daemon=True).start()
-def count(marker):
-    with lock: return buf.count(marker.encode())
 def wait_for(marker, timeout):
     m = marker.encode(); deadline = time.time() + timeout
     while time.time() < deadline:
         with lock:
             if m in buf: return True
-        if qemu.poll() is not None: return False
-        time.sleep(0.2)
-    return False
-def wait_count(marker, n, timeout):
-    # Wait until `marker` has been seen at least n times.
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if count(marker) >= n: return True
         if qemu.poll() is not None: return False
         time.sleep(0.2)
     return False
