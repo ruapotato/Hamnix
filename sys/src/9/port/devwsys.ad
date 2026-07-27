@@ -1144,6 +1144,9 @@ def _wsys_reset_rings(wid: int32):
     wsys_content_serial[u] = 0
     wsys_scene_pres_content[u] = 0
     wsys_scene_pres_valid[u] = 0
+    # A recycled wid must also start VISIBLE: inheriting the previous
+    # tenant's `hide 1` would leave a fresh window permanently unpainted.
+    wsys_win_hidden[u] = 0
 
 
 # --- ASCII formatting helpers ----------------------------------------
@@ -7683,6 +7686,26 @@ wsys_win_sav_h:    Array[32, int64]
 # minimized window is skipped by both the full z-blit present and the
 # damage-scoped recompose. A taskbar `raise` clears it (restore).
 wsys_win_minimized: Array[32, int32]
+# CLIENT-REQUESTED HIDE: 1 = this window is withdrawn from the screen at its
+# OWNER's request (the `hide` ctl verb), whatever its decoration. Unlike
+# `minimize` — which is a WM gesture and is deliberately restricted to
+# decorated app windows so the taskbar can still list them — this is how a
+# decorate-0 CHROME client parks a surface it has allocated but does not
+# currently want on screen.
+#
+# It exists because there was no way to say that. hampanelscene keeps a pool
+# of panel windows and, when a live config edit REDUCES the panel count, has
+# to withdraw the surplus ones. It asked for that with `geometry 0 0 0 0`,
+# reading as "collapse it to nothing at the origin" — but the geometry verb
+# deliberately treats a non-positive w/h as "leave that dimension alone"
+# (so a client can move a window without restating its size). The width and
+# height therefore survived untouched and only the ORIGIN moved: a full-size
+# 1280x26 bar, still holding its last committed scene, parked at (0,0)
+# directly on top of the real top panel. The desktop showed a dead grey bar
+# with the previous panel's widgets where the configured panel should be, and
+# because _wsys_hit_test does not know about visibility it also swallowed
+# every click aimed at the panel underneath.
+wsys_win_hidden:   Array[32, int32]
 # MULTI-WINDOW child/popup anchoring. A popup (menu/dropdown/tooltip/
 # dialog) is its own short-lived `decorate 0` window (de_scene_file_arch.md
 # §17, "separate decorate-0 windows so the compositor z-orders and dismisses
@@ -8161,6 +8184,60 @@ def devwsys_winctl_write(wid: int32, buf: Ptr[uint8],
             wsys_win_keyed[u] = 0
         else:
             wsys_win_keyed[u] = 1
+        return cast[int64](count)
+
+    # hide <0|1> : WITHDRAW this window from the screen (1) or put it back
+    # (0), at the OWNER's request, whatever its decoration. `minimize` is the
+    # WM's gesture and only applies to decorated app windows so the taskbar
+    # keeps a button; this is the CLIENT's, and a decorate-0 chrome surface is
+    # exactly who needs it.
+    #
+    # hampanelscene keeps a pool of panel windows and must withdraw the
+    # surplus ones when a live config edit reduces the panel count. It used to
+    # write `geometry 0 0 0 0` for that, which does NOT do what it reads like:
+    # the geometry verb treats a non-positive w/h as "leave that dimension
+    # alone" (so a move need not restate the size), so the window kept its
+    # full 1280x26 and merely MOVED to the origin — a dead bar, still showing
+    # its last committed scene, parked squarely on top of the real top panel
+    # and swallowing its clicks. There was no verb that meant "take this off
+    # the screen"; now there is.
+    #
+    # Hiding repaints the vacated footprint from the scene sources (backdrop +
+    # lower windows) exactly as _wsys_minimize does, so the window's pixels
+    # actually leave the screen instead of lingering until something else
+    # happens to recompose over them.
+    if _wsys_ctl_word_eq(buf, vs, ve, "hide") == 1:
+        p = _wsys_ctl_skip_ws(buf, p, count)
+        hs: uint64 = p
+        p = _wsys_ctl_token_end(buf, p, count)
+        he: uint64 = p
+        hv: uint64 = 0
+        if hs == he or _wsys_ctl_parse_u64(buf, hs, he, &hv) == 0:
+            set_current_errstr("/dev/wsys/ctl: hide: bad arg")
+            return -1
+        if hv == 0:
+            if wsys_win_hidden[u] != 0:
+                wsys_win_hidden[u] = 0
+                _wsys_present_window_scoped(wid)
+        else:
+            if wsys_win_hidden[u] == 0:
+                wsys_win_hidden[u] = 1
+                # A hidden window must not keep keyboard focus.
+                if wsys_focus_wid == wid:
+                    wsys_focus_wid = 0
+                hrx: int64 = 0
+                hry: int64 = 0
+                hrw: int64 = 0
+                hrh: int64 = 0
+                _wsys_win_screen_extent(u, &hrx, &hry, &hrw, &hrh)
+                if fb_get_initialized() != 0:
+                    fl_hide: uint64 = local_irq_save()
+                    spinlock_lock(&wsys_present_lock)
+                    _wsys_recompose_rect(hrx, hry, hrw, hrh)
+                    _wsys_flush_rect(hrx, hry, hrw, hrh)
+                    _wsys_present_cursor_locked()
+                    spinlock_unlock(&wsys_present_lock)
+                    local_irq_restore(fl_hide)
         return cast[int64](count)
 
     # blend <0|1> : opt this window into TRANSLUCENT (source-over) present. Each
@@ -10108,6 +10185,11 @@ def _wsys_win_visible(w: uint64) -> int32:
     # `raise` clears wsys_win_minimized and re-presents it.
     if wsys_win_decorate[w] != 0 and wsys_win_minimized[w] != 0:
         return 0
+    # Client-requested hide (`hide 1`). Applies to EVERY window, decorated or
+    # not: it is the only way a decorate-0 chrome client (hampanelscene's
+    # surplus panel windows) can withdraw a surface it still owns.
+    if wsys_win_hidden[w] != 0:
+        return 0
     return 1
 
 
@@ -11779,11 +11861,17 @@ def _wsys_hit_test(sx: int64, sy: int64) -> int32:
     # Return the wid of the TOP-MOST window whose content OR titlebar rect
     # contains screen point (sx,sy), or 0 if none. Top-most = highest z;
     # ties broken by higher wid.
+    #
+    # A window the compositor does not PAINT must not be clickable either, so
+    # this consults the same _wsys_win_visible authority the present passes
+    # use. Without that gate a hidden/minimized window kept eating the clicks
+    # aimed at whatever is now visible underneath it — invisible dead space.
     best: int32 = 0
     best_z: int64 = 0
     w: uint64 = 1
     while w < WSYS_SCENE_SLOTS:
-        if wsys_slot_in_use[w] != 0 and wsys_scene_len[w] > 0:
+        if wsys_slot_in_use[w] != 0 and wsys_scene_len[w] > 0 \
+                and _wsys_win_visible(w) != 0:
             ww: int64 = _wsys_win_def_w(w)
             wh: int64 = _wsys_win_def_h(w)
             wx: int64 = wsys_win_x[w]
@@ -13276,7 +13364,101 @@ def wsys_close_box_selftest() -> int32:
     wsys_focus_titlebar_selftest()
     wsys_geom_reset_selftest()
     wsys_anim_frames_selftest()
+    wsys_surplus_hide_selftest()
     wsys_fill_throughput_selftest()
+    return 1
+
+
+def wsys_surplus_hide_selftest() -> int32:
+    # THE SURPLUS PANEL WINDOW. hampanelscene keeps a pool of panel windows;
+    # a live config edit that REDUCES the panel count has to withdraw the
+    # ones it no longer uses. It asked for that with `geometry 0 0 0 0`, and
+    # the desktop answered with a dead full-width bar parked at the origin,
+    # on top of the real top panel, eating its clicks.
+    #
+    # Both halves are pinned here, because fixing only one leaves the bug:
+    #   (a) `geometry <x> <y> 0 0` STILL means "move, keep the size" — that is
+    #       a deliberate contract other clients rely on, so this asserts it
+    #       rather than quietly changing it. This is the trap: the spelling
+    #       the panel used cannot ever hide anything.
+    #   (b) `hide 1` on an UNDECORATED window really removes it from compose
+    #       AND from hit-testing, and `hide 0` brings it back. `minimize`
+    #       could not do this: _wsys_win_visible gates it on decorate != 0,
+    #       so it is a no-op for exactly the decorate-0 chrome that needs it.
+    _wsys_init_if_needed()
+    # Own the wid from THIS task so the verbs go through the real owner gate
+    # in devwsys_winctl_write rather than relying on a hostowner bypass.
+    wid: int32 = wsys_alloc_wid(current_task_pid())
+    if wid <= 1:
+        printk0("[SURPLUS_HIDE] PASS (skip: table full)\n")
+        return 1
+    u: uint64 = cast[uint64](wid)
+    wsys_scene_len[u] = 1                          # non-empty: hit-testable
+    wsys_win_decorate[u] = 0                       # panel-shaped chrome
+    wsys_win_z[u] = 100
+    wsys_win_geo_init[u] = 1
+    wsys_win_x[u] = 0
+    wsys_win_y[u] = 0
+    wsys_win_w[u] = 1280
+    wsys_win_h[u] = 26
+
+    # (a) the zero-size "collapse" the panel used to write is a size no-op.
+    c0: Ptr[uint8] = cast[Ptr[uint8]]("geometry 0 0 0 0\n")
+    devwsys_winctl_write(wid, c0, 17)
+    if _wsys_win_def_w(u) != 1280 or _wsys_win_def_h(u) != 26:
+        printk0("[SURPLUS_HIDE] FAIL `geometry x y 0 0` changed the size;")
+        printk0(" the move-without-restating-size contract regressed\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    if _wsys_win_visible(u) == 0:
+        printk0("[SURPLUS_HIDE] FAIL a zero-size geometry hid the window;")
+        printk0(" that is not what the verb means\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # (b) `hide 1` withdraws an undecorated window from compose AND clicks.
+    c1: Ptr[uint8] = cast[Ptr[uint8]]("hide 1\n")
+    devwsys_winctl_write(wid, c1, 7)
+    if wsys_win_hidden[u] == 0 or _wsys_win_visible(u) != 0:
+        printk0("[SURPLUS_HIDE] FAIL `hide 1` did not withdraw a decorate-0")
+        printk0(" window from compose\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    if _wsys_hit_test(640, 12) == wid:
+        printk0("[SURPLUS_HIDE] FAIL a hidden window still swallows clicks\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # ...and `hide 0` puts it back, both on screen and under the pointer.
+    c2: Ptr[uint8] = cast[Ptr[uint8]]("hide 0\n")
+    devwsys_winctl_write(wid, c2, 7)
+    if wsys_win_hidden[u] != 0 or _wsys_win_visible(u) == 0:
+        printk0("[SURPLUS_HIDE] FAIL `hide 0` did not restore the window\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    if _wsys_hit_test(640, 12) != wid:
+        printk0("[SURPLUS_HIDE] FAIL a restored window is not hit-testable\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # A recycled wid must not inherit `hide 1` (else a fresh window is born
+    # invisible and the desktop loses a panel for good).
+    c3: Ptr[uint8] = cast[Ptr[uint8]]("hide 1\n")
+    devwsys_winctl_write(wid, c3, 7)
+    wsys_scene_len[u] = 0
+    wsys_free_wid(wid)
+    if wsys_win_hidden[u] != 0:
+        printk0("[SURPLUS_HIDE] FAIL a freed wid kept its hidden flag;")
+        printk0(" the next tenant would never appear\n")
+        return 0
+    printk0("[SURPLUS_HIDE] PASS zero-size geometry is a size no-op; `hide`")
+    printk0(" withdraws + restores a decorate-0 panel window\n")
     return 1
 
 

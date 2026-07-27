@@ -4188,6 +4188,16 @@ pw_ev:    Array[256, uint8]          # 4 * 64
 pw_menu:  Array[4, int32]            # menu_open per panel
 pw_geoh:  Array[4, int64]            # last applied window cross-axis size
 _wait_efds: Array[4, int32]          # per-iter /event fds parked on by sys_waitfds
+# WINDOW POOL SIZE: how many compositor windows we have ever allocated.
+# pw_wid[0 .. pw_alloc_n) are live wids we own; only pw_wid[0 .. n_panels)
+# are currently ON SCREEN — the rest are hidden and waiting to be reused.
+#
+# A live config edit that REDUCES the panel count used to leave the surplus
+# windows allocated-but-unmanaged, and a later edit that GREW the count
+# allocated brand-new ones on top of them, so a few Settings edits leaked
+# through the 32-slot compositor window table. Keeping the pool means the
+# panel allocates at most MAX_PANELS windows for its whole life.
+pw_alloc_n: uint64 = 0
 
 
 def pw_ctl_ptr(i: uint64) -> Ptr[char]:
@@ -4486,27 +4496,44 @@ def pw_ev_ptr_u8(i: uint64) -> Ptr[uint8]:
     return cast[Ptr[uint8]](cast[uint64](&pw_ev[0]) + i * 64)
 
 
+# Show or withdraw one of our pooled panel windows through the compositor's
+# `hide` verb (sys/src/9/port/devwsys.ad).
+#
+# This used to be `_set_geometry_xy(ctl, 0, 0, 0, 0)` — "collapse it to a
+# zero-size off-screen geometry", per the old comment. It never did that. The
+# geometry verb deliberately treats a non-positive w/h as "leave that
+# dimension alone" so a client can MOVE a window without restating its size,
+# so the width and height survived and only the ORIGIN changed: the surplus
+# panel became a full-width bar parked at (0,0), still displaying its last
+# committed scene, sitting on top of the real top panel and swallowing every
+# click meant for it. Changing the panel layout — the one thing this file is
+# for — left the desktop with a dead bar where the panel should be.
+def _set_window_hidden(wid: int32, hidden: int32):
+    if wid < 0:
+        return
+    hp: Array[64, uint8]
+    _winpath(&hp[0], wid, cast[Ptr[uint8]]("/ctl"))
+    hfd: int32 = sys_open_write(cast[Ptr[char]](&hp[0]))
+    if hfd < 0:
+        return
+    if hidden != 0:
+        _writeall(hfd, cast[Ptr[uint8]]("hide 1\n"))
+    else:
+        _writeall(hfd, cast[Ptr[uint8]]("hide 0\n"))
+    sys_close(hfd)
+
+
 # Re-read the config and rebuild the panel set. The window COUNT may change;
-# we reuse existing windows 1:1 by index where possible, allocate more on a
-# grow, and collapse now-unused windows to a zero-size off-screen geometry on
-# a shrink. The common Settings edits (edge / widgets / colour / size / font
-# of the SAME panel count) reuse the same windows in place.
-_reload_save_wid:  Array[4, int32]
-_reload_save_menu: Array[4, int32]
+# we reuse the window POOL 1:1 by index, allocate more only when the config
+# asks for more panels than we have ever had, and HIDE the ones the new
+# config does not use. The common Settings edits (edge / widgets / colour /
+# size / font of the SAME panel count) reuse the same windows in place.
 def _reload_panels(sw: int64, sh: int64, btime: uint64):
-    old_n: uint64 = n_panels
-    k: uint64 = 0
-    while k < old_n and k < MAX_PANELS:
-        _reload_save_wid[k] = pw_wid[k]
-        _reload_save_menu[k] = pw_menu[k]
-        k = k + 1
     _load_config()
     pi: uint64 = 0
     while pi < n_panels:
-        if pi < old_n:
-            pw_wid[pi] = _reload_save_wid[pi]
-            pw_menu[pi] = _reload_save_menu[pi]
-        else:
+        if pi >= pw_alloc_n:
+            # First time we have needed this many panels: allocate + chrome.
             wid: int32 = _newwindow()
             pw_wid[pi] = wid
             pw_menu[pi] = 0
@@ -4524,17 +4551,29 @@ def _reload_panels(sw: int64, sh: int64, btime: uint64):
                 if cfdk >= 0:
                     _writeall(cfdk, cast[Ptr[uint8]]("keyed 1\n"))
                     sys_close(cfdk)
+                pw_alloc_n = pi + 1
         _winpath(pw_ctl_ptr_u8(pi), pw_wid[pi], cast[Ptr[uint8]]("/ctl"))
         _winpath(pw_ev_ptr_u8(pi), pw_wid[pi], cast[Ptr[uint8]]("/event"))
         _apply_panel_geometry(pi, sw, sh)
+        # A pooled window reclaimed from an earlier, larger layout comes back
+        # hidden; put it on screen before we redraw into it.
+        _set_window_hidden(pw_wid[pi], 0)
         pi = pi + 1
-    # Collapse any windows the new config no longer uses (shrink) to a
-    # zero-size off-screen geometry so they leave no chrome on screen.
-    while pi < old_n and pi < MAX_PANELS:
-        hidep: Array[64, uint8]
-        _winpath(&hidep[0], _reload_save_wid[pi], cast[Ptr[uint8]]("/ctl"))
-        _set_geometry_xy(cast[Ptr[char]](&hidep[0]), 0, 0, 0, 0)
+    # Withdraw the pooled windows the new config no longer uses, so they
+    # leave NOTHING on screen. They stay allocated for the next grow.
+    while pi < pw_alloc_n and pi < MAX_PANELS:
+        _set_window_hidden(pw_wid[pi], 1)
+        pw_menu[pi] = 0
         pi = pi + 1
+    # One line per applied reload, so a gate (and a human reading the serial
+    # log) can tell when the panel has actually PICKED UP a config edit
+    # instead of guessing with a sleep.
+    _writeall(1, cast[Ptr[uint8]]("[panel] config reload applied: "))
+    _rn: Array[24, uint8]
+    _rnl: uint64 = _u64_to_dec(n_panels, &_rn[0])
+    _rn[_rnl] = 0
+    _writeall(1, &_rn[0])
+    _writeall(1, cast[Ptr[uint8]](" panel(s)\n"))
 
 
 # ---- ADD-TO-PANEL CHOOSER: live search typing ---------------------------
@@ -4731,6 +4770,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             return 1
         pw_wid[pi] = wid
         pw_menu[pi] = 0
+        pw_alloc_n = pi + 1
         _winpath(pw_ctl_ptr_u8(pi), wid, cast[Ptr[uint8]]("/ctl"))
         _winpath(pw_ev_ptr_u8(pi), wid, cast[Ptr[uint8]]("/event"))
         _apply_panel_geometry(pi, sw, sh)
