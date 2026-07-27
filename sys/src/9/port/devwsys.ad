@@ -3028,6 +3028,34 @@ def _wsys_ws_step(dir: int32):
         _wsys_ws_apply(nw)
 
 
+def _wsys_ctl_wallpaper(buf: Ptr[uint8], p: uint64, count: uint64) -> int64:
+    # Body of the `wallpaper <path>` verb. `p` is the offset just past the
+    # verb token. Records the path and bumps wsys_wallpaper_gen so a poller
+    # on /dev/wsys/wallpaper observes the change.
+    ps: uint64 = _wsys_ctl_skip_ws(buf, p, count)
+    # Path extends to end-of-line / end-of-buffer, MINUS any trailing
+    # whitespace (so a writer using `echo "wallpaper /etc/foo.ppm"` doesn't
+    # store a trailing '\n').
+    pe: uint64 = count
+    while pe > ps and _wsys_ctl_is_ws(buf[pe - 1]) == 1:
+        pe = pe - 1
+    if ps == pe:
+        set_current_errstr("/dev/wsys/ctl: wallpaper: missing path")
+        return -1
+    plen: uint64 = pe - ps
+    if plen >= WSYS_WALLPAPER_PATH_CAP:
+        set_current_errstr("/dev/wsys/ctl: wallpaper: path too long")
+        return -1
+    i: uint64 = 0
+    while i < plen:
+        wsys_wallpaper_path[i] = buf[ps + i]
+        i = i + 1
+    wsys_wallpaper_path[plen] = 0
+    wsys_wallpaper_path_len = plen
+    wsys_wallpaper_gen = wsys_wallpaper_gen + 1
+    return cast[int64](count)
+
+
 def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
     # F2 #447 system-wide wsys-ctl writer. Hostowner-only — non-uid-1
     # callers get -EPERM. Returns the count consumed on success or -1
@@ -3127,6 +3155,19 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
             _wsys_cursor_set_scene(wsys_cursor_x, wsys_cursor_y)
         wsys_scene_present()
         return cast[int64](count)
+
+    # `wallpaper <path>` — publish the backdrop image request. Parsed BEFORE
+    # the hostowner gate, for exactly the reason `newwindow` and `desktop`
+    # are: the Control Center that sets the wallpaper is a DE app running as
+    # the default NOBODY uid, and so is the hamdesktop that reads the gen back
+    # out. Behind the gate this verb returned -EPERM to every caller that
+    # actually wants it — the user's "Sunset / Ocean / Tiles don't change the
+    # background" report, reproduced on the shipped image as
+    # `cat /dev/wsys/wallpaper` still reading gen 0 straight after hamctl
+    # printed "wallpaper applied". Choosing your own desktop picture is not a
+    # host-owner privilege; it changes no other process's view of anything.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "wallpaper") == 1:
+        return _wsys_ctl_wallpaper(buf, p0, count)
 
     if current_task_is_hostowner() == 0:
         set_current_errstr("/dev/wsys/ctl: permission denied (not hostowner)")
@@ -3729,30 +3770,6 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         if wsys_run_set(&buf[rp], rlen, cast[int32](run_open_v)) < 0:
             set_current_errstr("/dev/wsys/ctl: run: payload too large")
             return -1
-        return cast[int64](count)
-
-    if _wsys_ctl_word_eq(buf, vs, ve, "wallpaper") == 1:
-        ps: uint64 = _wsys_ctl_skip_ws(buf, p, count)
-        # Path extends to end-of-line / end-of-buffer, MINUS any trailing
-        # whitespace (so a writer using `echo "wallpaper /etc/foo.ppm"`
-        # doesn't store a trailing '\n').
-        pe: uint64 = count
-        while pe > ps and _wsys_ctl_is_ws(buf[pe - 1]) == 1:
-            pe = pe - 1
-        if ps == pe:
-            set_current_errstr("/dev/wsys/ctl: wallpaper: missing path")
-            return -1
-        plen: uint64 = pe - ps
-        if plen >= WSYS_WALLPAPER_PATH_CAP:
-            set_current_errstr("/dev/wsys/ctl: wallpaper: path too long")
-            return -1
-        i: uint64 = 0
-        while i < plen:
-            wsys_wallpaper_path[i] = buf[ps + i]
-            i = i + 1
-        wsys_wallpaper_path[plen] = 0
-        wsys_wallpaper_path_len = plen
-        wsys_wallpaper_gen = wsys_wallpaper_gen + 1
         return cast[int64](count)
 
     # `ws <N>` — request a virtual-workspace switch. <N> is 1-based
@@ -13247,6 +13264,7 @@ def wsys_close_box_selftest() -> int32:
     wsys_focus_titlebar_selftest()
     wsys_geom_reset_selftest()
     wsys_anim_frames_selftest()
+    wsys_fill_throughput_selftest()
     return 1
 
 
@@ -13375,6 +13393,121 @@ def wsys_anim_frames_selftest() -> int32:
     printk2(cast[Ptr[char]]("[ANIM_FRAMES] PASS %d/%d animated frames presented,"),
             cast[uint64](presented), cast[uint64](WSYS_ANIM_FRAMES))
     printk0(" idle frames still skipped\n")
+    return 1
+
+
+WSYS_FILL_TPUT_FRAMES: int32 = 30
+# Ratio ceiling for the clip-hoist invariant (see below). A fill that is
+# ENTIRELY outside the clip rect must cost near-nothing; one that is entirely
+# inside must pay for its pixels. Measured on the fixed build the ratio is
+# hundreds to one, and on the pre-fix per-pixel build it is ~1:1 (the loop ran
+# either way and only the store was skipped). 8 leaves an order of magnitude
+# of headroom for timer noise on a slow TCG CI host while still failing hard
+# on any return to per-pixel clipping.
+WSYS_FILL_TPUT_RATIO: uint64 = 8
+
+
+def wsys_fill_throughput_selftest() -> int32:
+    # SUSTAINED RASTERIZER THROUGHPUT — the "2048 runs at 3 fps" defect.
+    #
+    # A scene commit is SYNCHRONOUS inside the client's write(): devwsys
+    # re-rasterizes the window and presents before the write returns. Raster
+    # time IS frame time. The present-path profiler (`perf 1` on
+    # /dev/wsys/ctl) measured 21.4 ms of a 33.1 ms present inside the
+    # rasterizer on a live 2048 session, and essentially all of it was
+    # _wsys_cache_fillrect calling _wsys_cache_putpixel once per pixel —
+    # six signed comparisons, a 64-bit multiply and a call for each of the
+    # ~360k pixels one 2048 frame fills.
+    #
+    # WHY THIS SHAPE OF ASSERTION. An absolute "must fill N px/ms" threshold
+    # is not portable: this battery runs under KVM on a fast dev host and
+    # under TCG in CI, an order of magnitude apart, so any constant is either
+    # toothless on one or flaky on the other. What the fix actually
+    # established is a STRUCTURAL invariant — the clip rect and cache bounds
+    # are loop-invariant and are now intersected ONCE, before the loop. That
+    # invariant has a machine-independent signature: a fill lying ENTIRELY
+    # OUTSIDE the clip rect must cost O(1), because the clipped span is empty
+    # and there is no loop left to run. Under the old per-pixel gate it cost
+    # O(area) — the loop ran over every pixel and only the store was skipped.
+    #
+    # So the gate times the same-sized fill twice, in-bounds and clipped-out,
+    # and requires the clipped-out one to be at least WSYS_FILL_TPUT_RATIO
+    # times cheaper. It is a pure ratio on one machine in one boot, so it
+    # cannot drift with host speed, and it cannot be satisfied by making
+    # everything uniformly slow.
+    #
+    # It also runs WSYS_FILL_TPUT_FRAMES CONSECUTIVE full-window fills and
+    # reports mean ns/frame + px/ms, so a human A/B has the real number.
+    fake_pid: uint64 = 990448
+    wid: int32 = wsys_alloc_wid(fake_pid)
+    if wid < 2:
+        printk0("[FILL_TPUT] PASS (skip: table full)\n")
+        return 1
+    cache: Ptr[uint8] = _wsys_layer_fb_ensure(wid)
+    if cast[uint64](cache) == 0:
+        wsys_free_wid(wid)
+        printk0("[FILL_TPUT] PASS (skip: no layer fb)\n")
+        return 1
+    # 2048's real window: 360x470 (user/ham2048scene.ad geometry verb).
+    W: int64 = 360
+    H: int64 = 470
+    _wsys_rast_wid = wid
+    _wsys_rast_w = W
+    _wsys_rast_h = H
+    _wsys_rast_clip_x0 = 0
+    _wsys_rast_clip_y0 = 0
+    _wsys_rast_clip_x1 = W
+    _wsys_rast_clip_y1 = H
+    px: uint64 = cast[uint64](W) * cast[uint64](H)
+
+    # (1) N consecutive full-window fills — the sustained number.
+    t0: uint64 = tsc_monotonic_ns()
+    f: int32 = 0
+    while f < WSYS_FILL_TPUT_FRAMES:
+        _wsys_cache_fillrect(cache, 0, 0, W, H, 250, 248, 239, 255)
+        f = f + 1
+    t1: uint64 = tsc_monotonic_ns()
+    inb: uint64 = t1 - t0
+
+    # (2) The SAME N fills, same nominal size, placed entirely outside the
+    #     clip rect. Clip-once => empty span => no loop.
+    _wsys_rast_clip_x0 = 0
+    _wsys_rast_clip_y0 = 0
+    _wsys_rast_clip_x1 = 1
+    _wsys_rast_clip_y1 = 1
+    t2: uint64 = tsc_monotonic_ns()
+    g: int32 = 0
+    while g < WSYS_FILL_TPUT_FRAMES:
+        _wsys_cache_fillrect(cache, 8, 8, W, H, 250, 248, 239, 255)
+        g = g + 1
+    t3: uint64 = tsc_monotonic_ns()
+    outb: uint64 = t3 - t2
+
+    nf: uint64 = cast[uint64](WSYS_FILL_TPUT_FRAMES)
+    per: uint64 = inb / nf
+    rate: uint64 = 0
+    if per > 0:
+        rate = px * 1000000 / per                # pixels per millisecond
+    printk3(cast[Ptr[char]]("[FILL_TPUT] %d frames of %dx%d:"), nf,
+            cast[uint64](W), cast[uint64](H))
+    printk2(cast[Ptr[char]](" %dns/frame, %d px/ms\n"), per, rate)
+
+    _wsys_rast_wid = 0
+    _wsys_rast_w = 0
+    _wsys_rast_h = 0
+    wsys_free_wid(wid)
+
+    # A clipped-out fill that costs anything like an in-bounds one means the
+    # per-pixel clip gate is back inside the loop.
+    if outb * WSYS_FILL_TPUT_RATIO >= inb:
+        printk2(cast[Ptr[char]](
+            "[FILL_TPUT] FAIL clipped-out fill cost %dns vs in-bounds %dns"),
+            outb, inb)
+        printk0(" — the clip test is back INSIDE the per-pixel loop\n")
+        return 0
+    printk2(cast[Ptr[char]](
+        "[FILL_TPUT] PASS clip hoisted out of the fill loop (%dns vs %dns)\n"),
+        outb, inb)
     return 1
 
 

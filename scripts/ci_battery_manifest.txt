@@ -1838,6 +1838,16 @@ bash scripts/ci_run_gate.sh scripts/test_de_cursor_hotspot.sh
 # browser barely repaints" freeze passed every other gate because frame 1 was
 # always correct — this is the gate that measures frame 2..N.
 bash scripts/ci_run_gate.sh scripts/test_wsys_anim_frames.sh
+# test_wsys_fill_throughput: RASTERIZER SPEED, not correctness. A scene commit
+# is synchronous inside the client's write(), so raster time IS frame time —
+# and nothing in this battery measured it, which is how "2048 runs at 3 fps"
+# survived twice. _wsys_cache_fillrect used to call _wsys_cache_putpixel once
+# per pixel (six comparisons, a multiply and a call each); the profiler
+# measured 21.4ms of a 33.1ms present inside it. The gate pins the structural
+# invariant the fix established — the clip test is hoisted OUT of the loop, so
+# a fully-clipped-out fill costs O(1) rather than O(area) — as a pure
+# same-boot ratio, so it is immune to KVM-vs-TCG host speed.
+bash scripts/ci_run_gate.sh scripts/test_wsys_fill_throughput.sh
 bash scripts/ci_run_gate.sh scripts/test_dup.sh
 bash scripts/ci_run_gate.sh scripts/test_srv_post.sh
 bash scripts/ci_run_gate.sh scripts/test_devdiskstats.sh
@@ -2457,6 +2467,17 @@ bash scripts/test_de_wallpaper_coverage_host.sh
 # framebuffer that the bottom band is neither black nor darker than the rest,
 # and that each image actually repainted the desktop.
 bash scripts/test_de_wallpaper_fullscreen.sh
+
+# test_de_wallpaper_themes: THE PICTURE YOU PICKED IS THE PICTURE YOU GET.
+# The 2026-07-27 "Sunset/Ocean/Tiles don't change the background" defect passed
+# every wallpaper gate above, because they check the source text, the host
+# mosaic, or the live backdrop for a black band — and a backdrop stuck on
+# Default has no black band, it is a perfectly good picture. This one applies
+# all four wallpapers on a real OVMF+KVM boot and asserts each differs from
+# Default AND from the other two, plus that /dev/wsys/wallpaper's generation
+# actually advanced (it read 0 forever while the ctl verb sat behind the
+# hostowner gate and hamctl reported success anyway).
+bash scripts/test_de_wallpaper_themes.sh
 
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +

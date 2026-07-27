@@ -204,11 +204,24 @@ def _persist_wallpaper(kind: int32, n: int32):
 
 
 def _wsys_wallpaper_apply():
+    # REPORT WHAT ACTUALLY HAPPENED. This used to print "wallpaper applied"
+    # unconditionally, without ever looking at the write's return value — so
+    # when /dev/wsys/ctl rejected the verb (it sat behind the hostowner gate,
+    # which every DE app fails), hamctl still claimed success and the only
+    # symptom was a desktop that never changed. A silent failure that lies in
+    # the affirmative is worse than no message at all.
+    line: Ptr[uint8] = cast[Ptr[uint8]]("wallpaper /tmp/hamnix-wallpaper.ppm\n")
     fd: int32 = sys_open_write(cast[Ptr[char]]("/dev/wsys/ctl"))
     if fd < 0:
+        _writeall(1, cast[Ptr[uint8]](
+            "[hamctl] FAIL wallpaper: cannot open /dev/wsys/ctl\n"))
         return
-    _writeall(fd, cast[Ptr[uint8]]("wallpaper /tmp/hamnix-wallpaper.ppm\n"))
+    w: int64 = sys_write(fd, line, _ctl_slen(line))
     sys_close(fd)
+    if w < 0:
+        _writeall(1, cast[Ptr[uint8]](
+            "[hamctl] FAIL wallpaper: /dev/wsys/ctl rejected the verb\n"))
+        return
     _writeall(1, cast[Ptr[uint8]]("[hamctl] wallpaper applied\n"))
 
 
