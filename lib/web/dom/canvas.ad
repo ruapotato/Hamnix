@@ -6680,6 +6680,42 @@ def he_bbox_radius(i: int32) -> int32:
     return bbox_rad[i]
 
 
+# ---- link-box (pointer hit-test) registry accessors ------------------
+# The clickable box of a blockified / inline-block <a>. Consulted ONLY by
+# htmlpage_hit_link as a fallback when no painted text segment matched, so a
+# click in a nav pill's / card's padding resolves to the link like Chrome.
+def he_n_lnkboxes() -> int32:
+    return n_lnkboxes
+
+
+def he_lnkbox_lid(i: int32) -> int32:
+    return lnkbox_lid[i]
+
+
+def he_lnkbox_lx(i: int32) -> int32:
+    return lnkbox_lx[i]
+
+
+def he_lnkbox_rx(i: int32) -> int32:
+    return lnkbox_rx[i]
+
+
+def he_lnkbox_top(i: int32) -> int32:
+    return lnkbox_top[i]
+
+
+def he_lnkbox_bot(i: int32) -> int32:
+    return lnkbox_bot[i]
+
+
+def he_lnkbox_padt(i: int32) -> int32:
+    return lnkbox_padt[i]
+
+
+def he_lnkbox_padb(i: int32) -> int32:
+    return lnkbox_padb[i]
+
+
 # ---- element background-fill registry accessors ---------------------
 def he_n_bfills() -> int32:
     return n_bfills

@@ -46,6 +46,7 @@ def _reset_layout():
     n_eimg = 0
     eimg_name_used = 0
     n_links = 0
+    n_lnkboxes = 0
     link_href_len = 0
     cur_row = 0
     # READABLE-MEASURE SCOPING: decide BEFORE baking the initial content column
@@ -536,6 +537,16 @@ def _apply_alignment():
                             bfill_lx[bfi] = bfill_lx[bfi] + shift
                             bfill_rx[bfi] = bfill_rx[bfi] + shift
                         bfi = bfi + 1
+                    # ...and slide the matching CHIP hit boxes (pointer-only, never
+                    # painted) by the same shift, so a centred nav pill's clickable
+                    # box tracks its painted box instead of staying at the pen left.
+                    lbi: int32 = 0
+                    while lbi < n_lnkboxes:
+                        if lnkbox_inlb[lbi] != 0 and \
+                           cast[uint64](lnkbox_top[lbi]) == r:
+                            lnkbox_lx[lbi] = lnkbox_lx[lbi] + shift
+                            lnkbox_rx[lbi] = lnkbox_rx[lbi] + shift
+                        lbi = lbi + 1
         r = r + 1
 
 

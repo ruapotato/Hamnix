@@ -1960,6 +1960,13 @@ def _handle_tag(ts: uint64, te: uint64):
                 if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("a")) != 0:
                     g_link = _capture_href(ne, te)
                     g_link_rgb = _own_color(ne, te)
+                    # POINTER HIT: remember that this open block box IS an
+                    # anchor, so its close registers the whole padded box as a
+                    # clickable rect (Chrome's hit area for a blockified <a>) —
+                    # not just the glyph run the text-segment scan covers.
+                    aidx: int32 = box_sp - 1
+                    if aidx >= 0:
+                        box_link_stack[aidx] = g_link
                 # RELATIVE: stays in flow; register its run + a positioning
                 # context so absolute descendants resolve against it.
                 if fpos == 1:

@@ -1546,6 +1546,18 @@ bash scripts/test_hambrowse_searchbox_host.sh
 # resolves to that text field, typing appends to its DOM value and renders inside
 # the box, and a blank-area click focuses nothing. Also compiles native hambrowse.
 bash scripts/test_hambrowse_inputfocus_host.sh
+# scripts/test_hambrowse_hitcoord_host.sh: COORDINATE-driven pointer gate — the
+# one thing every other interaction gate misses, because they all resolve their
+# element BY ID. Reads the PAINTED pixels out of the rendered PPM (inline link
+# glyphs by their marker ink, box links by a unique flat background) and clicks
+# THOSE coordinates through the real clickxy -> htmlpage_hit_link ->
+# he_link_evt_index chain, on fixtures with body margins, block padding, nesting,
+# centred text, a padded block <a> card and padded (incl. centred) inline-block
+# nav pills. Asserts every painted pixel of an anchor — its padding included, as
+# in Chrome — is live and nothing beyond it is, with a chromium
+# getBoundingClientRect + elementFromPoint cross-check that a padded anchor's hit
+# area really is box-wide, not text-wide.
+bash scripts/test_hambrowse_hitcoord_host.sh
 # HTML FORMS (W3C): form.submit() GET-serializes text/checkbox/radio/select into
 # an action?k=v query + cancelable/bubbling submit event + input/textarea value
 # get/set (formsubmit); and method=POST request-body serialization

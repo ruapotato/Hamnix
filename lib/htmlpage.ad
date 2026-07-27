@@ -32,6 +32,8 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     he_n_bfills, he_bfill_lx, he_bfill_rx, he_bfill_top, he_bfill_bot, \
     he_bfill_rgb, he_bfill_z, he_bfill_radius, he_bfill_filter, \
     he_bfill_padt, he_bfill_padb, he_bfill_bord, he_page_bg, \
+    he_n_lnkboxes, he_lnkbox_lid, he_lnkbox_lx, he_lnkbox_rx, \
+    he_lnkbox_top, he_lnkbox_bot, he_lnkbox_padt, he_lnkbox_padb, \
     he_filter_is_list, he_filter_list_len, he_filter_list_at, \
     he_set_measure_hook, he_clear_measure_hook, he_meas_face_get, \
     he_meas_bold_get, he_meas_px_get, he_meas_txt_get, he_meas_len_get, \
@@ -1625,7 +1627,95 @@ def htmlpage_render() -> int32:
 
     _hpg_doc_w = canvas_w
     _hpg_doc_h = total_h
+    _hpg_build_link_rects()
     return total_h
+
+
+# ---- clickable rect of a BOX-shaped link ----------------------------
+# A block / inline-block <a> — a nav pill, a card, a sidebar entry, a CTA button
+# — is clickable over its WHOLE border box in Chrome. The engine records those
+# boxes in its link-box registry (lib/web/layout/box.ad); here we resolve them
+# into painted PIXEL rects exactly as the fill pass resolves a background fill
+# (rows -> row_top/row_h, plus the vertical padding the rows do not span), and
+# then UNION each with the painted glyph runs of the same link. The union is the
+# point: the clickable rect is precisely "everything this anchor painted", so it
+# can never drift from what the user sees.
+HPG_MAX_LNKB: uint64 = 256
+lb_lid: Array[256, int32]
+lb_x0:  Array[256, int32]
+lb_x1:  Array[256, int32]
+lb_y0:  Array[256, int32]
+lb_y1:  Array[256, int32]
+n_lb:   int32 = 0
+
+
+def _hpg_build_link_rects():
+    n_lb = 0
+    nlb: int32 = he_n_lnkboxes()
+    nseg: uint64 = he_n_segs()
+    if nseg > HPG_MAX_SEGS:
+        nseg = HPG_MAX_SEGS
+    b: int32 = 0
+    while b < nlb and cast[uint64](n_lb) < HPG_MAX_LNKB:
+        bt: int32 = he_lnkbox_top(b)
+        bb: int32 = he_lnkbox_bot(b)
+        if bt >= 0 and bb > bt and cast[uint64](bb - 1) < HPG_MAX_ROWS:
+            x0: int32 = he_lnkbox_lx(b)
+            if x0 < 0:
+                x0 = 0
+            x1: int32 = he_lnkbox_rx(b)
+            y0: int32 = row_top[cast[uint64](bt)] - he_lnkbox_padt(b)
+            if y0 < 0:
+                y0 = 0
+            y1: int32 = row_top[cast[uint64](bb - 1)] + row_h[cast[uint64](bb - 1)] \
+                        + he_lnkbox_padb(b)
+            # Union with this anchor's painted runs on the rows it spans: an
+            # inline chip's own text strip can paint a few px outside the chip
+            # box, and those pixels are part of the link the user sees.
+            lid: int32 = he_lnkbox_lid(b)
+            s: uint64 = 0
+            while s < nseg:
+                if he_seg_link(s) == lid and seg_px_x1[s] > seg_px_x0[s]:
+                    sr: int32 = he_seg_line(s)
+                    if sr >= bt and sr < bb:
+                        if seg_px_x0[s] < x0:
+                            x0 = seg_px_x0[s]
+                        if seg_px_x1[s] > x1:
+                            x1 = seg_px_x1[s]
+                s = s + 1
+            if x1 > x0 and y1 > y0:
+                lb_lid[cast[uint64](n_lb)] = lid
+                lb_x0[cast[uint64](n_lb)]  = x0
+                lb_x1[cast[uint64](n_lb)]  = x1
+                lb_y0[cast[uint64](n_lb)]  = y0
+                lb_y1[cast[uint64](n_lb)]  = y1
+                n_lb = n_lb + 1
+        b = b + 1
+
+
+# Read-only accessors for the resolved link boxes (host gate geometry dump).
+def htmlpage_n_linkboxes() -> int32:
+    return n_lb
+
+
+def htmlpage_linkbox_lid(i: int32) -> int32:
+    return lb_lid[i]
+
+
+def htmlpage_linkbox_x0(i: int32) -> int32:
+    return lb_x0[i]
+
+
+def htmlpage_linkbox_x1(i: int32) -> int32:
+    return lb_x1[i]
+
+
+def htmlpage_linkbox_y0(i: int32) -> int32:
+    return lb_y0[i]
+
+
+def htmlpage_linkbox_y1(i: int32) -> int32:
+    return lb_y1[i]
 
 
 # Map a DOCUMENT-space pixel point (doc_x, doc_y) to the engine link id of the
@@ -1649,4 +1739,21 @@ def htmlpage_hit_link(doc_x: int32, doc_y: int32) -> int32:
                     if doc_y >= yt and doc_y < yb:
                         return lid
         s = s + 1
-    return -1
+    # FALLBACK: the anchor's BOX (see _hpg_build_link_rects). Consulted only
+    # after every painted text segment missed, so the innermost/glyph-run hit
+    # always wins and no click that already resolved changes its answer — the
+    # fix is purely additive. Among overlapping anchor boxes the SMALLEST wins
+    # (a pill nested in a block <a> card resolves to the pill, as in Chrome).
+    best: int32 = -1
+    besta: int32 = 0
+    b2: int32 = 0
+    while b2 < n_lb:
+        if doc_x >= lb_x0[cast[uint64](b2)] and doc_x < lb_x1[cast[uint64](b2)] and \
+           doc_y >= lb_y0[cast[uint64](b2)] and doc_y < lb_y1[cast[uint64](b2)]:
+            ar: int32 = (lb_x1[cast[uint64](b2)] - lb_x0[cast[uint64](b2)]) * \
+                        (lb_y1[cast[uint64](b2)] - lb_y0[cast[uint64](b2)])
+            if best < 0 or ar < besta:
+                best = lb_lid[cast[uint64](b2)]
+                besta = ar
+        b2 = b2 + 1
+    return best

@@ -84,7 +84,8 @@ from lib.browserwin import browserwin_paint, browserwin_addr_caret_at, \
     browserwin_set_menu_open, browserwin_menu_open, browserwin_menu_item_at, \
     browserwin_set_tabs, browserwin_set_tab_title, browserwin_set_devtools, \
     browserwin_set_zoom, browserwin_tab_hit, browserwin_tab_close_hit, \
-    browserwin_ntabs, browserwin_active_tab, browserwin_newtab_x
+    browserwin_ntabs, browserwin_active_tab, browserwin_newtab_x, \
+    browserwin_devtools_h
 from lib.searchengines import se_current, se_set_current, se_cycle, \
     se_prefix_ptr, se_prefix_len
 from lib.adblock import adblock_enabled, adblock_toggle, adblock_should_block, \
@@ -1538,7 +1539,11 @@ def _focus_field(el: int32):
 # proportional per-segment extents htmlpage recorded (window x maps directly to
 # doc x; doc y adds the scroll offset).
 def _hit_link(x: int32, y: int32) -> int32:
-    if y < CONTENT_Y or y >= bh - STATUS_H:
+    # The content viewport ends ABOVE the docked dev-tools panel (browserwin
+    # paints the page into `bh - CONTENT_Y - STATUS_H - devtools_h`). Without
+    # subtracting it, a click on the Elements/Console panel was still mapped into
+    # document space and could fire a link that is nowhere near the pointer.
+    if y < CONTENT_Y or y >= bh - STATUS_H - browserwin_devtools_h(bh):
         return -1
     doc_y: int32 = scroll_px + (y - CONTENT_Y)
     return htmlpage_hit_link(x, doc_y)

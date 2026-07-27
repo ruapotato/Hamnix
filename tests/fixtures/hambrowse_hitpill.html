@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- Coordinate hit-test fixture: the INLINE-BLOCK link — padded nav pills / CTA
+     badges, the other dominant clickable shape on real sites. Chrome's hit area
+     is the whole chip box, padding included; the engine used to resolve only the
+     chip's glyph run, leaving the pill's visible padding dead.
+
+     The second row is CENTRED: a centred chip's background is slid by the
+     post-layout text-align pass, so its hit box must be slid by the same shift
+     or it would be stranded at the pen's left edge — a coordinate regression no
+     id-driven gate can see. Unique flat background colours let the gate recover
+     each PAINTED chip rect from the PPM. -->
+<html>
+<head>
+<style>
+  body { margin-left: 40px; margin-top: 0; }
+  a.p1 { display: inline-block; padding: 10px 26px; background: #c8dcf0; }
+  a.p2 { display: inline-block; padding: 10px 26px; background: #f0d2c8; }
+  a.p3 { display: inline-block; padding: 10px 22px; background: #d2f0c8; }
+  .ctr { text-align: center; }
+</style>
+</head>
+<body>
+<nav><a class="p1" href="/pill-one">PILLONE</a><a class="p2" href="/pill-two">PILLTWO</a></nav>
+<p class="ctr"><a class="p3" href="/pill-three">PILLTHREE</a></p>
+</body>
+</html>

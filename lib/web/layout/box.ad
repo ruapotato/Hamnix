@@ -280,6 +280,66 @@ bfill_inlb: Array[256, uint8]
 bfill_bord: Array[256, int32]
 n_bfills:   int32 = 0
 
+# ---- LINK BOX registry (POINTER HIT-TEST ONLY — never painted) -------
+# The coordinate hit-test (htmlpage_hit_link) resolves a click by scanning the
+# painted TEXT SEGMENTS, so an anchor's clickable area is exactly its glyph run.
+# That is right for an ordinary inline <a> (verified: the hit rect and the
+# painted ink agree to the pixel across body margins, block padding, nesting and
+# centred text) but WRONG for the dominant real-page link shape: a BLOCK /
+# INLINE-BLOCK <a> with padding — a nav pill, a card, a sidebar entry, a CTA
+# button. Chrome's hit area for those is the anchor's whole border box
+# (document.elementFromPoint inside the padding returns the <a>), so a user
+# clicking the visible padding, or anywhere in the painted card away from the
+# words, hit NOTHING here while the same click navigates in Chrome. With
+# `padding: … 30px` the dead strip is exactly the 30px left of the glyphs, i.e.
+# the live area LOOKS shifted ~30px right of the box the user sees.
+#
+# This registry records the border-box rect of every blockified / inline-block
+# <a> so the hit-test can fall back to it when no text segment matched. It is
+# consulted ONLY by htmlpage_hit_link — nothing paints from it, and the segment
+# scan still runs first (innermost/glyph hit wins), so no click that already
+# resolved changes its answer and no pixel changes; the fix is purely ADDITIVE.
+# lx/rx are pixel columns, top/bot are row indices [top, bot) — the same
+# convention as the bfill registry, so htmlpage maps them through row_top[].
+LNKBOX_MAX: int32 = 256
+lnkbox_lid: Array[256, int32]
+lnkbox_lx:  Array[256, int32]
+lnkbox_rx:  Array[256, int32]
+lnkbox_top: Array[256, int32]
+lnkbox_bot: Array[256, int32]
+# Vertical padding (px) the box extends ABOVE its first row / BELOW its last —
+# the same offsets bfill_padt/padb carry for the paint, since a padded chip's
+# rows only span its text. Without them the live area would be the text row
+# only, leaving the pill's visible top/bottom padding dead.
+lnkbox_padt: Array[256, int32]
+lnkbox_padb: Array[256, int32]
+# 1 = an inline-block CHIP's box: the post-layout text-align pass slides it by
+# its row's centre/right shift exactly as it slides the chip's bfill, so a
+# CENTRED nav pill's clickable box follows its painted box.
+lnkbox_inlb: Array[256, uint8]
+n_lnkboxes: int32 = 0
+
+
+# Record one anchor box for the pointer hit-test. Degenerate rects are ignored.
+def _reg_lnkbox(lid: int32, lx: int32, rx: int32, top: int32, bot: int32,
+                padt: int32, padb: int32, inlb: int32):
+    if lid < 0 or n_lnkboxes >= LNKBOX_MAX:
+        return
+    if rx <= lx or bot <= top or top < 0:
+        return
+    if lx < 0:
+        lx = 0
+    lnkbox_lid[n_lnkboxes] = lid
+    lnkbox_lx[n_lnkboxes]  = lx
+    lnkbox_rx[n_lnkboxes]  = rx
+    lnkbox_top[n_lnkboxes] = top
+    lnkbox_bot[n_lnkboxes] = bot
+    lnkbox_padt[n_lnkboxes] = padt
+    lnkbox_padb[n_lnkboxes] = padb
+    lnkbox_inlb[n_lnkboxes] = cast[uint8](inlb)
+    n_lnkboxes = n_lnkboxes + 1
+
+
 # ---- ELEMENT BOX registry (CSSOM / layout-read geometry) -------------
 # The DOM's layout-read surface (getBoundingClientRect / offsetWidth / offsetTop
 # / getComputedStyle) needs an element's REAL laid-out CSS box. Before this
@@ -1033,6 +1093,10 @@ box_txtovf_stack: Array[64, int32] # text-overflow (0 unset/clip .. 2 ellipsis)
 box_seg0_stack: Array[64, int32]   # n_segs at open (first descendant segment)
 box_bf0_stack:  Array[64, int32]   # n_bfills at open (first descendant fill)
 box_bx0_stack:  Array[64, int32]   # n_bboxes at open (first descendant border)
+# Link id of a blockified <a> whose box this is (-1 = not an anchor box). The
+# close registers the box rect in the link-box hit registry so a click anywhere
+# in the anchor's padded box resolves to it, as in Chrome.
+box_link_stack: Array[64, int32]
 
 # ---- CSS inline-block (inline-level box in the line grid) --------------------
 # `display:inline-block` chips/badges/buttons/nav-pills flow INLINE on a text
@@ -2566,6 +2630,7 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         g_ebox_skx = g_ebox_skx + ebins - ebord
         g_ebox_sky = g_ebox_sky + ebake + ebord
         box_ebox_stack[box_sp] = eslot
+        box_link_stack[box_sp] = -1
         box_sp = box_sp + 1
     # ROUND-3 text-indent: arm the first-line inset for this block (inline over
     # sheet). Consumed once by the first word on the opening line.
@@ -2714,8 +2779,10 @@ def _block_box_close():
     bf0: int32 = 0
     bx0: int32 = 0
     was_flexitem: int32 = 0
+    lnk_id: int32 = -1
     if box_sp > 0:
         box_sp = box_sp - 1
+        lnk_id = box_link_stack[box_sp]
         botg = box_botg_stack[box_sp]
         padx = box_padx_stack[box_sp]
         pady = box_pady_stack[box_sp]
@@ -2820,6 +2887,40 @@ def _block_box_close():
             box_bot_row = box_bot_row + 1
         if box_bot_row > srow and n_bboxes < BBOX_MAX:
             bake_pad = 1
+    # POINTER HIT (never painted): a blockified <a> registers its WHOLE border
+    # box in the link-box registry, so a click in the anchor's padding — or
+    # anywhere in the painted card away from the words — resolves to the link,
+    # as in Chrome. The rect MIRRORS the background-fill rect computed just below
+    # (the padding box for a borderless box, the char-grid border rectangle
+    # otherwise, tight-right for a float) so the live area is exactly the box the
+    # user sees; it is registered independently of the fill so a padded anchor
+    # with NO background is clickable too. No pixel is written from this.
+    if lnk_id >= 0:
+        # Flush the pen ONLY when one of the paths below would have flushed it
+        # anyway (the fill, the baked padding, or the border's soft newline).
+        # _word_flush -> _emit_word can advance the line, so flushing where the
+        # original code did not would be a real LAYOUT change; this keeps the
+        # flush set byte-identical. An unstyled block <a> (no bg, no border, no
+        # padding) is the only case left unflushed, and its box is exactly its
+        # text rows — which the glyph-segment scan already covers.
+        if bgc >= 0 or bord != 0 or (bordps == 0 and pady > 0):
+            _word_flush()
+        lkbot: int32 = cast[int32](cur_row)
+        if row_dirty != 0:
+            lkbot = lkbot + 1
+        lkx0: int32 = lx
+        lkx1: int32 = rx + CELL_W
+        lkyp: int32 = 0
+        if bord == 0 and bordps == 0:
+            lkxp: int32 = padx / 2
+            lkx0 = lx + CELL_W - lkxp
+            if box_float_stack[box_sp] != 0:
+                lkx1 = rx + lkxp
+            else:
+                lkx1 = rx + CELL_W + lkxp
+            if bake_pad == 0:
+                lkyp = pady / 2
+        _reg_lnkbox(lnk_id, lkx0, lkx1, srow, lkbot, lkyp, lkyp, 0)
     # element background: paint the WHOLE box rectangle (not just behind text).
     # Flush the pen so the box's last content row is counted, then register a
     # fill spanning [srow, bottom) at the box's left/right columns.
@@ -5454,6 +5555,12 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
     if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("a")) != 0:
         g_link = _capture_href(ne, te)
         g_link_rgb = _own_color(ne, te)
+        # POINTER HIT (never painted): an inline-block <a> is a nav pill / CTA /
+        # badge — Chrome's hit area is the whole chip box, so register it. The
+        # rect is the chip's own fill rect; registering it independently of
+        # chip_draw means a padded pill with NO background is clickable too.
+        _reg_lnkbox(g_link, startx, startx + boxw, row0, row0 + fillrows, \
+                    chip_padt, chip_padb, 1)
         _recompute_style()
     pen_x = startx + eff_padx
     need_space = 0

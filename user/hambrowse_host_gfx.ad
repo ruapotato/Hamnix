@@ -46,6 +46,8 @@ from lib.htmlpaint import htmlpaint_load_face, htmlpaint_width, \
     htmlpaint_target_rgba, htmlpaint_target_internal, htmlpaint_set_shear, \
     htmlpaint_text_ttf
 from lib.htmlpage import htmlpage_render, htmlpage_row_top, \
+    htmlpage_n_linkboxes, htmlpage_linkbox_lid, htmlpage_linkbox_x0, \
+    htmlpage_linkbox_x1, htmlpage_linkbox_y0, htmlpage_linkbox_y1, \
     htmlpage_row_height, htmlpage_row_baseline, htmlpage_install_reflow, \
     htmlpage_seg_px_x0, htmlpage_seg_px_x1, htmlpage_n_borders, \
     htmlpage_border_x0, \
@@ -807,6 +809,26 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                     _o_ch(10)
                     _o_flush()
                 fsi = fsi + 1
+            # Dump the resolved LINK-BOX hit rects (blockified / inline-block
+            # <a> boxes, unioned with their painted runs) so a gate can prove the
+            # clickable box matches the PAINTED box of a nav pill / card, not
+            # just its glyph run.
+            lbn: int32 = htmlpage_n_linkboxes()
+            lbi: int32 = 0
+            while lbi < lbn:
+                _o_str(cast[Ptr[uint8]]("LNKBOX lid "))
+                _o_dec(cast[int64](htmlpage_linkbox_lid(lbi)))
+                _o_str(cast[Ptr[uint8]](" x0 "))
+                _o_dec(cast[int64](htmlpage_linkbox_x0(lbi)))
+                _o_str(cast[Ptr[uint8]](" x1 "))
+                _o_dec(cast[int64](htmlpage_linkbox_x1(lbi)))
+                _o_str(cast[Ptr[uint8]](" y0 "))
+                _o_dec(cast[int64](htmlpage_linkbox_y0(lbi)))
+                _o_str(cast[Ptr[uint8]](" y1 "))
+                _o_dec(cast[int64](htmlpage_linkbox_y1(lbi)))
+                _o_ch(10)
+                _o_flush()
+                lbi = lbi + 1
             cxx: int32 = _atoi(cast[Ptr[uint8]](argv[5]))
             cyy: int32 = _atoi(cast[Ptr[uint8]](argv[6]))
             lid: int32 = htmlpage_hit_link(cxx, cyy)

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- Coordinate hit-test fixture: the BLOCK-shaped link — a padded `display:block`
+     <a> card / sidebar entry, one of the dominant clickable shapes on real sites.
+     Chrome's hit area for these is the anchor's whole border box
+     (document.elementFromPoint inside the padding returns the <a>); the engine
+     used to resolve a click only against the anchor's painted GLYPH RUN, so the
+     visible padding was dead and — with `padding: … 30px` — the live area looked
+     shifted ~30px right of the card the user sees.
+
+     Each anchor box carries a UNIQUE flat background colour so the gate can
+     recover its PAINTED rect from the PPM and click the painted padding: an
+     oracle independent of the engine's own geometry. -->
+<html>
+<head>
+<style>
+  body { margin-left: 48px; margin-top: 0; }
+  a.c1 { display: block; width: 300px; padding: 14px 30px; background: #c8dcf0; }
+  a.c2 { display: block; width: 220px; padding: 12px 24px; background: #f0d2c8; }
+  a.c3 { display: block; width: 220px; padding: 12px 24px; background: #d2f0c8; }
+</style>
+</head>
+<body>
+<a class="c1" href="/card-one">CARDONE</a>
+<a class="c2" href="/card-two">CARDTWO</a>
+<a class="c3" href="/card-three">CARDTHREE</a>
+</body>
+</html>

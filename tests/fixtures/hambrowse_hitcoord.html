@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!-- Coordinate hit-test fixture: ORDINARY inline <a> links on a page with a body
+     margin, block padding, nesting and centred content. Every browser
+     interaction gate before this one resolved its element BY ID, so a clickable
+     rect that drifted away from the painted glyphs was invisible to all of them.
+     Each link is painted in a saturated MAGENTA that nothing else on the page
+     uses, so scripts/test_hambrowse_hitcoord_host.sh can locate the PAINTED ink
+     straight out of the rendered PPM and aim its clicks at those coordinates.
+     (The UA link blue is unusable as a marker: subpixel antialiasing gives
+     ordinary black body text strongly blue-dominant fringe pixels.) -->
+<html>
+<head>
+<style>
+  body { margin-left: 72px; margin-top: 0; }
+  a { color: #ff00ff; }
+  .pad { padding-left: 40px; }
+  .nest { margin-left: 30px; padding-left: 24px; }
+  .ctr { text-align: center; }
+</style>
+</head>
+<body>
+<p>lead <a href="/one">ALPHALINK</a> trail</p>
+<div class="pad"><p>pad <a href="/two">BETALINK</a> trail</p></div>
+<div class="nest"><div><p>deep <a href="/three">GAMMALINK</a> t</p></div></div>
+<p class="ctr">c <a href="/four">DELTALINK</a> c</p>
+<p>t1</p>
+<p>t2</p>
+<p>far <a href="/five">EPSILONLNK</a> end</p>
+</body>
+</html>
