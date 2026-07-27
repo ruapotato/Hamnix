@@ -270,32 +270,42 @@ def apply_config(tag, conf, label):
     # stops reaching the serial console at the rl5 desktop flip, so everything
     # it prints after startup is invisible here. The framebuffer is the only
     # honest signal, so we poll it.
-    send("printf '%s' > /tmp/hamnix-panel.conf" % conf)
-    send("echo %s" % tag)
-    if not wait_for(tag, 60):
-        print("[panel_config] driver: shell never acked %s" % tag, file=sys.stderr)
+    # The write itself is RETRIED, because delivering it is not the thing
+    # under test and it is not reliable: a guest whose /tmp/hamnix-panel.conf
+    # does not exist yet has been seen swallow the first `>` redirect
+    # entirely — printf ran, the file did not appear, the desktop never
+    # changed, and the run reported a rendering failure that was really a
+    # dropped keystroke. Re-sending an IDENTICAL config cannot manufacture a
+    # pass: if the panel renders it wrongly it renders it wrongly every time.
     path = os.path.join(outdir, label + ".ppm")
     base = settled[0]
-    prev = None
-    changed = base is None
-    deadline = time.time() + 60
-    while True:
-        screendump(label)          # ~2.2 s per call: paces the loop for us
-        try: cur = load_ppm(path)
-        except Exception: cur = None
-        if cur is not None:
+    cur = None
+    for attempt in range(3):
+        atag = "%s_%d" % (tag, attempt)
+        send("printf '%s' > /tmp/hamnix-panel.conf" % conf)
+        send("echo %s" % atag)
+        if not wait_for(atag, 60):
+            print("[panel_config] driver: shell never acked %s" % atag,
+                  file=sys.stderr)
+        prev = None
+        changed = base is None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            screendump(label)      # ~2.2 s per call: paces the loop for us
+            try: cur = load_ppm(path)
+            except Exception: cur = None
+            if cur is None: continue
             if not changed and band_delta(base, cur) > 1500:
                 changed = True
             if changed and prev is not None and band_delta(prev, cur) < 400:
                 settled[0] = cur
                 return
             prev = cur
-        if time.time() > deadline:
-            print("[panel_config] driver: desktop never settled after %s "
-                  "(changed=%s) — asserting on the last frame anyway"
-                  % (tag, changed), file=sys.stderr)
-            settled[0] = cur
-            return
+        print("[panel_config] driver: desktop did not change+settle after %s "
+              "(changed=%s); re-sending" % (atag, changed), file=sys.stderr)
+    print("[panel_config] driver: %s never took effect after 3 attempts — "
+          "asserting on the last frame anyway" % tag, file=sys.stderr)
+    settled[0] = cur
 
 rc = 2
 try:
