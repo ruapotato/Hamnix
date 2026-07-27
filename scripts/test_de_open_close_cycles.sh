@@ -43,13 +43,16 @@ if [ -z "$OVMF_FD" ]; then
 fi
 [ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "[occ] SKIP-RUNTIME: no OVMF" >&2; exit 0; }
 command -v socat >/dev/null 2>&1 || { echo "[occ] SKIP-RUNTIME: no socat" >&2; exit 0; }
-[ -f "$INSTALLER_IMG" ] || { echo "[occ] SKIP-RUNTIME: $INSTALLER_IMG absent" >&2; exit 0; }
-# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
-# build. Booting a stale one silently is the 2026-07-24 false-negative
-# class — be loud about it. shellcheck source=_installer_img.sh
+# STALE-IMAGE GUARD: this gate BOOTS a pre-existing image it did not build.
+# A WARNING is not enough — a stale image false-GREENs the very regression
+# this gate exists to catch (bit us 2026-07-01, 07-11, 07-27). ensure_installer_img
+# REBUILDS when the image is missing or older than any tracked build input;
+# HAMNIX_SKIP_BUILD=1 downgrades to a LOUD stale warning, never a silent pass.
+# shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-installer_img_warn_if_stale "$INSTALLER_IMG" "[de_open_close_cycles]"
+ensure_installer_img "$INSTALLER_IMG" "[de_open_close_cycles]" \
+    || { echo "[occ] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
 
 mkdir -p "$OUT_DIR"
 echo "[occ] output dir: $OUT_DIR"

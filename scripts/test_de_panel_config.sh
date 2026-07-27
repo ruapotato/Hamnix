@@ -134,12 +134,15 @@ run_live() {
     fi
     [ -z "$OVMF_FD" ] && { echo "[panel_config] SKIP live: no OVMF" >&2; return 0; }
     command -v socat >/dev/null 2>&1 || { echo "[panel_config] SKIP live: no socat" >&2; return 0; }
-    [ -s "$INSTALLER_IMG" ] || { echo "[panel_config] SKIP live: no image" >&2; return 0; }
-    # Stale-artifact guard: this live sub-gate boots a pre-existing image it
-    # did not build (2026-07-24 false-negative class).
+    # STALE-IMAGE GUARD: this live sub-gate BOOTS an image it did not build.
+    # A WARNING is not enough — a stale image false-GREENs the very panel
+    # regression this gate exists to catch. ensure_installer_img REBUILDS when
+    # the image is missing or older than any tracked build input;
+    # HAMNIX_SKIP_BUILD=1 downgrades to a LOUD warning, never a silent pass.
     # shellcheck source=_installer_img.sh
     source "$PROJ_ROOT/scripts/_installer_img.sh"
-    installer_img_warn_if_stale "$INSTALLER_IMG" "[de_panel_config]"
+    ensure_installer_img "$INSTALLER_IMG" "[de_panel_config]" \
+        || { echo "[panel_config] SKIP live: no usable $INSTALLER_IMG" >&2; return 0; }
 
     OUT_DIR=$(mktemp -d --tmpdir hamnix-pcfg.XXXXXX)
     OVMF_RW=$(mktemp --tmpdir hamnix-pcfg.ovmf.XXXXXX.fd)

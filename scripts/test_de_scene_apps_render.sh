@@ -25,13 +25,16 @@ OVMF_FD="${OVMF_FD:-/usr/share/OVMF/OVMF_CODE.fd}"
 [ -e /dev/kvm ] || { echo "[apps_render] SKIP: /dev/kvm absent" >&2; exit 0; }
 [ -f "$OVMF_FD" ] || { echo "[apps_render] SKIP: OVMF firmware not found" >&2; exit 0; }
 command -v socat >/dev/null 2>&1 || { echo "[apps_render] SKIP: socat required" >&2; exit 0; }
-[ -f "$INSTALLER_IMG" ] || { echo "[apps_render] SKIP: $INSTALLER_IMG absent" >&2; exit 0; }
-# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
-# build. Booting a stale one silently is the 2026-07-24 false-negative
-# class — be loud about it. shellcheck source=_installer_img.sh
+# STALE-IMAGE GUARD: this gate BOOTS a pre-existing image it did not build.
+# A WARNING is not enough — a stale image false-GREENs the very regression
+# this gate exists to catch (bit us 2026-07-01, 07-11, 07-27). ensure_installer_img
+# REBUILDS when the image is missing or older than any tracked build input;
+# HAMNIX_SKIP_BUILD=1 downgrades to a LOUD stale warning, never a silent pass.
+# shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-installer_img_warn_if_stale "$INSTALLER_IMG" "[de_scene_apps_render]"
+ensure_installer_img "$INSTALLER_IMG" "[de_scene_apps_render]" \
+    || { echo "[apps_render] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
 
 echo "[apps_render] output dir: $OUT_DIR"
 OVMF_RW=$(mktemp --tmpdir hamnix-ar.ovmf.XXXXXX.fd)

@@ -146,6 +146,66 @@ if [ -n "$UNGUARDED" ]; then
     for f in $UNGUARDED; do echo "$TAG   $f" >&2; done
 fi
 
+echo "$TAG PART 2b: WARN-ONLY is not a guard for a gate that BOOTS the image"
+# The hole this closes (2026-07-27): PART 2 above accepts
+# installer_img_warn_if_stale as "guarded". But that helper ALWAYS returns 0
+# and rebuilds NOTHING — the gate still boots the stale image and still
+# prints PASS or FAIL. A loud warning in a 4000-line serial log is not a
+# guard; it is a footnote nobody reads. Counted on 7240d3b2, 13 gates that
+# BOOT build/hamnix-installer.img under QEMU were in exactly this state, and
+# one of them (test_de_wallpaper_themes.sh) had no guard at all and produced
+# a false FAIL that cost an hour that morning. The false GREEN is worse: a
+# stale image that predates a regression silently PASSES the gate written to
+# catch it.
+#
+# RULE: a test_*.sh that launches QEMU against $INSTALLER_IMG must either
+#   (a) call ensure_installer_img (rebuild-when-stale), or
+#   (b) invoke build_installer_img.sh itself (the ENABLE_*_SELFTEST family,
+#       which needs gate-specific build env), optionally alongside
+#       installer_img_needs_build / warn_if_stale.
+# warn_if_stale ALONE is a FAIL. Gates that never boot the image (size
+# checks, -kernel fast paths) are exempt: they cannot be fooled by a stale
+# boot.
+WARNONLY=$(python3 - <<'PY'
+import glob, re
+bad = []
+for f in sorted(glob.glob('scripts/test_*.sh')):
+    src = open(f, errors='replace').read()
+    code = [l for l in src.split('\n') if not l.lstrip().startswith('#')]
+    # Only the real build artifact path counts — not an mktemp TEMPLATE that
+    # merely happens to be named hamnix-installer-stageB-raw.XXXXXX.img
+    # (scripts/test_installer_full.sh), and not a defensive `rm -f` of a
+    # stale image in a gate that boots via -kernel
+    # (scripts/test_apt_install_e2e.sh). Both are exempt: neither BOOTS it.
+    uses = [l for l in code
+            if re.search(r'build/hamnix-installer[\w.-]*\.img', l)
+            and not re.match(r'\s*rm\b', l)]
+    if not uses:
+        continue
+    code = '\n'.join(code)
+    if 'qemu-system' not in code:            # never boots it — exempt
+        continue
+    if 'ensure_installer_img' in code:
+        continue
+    if re.search(r'(bash|python3)\s+\S*build_installer_img\.sh', code):
+        continue
+    bad.append(f)
+print('\n'.join(bad))
+PY
+)
+if [ -n "$WARNONLY" ]; then
+    echo "$TAG FAIL: gates that BOOT the installer image with no rebuild guard:" >&2
+    echo "$WARNONLY" | sed "s|^|$TAG   |" >&2
+    echo "$TAG   These boot whatever image happens to be on disk. Fix:" >&2
+    echo "$TAG     source \"\$PROJ_ROOT/scripts/_installer_img.sh\"" >&2
+    echo "$TAG     ensure_installer_img \"\$INSTALLER_IMG\" \"[tag]\" \\\\" >&2
+    echo "$TAG         || { echo \"[tag] SKIP: no usable image\" >&2; exit 0; }" >&2
+    echo "$TAG   Do NOT satisfy this by deleting the QEMU boot or exiting 0." >&2
+    FAILED=1
+else
+    echo "$TAG   ok  every image-booting gate rebuilds when the image is stale"
+fi
+
 echo "$TAG PART 3: assertion-altitude registry (a gate that asserts on"
 echo "$TAG         EMISSION or a DIRECTORY LISTING must name the gate that"
 echo "$TAG         asserts on the SHIPPED RESULT)"

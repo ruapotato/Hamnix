@@ -19,13 +19,16 @@ if [ -z "$OVMF_FD" ]; then
     [ -f "$c" ] && OVMF_FD="$c" && break; done
 fi
 [ -f "$OVMF_FD" ] || { echo "[note] SKIP-RUNTIME: no OVMF" >&2; exit 0; }
-[ -f "$INSTALLER_IMG" ] || { echo "[note] SKIP-RUNTIME: no image" >&2; exit 0; }
-# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
-# build. Booting a stale one silently is the 2026-07-24 false-negative
-# class — be loud about it. shellcheck source=_installer_img.sh
+# STALE-IMAGE GUARD: this gate BOOTS a pre-existing image it did not build.
+# A WARNING is not enough — a stale image false-GREENs the very regression
+# this gate exists to catch (bit us 2026-07-01, 07-11, 07-27). ensure_installer_img
+# REBUILDS when the image is missing or older than any tracked build input;
+# HAMNIX_SKIP_BUILD=1 downgrades to a LOUD stale warning, never a silent pass.
+# shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-installer_img_warn_if_stale "$INSTALLER_IMG" "[note_terminate]"
+ensure_installer_img "$INSTALLER_IMG" "[note_terminate]" \
+    || { echo "[note] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
 mkdir -p "$OUT_DIR"
 OVMF_RW=$(mktemp --tmpdir hamnix-note.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-note.img.XXXXXX.raw)

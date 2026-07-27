@@ -76,17 +76,17 @@ fi
 [ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] \
     || verdict_inconclusive "$TAG" "OVMF firmware not found."
 
-# The .img is NOT rebuilt when present (see the stale-installer-img QA
-# trap). Callers that changed kernel code must rebuild it themselves.
-[ -f "$INSTALLER_IMG" ] \
+# STALE-IMAGE GUARD. This gate used to boot whatever image was already there
+# and merely WARN when it predated the tree — but the overlay-dir regression
+# it exists to catch lives in the kernel, so a stale image false-GREENs it.
+# ensure_installer_img REBUILDS when the image is missing or older than any
+# tracked build input; HAMNIX_SKIP_BUILD=1 (the CI shard fast path, where an
+# earlier step already built the image) downgrades to a LOUD stale warning
+# rather than a silent pass. shellcheck source=_installer_img.sh
+source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
+ensure_installer_img "$INSTALLER_IMG" "[ls_overlay_dirs]" \
     || verdict_inconclusive "$TAG" \
          "$INSTALLER_IMG absent — run: bash scripts/build_installer_img.sh"
-# This gate deliberately boots whatever image is already there. That is only
-# safe if the reader is TOLD when that image predates the tree under test —
-# a silent stale boot is how the 2026-07-24 office-suite false negative
-# happened. shellcheck source=_installer_img.sh
-source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
-installer_img_warn_if_stale "$INSTALLER_IMG" "[ls_overlay_dirs]"
 
 OVMF_RW=$(mktemp --tmpdir hamnix-lsov.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-lsov.img.XXXXXX.raw)

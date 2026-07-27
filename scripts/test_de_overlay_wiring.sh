@@ -37,13 +37,16 @@ for c in convert pnmtopng ffmpeg; do command -v "$c" >/dev/null 2>&1 && { CONVER
 MON_DRIVER=""
 for c in socat nc; do command -v "$c" >/dev/null 2>&1 && { MON_DRIVER="$c"; break; }; done
 [ -z "$MON_DRIVER" ] && { echo "[overlay] SKIP: no socat/nc" >&2; exit 0; }
-[ -f "$INSTALLER_IMG" ] || { echo "[overlay] SKIP: $INSTALLER_IMG absent" >&2; exit 0; }
-# Stale-artifact guard: this gate BOOTS a pre-existing image it did not
-# build. Booting a stale one silently is the 2026-07-24 false-negative
-# class — be loud about it. shellcheck source=_installer_img.sh
+# STALE-IMAGE GUARD: this gate BOOTS a pre-existing image it did not build.
+# A WARNING is not enough — a stale image false-GREENs the very regression
+# this gate exists to catch (bit us 2026-07-01, 07-11, 07-27). ensure_installer_img
+# REBUILDS when the image is missing or older than any tracked build input;
+# HAMNIX_SKIP_BUILD=1 downgrades to a LOUD stale warning, never a silent pass.
+# shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-installer_img_warn_if_stale "$INSTALLER_IMG" "[de_overlay_wiring]"
+ensure_installer_img "$INSTALLER_IMG" "[de_overlay_wiring]" \
+    || { echo "[overlay] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
 
 OVMF_RW=$(mktemp --tmpdir hamnix-ow.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-ow.img.XXXXXX.raw)
