@@ -368,6 +368,14 @@ dom_ov_wd_len:   Array[8192, int32]
 dom_ov_cls_off:  Array[8192, int32]    # className
 dom_ov_cls_len:  Array[8192, int32]
 dom_ov_hide:     Array[8192, int32]    # 1 = display:none (drop the element)
+# DETACHED source elements. removeChild()/replaceChild() used to handle CREATED
+# children only, so `parent.removeChild(sourceEl)` was a silent no-op: the node
+# stayed on screen AND stayed in the parent's innerHTML. This is the real
+# "removed from the tree" bit, kept SEPARATE from dom_ov_hide because
+# `el.style.display='none'` hides an element that is still IN the tree — a
+# browser still serialises it into innerHTML. Persistent across _dom_readback
+# (which recomputes dom_ov_hide from scratch every call).
+dom_detached:    Array[8192, int32]    # 1 = removeChild()'d out of the tree
 dom_ovbuf:   Array[65536, uint8]
 dom_ov_len:  int32 = 0
 dom_n_overrides: int32 = 0           # count of elements with ANY override
@@ -389,6 +397,25 @@ he_click_links: int32 = 0           # native: wrap handler elements in #__evt_N 
 # he_dom_click_index() and the synthetic "#__evt_N" pointer-link wrap use this
 # one space, which is what lets a user click reach a JS-created element.
 CRE_IDX_BASE: int32 = 1000000
+
+# ---- live DOM SERIALISATION (innerHTML re-serialisation) --------------------
+# `el.innerHTML` used to be a slice of the ORIGINAL source, so every script
+# mutation was invisible to it (measured against chromium: appendChild,
+# textContent= and removeChild all read back the untouched markup). It is now
+# produced by the same _rewrite_range emitter that bakes mutations into the
+# rendered page — run over the element's own content span, in SERIALISATION
+# mode. The two modes differ in exactly three ways, so one emitter serves both:
+#   * ser mode never emits the native "#__evt_N" click-link wrappers (they are
+#     a hit-testing device, not page markup);
+#   * ser mode elides a node only when it is DETACHED (dom_detached), not when
+#     it is merely display:none — a browser still serialises a hidden element;
+#   * ser mode emits the JS-set `display` in the merged inline style, so a
+#     hidden element round-trips as <div style="display:none">.
+g_ser_mode: int32 = 0                 # 1 = emitting innerHTML, not the render
+# Mutation counter. Zero means no structural/attribute mutation has run yet, so
+# innerHTML is provably the source slice and takes the old (cheap, byte-exact)
+# path. Bumped by every DOM-mutating native entry point.
+g_dom_mutated: int32 = 0
 
 # rewritten source (only built when overrides exist)
 RW_CAP:  uint64 = 4194304
@@ -442,6 +469,255 @@ def _strip_comments():
     src_ptr = &cs_buf[0]
     src_len = w
     cs_done = 1
+    _insert_implied_tags()
+
+
+# ====================================================================
+# IMPLIED ELEMENTS — <html>, <head>, <body>, <tbody>
+# ====================================================================
+#
+# THE PROBLEM. This DOM is anchored to byte spans in the source: an element IS
+# a pair of offsets. An element the HTML5 tree construction algorithm INSERTS —
+# one with no start tag anywhere in the file — therefore had no way to exist,
+# and the element census came up short by exactly those nodes. Measured with
+# scripts/probe_realweb_dom.sh (document.getElementsByTagName("*").length),
+# ours vs chromium --headless --dump-dom:
+#
+#     cern_project   51 vs 53   — the file opens with <HEADER>, so <html> and
+#                                 <head> are both implied
+#     hackernews    805 vs 809  — four <table>s with no <tbody>
+#
+# THE DESIGN DECISION. The alternative was to give tx_/dom_ nodes an OPTIONAL
+# SYNTHESISED span (a negative tx_ns meaning "name lives in a side table"),
+# which touches every consumer of a name span, every registration path
+# (_dom_register_el reads the START TAG out of the source to build the JS
+# object) and every enumerator — and _dom_collect_selector, the thing that
+# actually answers getElementsByTagName, does not walk the tree index at all:
+# it re-scans the SOURCE for '<'. Under that architecture a span-less node is
+# invisible no matter how the tree index is extended.
+#
+# So instead of teaching the DOM to represent nodes the source does not
+# contain, this pass makes the SOURCE contain them: a normalisation pass that
+# inserts the implied start/end tags into the (already comment-stripped)
+# buffer before anything indexes it. Every downstream consumer — tree index,
+# selectors, traversal, innerHTML, layout — then sees ordinary source-anchored
+# elements with real spans, and needs no change whatsoever.
+#
+# RENDER NEUTRALITY. Byte-compared over the full 270-page corpus (layout dump
+# AND rendered PPM), before vs after: zero movers. <html>/<head>/<body>/<tbody>
+# carry no UA box of their own in this engine, so inserting them moves nothing.
+#
+# SCOPE (deliberately the four elements above, in the shapes real pages hit):
+#   * <html>  — inserted around the document (after any <!DOCTYPE>) when absent.
+#   * <head>  — inserted when absent, closing before the first element that is
+#               not head-only (title/meta/link/style/script/base/noscript),
+#               which is where the spec's "in head" insertion mode ends.
+#   * <body>  — inserted when absent, opening after </head> and closing before
+#               a trailing </html>.
+#   * <tbody> — wraps each maximal run of <tr> that is not already inside a
+#               thead/tbody/tfoot, per open <table> (a nesting stack keeps a
+#               nested table's rows with the nested table).
+# NOT modelled: <colgroup>, <option>-implied <select> repair, foster parenting.
+IM_CAP:  uint64 = 4194304
+im_buf:  Array[4194304, uint8]
+IM_TBL_MAX: int32 = 64
+im_tb_rg:   Array[64, int32]          # per open <table>: inside a row group?
+im_tb_open: Array[64, int32]          # per open <table>: did WE open a <tbody>?
+
+
+def _im_put(w: uint64, c: uint8) -> uint64:
+    if w < IM_CAP - 1:
+        im_buf[w] = c
+        return w + 1
+    return w
+
+
+def _im_puts(w: uint64, s: Ptr[uint8]) -> uint64:
+    i: int32 = 0
+    x: uint64 = w
+    while s[i] != 0:
+        x = _im_put(x, s[i])
+        i = i + 1
+    return x
+
+
+# Is the tag name at src[ts,ne) one the spec keeps in <head>? Used only to find
+# where an IMPLIED </head> goes; the close-tag form counts too (</title> must
+# not end the head).
+def _im_head_only(ts: uint64, ne: uint64) -> int32:
+    nl: uint64 = ne - ts
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("title")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("meta")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("link")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("style")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("script")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("base")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("noscript")) != 0:
+        return 1
+    return 0
+
+
+def _im_name_is(ts: uint64, ne: uint64, s: Ptr[uint8]) -> int32:
+    return _hx_name_eq(ts, ne - ts, s)
+
+
+def _insert_implied_tags():
+    if src_len == 0:
+        return
+    # ---- pass 1: what does the document already declare, and where would the
+    # implied </head> and </body> land?
+    has_html: int32 = 0
+    has_head: int32 = 0
+    has_body: int32 = 0
+    has_table: int32 = 0
+    dstart: uint64 = 0                                    # just past <!DOCTYPE>
+    hcut: uint64 = src_len                                # implied </head> here
+    headend: uint64 = 0                                   # past an EXPLICIT </head>
+    lasthtmlclose: uint64 = src_len                       # a trailing </html>
+    i: uint64 = 0
+    while i < src_len:
+        if src_ptr[i] == 60:
+            if i + 8 < src_len and src_ptr[i + 1] == 33:  # <!DOCTYPE ...>
+                j: uint64 = _hx_tag_end_p(src_ptr, src_len, i + 1)
+                if dstart == 0:
+                    dstart = j + 1
+                i = j
+                i = i + 1
+                continue
+            cl: int32 = 0
+            ts: uint64 = i + 1
+            if ts < src_len and src_ptr[ts] == 47:
+                cl = 1
+                ts = ts + 1
+            je: uint64 = ts
+            je = _hx_tag_end_p(src_ptr, src_len, je)
+            ne: uint64 = ts
+            while ne < je and _alnum_at(ne) != 0:
+                ne = ne + 1
+            if ne > ts:
+                if _im_name_is(ts, ne, cast[Ptr[uint8]]("html")) != 0:
+                    if cl == 0:
+                        has_html = 1
+                    else:
+                        lasthtmlclose = i
+                elif _im_name_is(ts, ne, cast[Ptr[uint8]]("head")) != 0:
+                    if cl == 0:
+                        has_head = 1
+                    else:
+                        headend = je + 1
+                elif _im_name_is(ts, ne, cast[Ptr[uint8]]("body")) != 0:
+                    if cl == 0:
+                        has_body = 1
+                elif _im_name_is(ts, ne, cast[Ptr[uint8]]("table")) != 0:
+                    has_table = 1
+                if hcut == src_len and cl == 0 and \
+                   _im_name_is(ts, ne, cast[Ptr[uint8]]("html")) == 0 and \
+                   _im_head_only(ts, ne) == 0:
+                    hcut = i
+            if cl == 0 and ne > ts:
+                rt: uint64 = _inert_skip(ts, ne, je)
+                if rt != 0:
+                    i = rt
+                    continue
+            i = je
+        i = i + 1
+    if has_html != 0 and has_head != 0 and has_body != 0 and has_table == 0:
+        return                                            # nothing to imply
+    if hcut < dstart:
+        hcut = dstart
+    # where <body> opens: right after the head (implied or explicit)
+    bopen: uint64 = hcut
+    if has_head != 0:
+        bopen = headend
+        if bopen < dstart:
+            bopen = dstart
+    bclose: uint64 = lasthtmlclose
+    if has_html == 0:
+        bclose = src_len
+    # ---- pass 2: stream the source out with the implied tags spliced in
+    w: uint64 = 0
+    sp: int32 = 0
+    k: uint64 = 0
+    while k < src_len:
+        if k == dstart:
+            if has_html == 0:
+                w = _im_puts(w, cast[Ptr[uint8]]("<html>"))
+            if has_head == 0:
+                w = _im_puts(w, cast[Ptr[uint8]]("<head>"))
+        if has_head == 0 and k == hcut:
+            w = _im_puts(w, cast[Ptr[uint8]]("</head>"))
+        if has_body == 0 and k == bopen:
+            w = _im_puts(w, cast[Ptr[uint8]]("<body>"))
+        if has_body == 0 and k == bclose:
+            w = _im_puts(w, cast[Ptr[uint8]]("</body>"))
+        if src_ptr[k] == 60:
+            cl2: int32 = 0
+            ts2: uint64 = k + 1
+            if ts2 < src_len and src_ptr[ts2] == 47:
+                cl2 = 1
+                ts2 = ts2 + 1
+            je2: uint64 = ts2
+            je2 = _hx_tag_end_p(src_ptr, src_len, je2)
+            ne2: uint64 = ts2
+            while ne2 < je2 and _alnum_at(ne2) != 0:
+                ne2 = ne2 + 1
+            if ne2 > ts2:
+                if _im_name_is(ts2, ne2, cast[Ptr[uint8]]("table")) != 0:
+                    if cl2 == 0:
+                        if sp < IM_TBL_MAX:
+                            im_tb_rg[sp] = 0
+                            im_tb_open[sp] = 0
+                            sp = sp + 1
+                    elif sp > 0:
+                        if im_tb_open[sp - 1] != 0:
+                            w = _im_puts(w, cast[Ptr[uint8]]("</tbody>"))
+                        sp = sp - 1
+                elif sp > 0:
+                    grp: int32 = 0
+                    if _im_name_is(ts2, ne2, cast[Ptr[uint8]]("tbody")) != 0:
+                        grp = 1
+                    elif _im_name_is(ts2, ne2, cast[Ptr[uint8]]("thead")) != 0:
+                        grp = 1
+                    elif _im_name_is(ts2, ne2, cast[Ptr[uint8]]("tfoot")) != 0:
+                        grp = 1
+                    if grp != 0:
+                        if cl2 == 0:
+                            if im_tb_open[sp - 1] != 0:
+                                w = _im_puts(w, cast[Ptr[uint8]]("</tbody>"))
+                                im_tb_open[sp - 1] = 0
+                            im_tb_rg[sp - 1] = 1
+                        else:
+                            im_tb_rg[sp - 1] = 0
+                    elif cl2 == 0 and \
+                         _im_name_is(ts2, ne2, cast[Ptr[uint8]]("tr")) != 0:
+                        if im_tb_rg[sp - 1] == 0 and im_tb_open[sp - 1] == 0:
+                            w = _im_puts(w, cast[Ptr[uint8]]("<tbody>"))
+                            im_tb_open[sp - 1] = 1
+                # an inert body (script/style/noscript/template) is copied
+                # verbatim: a '<' inside a JS string is not a tag.
+                if cl2 == 0:
+                    rt2: uint64 = _inert_skip(ts2, ne2, je2)
+                    if rt2 != 0:
+                        while k < rt2 and k < src_len:
+                            w = _im_put(w, src_ptr[k])
+                            k = k + 1
+                        continue
+        w = _im_put(w, src_ptr[k])
+        k = k + 1
+    if has_body == 0 and bclose >= src_len:
+        w = _im_puts(w, cast[Ptr[uint8]]("</body>"))
+    if has_html == 0:
+        w = _im_puts(w, cast[Ptr[uint8]]("</html>"))
+    im_buf[w] = 0
+    src_ptr = &im_buf[0]
+    src_len = w
+
 
 js_hbase: int32 = 0
 js_doc:   int32 = 0
@@ -741,6 +1017,12 @@ def _dom_reset():
     cre_n = 0
     cc_n = 0
     rw_len = 0
+    g_ser_mode = 0
+    g_dom_mutated = 0
+    ddi: int32 = 0
+    while ddi < DOM_MAX:
+        dom_detached[ddi] = 0
+        ddi = ddi + 1
     dom_nav_len = 0
     dom_nav_present = 0
     dom_nav_method = 0

@@ -2095,13 +2095,19 @@ def _inner_accessor(rel: int32) -> int32:
     if rel == NID_IH_GET:
         if idx < 0:
             return js_undefined()
-        cs: int32 = dom_cstart[idx]
-        hn: int32 = dom_cend[idx] - cs
-        if hn < 0:
-            hn = 0
-        hv: int32 = js_new_string(&src_ptr[cast[uint64](cs)], cast[uint64](hn))
-        js_set_own(thisv, cast[Ptr[uint8]]("innerHTML"), 9, hv)
-        return hv
+        # NOT memoised any more. The memo installed an own data property that
+        # shadowed this accessor for the rest of the page's life, so the FIRST
+        # read froze innerHTML at its parse-time value — which is half of why
+        # every later mutation was invisible. A browser recomputes on every
+        # read; so do we. Until the page's first mutation the answer is
+        # provably the source slice, so that stays the cheap path.
+        if g_dom_mutated == 0:
+            cs: int32 = dom_cstart[idx]
+            hn: int32 = dom_cend[idx] - cs
+            if hn < 0:
+                hn = 0
+            return js_new_string(&src_ptr[cast[uint64](cs)], cast[uint64](hn))
+        return _serialize_inner_of(idx)
     # ---- setters: install the own data property, then run the same side
     # effects member_set's hook would have run (an accessor set returns before
     # the hook fires, so the work has to happen here).
@@ -2254,8 +2260,31 @@ def _feat_accessor(rel: int32) -> int32:
     return js_new_native_fn(js_hbase + NID_REPORTVALID)
 
 
+# Does native id `rel` mutate the DOM in a way innerHTML must reflect? Used to
+# latch g_dom_mutated, which is what lets an UNMUTATED page keep the cheap
+# source-slice innerHTML path (and so stay byte-identical to before this
+# change) while a mutated one re-serialises. Deliberately over-inclusive:
+# a false positive costs one re-serialisation, a false negative is a stale read.
+def _nid_mutates(rel: int32) -> int32:
+    if rel == NID_APPEND or rel == NID_APPEND_M or rel == NID_INSBEF or \
+       rel == NID_REMCHILD or rel == NID_REPLCHILD or rel == NID_REMOVE:
+        return 1
+    if rel == NID_SETATTR or rel == NID_REMATTR or rel == NID_TOGGLEATTR:
+        return 1
+    if rel == NID_CLSADD or rel == NID_CLSREM or rel == NID_CLSTOG or \
+       rel == NID_CLSREPL:
+        return 1
+    if rel == NID_TC_SET or rel == NID_IH_SET or rel == NID_INSADJ:
+        return 1
+    if rel == NID_STYLE_SETPROP or rel == NID_STYLE_REMPROP:
+        return 1
+    return 0
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
+    if _nid_mutates(rel) != 0:
+        g_dom_mutated = 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
@@ -3260,11 +3289,25 @@ def _js_host_dispatch(id: int32) -> int32:
             _mo_record_childlist(js_this(), js_arg(0), -1)
         return js_arg(0)
     if rel == NID_REMCHILD:
-        # parent.removeChild(child) — detach the child (created nodes only).
+        # parent.removeChild(child) — detach the child. Created nodes flip
+        # cre_gone; a SOURCE-anchored child (which this used to ignore entirely,
+        # leaving the node on screen AND in the parent's innerHTML) flips
+        # dom_detached, which both the renderer and the innerHTML serialiser
+        # treat as "no longer in the tree".
         if js_arg_count() >= 1:
             rc: int32 = _find_cre_by_obj(js_arg(0))
-            if rc >= 0:
-                cre_gone[rc] = 1
+            rcs: int32 = -1
+            if rc < 0:
+                rcs = _find_el_by_obj(js_arg(0))
+            if rc >= 0 or rcs >= 0:
+                if rc >= 0:
+                    cre_gone[rc] = 1
+                else:
+                    dom_detached[rcs] = 1
+                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
+                                js_null())
+                    js_set_prop(js_arg(0), \
+                                cast[Ptr[uint8]]("parentElement"), 13, js_null())
                 # keep the parent's live JS .children/.childNodes in sync so a
                 # subsequent read no longer sees the detached node.
                 _dom_children_drop(js_this(), js_arg(0))
@@ -3323,9 +3366,22 @@ def _js_host_dispatch(id: int32) -> int32:
         else:
             sel: int32 = _find_el_by_obj(js_this())
             if sel >= 0:
-                stvr: int32 = js_get_prop(dom_obj[sel], cast[Ptr[uint8]]("style"), 5)
-                js_set_prop(stvr, cast[Ptr[uint8]]("display"), 7, \
-                            js_new_string(cast[Ptr[uint8]]("none"), 4))
+                # A source element used to be "removed" by forcing
+                # style.display:none, which drops it from the RENDER but leaves
+                # it in the tree — so it stayed in its parent's innerHTML and
+                # `el.style.display` read back "none", neither of which a
+                # browser does. dom_detached is the real thing.
+                dom_detached[sel] = 1
+                rmspar: int32 = js_get_prop(js_this(), \
+                                            cast[Ptr[uint8]]("parentNode"), 10)
+                if js_type_of(rmspar) == 5:
+                    _dom_children_drop(rmspar, js_this())
+                    _wire_sibling_links(js_get_prop(rmspar, \
+                                        cast[Ptr[uint8]]("children"), 8), rmspar)
+                    _mo_record_childlist(rmspar, -1, js_this())
+                js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), 13, \
+                            js_null())
         return js_undefined()
     if rel == NID_GETATTR:
         if js_arg_count() >= 1:
@@ -4997,6 +5053,8 @@ def _rw_text_escaped(off: int32, ln: int32):
 
 
 def _el_has_override(idx: int32) -> int32:
+    if dom_detached[idx] != 0:
+        return 1
     if dom_ov_hide[idx] != 0 or dom_ov_inner_len[idx] >= 0 or \
        dom_ov_col_len[idx] >= 0 or dom_ov_bg_len[idx] >= 0 or \
        dom_ov_wt_len[idx] >= 0 or dom_ov_al_len[idx] >= 0 or \
@@ -5245,12 +5303,21 @@ def _emit_created(cid: int32):
 
 
 # Emit the merged inline style="" for an element's style overrides (or nothing).
+# `display:none` is a RENDER decision (the element is dropped outright, so the
+# render never needs the declaration) but it IS part of the markup a browser
+# serialises, so it joins the merged style in serialisation mode only — which
+# keeps every rendered byte unchanged.
 def _emit_merged_style(idx: int32):
+    ser_disp: int32 = 0
+    if g_ser_mode != 0 and dom_ov_hide[idx] != 0:
+        ser_disp = 1
     if dom_ov_col_len[idx] < 0 and dom_ov_bg_len[idx] < 0 and \
        dom_ov_wt_len[idx] < 0 and dom_ov_al_len[idx] < 0 and \
-       dom_ov_wd_len[idx] < 0:
+       dom_ov_wd_len[idx] < 0 and ser_disp == 0:
         return
     _rw_cstr(cast[Ptr[uint8]](" style=\""))
+    if ser_disp != 0:
+        _rw_cstr(cast[Ptr[uint8]]("display:none;"))
     if dom_ov_col_len[idx] >= 0:
         _rw_cstr(cast[Ptr[uint8]]("color:"))
         _rw_ovbuf(dom_ov_col_off[idx], dom_ov_col_len[idx])
@@ -5386,7 +5453,7 @@ def _rewrite_range(lo: uint64, hi: uint64):
                 # elements keep the INNER wrap (their clickable content is the
                 # element's text), so the two are mutually exclusive.
                 wrap_outer: int32 = 0
-                if _is_wrappable_field(idx) != 0:
+                if g_ser_mode == 0 and _is_wrappable_field(idx) != 0:
                     wrap_outer = 1
                     _rw_cstr(cast[Ptr[uint8]]("<a href=\"#__evt_"))
                     _rw_dec(idx)
@@ -5401,7 +5468,11 @@ def _rewrite_range(lo: uint64, hi: uint64):
                 # locate the close tag end
                 _find_close(ts, ne - ts, je + 1)
                 cend: uint64 = g_close_end
-                if dom_ov_hide[idx] != 0:
+                # Render mode drops anything hidden; SERIALISATION mode drops
+                # only what was really removed from the tree (a display:none
+                # element is still in a browser's innerHTML).
+                if dom_detached[idx] != 0 or \
+                   (g_ser_mode == 0 and dom_ov_hide[idx] != 0):
                     i = cend
                     continue
                 # rebuild the start tag: <name [class] [style] original-attrs>
@@ -5431,7 +5502,7 @@ def _rewrite_range(lo: uint64, hi: uint64):
                 # synthetic "#__evt_IDX" link so the existing pointer link
                 # hit-test can route the click to he_dom_click_index.
                 wrap_evt: int32 = 0
-                if wrap_outer == 0 and he_click_links != 0 and \
+                if g_ser_mode == 0 and wrap_outer == 0 and he_click_links != 0 and \
                    _el_has_handler(idx) != 0:
                     wrap_evt = 1
                     _rw_cstr(cast[Ptr[uint8]]("<a href=\"#__evt_"))
@@ -5471,6 +5542,50 @@ def _rewrite_range(lo: uint64, hi: uint64):
                 continue
         _rw_ch(c)
         i = i + 1
+
+
+# LIVE innerHTML SERIALISATION for a source-anchored element.
+#
+# The DOM is anchored to byte spans in the original source, so for a long time
+# `el.innerHTML` was literally src[cstart..cend) — correct at parse time and
+# frozen forever after. Measured against chromium --headless on a clean
+# fixture, EVERY script mutation was invisible: appendChild, a descendant's
+# textContent= and removeChild all read back the untouched markup.
+#
+# Rather than give every node a heap representation (a rewrite of the whole
+# engine), this reuses the emitter that ALREADY has to reproduce a mutated
+# subtree — _rewrite_range, which bakes the override tables + appended created
+# children into the markup it emits for the render. Running it over just this
+# element's content span, in serialisation mode, IS the re-serialisation:
+#
+#   * a subtree script never touched has no overrides, so _rewrite_range copies
+#     it through byte-for-byte and the answer is identical to the old slice;
+#   * a mutated descendant is emitted with its mutation baked in;
+#   * a detached child is elided;
+#   * created children appended to THIS element are emitted after the span
+#     (the enclosing-element branch of _rewrite_range would normally do this,
+#     but we start INSIDE this element, so it is done here).
+#
+# _dom_readback() is what fills the override tables, and it normally runs only
+# after all scripts finish; a getter called mid-script has to run it itself.
+def _serialize_inner_of(idx: int32) -> int32:
+    _dom_readback()
+    save_links: int32 = he_click_links
+    save_rw: uint64 = rw_len
+    he_click_links = 0
+    g_ser_mode = 1
+    rw_len = 0
+    _rewrite_range(cast[uint64](dom_cstart[idx]), cast[uint64](dom_cend[idx]))
+    a: int32 = 0
+    while a < ap_n:
+        if ap_removed[a] == 0 and ap_parent[a] == idx:
+            _emit_created(ap_child[a])
+        a = a + 1
+    v: int32 = js_new_string(&rw_buf[0], rw_len)
+    rw_len = save_rw
+    g_ser_mode = 0
+    he_click_links = save_links
+    return v
 
 
 # ---- front-end accessors (console / title / error) ------------------
