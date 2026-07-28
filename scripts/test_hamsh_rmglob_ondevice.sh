@@ -153,6 +153,25 @@ send_until 'echo RMGLOB_CREATED' 'RMGLOB_CREATED' 600 \
 # --- 2. count BEFORE (so an empty-directory false green is impossible) ----
 send_until "cd $RMDIR ; echo RMGLOB_CD" 'RMGLOB_CD' 60 \
     || verdict_inconclusive "$TAG" "guest never acknowledged cd."
+
+# TWO independent counts, deliberately.
+#
+#   `ls | wc -l` is the PRIMARY one: `ls` reads the directory itself and the
+#   count never passes through the shell's argument vector, so it stays
+#   truthful even on a build where the argv cap is broken. Using only the
+#   glob listing was a real weakness — under the bug the measuring
+#   instrument is truncated too, and the gate could only report
+#   INCONCLUSIVE ("63 of 230 seen") when it should say FAIL.
+#
+#   `for f in * { echo … }` is the corroborating one: it exercises the glob
+#   -> argv path that the fix is actually about.
+count_dir() {   # count_dir <TAG>  -> guest prints "<TAG>" then a bare number
+    printf '\necho %s\n' "$1" >&3; sleep 2
+    printf '\nls | wc -l\n' >&3
+    send_until "echo ${1}_END" "${1}_END" 180
+}
+count_dir RMGLOB_BCOUNT \
+    || verdict_inconclusive "$TAG" "guest never answered the BEFORE ls|wc count."
 printf '\nfor f in * { echo BEFORE $f }\n' >&3
 send_until 'echo RMGLOB_BEFORE_DONE' 'RMGLOB_BEFORE_DONE' 300 \
     || verdict_inconclusive "$TAG" "guest never finished the BEFORE listing."
@@ -163,6 +182,8 @@ send_until 'echo RMGLOB_RM_DONE' 'RMGLOB_RM_DONE' 300 \
     || verdict_inconclusive "$TAG" 'guest never came back from rm-glob.'
 
 # --- 4. count AFTER ------------------------------------------------------
+count_dir RMGLOB_ACOUNT \
+    || verdict_inconclusive "$TAG" "guest never answered the AFTER ls|wc count."
 printf '\nfor f in * { echo AFTER $f }\n' >&3
 send_until 'echo RMGLOB_AFTER_DONE' 'RMGLOB_AFTER_DONE' 300 \
     || verdict_inconclusive "$TAG" "guest never finished the AFTER listing."
@@ -200,22 +221,61 @@ def listed(tag):
 before = listed("BEFORE")
 after = listed("AFTER")
 
+def wc_count(tag):
+    # The guest prints "<tag>", then the `ls | wc -l` result, then
+    # "<tag>_END". Take the first bare integer between the two markers.
+    lines = raw.split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        t = line.strip()
+        if t.endswith(tag) and not t.endswith(tag + "_END") and "echo" not in t:
+            start = i
+    if start is None:
+        return None
+    for line in lines[start + 1:]:
+        t = line.strip().replace("hamsh$", "").strip()
+        if t.endswith("_END"):
+            break
+        if re.fullmatch(r"\d+", t):
+            return int(t)
+    return None
+
+bcount = wc_count("RMGLOB_BCOUNT")
+acount = wc_count("RMGLOB_ACOUNT")
+
 # --- 0. the run must actually have observed the directory FULL first.
 # Without this the gate could "pass" on a guest that never created a file.
-if len(before) < want_n:
-    print("[ondevice] INCONCLUSIVE: only %d of %d files were observed BEFORE "
-          "the rm (serial drops or the create loop never finished) — nothing "
-          "can be concluded about the delete." % (len(before), want_n))
+# `ls | wc -l` is authoritative here: it does not go through argv, so it is
+# still truthful on a build where the argv cap is broken.
+if bcount is None or acount is None:
+    print("[ondevice] INCONCLUSIVE: the guest's ls|wc counts were not "
+          "captured (before=%r after=%r) — serial drops." % (bcount, acount))
     sys.exit(125)
-ok("the directory really held %d files before `rm *`" % len(before))
+if bcount < want_n:
+    print("[ondevice] INCONCLUSIVE: ls counted only %d of %d files BEFORE the "
+          "rm — the create loop never finished, so nothing can be concluded "
+          "about the delete." % (bcount, want_n))
+    sys.exit(125)
+ok("ls counted %d files in the directory before `rm *`" % bcount)
 
 # --- 1. THE ASSERTION. Not the exit status: the CONTENTS.
-if after:
+if acount != 0:
     bad("`rm *` left %d of %d files behind — a PARTIAL delete reported as "
-        "success. Survivors (first 10): %s"
-        % (len(after), len(before), sorted(after)[:10]))
+        "success (ls|wc count after the delete)" % (acount, bcount))
 else:
-    ok("`rm *` emptied the directory: 0 of %d files survived" % len(before))
+    ok("`rm *` emptied the directory: ls counts 0 of %d files remaining" % bcount)
+
+# --- 1b. corroborate through the glob -> argv path itself. A short BEFORE
+# listing here with a full `ls` count above means the WORD LIST was
+# truncated — the bug — not that the files were missing.
+if len(before) < want_n:
+    bad("the glob word list saw only %d of the %d files ls found — argv/glob "
+        "truncation" % (len(before), bcount))
+else:
+    ok("the glob word list saw all %d files" % len(before))
+if after:
+    bad("files still enumerable through the glob after `rm *`: %s"
+        % sorted(after)[:10])
 
 # --- 2. and it must not have been loud-but-broken either: no E2BIG, no
 # argv raise, no "cannot remove" — the vector should simply have fit.

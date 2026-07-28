@@ -37,7 +37,14 @@ from lib.p9dir import P9_DMDIR
 from lib.9p.9p import P9_QTDIR
 
 
-LISTBUF:  uint64 = 4096
+# LISTBUF — the raw "NAME\n" directory-listing buffer. At 4096 a directory
+# whose listing exceeded 4 KiB (~500 short names) was SILENTLY CUT: p9_listdir
+# stops when the buffer fills, so `ls` printed a PREFIX of the directory and
+# exited 0, and anything piping it (`ls | wc -l`, `ls | grep`) got a confident
+# undercount. Same class as the hamsh argv/glob caps fixed 2026-07-28. 64 KiB
+# holds ~8000 short names, and a FULL buffer is now reported on stderr with a
+# nonzero exit rather than passed off as a complete listing.
+LISTBUF:  uint64 = 65536
 
 
 def strlen_u8(s: Ptr[uint8]) -> uint64:
@@ -67,7 +74,7 @@ def write_dec(fd: int32, v: uint64):
 
 
 # BSS scratch buffers — Adder quirks: module-scope BSS only.
-ls_buf: Array[4096, uint8]
+ls_buf: Array[65536, uint8]   # LISTBUF
 ls_modebuf: Array[12, uint8]
 
 
@@ -194,4 +201,10 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         write_str(2, "\n")
         return 1
     sys_write(1, &ls_buf[0], cast[uint64](n))
+    if cast[uint64](n) >= LISTBUF:
+        # The listing filled the buffer, so entries past it were never read.
+        # Say so and fail — a truncated listing reported as success is how a
+        # user (or a script) concludes a directory is smaller than it is.
+        write_str(2, "ls: listing TRUNCATED at 65536 bytes — output is INCOMPLETE\n")
+        return 1
     return 0
