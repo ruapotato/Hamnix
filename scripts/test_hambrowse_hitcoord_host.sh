@@ -184,9 +184,19 @@ probe_boxes() {  # probe_boxes <fixture> <ppm> <name=rrggbb> ...
               "$(hit "$fix" "$cx" "$((by0 + 2))")" ge 0
         check "$name: bottom padding row y=$((by1 - 2))" \
               "$(hit "$fix" "$cx" "$((by1 - 2))")" ge 0
-        # ...and nothing beyond the painted box may become live.
-        check "$name: 8px right of the box is NOT live" \
-              "$(hit "$fix" "$((bx1 + 8))" "$cy")" eq -1
+        # ...and nothing beyond the painted box may still be THIS anchor.
+        #
+        # Not "is dead": in Chrome two source-adjacent inline-block chips have
+        # TOUCHING border boxes, so the pixels just right of one pill belong to
+        # the NEXT pill. Verified with chromium --headless on this very fixture:
+        #   p1: right=158.7  elementFromPoint(right+8) -> p2
+        #   p2: right=279.4  elementFromPoint(right+8) -> NAV
+        #   p3: right=399.9  elementFromPoint(right+8) -> ctr (the <p>)
+        # The invariant that actually matters — and the one a drifting hit rect
+        # violates — is that this anchor's live area STOPS at its box.
+        local own; own="$(hit "$fix" "$cx" "$cy")"
+        check "$name: 8px right of the box is no longer THIS link" \
+              "$(hit "$fix" "$((bx1 + 8))" "$cy")" ne "$own"
     done < <(box_rects "$ppm" "$@")
     BOXN="$n"
 }
