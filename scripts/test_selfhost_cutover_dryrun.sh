@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND: not in ci_battery_manifest.txt because it builds the FULL fused
+# .ad compiler as a host binary and then runs a 300-case differential dry-run
+# against the Python seed oracle. It exceeded a 120 s probe budget on
+# 55c842b9 without finishing; that is minutes of CPU per shard for a gate
+# whose subject (the seed/native cutover) changes rarely. Run it deliberately
+# when touching the compiler front end, not on every push.
 # scripts/test_selfhost_cutover_dryrun.sh — Track-3 self-hosting CUTOVER
 # DRY-RUN gate (host-only, NO QEMU).
 #

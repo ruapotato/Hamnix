@@ -1,4 +1,22 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED — LIKELY GATE ROT, DELETION CANDIDATE*: not in
+# ci_battery_manifest.txt because it FAILS on 55c842b9 (2026-07-28
+# unregistered-gate sweep, 0.1 s).
+#
+# Unlike the other reds from that sweep, the evidence here points at the GATE,
+# not the tree. It is a grep-guard that pins EXACT declaration text from the
+# June-2026 #442(c) design:
+#     wsys_backbuffer Array[36864000,uint8]   -> devwsys.ad now declares
+#                                                wsys_backbuffer_page (24 hits)
+#     h_v2_bb Array[4096000,uint8]            -> lib/hamui.ad now declares
+#                                                h_v2_bb_addr / h_v2_bb_w/h
+# i.e. the substrate EXISTS but was reshaped (paged backbuffers, dynamic
+# dims), so the gate reds on renames rather than on lost behaviour. It also
+# predates the DE scene-file pivot, which moved pixel ownership out of the
+# kernel entirely. Before deleting it, confirm the blit wire format ('B'/'D'
+# verbs) is asserted by a scene-era gate; if it is not, REWRITE this one
+# against the current names instead of deleting the only coverage.
 # scripts/test_de_rio_blit.sh — #442 (c) rio blit protocol substrate guard.
 #
 # THE KEYSTONE. graphical_stack_audit.md recommends a hard pivot away

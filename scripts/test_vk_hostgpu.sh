@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND: not in ci_battery_manifest.txt because steps 3-7 need a real
+# libvulkan.so.1 and an X display; on a headless runner they SKIP and the
+# gate exits 0 having asserted almost nothing. A gate that cannot fail on the
+# machine that runs it is worse than no gate — it manufactures green. Run it
+# on a workstation with a GPU when touching lib/vk. Measured 5.8 s.
 # scripts/test_vk_hostgpu.sh — host gate for the HOST-GPU bridge.
 #
 # GPU track: "Vulkan back into work on Linux". Proves our composited vk

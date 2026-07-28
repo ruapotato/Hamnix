@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
+# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s). It is a
+# grep-guard from 2026-06-19 that requires named handlers in the pre-scene-
+# pivot app shape: _fm_apply_resize() in user/hamfmscene.ad,
+# _calc_apply_resize() plus an 'r' (114) resize-event branch in
+# user/hamcalcscene.ad. Those symbols are gone. Either the resize re-layout
+# behaviour moved (scene-file pivot) and this gate needs rewriting against the
+# new seam, or it regressed and nobody noticed for six weeks — a maximized
+# window rendering into a small quadrant is exactly the bug it was written
+# for, so DECIDE WHICH by driving the DE, not by reading the grep.
 # scripts/test_de_resize_event_relayout.sh — structural regression guard for
 # the window-resize TEAR + "maximized window renders to a small quadrant" bug
 # (DE BUG 1).

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND: not in ci_battery_manifest.txt because it needs BOTH the system
+# libSDL2 (absent on the battery runner) and, for the live-fetch arm,
+# outbound network. Measured 55.6 s on 55c842b9 on a host that has both. The
+# live-fetch arm already degrades to a reported SKIP without DNS; the SDL2
+# link does not. See test_hambrowse_sdl_host.sh for the same note.
 # scripts/test_hambrowse_sdl_net_host.sh — QEMU-free host gate for the
 # INTERACTIVE hambrowse window fetching a LIVE https:// page over the Plan-9
 # /net stack (user/hambrowse_sdl_host.ad -> UNCHANGED user/http9.ad/net9.ad,

@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
+# FAILS on 55c842b9 (measured 90.4 s, 2026-07-28 unregistered-gate sweep).
+#
+# THE FAILURE IS A REAL FINDING. The gate compile-checks the x86_64 kernel and
+# tolerates exactly ONE known link error (the initramfs symbol pair). On
+# 55c842b9 there are TWO MORE undefined references:
+#     undefined reference to `arm64_a10_blob_base'
+#     undefined reference to `arm64_a10_blob_size'
+# They come from init/main.ad's arm64_a10_load_arm64(), added by 613b886d
+# (feat(arm64/llvm): A10 — REAL Adder-compiled EL0 user program). That commit
+# says the code is "ADDITIVE + aarch64-only ... x86's start_kernel() never
+# references these, so the x86 kernel stays byte-identical" — but the `extern
+# def` sits in the SHARED init/main.ad with no arch guard, and the symbols are
+# only defined in arch/arm64/llvm/user_blob.S. So the x86_64 kernel link now
+# carries two arch-foreign undefined references that nothing in CI notices,
+# because this gate is the only thing that asserts the link is clean and it
+# was never registered. Triage: either arch-guard the extern/caller, or
+# provide weak x86 stubs, or widen the gate's tolerated-symbol list ONLY if
+# the image link is genuinely unaffected — and prove that, don't assume it.
 # scripts/test_napi.sh — NAPI (budgeted receive) regression.
 #
 # Two-part gate, NO QEMU / NO Hamnix image (compile-check + host logic

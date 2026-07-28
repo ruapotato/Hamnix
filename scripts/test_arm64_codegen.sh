@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND: not in ci_battery_manifest.txt because it HARD-FAILS (does not
+# skip) without binutils-aarch64-linux-gnu and qemu-user-static, and the
+# bare-metal battery runner apt-installs neither. Registering it therefore
+# requires a .github/workflows/ci.yml change to add those two packages —
+# which is worth doing: the ARM64 lane has silently stopped building on main
+# before, precisely because no CI job ran an ARM64 gate. Measured 0.2 s on
+# 55c842b9 with the toolchain present, so the cost is not the obstacle.
 # scripts/test_arm64_codegen.sh — PHASE 1 multi-arch milestone: the Adder
 # compiler's aarch64 (ARM64) Linux user-mode code-generation backend.
 #

@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
+# FAILS on 55c842b9 (measured 65.3 s, 2026-07-28 unregistered-gate sweep), and
+# registering a red gate poisons the battery and trains people to ignore it.
+#
+# THE FAILURE IS A REAL BUG, NOT GATE ROT. Check 1 —
+# browserwin_addr_caret_at() being the exact inverse of the 13px address-text
+# caret pixels — is off by a growing amount: inverse k=13 -> 10, k=16 -> 13,
+# k=20 -> 17, and mid_caret_7 -> 3 instead of 7. The clamp cases (k=0, k=20)
+# still pass, so the two directions agree at the ends and diverge in the
+# middle: a proportional-advance vs fixed-advance mismatch between the
+# forward (index -> px) and reverse (px -> index) walks. User-visible symptom
+# is exactly the bug this gate was written for: clicking mid-URL puts the
+# caret several glyphs left of the click. FIX THE BUG, then register the gate
+# — do not weaken the assertion.
 # scripts/test_hamurl_host.sh — FAST, QEMU-free host gate for the #315 text-
 # selection substrate propagated into the browser URL bar (user/hambrowse.ad +
 # lib/browserwin.ad). Three checks:

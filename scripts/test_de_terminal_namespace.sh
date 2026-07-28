@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
+# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s). Everything
+# passes except one assertion:
+#     FAIL: etc/rc.de-user must NOT bind '#distro' (hostowner-only surface)
+# i.e. the REGULAR-USER DE namespace profile currently binds the hostowner-only
+# #distro file server, handing every DE terminal a capability it should not
+# have. This is the privilege model, not cosmetics — triage against
+# etc/rc.de-user and the hostowner/regular-user split before touching the gate.
 # scripts/test_de_terminal_namespace.sh — STRUCTURAL guard for the
 # DE-terminal namespace plumbing.
 #

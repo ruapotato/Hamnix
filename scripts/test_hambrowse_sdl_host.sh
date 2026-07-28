@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND: not in ci_battery_manifest.txt because it compiles
+# scripts/hambrowse_sdl_bridge.c against the SYSTEM libSDL2, which the
+# bare-metal battery runner does not install. Measured 57.3 s on 55c842b9 on
+# a developer host that has it. To register: add libsdl2-dev to the runner's
+# apt list, or teach the gate to SKIP (exit 0, loudly) when sdl2-config is
+# absent — but note a silent skip is a soft green, which is the failure mode
+# this whole sweep exists to kill.
 # scripts/test_hambrowse_sdl_host.sh — FAST, QEMU-free host gate for the
 # INTERACTIVE hambrowse window on Linux (user/hambrowse_sdl_host.ad, the shared
 # engine, + scripts/hambrowse_sdl_bridge.c, the real SDL2 shell).

@@ -17,6 +17,16 @@
 # office-suite false negative), or when a gate reuses a prebuilt artifact
 # behind the banned `if [ ! -f "$IMG" ]` rebuild-only-when-absent shape.
 bash scripts/test_artifact_freshness.sh
+# SECOND, and ~1 s: the unregistered-gate canary. No QEMU. A gate script that
+# no CI job runs is not coverage — it is a hole shaped like coverage, and it
+# has already cost shipped bugs (tagquote/textContent, the DE ghost window,
+# the broken installer, the ARM64 lane that silently stopped building). This
+# fails when a NEW scripts/test_*.sh is neither registered here, nor run by a
+# .github/workflows step, nor carrying an explicit "not in
+# ci_battery_manifest.txt because <reason>" line in its header. The 879
+# pre-existing dark gates are frozen in scripts/ci_ondemand_baseline.txt,
+# which the same gate ratchets DOWN-only.
+bash scripts/test_gate_registration.sh
 bash scripts/test_hamsh.sh
 bash scripts/ci_run_gate.sh scripts/test_hamsh_heartbeat.sh
 # QEMU-free host gate for the 2048 scene app: renders the board, drives scripted
@@ -3272,3 +3282,386 @@ bash scripts/test_jsengine_utf16_host.sh
 # tests/fixtures/hambrowse_utf16dom.html, including the deliberate split("")
 # (code UNITS) vs Array.from (code POINTS) disagreement on an astral character.
 bash scripts/test_hambrowse_utf16dom_host.sh
+
+# ============================================================================
+# 2026-07-28 — THE UNREGISTERED-GATE SWEEP
+# ============================================================================
+# Counted on 55c842b9: 1495 scripts/test_*.sh existed. 528 were named here and
+# ~97 more were run by .github/workflows/ci.yml (the test_opt_* /
+# test_compiler_* globs plus the explicit host-gate steps). 879 gate scripts
+# were run by NOTHING. That is not a hypothetical cost: the tagquote gate a
+# few dozen lines above this one sat unregistered while 35 layout scanners
+# kept their naive `while src_ptr[j] != '>'` walks and wikipedia's
+# textContent over-reported by 21378 chars; test_de_panel_config shipped a
+# ghost window that swallowed clicks; test_installer_nvme_inram let a broken
+# installer ship. An unregistered gate is WORSE than a missing one — it reads
+# as coverage in the tree and in every report while asserting nothing.
+#
+# The block below is the promotable subset of that 879. Selection rule, in
+# order:
+#   1. QEMU-free — nothing here boots qemu-system or OVMF, transitively.
+#   2. Does not rebuild the kernel / initramfs / installer image (those
+#      mutate tracked artifacts like fs/initramfs_blob.S and are not safe to
+#      run concurrently inside a sharded battery).
+#   3. RUN AT LEAST ONCE, GREEN, TWICE. Every line below was executed on
+#      55c842b9 and its wall time measured; the bracketed [Ns measured]
+#      figure is that measurement, and each was then re-run to confirm it is
+#      not flaky. Nothing red and nothing unmeasured was registered — a red
+#      or flaky line trains people to ignore the battery.
+#
+# BUDGET: 76 gates, 1739 s total = ~145 s (2.4 min) added per shard under the
+# 12-way round-robin, against a 50-minute shard cap. The ~41-45 s entries are
+# the lib/web host gates; each rebuilds the host browser engine, which is not
+# cached between gates.
+#
+# DELIBERATELY NOT REGISTERED HERE (each carries the reason in its own
+# header, and scripts/test_gate_registration.sh enforces that it keeps one):
+#   * test_arm64_codegen.sh — needs binutils-aarch64-linux-gnu +
+#     qemu-user-static, which the bare-metal runner does not apt-install; it
+#     HARD-FAILS rather than skipping. Registering it needs a .github change.
+#   * test_hambrowse_sdl_host.sh / test_hambrowse_sdl_net_host.sh — link
+#     against the system libSDL2, absent on the runner.
+#   * test_vk_hostgpu.sh — real-GPU arms; skips without libvulkan, so it
+#     would be a soft green on a headless runner.
+#   * 8 gates that are RED on 55c842b9 — see the commit message. They are
+#     real findings, not registration candidates.
+#
+# The whole 879 is inventoried in scripts/ci_ondemand_baseline.txt and the
+# rule is enforced going forward by scripts/test_gate_registration.sh (first
+# entry in this file, next to the artifact-freshness canary).
+# ----------------------------------------------------------------------------
+# scripts/test_atkbd_no_keystroke_loss.sh: regression guard for the "some keys
+# delayed / some keys lost" DE keyboard bug.  [0.0s measured on 55c842b9]
+bash scripts/test_atkbd_no_keystroke_loss.sh
+# scripts/test_atkbd_poll_aux_filter.sh: structural regression guard for the
+# "mouse drag injects random characters into hamedit" leak (DE input BUG 2).
+# [0.0s measured on 55c842b9]
+bash scripts/test_atkbd_poll_aux_filter.sh
+# scripts/test_auxmouse_wheel_dz.sh: structural regression guard for the
+# "mouse wheel does nothing" bug (DE input BUG 2).  [0.0s measured on
+# 55c842b9]
+bash scripts/test_auxmouse_wheel_dz.sh
+# scripts/test_de_bottom_v2.sh: DE bottom-panel structural guard.  [0.0s
+# measured on 55c842b9]
+bash scripts/test_de_bottom_v2.sh
+# scripts/test_de_cursor_decouple.sh: structural regression guard for the DE
+# perf cursor-decouple path (kernel-overlay cursor independent of the
+# compositor hot path).  [0.0s measured on 55c842b9]
+bash scripts/test_de_cursor_decouple.sh
+# scripts/test_de_damage_clip.sh: structural regression guard for the DE perf
+# P0-B damage-clipping (drag / move / resize / menu) win.  [0.0s measured on
+# 55c842b9]
+bash scripts/test_de_damage_clip.sh
+# scripts/test_de_drag_no_spurious_keys.sh: structural regression guard for
+# the compositor's "drop keystrokes during a window drag" rule.  [0.0s
+# measured on 55c842b9]
+bash scripts/test_de_drag_no_spurious_keys.sh
+# scripts/test_de_flicker_double_buffer.sh: QEMU-free host gate.  [0.0s
+# measured on 55c842b9]
+bash scripts/test_de_flicker_double_buffer.sh
+# scripts/test_de_scrollwheel_guard.sh: structural regression guard for the
+# end-to-end mouse SCROLL-WHEEL chain.  [0.0s measured on 55c842b9]
+bash scripts/test_de_scrollwheel_guard.sh
+# scripts/test_de_snarf_wctl.sh: structural guard for the three DE primitives
+# that landed in "DE: snarf clipboard + wctl resize/move/focus":  [0.0s
+# measured on 55c842b9]
+bash scripts/test_de_snarf_wctl.sh
+# scripts/test_de_spawn_detached.sh: DE fire-and-forget launch leak guard.
+# [0.0s measured on 55c842b9]
+bash scripts/test_de_spawn_detached.sh
+# scripts/test_de_term_cmd_not_found.sh: REGRESSION gate for hamsh's "command
+# not found" diagnostic (#4) AND its no-hang invariant.  [0.0s measured on
+# 55c842b9]
+bash scripts/test_de_term_cmd_not_found.sh
+# scripts/test_de_wallpaper.sh: structural guard for the DE image- wallpaper
+# primitive that landed in "DE: image wallpaper (PPM)":  [0.0s measured on
+# 55c842b9]
+bash scripts/test_de_wallpaper.sh
+# scripts/test_de_windowshade_guard.sh: structural regression guard for the
+# desktop window-shade (titlebar double-click roll-up) chain.  [0.0s measured
+# on 55c842b9]
+bash scripts/test_de_windowshade_guard.sh
+# scripts/test_htmlpaint_bounds_host.sh: QEMU-free guard on the browser's
+# largest BSS working-set buffers.  [0.0s measured on 55c842b9]
+bash scripts/test_htmlpaint_bounds_host.sh
+# scripts/test_ssh_namespace.sh: STRUCTURAL guard for the SSH-session
+# namespace plumbing.  [0.0s measured on 55c842b9]
+bash scripts/test_ssh_namespace.sh
+# scripts/test_adder_x86_64_linux.sh: smoke test for the `x86_64-linux` Adder
+# target: a FREESTANDING Adder program (no libc, no Plan 9 base) compiled to a
+# native x86_64 Linux ELF and run on the HOST kernel.  [0.2s measured on
+# 55c842b9]
+bash scripts/test_adder_x86_64_linux.sh
+# scripts/test_font_hscale_host.sh: FAST, QEMU-free gate for the Chrome-parity
+# horizontal metric scale in lib/font_ttf.ad.  [0.5s measured on 55c842b9]
+bash scripts/test_font_hscale_host.sh
+# scripts/test_adder_bounds_check.sh: Adder runtime array-bounds checking
+# (memory-safety increment 1). HOST-ONLY, NO QEMU.  [0.8s measured on
+# 55c842b9]
+bash scripts/test_adder_bounds_check.sh
+# scripts/test_png_roundtrip_host.sh: FAST, QEMU-free host gate proving the
+# PNG encoder (lib/pngwrite.ad, as used by user/hamshot.ad) and the PNG
+# decoder (lib/png.ad, as used by user/hamview.ad) agree byte-for-byte at real
+# desktop  [1.6s measured on 55c842b9]
+bash scripts/test_png_roundtrip_host.sh
+# scripts/test_htermsel_host.sh: FAST, QEMU-free host unit test for the #323
+# terminal grid-text SELECTION model in lib/htermsel.ad ("copy an error
+# message out of a terminal"). Compiles the pure selection logic (anchor/caret
+# cell  [3.1s measured on 55c842b9]
+bash scripts/test_htermsel_host.sh
+# scripts/test_hammark_host.sh: FAST, QEMU-free host gate for HamMark, the
+# native Markdown viewer (lib/hammarkcore.ad composited into an RGBA
+# backbuffer via lib/chrometext.ad). It drives the SAME core the native app
+# ships with a  [3.9s measured on 55c842b9]
+bash scripts/test_hammark_host.sh
+# scripts/test_hampaint_host.sh: FAST, QEMU-free host gate for HamPaint, the
+# MS-Paint / Tux-Paint-style raster drawing app (lib/hampaintcore.ad — a pure,
+# dual-target drawing + compositing core shared by the native app  [4.4s
+# measured on 55c842b9]
+bash scripts/test_hampaint_host.sh
+# scripts/test_de_panel_prefs.sh: QEMU-free host gate.  [5.0s measured on
+# 55c842b9]
+bash scripts/test_de_panel_prefs.sh
+# scripts/test_hamclock_host.sh: FAST, QEMU-free host gate for HamClock, the
+# clock / calendar / timer desktop utility (lib/hamclockcore.ad drawn through
+# lib/hamscene.ad + rasterized by lib/hamui_host.ad). It drives the SAME core
+# [5.6s measured on 55c842b9]
+bash scripts/test_hamclock_host.sh
+# scripts/test_hamnotes_click.sh: FAST, QEMU-free host gate for the #315
+# click-to-position + selection propagation into the Notes app. It drives the
+# SAME hit-test the compositor feeds pointer events into (hamnotes_hit /
+# [5.8s measured on 55c842b9]
+bash scripts/test_hamnotes_click.sh
+# scripts/test_hamtextbox_host.sh: FAST, QEMU-free host unit test for the #315
+# text-selection substrate in lib/hamtextbox.ad. Compiles the pure logic
+# (htb_hit_test click-to-position + the managed-box selection model) for the
+# [5.8s measured on 55c842b9]
+bash scripts/test_hamtextbox_host.sh
+# scripts/test_hamconvert_host.sh: FAST, QEMU-free host gate for HamConvert,
+# the unit-converter desktop utility (lib/hamconvertcore.ad drawn through
+# lib/hamscene.ad + rasterized by lib/hamui_host.ad). It drives the SAME core
+# [6.0s measured on 55c842b9]
+bash scripts/test_hamconvert_host.sh
+# scripts/test_selfhost_castptr_member.sh: Track-3 self-hosting CUTOVER
+# MEMBER-OVER-INDEX behavioral-equivalence gate (host-only, NO QEMU).  [6.2s
+# measured on 55c842b9]
+bash scripts/test_selfhost_castptr_member.sh
+# scripts/test_de_panel_clock_host.sh: FAST, QEMU-free host gate for the DE
+# panel's MATE-style clock applet (lib/panelclock.ad drawn through
+# lib/hamscene.ad + rasterized by lib/hamui_host.ad).  [6.4s measured on
+# 55c842b9]
+bash scripts/test_de_panel_clock_host.sh
+# scripts/test_de_drag_drop_place.sh: FAST, QEMU-free host gate for the drag-
+# from-menu DROP-LOCATION model (#327).  [9.5s measured on 55c842b9]
+bash scripts/test_de_drag_drop_place.sh
+# scripts/test_selfhost_asm_volatile.sh: Track-3 self-hosting CUTOVER cap#4b
+# INLINE-ASM + TRIPLE-QUOTE + `ref`-identifier regression gate (host-only, NO
+# QEMU).  [9.6s measured on 55c842b9]
+bash scripts/test_selfhost_asm_volatile.sh
+# scripts/test_editor_picker_homedirs.sh: QEMU-free host gate.  [9.7s measured
+# on 55c842b9]
+bash scripts/test_editor_picker_homedirs.sh
+# scripts/test_de_focus_damage_host.sh: regression guard for the DE focus-
+# change titlebar repaint (user-reported 2026-07-19).  [10.4s measured on
+# 55c842b9]
+bash scripts/test_de_focus_damage_host.sh
+# scripts/test_de_term_password_echo.sh: REGRESSION gate for the DE scene
+# terminal PASSWORD-ECHO suppression (user-reported: `newshell hostowner` in
+# the DE terminal showed the typed password `hamnix` in CLEAR TEXT).  [11.0s
+# measured on 55c842b9]
+bash scripts/test_de_term_password_echo.sh
+# scripts/test_de_term_editor_features.sh: REGRESSION gate for three DE
+# terminal / shell interactivity features that can each silently rot across
+# unrelated refactors:  [14.7s measured on 55c842b9]
+bash scripts/test_de_term_editor_features.sh
+# scripts/test_jsengine_strpool_clean_host.sh: FAST, QEMU-free gate that the
+# STRING-POOL ceiling fails CLEANLY.  [18.6s measured on 55c842b9]
+bash scripts/test_jsengine_strpool_clean_host.sh
+# scripts/test_jsengine_xhr_host.sh: FAST, QEMU-free gate for the JS engine's
+# XMLHttpRequest API (lib/web/js/builtins/xhr.ad) via the x86_64-linux host
+# driver (user/js_host.ad).  [18.6s measured on 55c842b9]
+bash scripts/test_jsengine_xhr_host.sh
+# scripts/test_jsengine_performance_host.sh: FAST, QEMU-free gate for the JS
+# engine's `performance` global (High Resolution Time + User Timing), via the
+# x86_64-linux host driver (user/js_host.ad).  [19.7s measured on 55c842b9]
+bash scripts/test_jsengine_performance_host.sh
+# scripts/test_jsengine_gc_strpool_host.sh: QEMU-free gate proving the Phase-4
+# NON-MOVING string-id garbage collector (a) unblocks the string-heavy class
+# of scripts that previously EXHAUSTED the string id table at ~200k
+# allocations, and  [21.1s measured on 55c842b9]
+bash scripts/test_jsengine_gc_strpool_host.sh
+# scripts/test_jsengine_gc_unblocks_host.sh: FAST, QEMU-free gate that the
+# value-cell + env-scope garbage collectors UNBLOCK the loop class of scripts
+# that used to exhaust the bump-only arenas.  [26.5s measured on 55c842b9]
+bash scripts/test_jsengine_gc_unblocks_host.sh
+# scripts/test_net9_host.sh: prove the UNCHANGED Plan-9 /net networking stack
+# (user/http9.ad + user/net9.ad) fetches REAL, LIVE websites on the Linux
+# HOST, over both http AND https, via the host /net SHIM
+# (scripts/net9_host_shim.c).  [27.9s measured on 55c842b9]
+bash scripts/test_net9_host.sh
+# scripts/test_hambrowse_classlistr2_host.sh: FAST, QEMU-free gate for the
+# round-2 DOM Element.classList completeness (W3C dom-core / DOMTokenList): -
+# toggle(name, force): force=true keeps/adds, force=false removes, returns
+# [40.7s measured on 55c842b9]
+bash scripts/test_hambrowse_classlistr2_host.sh
+# scripts/test_hambrowse_dommut_host.sh: FAST, QEMU-free gate for the DOM
+# MUTATION + node-identity surface real pages depend on (browser campaign
+# round 3). Rounds 1/2 (#320/#324) shipped the DOM-API surface and the real
+# [40.7s measured on 55c842b9]
+bash scripts/test_hambrowse_dommut_host.sh
+# scripts/test_hambrowse_innerhtml_host.sh: FAST, QEMU-free gate for the
+# .innerHTML SETTER (browser campaign round 4). Frameworks and hand-rolled
+# widgets build UI by assigning `el.innerHTML = "<...>"`; the round-3 engine
+# [40.7s measured on 55c842b9]
+bash scripts/test_hambrowse_innerhtml_host.sh
+# scripts/test_hambrowse_cssnl_host.sh: FAST, QEMU-free gate for bug #250: the
+# CSS property matcher (_prop_is / _prop_prefix) and the value-start skip
+# (_val_start / _val_starts) trimmed spaces + tabs but NOT newlines, so a rule
+# [41.0s measured on 55c842b9]
+bash scripts/test_hambrowse_cssnl_host.sh
+# scripts/test_hambrowse_attrsel_host.sh: FAST, QEMU-free gate for CSS
+# ATTRIBUTE SELECTORS in the native browser cascade (lib/web/css/cascade.ad).
+# This is the single listed css-selectors gap ("attribute selectors in the CSS
+# [41.1s measured on 55c842b9]
+bash scripts/test_hambrowse_attrsel_host.sh
+# scripts/test_hambrowse_contains_host.sh: FAST, QEMU-free gate for
+# Node.contains(other) (W3C DOM). Returns true iff `other` is the node itself
+# or a descendant; false for an ancestor, a sibling, or a null/non-element
+# arg.  [41.1s measured on 55c842b9]
+bash scripts/test_hambrowse_contains_host.sh
+# scripts/test_hambrowse_bgshorthand_host.sh: FAST, QEMU-free gate for the
+# `background:` SHORTHAND colour extraction in the native browser cascade
+# (lib/web/css/cascade.ad). Before this the shorthand only parsed a colour at
+# [41.2s measured on 55c842b9]
+bash scripts/test_hambrowse_bgshorthand_host.sh
+# scripts/test_hambrowse_clearrebuild_host.sh: FAST, QEMU-free gate for the
+# "clear the container, then rebuild it from data" idiom (browser campaign
+# round 12, audit finding #3). This is THE dominant JS list-update pattern
+# [41.2s measured on 55c842b9]
+bash scripts/test_hambrowse_clearrebuild_host.sh
+# scripts/test_hambrowse_pseudocss_host.sh: FAST, QEMU-free gate for CSS
+# PSEUDO-CLASSES / PSEUDO-ELEMENTS in the native browser cascade
+# (lib/web/css/cascade.ad). Before this round _parse_compound skipped ':'
+# bytes  [41.2s measured on 55c842b9]
+bash scripts/test_hambrowse_pseudocss_host.sh
+# scripts/test_hambrowse_boxr2_host.sh: FAST, QEMU-free gate for the ROUND-2
+# box-model / flex / position cascade properties in the native browser engine
+# (lib/web/css/cascade.ad). Each is a property the LAYOUT module needs; the
+# ones  [41.6s measured on 55c842b9]
+bash scripts/test_hambrowse_boxr2_host.sh
+# scripts/test_hambrowse_insadj_host.sh: FAST, QEMU-free gate for
+# Element.insertAdjacentHTML(position, html) (W3C DOM Parsing). 'beforeend'
+# appends the parsed fragment inside the element (after existing content);
+# [42.8s measured on 55c842b9]
+bash scripts/test_hambrowse_insadj_host.sh
+# scripts/test_hambrowse_matches_host.sh: FAST, QEMU-free gate for
+# Element.matches(selector) + Element.closest(selector) (W3C dom-core; both
+# were listed missing). Event-delegation code (e.target.closest('.item'),
+# [42.8s measured on 55c842b9]
+bash scripts/test_hambrowse_matches_host.sh
+# scripts/test_hambrowse_gencontent_host.sh: FAST, QEMU-free gate for CSS
+# GENERATED CONTENT (::before / ::after) in the native browser layout engine
+# (lib/web/layout/box.ad + the _gencontent_open/_gencontent_close hooks in
+# [42.9s measured on 55c842b9]
+bash scripts/test_hambrowse_gencontent_host.sh
+# scripts/test_hambrowse_gridjustify_host.sh: FAST, QEMU-free gate for CSS
+# GRID `justify-content` (inline-axis alignment of the grid TRACKS) in the
+# native browser engine (lib/web/layout/box.ad _grid_resolve_tracks).  [42.9s
+# measured on 55c842b9]
+bash scripts/test_hambrowse_gridjustify_host.sh
+# scripts/test_hambrowse_inputtypes_host.sh: FAST, QEMU-free gate for
+# specialized <input type=...> rendering (W3C html-forms round, w3c/dom-core).
+# Before this every non-checkbox/radio/button/hidden input fell through to the
+# [42.9s measured on 55c842b9]
+bash scripts/test_hambrowse_inputtypes_host.sh
+# scripts/test_hambrowse_gridr2_host.sh: FAST, QEMU-free gate for the CSS GRID
+# ROUND-2 track functions in the native browser engine cascade
+# (lib/web/css/cascade.ad):  [43.0s measured on 55c842b9]
+bash scripts/test_hambrowse_gridr2_host.sh
+# scripts/test_hambrowse_liclass_host.sh: FAST, QEMU-free gate for the
+# round-13 rung in the native browser engine (lib/htmlengine.ad): <li>
+# elements now apply their OWN class/inline cascade (colour, text-
+# decoration:line-through,  [43.1s measured on 55c842b9]
+bash scripts/test_hambrowse_liclass_host.sh
+# scripts/test_hambrowse_flexpadtop_host.sh: FAST, QEMU-free regression gate
+# pinning a FLEX ITEM's padding-top.  [43.2s measured on 55c842b9]
+bash scripts/test_hambrowse_flexpadtop_host.sh
+# scripts/test_hambrowse_fieldset_host.sh: FAST, QEMU-free gate for the native
+# browser engine drawing a <fieldset> border (compat-audit #7). Before the
+# fix, <fieldset> hit the "transparent container" tag path and never opened a
+# box, so  [43.4s measured on 55c842b9]
+bash scripts/test_hambrowse_fieldset_host.sh
+# scripts/test_hambrowse_chrome_shell.sh: gate for the Chrome-style browser
+# SHELL: (1) the pure ad-block + search-engine logic modules (host unit
+# harness), and (2) the shell's overlay chrome — the ⋮ application MENU
+# dropdown and the  [43.7s measured on 55c842b9]
+bash scripts/test_hambrowse_chrome_shell.sh
+# scripts/test_hambrowse_valign_host.sh: FAST, QEMU-free gate for ROUND-3 CSS
+# vertical-align on an inline-block in the native browser engine
+# (lib/web/layout/box.ad). The m_valign cascade winner was parsed by round-2
+# but  [43.7s measured on 55c842b9]
+bash scripts/test_hambrowse_valign_host.sh
+# scripts/test_jsengine_fontfaceset_host.sh: FAST, QEMU-free gate for the DOM
+# CSS Font Loading API (`document.fonts` : FontFaceSet), via the x86_64-linux
+# hambrowse host driver (user/hambrowse_host.ad). Unlike `performance` (a pure
+# [43.8s measured on 55c842b9]
+bash scripts/test_jsengine_fontfaceset_host.sh
+# scripts/test_hambrowse_qsel_created_host.sh: FAST, QEMU-free gate for
+# selectors over the CREATED-node tree (browser campaign round 5). Before
+# this, querySelector/All + getElementById/ByClassName/ByTagName scanned only
+# the  [44.6s measured on 55c842b9]
+bash scripts/test_hambrowse_qsel_created_host.sh
+# scripts/test_hambrowse_qsel_pseudo_host.sh: FAST, QEMU-free gate for the
+# EXTENDED structural pseudo-class family in the selectors API (W3C css-
+# selectors round, w3c/dom-core). Before this the query engine understood only
+# [44.6s measured on 55c842b9]
+bash scripts/test_hambrowse_qsel_pseudo_host.sh
+# scripts/test_hambrowse_flexmin_host.sh: FAST, QEMU-free gate for the flex
+# item MIN-CONTENT floor in the native browser engine (lib/htmlengine.ad).
+# [44.8s measured on 55c842b9]
+bash scripts/test_hambrowse_flexmin_host.sh
+# scripts/test_hambrowse_landing_host.sh: FAST, QEMU-free gate for the native
+# browser engine against a REALISTIC stylesheet-driven marketing page
+# (tests/fixtures/hambrowse_landing.html): a flex top bar, a card grid, and a
+# [44.8s measured on 55c842b9]
+bash scripts/test_hambrowse_landing_host.sh
+# scripts/test_hambrowse_position_host.sh: FAST, QEMU-free gate for CSS
+# POSITIONING in the native browser engine (lib/htmlengine.ad +
+# lib/htmlpage.ad), driven by the pixel backend user/hambrowse_host_gfx.ad.
+# Asserts on STABLE  [44.8s measured on 55c842b9]
+bash scripts/test_hambrowse_position_host.sh
+# scripts/test_hambrowse_height_host.sh: FAST, QEMU-free gate for ROUND-3 CSS
+# vertical sizing (height / min-height / max-height) in the native browser
+# engine (lib/web/layout/box.ad). These cascade winners (m_ht/m_minh/m_maxh)
+# were parsed  [45.0s measured on 55c842b9]
+bash scripts/test_hambrowse_height_host.sh
+# scripts/test_hambrowse_impliedtags_host.sh: FAST, QEMU-free gate for W3C
+# HTML5 tree-construction ROUND 8 in the native browser engine
+# (lib/web/dom/forms.ad + lib/web/layout + lib/web/css): IMPLIED / OPTIONAL
+# END  [45.0s measured on 55c842b9]
+bash scripts/test_hambrowse_impliedtags_host.sh
+# scripts/test_hambrowse_varfallback_host.sh: FAST, QEMU-free coverage-lock
+# gate for CSS custom-property var() FALLBACK completeness in the native
+# browser cascade (lib/web/css/cascade.ad _apply_decl). Proves every fallback
+# [45.2s measured on 55c842b9]
+bash scripts/test_hambrowse_varfallback_host.sh
+# scripts/test_hambrowse_rawtext_host.sh: FAST, QEMU-free gate for the source-
+# text selector engine's RAW-TEXT (CDATA) scope (browser campaign round 6).
+# The source-text scanners (_dom_collect_selector / _dom_find_by_id /  [45.6s
+# measured on 55c842b9]
+bash scripts/test_hambrowse_rawtext_host.sh
+# scripts/test_hambrowse_style_host.sh: FAST, QEMU-free gate for the
+# element.style property API (browser campaign round 7). Real pages drive
+# layout via JS inline style constantly (el.style.display='none',  [48.2s
+# measured on 55c842b9]
+bash scripts/test_hambrowse_style_host.sh
+# scripts/test_hambrowse_twofloat_host.sh: FAST, QEMU-free gate for a
+# SIMULTANEOUS left+right float pair in the native browser engine
+# (lib/web/layout/box.ad float channels). A `float:left` box and a
+# `float:right`  [50.4s measured on 55c842b9]
+bash scripts/test_hambrowse_twofloat_host.sh
+# scripts/test_hambrowse_textindent_host.sh: FAST, QEMU-free gate for ROUND-3
+# CSS text-indent (first-line inset) in the native browser engine
+# (lib/web/layout/box.ad). The m_tindent cascade winner was parsed by round-2
+# but  [54.4s measured on 55c842b9]
+bash scripts/test_hambrowse_textindent_host.sh

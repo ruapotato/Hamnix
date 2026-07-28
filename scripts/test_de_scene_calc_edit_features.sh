@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+#
+# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
+# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s). Grep-guard
+# from 2026-06-19; the missing pieces it reports are hamcalc keyboard mappings
+# ('+' 43, '=' 61) and hamedit's Save-As prompt (_commit_save_as, the prompting
+# modal state, Ctrl-S-with-no-file entering the prompt). Those are USER-VISIBLE
+# features, so this is more likely lost behaviour than a rename — verify by
+# using the app before assuming gate rot.
 # scripts/test_de_scene_calc_edit_features.sh
 #
 # Fast, deterministic, grep-only (NO QEMU boot) structural regression guard
