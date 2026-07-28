@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html><head><title>live innerHTML</title></head><body>
+<div id="host"><p id="p1">one</p><span>two</span></div>
+<div id="host2"><i>keep</i></div>
+<table id="tbl"><tr><td>r1</td></tr></table>
+<script>
+function L(t, v) { console.log('IH ' + t + ' :: ' + v); }
+// ---- implied elements FIRST, on the untouched tree (chromium-measured) ------
+L('tags', document.getElementsByTagName('*').length);
+L('tbody', document.getElementsByTagName('tbody').length);
+L('htmlel', document.documentElement ? document.documentElement.tagName : 'none');
+L('bodykids', document.body.children ? document.body.children.length : 'undefined');
+L('bodykid0', document.body.children ? document.body.children[0].tagName : 'none');
+// ---- live innerHTML --------------------------------------------------------
+var host = document.getElementById('host');
+L('initial', host.innerHTML);
+var b = document.createElement('b');
+b.textContent = 'NEW';
+host.appendChild(b);
+L('append', host.innerHTML);
+document.getElementById('p1').textContent = 'CHANGED';
+L('textcontent', host.innerHTML);
+host.removeChild(document.getElementById('p1'));
+L('remove', host.innerHTML);
+host.innerHTML = '<i>set</i>';
+L('assign', host.innerHTML);
+// an UNMUTATED sibling still reads back its exact source slice
+L('sibling', document.getElementById('host2').innerHTML);
+// display:none is NOT removal: a browser still serialises the element
+var h2 = document.getElementById('host2');
+h2.firstElementChild.style.display = 'none';
+L('hidden', h2.innerHTML.indexOf('<i') >= 0 ? 'present' : 'gone');
+</script>
+</body></html>

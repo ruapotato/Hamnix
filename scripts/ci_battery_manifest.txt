@@ -4151,3 +4151,15 @@ HAMNIX_SKIP_BUILD=1 bash scripts/test_installed_system_parity.sh
 # under /etc/run-selftests in test_dns/test_net_fuzz/test_net_http/
 # test_net_https*. ~2-10 min (one OVMF boot; rebuilds the image if stale).
 bash scripts/ci_run_gate.sh scripts/test_boot_net_phase.sh
+# LIVE DOM (2026-07-28). innerHTML is a re-serialisation of the CURRENT tree,
+# not a slice of the parse-time source: measured against chromium --headless,
+# appendChild / a descendant's textContent= / removeChild were ALL invisible to
+# it. Same gate covers the IMPLIED elements (<html>/<head>/<body>/<tbody>) the
+# span-anchored DOM could not represent — cern_project was 51 elements vs
+# chromium's 53, hackernews 805 vs 809, both now exact. REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_ihlive_host.sh
+
+# LIVE CONTENT ATTRIBUTES (2026-07-28). getAttribute()/hasAttribute() read the
+# source START TAG, so a setAttribute()/removeAttribute() was invisible to them
+# (chromium: getAttribute reports the CURRENT attribute). REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_attrlive_host.sh

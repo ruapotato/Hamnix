@@ -412,6 +412,28 @@ CRE_IDX_BASE: int32 = 1000000
 #   * ser mode emits the JS-set `display` in the merged inline style, so a
 #     hidden element round-trips as <div style="display:none">.
 g_ser_mode: int32 = 0                 # 1 = emitting innerHTML, not the render
+
+# ---- setAttribute overrides on SOURCE-anchored elements ---------------------
+# getAttribute() reads the START TAG out of the source, which is right for an
+# untouched element and WRONG the moment script writes one: measured against
+# chromium, after `a.setAttribute('href','b.html')` chromium's getAttribute
+# answers "b.html" while ours still answered the source's "a.html". The JS
+# property could not be used as the store because href/src/alt/title are
+# REFLECTED onto every element at registration (and href/src are absolutised),
+# so "the object has an own `href`" says nothing about whether script wrote it.
+# This is that missing bit: an explicit per-(element,name) override list, which
+# getAttribute/hasAttribute consult before the source tag. A negative vlen is a
+# removeAttribute() tombstone.
+SATTR_MAX:     int32 = 512
+SATTR_BUF_CAP: int32 = 16384
+sattr_el:      Array[512, int32]
+sattr_noff:    Array[512, int32]
+sattr_nlen:    Array[512, int32]
+sattr_voff:    Array[512, int32]
+sattr_vlen:    Array[512, int32]      # -1 = attribute REMOVED
+sattr_buf:     Array[16384, uint8]
+sattr_buf_len: int32 = 0
+sattr_n:       int32 = 0
 # Mutation counter. Zero means no structural/attribute mutation has run yet, so
 # innerHTML is provably the source slice and takes the old (cheap, byte-exact)
 # path. Bumped by every DOM-mutating native entry point.
@@ -1019,6 +1041,8 @@ def _dom_reset():
     rw_len = 0
     g_ser_mode = 0
     g_dom_mutated = 0
+    sattr_n = 0
+    sattr_buf_len = 0
     ddi: int32 = 0
     while ddi < DOM_MAX:
         dom_detached[ddi] = 0

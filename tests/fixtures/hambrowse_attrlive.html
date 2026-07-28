@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><title>live attributes</title></head><body>
+<a id="lnk" href="a.html" title="T">x</a>
+<img id="im" src="p.png" alt="A">
+<script>
+function L(t, v) { console.log('AT ' + t + ' :: ' + v); }
+var a = document.getElementById('lnk');
+L('get.before', a.getAttribute('href'));
+a.setAttribute('href', 'b.html');
+L('get.after', a.getAttribute('href'));
+L('has.after', a.hasAttribute('href'));
+a.setAttribute('data-k', 'v');
+L('get.new', a.getAttribute('data-k'));
+a.removeAttribute('title');
+L('get.removed', a.getAttribute('title'));
+L('has.removed', a.hasAttribute('title'));
+var im = document.getElementById('im');
+im.setAttribute('src', 'q.png');
+L('img.get', im.getAttribute('src'));
+</script>
+</body></html>

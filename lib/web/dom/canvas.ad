@@ -2493,6 +2493,11 @@ def _js_host_dispatch(id: int32) -> int32:
             han: int32 = _arg_bytes(0, &hn[0], 64)
             hel: int32 = _find_el_by_obj(js_this())
             if hel >= 0:
+                hso: int32 = _sattr_find(hel, &hn[0], han)
+                if hso >= 0:
+                    if sattr_vlen[hso] < 0:
+                        return js_bool(0)
+                    return js_bool(1)
                 hte: uint64 = cast[uint64](dom_cstart[hel]) - 1
                 if _hx_find_attr(cast[uint64](dom_ns[hel]), hte, &hn[0]) != 0:
                     return js_bool(1)
@@ -2522,6 +2527,10 @@ def _js_host_dispatch(id: int32) -> int32:
             if mreg_n != 0 and rtgt >= 0:
                 rm_oldattr = _mo_attr_oldvalue(rtgt, &rn[0], ran)
             if rtgt >= 0:
+                # tombstone the content attribute so getAttribute/hasAttribute
+                # stop reporting the value still sitting in the source tag.
+                if rel_i >= 0:
+                    _sattr_set(rel_i, &rn[0], ran, &dom_txtbuf[0], -1)
                 # Reflect the removal on the JS object so a later read + the
                 # readback see it cleared. `class` clears className (which the
                 # rewrite bakes back into the cascade).
@@ -3394,6 +3403,15 @@ def _js_host_dispatch(id: int32) -> int32:
                 return _style_serialize(gsto)
             el2: int32 = _find_el_by_obj(js_this())
             if el2 >= 0:
+                # a setAttribute()/removeAttribute() override outranks the
+                # source start tag (chromium: getAttribute reports the CURRENT
+                # content attribute, not the parsed one).
+                so: int32 = _sattr_find(el2, &nm[0], an)
+                if so >= 0:
+                    if sattr_vlen[so] < 0:
+                        return js_null()
+                    return js_new_string(&sattr_buf[sattr_voff[so]], \
+                                         cast[uint64](sattr_vlen[so]))
                 te2: uint64 = cast[uint64](dom_cstart[el2]) - 1
                 if _hx_find_attr(cast[uint64](dom_ns[el2]), te2, &nm[0]) != 0:
                     # ENTITY-DECODED, like every other attribute read: chromium
@@ -3450,6 +3468,14 @@ def _js_host_dispatch(id: int32) -> int32:
             if mreg_n != 0 and tgt >= 0:
                 mo_oldattr = _mo_attr_oldvalue(tgt, &nm2[0], an2)
             if tgt >= 0:
+                # record the CONTENT attribute so getAttribute answers the new
+                # value rather than the parsed start tag.
+                if el3 >= 0:
+                    sav0: Ptr[uint8] = js_str_bytes(js_arg(1))
+                    savn0: int32 = js_str_bytelen(js_arg(1))
+                    if _is_undef_str(sav0, savn0) != 0:
+                        savn0 = 0
+                    _sattr_set(el3, &nm2[0], an2, sav0, savn0)
                 if _bytes_eq(&nm2[0], an2, cast[Ptr[uint8]]("class"), 5) != 0:
                     js_set_prop(tgt, cast[Ptr[uint8]]("className"), 9, js_arg(1))
                 elif _bytes_eq(&nm2[0], an2, cast[Ptr[uint8]]("style"), 5) != 0:
@@ -3461,6 +3487,16 @@ def _js_host_dispatch(id: int32) -> int32:
                     san: int32 = _cstr_len(sap)
                     if _is_undef_str(sap, san) == 0:
                         _style_apply_csstext(sto, sap, san)
+                elif _is_url_attr(&nm2[0], an2) != 0:
+                    # href/src reflect the URL RESOLVED against the document
+                    # base (chromium: setAttribute('href','b.html') then .href
+                    # reads file:///…/b.html). Storing the raw string left the
+                    # reflected property relative and stale.
+                    suv: Ptr[uint8] = js_str_bytes(js_arg(1))
+                    suvn: int32 = js_str_bytelen(js_arg(1))
+                    if _is_undef_str(suv, suvn) != 0:
+                        suvn = 0
+                    _set_url_prop(tgt, &nm2[0], cast[uint64](an2), suv, suvn)
                 else:
                     js_set_prop(tgt, &nm2[0], cast[uint64](an2), js_arg(1))
                 _mo_record_attr(js_this(), &nm2[0], an2, mo_oldattr)
@@ -4437,6 +4473,96 @@ def _readback_str(o: int32, name: Ptr[uint8], nlen: uint64) -> int32:
 # Read the JS-mutated DOM back into the override tables. Idempotent: resets the
 # override accumulators first, so it can run after the initial scripts AND
 # again after an event handler mutates the DOM.
+# Find the setAttribute-override slot for (element, name), or -1.
+def _sattr_find(el: int32, np: Ptr[uint8], nn: int32) -> int32:
+    i: int32 = 0
+    while i < sattr_n:
+        if sattr_el[i] == el and sattr_nlen[i] == nn and \
+           _idbytes_buf_eq(sattr_noff[i], nn, np, nn) != 0:
+            return i
+        i = i + 1
+    return -1
+
+
+# Case-insensitive compare of sattr_buf[off..off+n) against p[0..pn).
+def _idbytes_buf_eq(off: int32, n: int32, p: Ptr[uint8], pn: int32) -> int32:
+    if n != pn:
+        return 0
+    i: int32 = 0
+    while i < n:
+        if _hx_lower(sattr_buf[off + i]) != _hx_lower(p[i]):
+            return 0
+        i = i + 1
+    return 1
+
+
+# Record `el.name = value` (vlen < 0 = removeAttribute tombstone). Overwrites an
+# existing slot only when the new value fits it exactly; otherwise a fresh slot
+# is appended and _sattr_find's linear scan (which returns the FIRST match)
+# would find the stale one — so the old slot is retired by clearing its element.
+def _sattr_set(el: int32, np: Ptr[uint8], nn: int32, vp: Ptr[uint8], vn: int32):
+    if el < 0 or nn <= 0:
+        return
+    old: int32 = _sattr_find(el, np, nn)
+    if old >= 0:
+        sattr_el[old] = -1
+    if sattr_n >= SATTR_MAX:
+        return
+    if sattr_buf_len + nn + vn >= SATTR_BUF_CAP:
+        return
+    s: int32 = sattr_n
+    sattr_el[s] = el
+    sattr_noff[s] = sattr_buf_len
+    sattr_nlen[s] = nn
+    i: int32 = 0
+    while i < nn:
+        sattr_buf[sattr_buf_len] = np[i]
+        sattr_buf_len = sattr_buf_len + 1
+        i = i + 1
+    sattr_voff[s] = sattr_buf_len
+    if vn < 0:
+        sattr_vlen[s] = -1
+    else:
+        sattr_vlen[s] = vn
+        j: int32 = 0
+        while j < vn:
+            sattr_buf[sattr_buf_len] = vp[j]
+            sattr_buf_len = sattr_buf_len + 1
+            j = j + 1
+    sattr_n = s + 1
+
+
+# Assign a URL-VALUED IDL property (href / src) from an arbitrary string,
+# resolved against the document base URL exactly as _reflect_url_attr does at
+# registration time. setAttribute used to store the RAW string, so
+# `a.setAttribute('href','b.html')` left `.href` relative where chromium
+# reports the absolute URL.
+def _set_url_prop(o: int32, name: Ptr[uint8], nlen: uint64, vp: Ptr[uint8], vn: int32):
+    if base_url_len <= 0 or vn <= 0:
+        js_set_prop(o, name, nlen, js_new_string(vp, cast[uint64](vn)))
+        return
+    sa: int32 = 0
+    sb: int32 = vn
+    while sa < sb and vp[sa] <= 32:
+        sa = sa + 1
+    while sb > sa and vp[sb - 1] <= 32:
+        sb = sb - 1
+    if sb <= sa:
+        js_set_prop(o, name, nlen, js_new_string(vp, cast[uint64](vn)))
+        return
+    n2: int32 = _url_resolve(&vp[sa], sb - sa, &base_url[0], base_url_len)
+    js_set_prop(o, name, nlen, js_new_string(&url_buf_a[0], cast[uint64](n2)))
+
+
+# Is `name` a URL-valued content attribute whose IDL property is absolutised?
+def _is_url_attr(p: Ptr[uint8], n: int32) -> int32:
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("href"), 4) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("src"), 3) != 0:
+        return 1
+    return 0
+
+
 def _dom_readback():
     dom_ov_len = 0
     dom_n_overrides = 0
@@ -4907,8 +5033,16 @@ def _run_scripts() -> int32:
     js_hbase = js_host_base()
     js_set_host_dispatch(cast[Fn[int32, int32]](cast[uint64](_js_host_dispatch)))
     js_set_member_hook(cast[Fn[int32, int32]](cast[uint64](_js_member_set_hook)))
-    _js_build_document()
+    # The tree overlay must exist BEFORE the first element object is minted.
+    # _dom_wire_tree — which is what gives an element .children/.childNodes/
+    # .firstElementChild/.parentNode — returns immediately while tx_built == 0,
+    # and _js_build_document registers document.documentElement/head/body. Built
+    # in the other order, those three (the roots every traversal starts from)
+    # were the ONLY elements on the page with no children: measured against
+    # chromium --headless, `document.body.children` was `undefined` where a
+    # browser answers an HTMLCollection of length 4.
     _dom_build_tree_index()                               # parent/child overlay (round 2)
+    _js_build_document()
     js_ctx_live = 1
     # PRE-LAYOUT: lay out the (pre-script) source once so a page's <script>s can
     # read box geometry (getBoundingClientRect / offsetWidth / getComputedStyle).

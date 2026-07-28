@@ -730,7 +730,14 @@ DD_INDENT: int32 = 40       # px of left indent per <dd> level (browser default)
 # <dt>/<dd> — or the enclosing </dl> — implicitly closes the previous item.
 p_open: int32 = 0           # a <p> is open with its </p> not yet seen
 dl_item: int32 = 0          # 0 none, 1 <dt> open, 2 <dd> open
-MARK_BG: int32 = 0xfff275   # <mark> highlight background (yellow)
+# <mark> UA highlight background. This was 0xfff275, a muted yellow that no
+# browser uses. MEASURED in chromium --headless with getComputedStyle on a
+# <mark> with no author CSS, on two independent fixtures:
+#     background-color: rgb(255, 255, 0)   color: rgb(0, 0, 0)
+# i.e. plain `yellow`, which is also what the HTML spec's suggested UA
+# stylesheet says (`mark { background: yellow; color: black; }`). The two
+# corpus fixtures that carry a <mark> move, and they move TOWARDS chromium.
+MARK_BG: int32 = 0xffff00   # <mark> highlight background (chromium UA: yellow)
 pre_mode: int32 = 0
 
 # LIST layout — <ul>/<ol>/<li> with markers, ordered numbering + nesting.

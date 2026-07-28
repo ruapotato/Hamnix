@@ -61,6 +61,14 @@ assert_grep() {
 # INLINE UA DEFAULTS: <sub> lowered, <sup> raised, <s>/<del> struck (2), the four
 # <kbd>/<samp>/<var> runs in monospace, and a <mark> highlight in yellow.
 #
+# The markbg value was WRONG, not the engine — in the other direction from ddx
+# below: it demanded #fff275, a muted yellow no browser uses. MEASURED in
+# chromium --headless with getComputedStyle on a <mark> carrying no author CSS
+# (two independent fixtures): background-color rgb(255, 255, 0), color
+# rgb(0, 0, 0) — plain `yellow`, which is also the HTML spec's suggested UA
+# stylesheet. The engine constant and this assertion both moved to #ffff00.
+# Re-measured 2026-07-28.
+#
 # The `ddx` bound was WRONG, not the engine. UAELEM ddx is the maximum ROW-START
 # x of any flowed segment, i.e. the deepest block indent on the page, and this
 # gate demanded >= 60px. MEASURED in chromium --headless on this very fixture
@@ -79,10 +87,10 @@ if awk '/^UAELEM /{
       if($i=="mark") mk=$(i+1); if($i=="markbg") mb=$(i+1);
       if($i=="minpx") mp=$(i+1); if($i=="ddx") dd=$(i+1);
     }
-    ok = (sub_n>=1 && sup_n>=1 && st>=2 && mo>=4 && mk>=1 && mb=="#fff275" && mp<16 && dd>=40 && dd<=56)
+    ok = (sub_n>=1 && sup_n>=1 && st>=2 && mo>=4 && mk>=1 && mb=="#ffff00" && mp<16 && dd>=40 && dd<=56)
   }
   END{ exit(ok?0:1) }' "$DUMP"; then
-    echo "[hb-ua] PASS sub/sup raised-lowered, strike-through, mono, mark(#fff275), small<16px, dd indented 40-56px (chromium: 48)"
+    echo "[hb-ua] PASS sub/sup raised-lowered, strike-through, mono, mark(#ffff00), small<16px, dd indented 40-56px (chromium: 48)"
 else
     echo "[hb-ua] FAIL UAELEM inline defaults not all present"; fail=1
 fi
