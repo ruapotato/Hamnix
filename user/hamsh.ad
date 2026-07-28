@@ -14901,7 +14901,16 @@ def _builtin_wait(node: int32, argc: int32):
 # We list the pattern's parent directory and fnmatch the leaf.
 glob_dir:  Array[256, uint8]
 glob_leaf: Array[128, uint8]
-glob_list: Array[4096, uint8]
+# GLOB_LIST_MAX — the raw "NAME\n" listing buffer. At 4096 this was the LAST
+# silent cap on the `rm *` path: p9_listdir simply stops when the buffer is
+# full, so a directory whose listing exceeded 4 KiB (~500 short names) had its
+# tail invisibly dropped and the glob expanded to a PREFIX of the directory.
+# The command then did part of its job and reported success — the same bug the
+# argv cap caused, one layer further out. 64 KiB holds ~8000 short names, well
+# past ARGV_MAX (2048), so argv's loud raise is always the wall that is hit
+# first; a full buffer is nevertheless treated as truncation and raised.
+GLOB_LIST_MAX: uint64 = 65536
+glob_list: Array[65536, uint8]
 
 
 def _fnmatch(pat: Ptr[uint8], name: Ptr[uint8]) -> int32:
@@ -14964,8 +14973,15 @@ def _glob_try(pattern: Ptr[uint8]) -> int32:
         li = li + 1
     glob_leaf[li] = 0
     # listdir
-    nlist: int64 = _ext_listdir(&glob_dir[0], &glob_list[0], 4096)
+    nlist: int64 = _ext_listdir(&glob_dir[0], &glob_list[0], GLOB_LIST_MAX)
     if nlist <= 0:
+        return 0
+    if cast[uint64](nlist) >= GLOB_LIST_MAX:
+        # The listing filled the buffer, so entries beyond it were never
+        # read. Expanding the glob against a PREFIX of the directory would
+        # silently half-do whatever the command is (`rm`, `mv`, `chmod`).
+        # Refuse instead; exec_statement's rt_fault check stops the command.
+        rt_raise("glob: directory listing too large (GLOB_LIST_MAX=65536 bytes) — command NOT run")
         return 0
     count: int32 = 0
     p: uint64 = 0
@@ -14979,8 +14995,14 @@ def _glob_try(pattern: Ptr[uint8]) -> int32:
             p = p + 1
         # NUL-terminate the entry name in a temp
         ent: Array[128, uint8]
+        if elen + 1 >= 128:
+            # A name too long for the scratch would be TRUNCATED, and a
+            # truncated name is a DIFFERENT path — `rm` would then delete
+            # the wrong file or silently skip it. Refuse the whole glob.
+            rt_raise("glob: directory entry name too long (>127 bytes) — command NOT run")
+            return 0
         ec: uint64 = 0
-        while ec < elen and ec + 1 < 128:
+        while ec < elen:
             ent[ec] = glob_list[es + ec]
             ec = ec + 1
         ent[ec] = 0
@@ -14995,7 +15017,12 @@ def _glob_try(pattern: Ptr[uint8]) -> int32:
                     fp[fi] = 47
                     fi = fi + 1
             gj: uint64 = 0
-            while ent[gj] != 0 and fi + 1 < 384:
+            while ent[gj] != 0:
+                if fi + 1 >= 384:
+                    # Same reasoning as the entry-name guard: a truncated
+                    # full path names a different file.
+                    rt_raise("glob: expanded path too long (>383 bytes) — command NOT run")
+                    return 0
                 fp[fi] = ent[gj]
                 fi = fi + 1
                 gj = gj + 1
