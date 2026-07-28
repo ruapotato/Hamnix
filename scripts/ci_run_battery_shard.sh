@@ -66,12 +66,26 @@ while [ "$i" -lt "$total" ]; do
         # non-failing ::warning:: naming the gate — NOT a hard FAIL, because
         # under pure TCG a timeout is far more likely host-starvation than a
         # real regression (same three-valued philosophy as ci_run_gate.sh).
+        #
+        # 900 not 600 (2026-07-28): three registered gates carry INTERNAL
+        # waits that already exceed 600 s on their own, so under the old cap
+        # they could only ever report INCONCLUSIVE — pure cost, zero possible
+        # verdict. test_ext4_largedir declares a single `timeout 900s`;
+        # test_ext4_fsync declares two 420 s boots (840 s); test_xargs declares
+        # a 480 s boot wait on top of its build, and is the gate that actually
+        # tripped the cap on 2026-07-27. Raising the ceiling turns a
+        # non-observation into an observation, which is strictly MORE honest —
+        # it cannot turn a FAIL into a PASS, only an INCONCLUSIVE into a real
+        # verdict. The shard budget can afford it because the three build
+        # caches landed the same day (scripts/_kernel_image.sh,
+        # scripts/_adder_bin.sh, build_user.sh's up-to-date short-circuit)
+        # took the average gate from ~77 s to ~47 s.
         rc=0
-        timeout -k 10 "${GATE_TIMEOUT:-600}"s bash -c "$cmd" || rc=$?
+        timeout -k 10 "${GATE_TIMEOUT:-900}"s bash -c "$cmd" || rc=$?
         if [ "$rc" -eq 0 ]; then
             echo "PASS $cmd"
         elif [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-            echo "::warning::INCONCLUSIVE (gate exceeded ${GATE_TIMEOUT:-600}s under TCG): $cmd"
+            echo "::warning::INCONCLUSIVE (gate exceeded ${GATE_TIMEOUT:-900}s under TCG): $cmd"
         else
             echo "FAIL $cmd (exit $rc)"
             fail=1

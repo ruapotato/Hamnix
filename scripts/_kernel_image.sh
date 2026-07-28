@@ -41,6 +41,21 @@
 # unreachable by construction rather than merely unlikely. Fingerprinting
 # costs ~0.4 s against a 101 s compile.
 #
+# MEASURED HIT RATE — READ THIS BEFORE BUDGETING WITH IT
+# ======================================================
+# scripts/build_initramfs.py embeds EVERY build/user/*.elf at /bin/<name>,
+# and 164 of the 181 kernel-building gates compile a fixture into
+# build/user/ before the kernel. Each such gate therefore has a genuinely
+# DIFFERENT initramfs and needs a genuinely different kernel: within one
+# fresh shard those 164 always MISS, and that ~101 s compile is irreducible
+# for them as long as the kernel .incbin-s its initramfs. This cache pays
+# off for (a) the 17 gates that do not plant a fixture, (b) any gate re-run
+# in the same working tree (local iteration), and (c) a shard where a warm
+# build/kernelcache is restored. It is NOT a 178x saving; do not budget as
+# if it were. The structural fix for the other 164 would be to hand the
+# initramfs to QEMU as a separate module instead of compiling it into the
+# image — a kernel boot-path change, deliberately out of scope here.
+#
 # The cache lives in build/kernelcache/ (gitignored with the rest of
 # build/). It is deliberately NOT in the freshness gate's artifact list:
 # those entries are addressed by input hash, not by mtime.
