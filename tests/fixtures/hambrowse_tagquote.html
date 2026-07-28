@@ -4,4 +4,28 @@
 <p>GAMMA <b title='p>q>r'>BOLDY</b> END3</p>
 <p>DELTA <a href='u.html' title="m>n">MIXQ</a> END4</p>
 <p>EPS <input type="text" value="v>w" name="f"> END5</p>
+
+<!-- DOM TEXT VIEW. The layout scanner was made quote-aware first; the DOM,
+     forms, CSS-harvest, table and flex scanners each kept their own naive
+     "advance to the first '>'" walk, so textContent still leaked attribute
+     tails long after the rendered flow was clean. -->
+<div id="dt">A<span title="x > y">B</span>C</div>
+<div id="dt2">P<a href="q.html" data-j='{"a":"><"}'>Q</a>R</div>
+<div id="dt3">M<i title="1 > 2" data-k="3 > 4">N</i>O</div>
+<div id="dt5">U<em title=x>y>V</em>W</div>
+
+<!-- Raw-text exception: a '>' AND a whole "<html"/"<body" inside a <script>
+     string literal must not be read as markup, or the enclosing close tag is
+     never found (books.toscrape has 5x "<html", google 3x "<body"). -->
+<div id="dt4">S<script>var z="a>b <html <body </div>";</script>T</div>
+<style>/* q>r */ #dt3 { color: red; }</style>
+
+<script>
+var g = function (i) { return document.getElementById(i).textContent; };
+console.log('TQ dt=[' + g('dt') + ']');
+console.log('TQ dt2=[' + g('dt2') + ']');
+console.log('TQ dt3=[' + g('dt3') + ']');
+console.log('TQ dt5=[' + g('dt5') + ']');
+console.log('TQ title=[' + document.getElementById('dt').firstElementChild.getAttribute('title') + ']');
+</script>
 </body></html>

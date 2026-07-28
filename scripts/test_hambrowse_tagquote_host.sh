@@ -75,6 +75,22 @@ assert_nogrep 'b&&c'   "no leaked span data-x tail"
 assert_nogrep "q>r'"   "no leaked single-quoted attribute tail (q>r')"
 assert_nogrep 'm>n"'   "no leaked mixed-quote attribute tail"
 
+# ---------------------------------------------------------------- DOM view.
+# The LAYOUT scanner was made quote-aware first (round 2); the DOM, forms,
+# CSS-harvest, table and flex scanners each kept their own naive "advance to
+# the first '>'" walk, so textContent still leaked attribute tails long after
+# the rendered flow was clean — <span title="x > y"> gave `A y">BC` for `ABC`,
+# and wikipedia's body.textContent over-reported by 21231 chars.
+#
+# Every expectation below is chromium --headless --dump-dom on THIS fixture:
+#   TQ dt=[ABC] TQ dt2=[PQR] TQ dt3=[MNO] TQ dt5=[Uy>VW] TQ title=[x > y]
+assert_grep 'TQ dt=[ABC]'      "textContent: '>' inside a double-quoted attr is value text"
+assert_grep 'TQ dt2=[PQR]'     "textContent: '><' inside a single-quoted JSON attr is value text"
+assert_grep 'TQ dt3=[MNO]'     "textContent: two quoted attrs each carrying '>'"
+assert_grep 'TQ dt5=[Uy>VW]'   "textContent: an UNQUOTED value still ends at the first '>'"
+assert_grep 'TQ title=[x > y]' "getAttribute keeps the '>' inside the value"
+assert_nogrep 'JSERR'          "no script error"
+
 if [ "$fail" -ne 0 ]; then
     echo "[hb-tq] RESULT: FAIL"; exit 1
 fi

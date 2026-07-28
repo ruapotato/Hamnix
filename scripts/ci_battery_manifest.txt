@@ -3205,9 +3205,20 @@ bash scripts/test_hambrowse_realwebjs_host.sh
 # because every element snapshotted its full text AND raw markup into one shared
 # 64 KiB arena, and because _find_close counted "<body"/"<html" appearing inside
 # <script> string literals and HTML comments as real markup. Every expectation in
-# the gate is a chromium --headless --dump-dom value, byte-for-byte, with the one
-# &nbsp;-decoding divergence documented in the script.
+# the gate is a chromium --headless --dump-dom value, byte-for-byte. (The old
+# &nbsp;->U+0020 divergence is gone: the shared entity table now carries a
+# decode-MODE flag, so layout still folds it and the DOM view is faithful.)
 bash scripts/test_hambrowse_domtext_host.sh
+# scripts/test_hambrowse_tagquote_host.sh: QEMU-free gate for QUOTE-AWARE tag
+# tokenization. Inside a quoted attribute value a '>' is ordinary value text, so
+# <span title="x > y"> must not end the tag early. This was fixed in the LAYOUT
+# scanner first, while the DOM/forms/CSS-harvest/table/flex scanners each kept
+# their own naive "advance to the first '>'" walk — textContent stayed corrupt
+# (`A y">BC` for `ABC`) and wikipedia's body.textContent over-reported by 21231
+# chars. The gate covers BOTH views: the rendered flow leaks no attribute tail,
+# AND textContent/getAttribute match chromium --headless --dump-dom exactly,
+# including that an UNQUOTED value still ends at the first '>'.
+bash scripts/test_hambrowse_tagquote_host.sh
 # scripts/test_hambrowse_ceilings_host.sh: QEMU-free gate that the engine's
 # per-page ceilings REPORT THEMSELVES. DOM_MAX and EVL_MAX overflow used to be
 # silent — script got `undefined` elements and listeners that never fired, and
