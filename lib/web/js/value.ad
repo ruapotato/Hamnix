@@ -50,7 +50,10 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
         return MAX_STR - 1
     off: int32 = sp_top
     i: int32 = 0
+    hi: int32 = 0                      # any byte >= 0x80? (classify while copying)
     while i < n:
+        if p[i] >= 128:
+            hi = 1
         sp_buf[sp_top] = p[i]
         sp_top = sp_top + 1
         i = i + 1
@@ -64,7 +67,7 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
         return MAX_STR - 1
     st_off[id] = off
     st_len[id] = n
-    st_asc[id] = 0                     # UTF-16 class not yet computed (lazy)
+    st_asc[id] = cast[uint8](1 + hi)   # 1 = ASCII, 2 = has multi-byte sequences
     return id
 
 
@@ -160,6 +163,8 @@ def str_seqlen_at(id: int32, i: int32) -> int32:
 
 # ---- length ----
 def str_u16_len(id: int32) -> int32:
+    if st_asc[id] == 1:                # inlined fast path (avoid the call)
+        return st_len[id]
     if str_is_ascii(id) != 0:
         return st_len[id]
     n: int32 = st_len[id]
@@ -187,7 +192,7 @@ u16_half: int32 = 0
 # UTF-16 code-unit index -> byte offset. `u` past the end returns st_len.
 def str_u16_to_byte(id: int32, u: int32) -> int32:
     u16_half = 0
-    if str_is_ascii(id) != 0:
+    if str_is_ascii(id) != 0:          # (cached after the first query)
         n0: int32 = st_len[id]
         if u > n0:
             return n0
@@ -239,6 +244,10 @@ def str_byte_to_u16(id: int32, b: int32) -> int32:
 def str_u16_at(id: int32, u: int32) -> int32:
     if u < 0:
         return -1
+    if st_asc[id] == 1:                # inlined fast path (avoid the call)
+        if u >= st_len[id]:
+            return -1
+        return cast[int32](sp_buf[st_off[id] + u])
     if str_is_ascii(id) != 0:
         if u >= st_len[id]:
             return -1
@@ -308,6 +317,8 @@ def emit_cp_utf8(cp: int32):
 def str_sub_u16(id: int32, u0: int32, u1: int32) -> int32:
     if u0 >= u1:
         return str_new(&sp_buf[st_off[id]], 0)
+    if st_asc[id] == 1:                # inlined fast path (avoid the call)
+        return str_new(&sp_buf[st_off[id] + u0], u1 - u0)
     if str_is_ascii(id) != 0:
         return str_new(&sp_buf[st_off[id] + u0], u1 - u0)
     b0: int32 = str_u16_to_byte(id, u0)
