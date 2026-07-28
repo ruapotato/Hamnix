@@ -184,7 +184,10 @@ dump_panel_fds start
 # --- the session -----------------------------------------------------
 # Open and close scene apps continuously, exactly as a user works, for the
 # whole soak window. Any wedge shows up as a missed serial round-trip.
-APPS="hammonscene hamnotesscene hamcalcscene hamfmscene"
+# The SAME app set scripts/test_de_open_close_cycles.sh drives — the harness
+# the defect was first seen under. Reproducing a slow, cumulative fault is
+# not the place to improvise a different workload.
+APPS="hammonscene hamaudioscene hamnotesscene hamcalcscene hamfmscene hamappmenu"
 SOAK_END=$(( SECONDS + SOAK_MIN * 60 ))
 cyc=0
 wedged=0
