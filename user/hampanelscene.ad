@@ -143,23 +143,27 @@ def _u64_to_dec(v: uint64, out: Ptr[uint8]) -> uint64:
     return i
 
 
-# --- DIAGNOSTICS -> /dev/cons (serial-visible) -----------------------
+# --- DIAGNOSTICS -> the serial console -------------------------------
 #
-# The panel is launched by rc.5 as `spawn detached` with stdio DETACHED
-# (-2/-2), so every `_writeall(1, "[panel] …")` in this file writes to
-# NOTHING: those markers can never reach the serial log, and a gate that
-# greps for them is asserting on a channel that does not exist. (Same
-# trap hamtermscene documented at its dbg_cons_fd.) Real panel telemetry
-# therefore goes to /dev/cons, whose writes land in printk -> serial.
+# MEASURED, not assumed (2026-07-28): rc.5 launches the panel with
+# `spawn detached`, and hamtermscene's dbg_cons_fd note says a detached
+# scene client's stdout is NOT the serial console — so the obvious move
+# was to open /dev/cons like hamtermscene does. On a real OVMF boot of
+# the shipped image that produced NOTHING, while the panel's existing
+# `_writeall(1, "[panel] appmenu entries: …")` marker DID reach the
+# serial log. In THIS launch path stdio is inherited from the rc shell
+# and fd 1 is the console; /dev/cons is not reachable (or not routed)
+# from the panel's namespace. Telemetry therefore goes to fd 1, which is
+# the channel that was observed to carry it.
 #
-# One long-lived fd, opened lazily on first use.
-_pdbg_cons_fd: int32 = -1
+# The indirection stays so there is one place to change if the launch
+# path ever changes again — and so a future reader sees that the channel
+# was picked by experiment.
+PANEL_DIAG_FD: int32 = 1
 
 
 def _pcons_fd() -> int32:
-    if _pdbg_cons_fd < 0:
-        _pdbg_cons_fd = sys_open_write(cast[Ptr[char]]("/dev/cons"))
-    return _pdbg_cons_fd
+    return PANEL_DIAG_FD
 
 
 # Telemetry is assembled into ONE line buffer and flushed with a SINGLE
