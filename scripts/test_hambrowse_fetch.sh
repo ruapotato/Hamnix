@@ -36,6 +36,14 @@
 #
 # SKIPS CLEANLY (exit 0) when /dev/kvm, OVMF, socat, python3, or the image is
 # absent — it needs a host HTTP server + SLIRP + KVM.
+#
+# VERDICT CODES (scripts/_verdict.sh, project-wide): 0 = PASS, 1 = FAIL,
+# 125 = INCONCLUSIVE. This family used a LOCAL 2 for INCONCLUSIVE until
+# 2026-07-28. scripts/ci_run_gate.sh maps 125 to a ::warning:: and 2 to a
+# BUILD FAILURE, so the private code turned every "could not observe the
+# assertion" run into a red shard. There is no reason for the exception and
+# it is gone; any embedded python helper that still exits 2 is INTERNAL and
+# is remapped by the `case "$rc"` at the foot of the script.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -59,28 +67,29 @@ command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "[fetch] SKIP: qemu-syst
 FIXTURE_HTML="$PWD/scripts/fixtures/hambrowse_fetch/page.html"
 [ -f "$FIXTURE_HTML" ] || { echo "[fetch] SKIP: fixture $FIXTURE_HTML missing" >&2; exit 0; }
 
-# --- build / stale-guard the installer image (mirrors test_de_browser.sh) ---
-# Stale-image guard: NEVER boot an image older than the tree under test.
-# See scripts/_installer_img.sh (2026-07-24 false-negative).
+# --- build / stale-guard the installer image --------------------------------
+# NEVER boot an image older than the tree under test, and NEVER print a verdict
+# for a run that had no image to boot. installer_img_or_verdict
+# (scripts/_installer_img.sh) covers all three cases in one call:
+#
+#   a usable image is in place                   -> returns; the gate carries on
+#   HAMNIX_SKIP_BUILD=1 and the image is absent  -> exit 0   (skip BY REQUEST)
+#   the build ran and FAILED / produced no image -> exit 125 (INCONCLUSIVE)
+#
+# The hand-rolled block this replaces got the third case wrong, and it cost
+# ~100 s of runner time per gate per run: it invoked build_installer_img.sh
+# WITHOUT checking its status, fell through to `cp "$INSTALLER_IMG" "$IMG_RW"`,
+# booted QEMU with no drive at all, and burned the whole BOOT_WAIT to a
+# timeout that then read as a browser FAIL. A false RED, expensive twice over.
+#
+# Its stale check was broken too:
+#     find lib user sys fs etc scripts -name '*.ad' -o -name '*.S' -newer "$IMG"
+# `-newer` binds to the '*.S' branch ONLY (find's implicit -a outranks -o), so
+# the expression is `(-name '*.ad') OR (-name '*.S' AND -newer $IMG)` and the
+# first .ad file in the tree always matched. The image "was stale" on every
+# single run. installer_img_is_stale does the mtime comparison properly.
 source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
-if installer_img_needs_build "$INSTALLER_IMG" "[hambrowse_fetch]"; then
-    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-        echo "[fetch] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2
-        exit 0
-    fi
-    echo "[fetch] building installer image (~6 min)"
-    bash "$PWD/scripts/build_installer_img.sh"
-else
-    newer=$(find lib user sys fs etc scripts -name '*.ad' -o -name '*.S' -newer "$INSTALLER_IMG" 2>/dev/null | head -1)
-    if [ -n "$newer" ]; then
-        if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-            echo "[fetch] WARNING: $INSTALLER_IMG is OLDER than source ($newer) but HAMNIX_SKIP_BUILD=1 — booting STALE image" >&2
-        else
-            echo "[fetch] image is stale (source newer: $newer) — rebuilding (~6 min)" >&2
-            bash "$PWD/scripts/build_installer_img.sh"
-        fi
-    fi
-fi
+installer_img_or_verdict "$INSTALLER_IMG" "[hambrowse_fetch]"
 
 mkdir -p "$OUT_DIR"
 echo "[fetch] output dir: $OUT_DIR"
@@ -284,7 +293,7 @@ if [ "$GUESTMARK" -eq 0 ]; then
     echo "[fetch] RESULT: INCONCLUSIVE (no guest [hambrowse] markers — boot/launch never happened)"
     echo "[fetch] --- boot tail ---" >&2
     tail -30 "$LOG" >&2
-    exit 2
+    exit 125
 fi
 
 # (2) The fetch marker — the core network-fetch proof.

@@ -27,7 +27,7 @@
 #   form submit    = magenta  (240, 50,230)
 #
 # VERDICT (three-valued, SOFT/REPORT gate):
-#   INCONCLUSIVE (exit 2): no guest [hambrowse] markers, empty/near-uniform AFTER
+#   INCONCLUSIVE (exit 125): no guest [hambrowse] markers, empty/near-uniform AFTER
 #     frame, or DE handoff never reached — never a fake pass on a blank scanout.
 #   FAIL (exit 1): AFTER frame non-blank but FEWER than MIN_REGIONS loud regions
 #     found (page crashed / rendered almost nothing).
@@ -48,6 +48,14 @@
 #   OUT_DIR        artifact dir   (default build/hambrowse_realpage_ondevice/<ts>)
 #   MIN_REGION_PX  min pixels for a loud region to count as present (default 80)
 #   MIN_REGIONS    min distinct regions for PASS (default 4)
+#
+# VERDICT CODES (scripts/_verdict.sh, project-wide): 0 = PASS, 1 = FAIL,
+# 125 = INCONCLUSIVE. This family used a LOCAL 2 for INCONCLUSIVE until
+# 2026-07-28. scripts/ci_run_gate.sh maps 125 to a ::warning:: and 2 to a
+# BUILD FAILURE, so the private code turned every "could not observe the
+# assertion" run into a red shard. There is no reason for the exception and
+# it is gone; any embedded python helper that still exits 2 is INTERNAL and
+# is remapped by the `case "$rc"` at the foot of the script.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -81,35 +89,29 @@ TMPL="$PWD/scripts/fixtures/hambrowse_realpage/page.html.tmpl"
 IMG_SAMPLE="$PWD/tests/fixtures/hambrowse_img_sample.png"
 [ -f "$TMPL" ] || { echo "[hbreal] SKIP: fixture $TMPL missing" >&2; exit 0; }
 
-# --- build / stale-guard the installer image (mirrors the visual gate) ---
-# Stale-image guard: NEVER boot an image older than the tree under test.
-# See scripts/_installer_img.sh (2026-07-24 false-negative).
+# --- build / stale-guard the installer image --------------------------------
+# NEVER boot an image older than the tree under test, and NEVER print a verdict
+# for a run that had no image to boot. installer_img_or_verdict
+# (scripts/_installer_img.sh) covers all three cases in one call:
+#
+#   a usable image is in place                   -> returns; the gate carries on
+#   HAMNIX_SKIP_BUILD=1 and the image is absent  -> exit 0   (skip BY REQUEST)
+#   the build ran and FAILED / produced no image -> exit 125 (INCONCLUSIVE)
+#
+# The hand-rolled block this replaces got the third case wrong, and it cost
+# ~100 s of runner time per gate per run: it invoked build_installer_img.sh
+# WITHOUT checking its status, fell through to `cp "$INSTALLER_IMG" "$IMG_RW"`,
+# booted QEMU with no drive at all, and burned the whole BOOT_WAIT to a
+# timeout that then read as a browser FAIL. A false RED, expensive twice over.
+#
+# Its stale check was broken too:
+#     find lib user sys fs etc scripts -name '*.ad' -o -name '*.S' -newer "$IMG"
+# `-newer` binds to the '*.S' branch ONLY (find's implicit -a outranks -o), so
+# the expression is `(-name '*.ad') OR (-name '*.S' AND -newer $IMG)` and the
+# first .ad file in the tree always matched. The image "was stale" on every
+# single run. installer_img_is_stale does the mtime comparison properly.
 source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
-if installer_img_needs_build "$INSTALLER_IMG" "[hambrowse_realpage_ondevice]"; then
-    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-        echo "[hbreal] SKIP: $INSTALLER_IMG absent and HAMNIX_SKIP_BUILD=1" >&2; exit 0
-    fi
-    echo "[hbreal] building installer image (~6 min)"
-    bash "$PWD/scripts/build_installer_img.sh"
-else
-    newer=$(find lib user sys fs etc scripts -name '*.ad' -o -name '*.S' -newer "$INSTALLER_IMG" 2>/dev/null | head -1)
-    if [ -n "$newer" ]; then
-        if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
-            echo "[hbreal] WARNING: $INSTALLER_IMG OLDER than source ($newer) but HAMNIX_SKIP_BUILD=1 — booting STALE image" >&2
-        else
-            echo "[hbreal] image stale (source newer: $newer) — rebuilding (~6 min)" >&2
-            bash "$PWD/scripts/build_installer_img.sh"
-        fi
-    fi
-fi
-# Reaching here means a build was ATTEMPTED just above and produced no
-# image: the tree does not build, nothing is booted and NOTHING IS
-# ASSERTED. That is INCONCLUSIVE, never a clean skip — the
-# by-request skip (HAMNIX_SKIP_BUILD=1) is handled above and still
-# exits 0. See scripts/_installer_img.sh + test_gate_softgreen.sh.
-[ -f "$INSTALLER_IMG" ] || {
-    echo "[hbreal] RESULT: INCONCLUSIVE (installer image build FAILED — nothing to boot)" >&2
-    exit 2; }
+installer_img_or_verdict "$INSTALLER_IMG" "[hambrowse_realpage_ondevice]"
 
 mkdir -p "$OUT_DIR"
 echo "[hbreal] output dir: $OUT_DIR"
@@ -202,7 +204,7 @@ echo "[hbreal] waiting up to ${BOOT_WAIT}s for DE shell handoff..."
 if ! wait_marker "M16.35 shell ready|handing off to interactive shell" "$BOOT_WAIT"; then
     echo "[hbreal] RESULT: INCONCLUSIVE (never reached DE shell handoff)"
     tail -40 "$LOG" >&2
-    exit 2
+    exit 125
 fi
 echo "[hbreal] handoff reached; letting the compositor settle ${PAINT_WAIT}s"
 sleep "$PAINT_WAIT"
@@ -263,10 +265,10 @@ echo "[hbreal] guest hambrowse markers: $GUESTMARK"
 if [ "$GUESTMARK" -eq 0 ]; then
     echo "[hbreal] RESULT: INCONCLUSIVE (no guest [hambrowse] markers — launch never happened)"
     tail -30 "$LOG" >&2
-    exit 2
+    exit 125
 fi
 
-[ -s "$AFTER_PPM" ] || { echo "[hbreal] RESULT: INCONCLUSIVE (empty AFTER screendump — no scanout captured)"; exit 2; }
+[ -s "$AFTER_PPM" ] || { echo "[hbreal] RESULT: INCONCLUSIVE (empty AFTER screendump — no scanout captured)"; exit 125; }
 ppm2png "$AFTER_PPM" "$AFTER_PNG"
 [ -s "$BEFORE_PPM" ] && ppm2png "$BEFORE_PPM" "$BEFORE_PNG"
 echo "[hbreal] BASELINE png: $BEFORE_PNG"
@@ -525,6 +527,6 @@ rc=$?
 echo "[hbreal] artifacts: $OUT_DIR (serial.log, page.html, baseline/after .ppm+.png, httpserver.log)"
 case "$rc" in
     0) echo "[hbreal] RESULT: PASS — hambrowse rendered the realistic page on the REAL framebuffer (see [hbreal:defect] lines for cosmetic findings)"; exit 0 ;;
-    2) echo "[hbreal] RESULT: INCONCLUSIVE"; exit 2 ;;
+    2) echo "[hbreal] RESULT: INCONCLUSIVE"; exit 125 ;;
     *) echo "[hbreal] RESULT: FAIL (blank/crashed render — see [hbreal:px] lines + eyeball $AFTER_PNG)"; exit 1 ;;
 esac
