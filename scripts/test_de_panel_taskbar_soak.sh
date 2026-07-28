@@ -385,14 +385,21 @@ fi
 # Cross-check the beacon's self-report against the shell's independent read
 # of the panel's fd table.
 echo "$TAG --- /proc/<panel>/fd line counts, read from the shell ---"
-for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" | sed 's/MARK_PFD_//;s/_BEGIN//'); do
+# The tag list must be DEDUPED: the console echoes each typed character, so
+# a single `cat` command leaves dozens of partial copies of its own text in
+# the log. And an fd line from devproc_fd_listdir is a BARE number, not
+# "<fd>\t<target>" — matching the latter counted the status line instead and
+# reported "1 descriptor" for every checkpoint.
+for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" \
+              | sed 's/MARK_PFD_//;s/_BEGIN//' | awk '!seen[$0]++'); do
     nfd=$(sed -n "/MARK_PFD_${tagn}_BEGIN/,/MARK_PFD_${tagn}_END/p" "$LOG" \
-          | tr -d '\r' | grep -acE '^[0-9]+[[:space:]]')
-    echo "$TAG   $tagn: $nfd descriptors"
+          | tr -d '\r' | grep -acE '^[0-9]+$')
+    echo "$TAG   $tagn: $nfd descriptors held mid-iteration"
 done
 
 echo "$TAG --- panel task state at each checkpoint ---"
-grep -a 'hampanel' "$LOG" | tr -d '\r' | grep -aE '^[0-9]+' | tail -20 | sed "s/^/$TAG   /"
+grep -a 'hampanel' "$LOG" | tr -d '\r' | grep -aE '^[0-9]+' \
+    | awk '!seen[$0]++' | tail -20 | sed "s/^/$TAG   /"
 
 echo "$TAG artifacts: $OUT_DIR"
 if [ "$fail" -ne 0 ]; then
