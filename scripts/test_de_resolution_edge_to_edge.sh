@@ -106,7 +106,7 @@ command -v convert >/dev/null 2>&1 && CONVERTER="convert"
 # is supposed to be testing (the stale-image trap).
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[de_res]" || exit 0
+installer_img_or_verdict "$INSTALLER_IMG" "[de_res]"
 
 mkdir -p "$OUT_DIR"
 echo "[de_res] output dir: $OUT_DIR"

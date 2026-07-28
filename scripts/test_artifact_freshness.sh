@@ -138,7 +138,7 @@ fi
 UNGUARDED=""
 for f in scripts/test_*.sh; do
     grep -q 'INSTALLER_IMG\|GOLDEN_NVME\|HAMNIX_ISO' "$f" 2>/dev/null || continue
-    grep -q 'installer_img_needs_build\|installer_img_warn_if_stale\|ensure_installer_img\|installer_img_is_stale\|_installed_boot.sh\|test_installer_nvme_inram.sh' "$f" 2>/dev/null && continue
+    grep -q 'installer_img_needs_build\|installer_img_warn_if_stale\|ensure_installer_img\|installer_img_or_verdict\|installer_img_is_stale\|_installed_boot.sh\|test_installer_nvme_inram.sh' "$f" 2>/dev/null && continue
     UNGUARDED="$UNGUARDED $f"
 done
 if [ -n "$UNGUARDED" ]; then
@@ -159,7 +159,9 @@ echo "$TAG PART 2b: WARN-ONLY is not a guard for a gate that BOOTS the image"
 # catch it.
 #
 # RULE: a test_*.sh that launches QEMU against $INSTALLER_IMG must either
-#   (a) call ensure_installer_img (rebuild-when-stale), or
+#   (a) call ensure_installer_img / installer_img_or_verdict (the latter is
+#       the preferred wrapper: rebuild-when-stale AND a three-valued verdict
+#       instead of the `|| exit 0` false green — scripts/_installer_img.sh), or
 #   (b) invoke build_installer_img.sh itself (the ENABLE_*_SELFTEST family,
 #       which needs gate-specific build env), optionally alongside
 #       installer_img_needs_build / warn_if_stale.
@@ -185,7 +187,7 @@ for f in sorted(glob.glob('scripts/test_*.sh')):
     code = '\n'.join(code)
     if 'qemu-system' not in code:            # never boots it — exempt
         continue
-    if 'ensure_installer_img' in code:
+    if 'ensure_installer_img' in code or 'installer_img_or_verdict' in code:
         continue
     if re.search(r'(bash|python3)\s+\S*build_installer_img\.sh', code):
         continue
@@ -198,8 +200,9 @@ if [ -n "$WARNONLY" ]; then
     echo "$WARNONLY" | sed "s|^|$TAG   |" >&2
     echo "$TAG   These boot whatever image happens to be on disk. Fix:" >&2
     echo "$TAG     source \"\$PROJ_ROOT/scripts/_installer_img.sh\"" >&2
-    echo "$TAG     ensure_installer_img \"\$INSTALLER_IMG\" \"[tag]\" \\\\" >&2
-    echo "$TAG         || { echo \"[tag] SKIP: no usable image\" >&2; exit 0; }" >&2
+    echo "$TAG     installer_img_or_verdict \"\$INSTALLER_IMG\" \"[tag]\"" >&2
+    echo "$TAG   (NOT \`ensure_installer_img ... || exit 0\`: that reports PASS" >&2
+    echo "$TAG   when the build FAILED — see scripts/test_gate_softgreen.sh.)" >&2
     echo "$TAG   Do NOT satisfy this by deleting the QEMU boot or exiting 0." >&2
     FAILED=1
 else

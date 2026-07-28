@@ -103,8 +103,7 @@ command -v socat >/dev/null 2>&1 || { echo "$TAG SKIP-RUNTIME: no socat" >&2; ex
 # it leaves behind was produced by THIS tree or does not exist at all.
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "$TAG" || {
-    echo "$TAG SKIP-RUNTIME: no usable installer image" >&2; exit 0; }
+installer_img_or_verdict "$INSTALLER_IMG" "$TAG"
 
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/serial.log"

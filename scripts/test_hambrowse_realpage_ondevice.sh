@@ -102,7 +102,14 @@ else
         fi
     fi
 fi
-[ -f "$INSTALLER_IMG" ] || { echo "[hbreal] SKIP: image unavailable" >&2; exit 0; }
+# Reaching here means a build was ATTEMPTED just above and produced no
+# image: the tree does not build, nothing is booted and NOTHING IS
+# ASSERTED. That is INCONCLUSIVE, never a clean skip — the
+# by-request skip (HAMNIX_SKIP_BUILD=1) is handled above and still
+# exits 0. See scripts/_installer_img.sh + test_gate_softgreen.sh.
+[ -f "$INSTALLER_IMG" ] || {
+    echo "[hbreal] RESULT: INCONCLUSIVE (installer image build FAILED — nothing to boot)" >&2
+    exit 2; }
 
 mkdir -p "$OUT_DIR"
 echo "[hbreal] output dir: $OUT_DIR"

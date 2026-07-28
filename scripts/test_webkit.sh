@@ -80,7 +80,14 @@ if installer_img_needs_build "$INSTALLER_IMG" "[webkit]"; then
     HAMNIX_LIVE_MINIMAL=0 HAMNIX_ROOTFS_SIZE_MB="${HAMNIX_ROOTFS_SIZE_MB:-2560}" \
         bash "$PROJ_ROOT/scripts/build_installer_img.sh"
 fi
-[ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP: $INSTALLER_IMG unavailable." >&2; exit 0; }
+# Reaching here means a build was ATTEMPTED just above and produced no
+# image: the tree does not build, nothing is booted and NOTHING IS
+# ASSERTED. That is INCONCLUSIVE (125), never a clean skip — the
+# by-request skip (HAMNIX_SKIP_BUILD=1) is handled above and still
+# exits 0. See scripts/_installer_img.sh + test_gate_softgreen.sh.
+[ -f "$INSTALLER_IMG" ] || {
+    echo "$TAG RESULT: INCONCLUSIVE ($INSTALLER_IMG could not be built)" >&2
+    exit 125; }
 
 # --- decide whether the live image carries MiniBrowser ----------------
 WK_LIBEXEC="usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"

@@ -76,8 +76,10 @@ fi
 # the image is missing or older than the tree under test. Booting a stale image
 # is how a gate reports green on a regression it was written to catch.
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[mid-paste]" || exit 0
-[ -f "$INSTALLER_IMG" ] || { echo "[mid-paste] SKIP: $INSTALLER_IMG absent" >&2; exit 0; }
+installer_img_or_verdict "$INSTALLER_IMG" "[mid-paste]"
+[ -f "$INSTALLER_IMG" ] || {
+    echo "[mid-paste] RESULT: INCONCLUSIVE ($INSTALLER_IMG absent — nothing booted)" >&2
+    exit 125; }
 
 mkdir -p "$OUTDIR"
 TMPD=$(mktemp -d --tmpdir hamnix-mid-paste.XXXXXX)

@@ -210,13 +210,17 @@ if installer_img_needs_build "$IMG" "[kpti_uefi]"; then
     fi
     say "image $IMG absent -- building via scripts/build_installer_img.sh (~15-20 min)"
     if ! HAMNIX_INSTALLER_IMG_OUT="$IMG" bash scripts/build_installer_img.sh; then
-        say "SKIP: installer image build failed/gated."
-        say "SKIP"; exit 0
+        say "RESULT: INCONCLUSIVE (installer image build FAILED)"
+        say "INCONCLUSIVE"; exit 125
     fi
 fi
+# A build was ATTEMPTED just above and produced nothing: the tree does not
+# build, so nothing boots and NOTHING IS ASSERTED. INCONCLUSIVE (125),
+# never a clean skip. The by-request skip (HAMNIX_SKIP_BUILD=1) is
+# handled above and still exits 0. 2026-07-28 soft-green sweep.
 if [ ! -f "$IMG" ]; then
-    say "SKIP: $IMG still missing after build_installer_img.sh."
-    say "SKIP"; exit 0
+    say "RESULT: INCONCLUSIVE ($IMG still missing after build_installer_img.sh)"
+    say "INCONCLUSIVE"; exit 125
 fi
 
 # --- boot the shipped image under OVMF --------------------------------

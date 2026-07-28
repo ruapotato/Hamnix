@@ -78,8 +78,14 @@ if installer_img_needs_build "$INSTALLER_IMG" "[de_rl5_deterministic]"; then
     echo "[rl5_det] building installer image (~6 min)"
     bash "$PROJ_ROOT/scripts/build_installer_img.sh"
 fi
+# Reaching here means a build was ATTEMPTED just above and produced no
+# image: the tree does not build, nothing is booted and NOTHING IS
+# ASSERTED. That is INCONCLUSIVE (125), never a clean skip — the
+# by-request skip (HAMNIX_SKIP_BUILD=1) is handled above and still
+# exits 0. See scripts/_installer_img.sh + test_gate_softgreen.sh.
 if [ ! -f "$INSTALLER_IMG" ]; then
-    echo "[rl5_det] SKIP: $INSTALLER_IMG unavailable (build gated)" >&2; exit 0
+    echo "[rl5_det] RESULT: INCONCLUSIVE ($INSTALLER_IMG could not be built)" >&2
+    exit 125
 fi
 
 fail=0; bare=0

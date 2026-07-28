@@ -124,7 +124,7 @@ fi
 # See scripts/_installer_img.sh.
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[visual_gate]" || exit 0
+installer_img_or_verdict "$INSTALLER_IMG" "[visual_gate]"
 
 mkdir -p "$OUT_DIR"
 echo "[visual_gate] output dir: $OUT_DIR"

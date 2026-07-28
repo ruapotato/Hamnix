@@ -27,6 +27,17 @@ bash scripts/test_artifact_freshness.sh
 # pre-existing dark gates are frozen in scripts/ci_ondemand_baseline.txt,
 # which the same gate ratchets DOWN-only.
 bash scripts/test_gate_registration.sh
+# THIRD, and ~1 s: the FALSE-GREEN canary — the strictly worse sibling of the
+# one above. An unregistered gate is a hole that looks like coverage; a
+# false-green gate is wired up, actively green, and asserting nothing. On
+# 2026-07-28 fourteen registered gates exited 0 while printing
+# "ERROR: build_installer_img.sh failed" — proven by construction by stubbing
+# that build script to exit 1. Root cause: ensure_installer_img returned the
+# same non-zero for "skipped by request" and "the build FAILED", and its
+# published idiom was `|| exit 0`. This gate bans that idiom outright, ratchets
+# down the pre-existing sites (scripts/ci_softgreen_baseline.txt), and forbids
+# a manifest line from discarding its gate's exit status with `|| true`.
+bash scripts/test_gate_softgreen.sh
 # THIRD/FOURTH, and <0.1 s each: the two DE capability-boundary structural
 # gates. Both were red and unregistered in the 2026-07-28 sweep and both turned
 # out to be GATE ROT (line-distance greps and a renamed callee), not privilege
@@ -3251,7 +3262,13 @@ bash scripts/test_hambrowse_realwebjs_host.sh
 # exhaustion, unexpected code=143 exits, kernel faults and a wedged console.
 # It BUILDS the image rather than warning about staleness: 30 minutes of soak
 # against a stale image is 30 minutes of confident nonsense.
-[ "${HAMNIX_SOAK:-0}" = "1" ] && bash scripts/test_de_stress_soak.sh || true
+# Opt-in via HAMNIX_SOAK=1. Written as an `if` and NOT as
+# `[ ... ] && bash <gate> || true`: the `|| true` form discarded the gate's
+# exit status, so the soak could report FAIL and the shard would still record
+# PASS — a false green one level above the gate (2026-07-28 soft-green sweep;
+# scripts/test_gate_softgreen.sh PART 4 now forbids it). The `if` form exits 0
+# when the switch is off and passes the real verdict through when it is on.
+if [ "${HAMNIX_SOAK:-0}" = "1" ]; then bash scripts/ci_run_gate.sh scripts/test_de_stress_soak.sh; fi
 
 # scripts/test_hambrowse_domtext_host.sh: QEMU-free gate for the DOM TEXT VIEW —
 # document.body.textContent / el.innerHTML completeness, decoded character

@@ -98,8 +98,7 @@ command -v convert >/dev/null 2>&1 && CONVERTER=convert
 # cost two agent cycles on 2026-07-24 (scripts/_installer_img.sh).
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[office]" || {
-    echo "[office] SKIP-RUNTIME: no usable $INSTALLER_IMG" >&2; exit 0; }
+installer_img_or_verdict "$INSTALLER_IMG" "[office]"
 
 mkdir -p "$OUT_DIR"
 echo "[office] output dir: $OUT_DIR"

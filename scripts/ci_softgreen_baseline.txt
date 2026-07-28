@@ -1,0 +1,76 @@
+# scripts/ci_softgreen_baseline.txt — FROZEN inventory of the gates that were
+# ALREADY exiting 0 on a "the artifact I was going to boot could not be
+# produced" path when scripts/test_gate_softgreen.sh was written (2026-07-28).
+#
+# Format:  <script> <number of such sites>
+#
+# This is a RATCHET, not an amnesty. scripts/test_gate_softgreen.sh FAILS when
+#   * a script not listed here acquires such a site,
+#   * a listed script grows MORE sites than its count,
+#   * a listed script no longer needs its entry (fix it, then delete the line),
+#   * this file is widened relative to HEAD (PART 3 — appending a line is the
+#     obvious way to launder a new false green, so it is forbidden outright).
+#
+# Every entry below is a gate that is NOT run by any CI job today (all of them
+# are dark per scripts/ci_ondemand_baseline.txt), which is the only reason they
+# were left rather than fixed: they lie to a human running them by hand, not to
+# CI. Every REGISTERED gate with this shape was fixed in the same commit.
+#
+# To clear a line: make the unproducible-artifact path report INCONCLUSIVE
+# (exit 125, scripts/_verdict.sh) — or, if the exit 0 really is honest, put
+# `# soft-green-ok: <reason>` at the site and delete the line here.
+scripts/test_de_app_churn.sh 1
+scripts/test_de_desktop_menu.sh 1
+scripts/test_de_fileops.sh 1
+scripts/test_de_fps.sh 1
+scripts/test_de_hamedit_picker.sh 1
+scripts/test_de_mate_applets.sh 1
+scripts/test_de_mouse_churn.sh 1
+scripts/test_de_mouse_refresh.sh 1
+scripts/test_de_open_close_cycles.sh 1
+scripts/test_de_overlay_wiring.sh 1
+scripts/test_de_p0_mouse_screendump.sh 1
+scripts/test_de_runtime_e2e.sh 4
+scripts/test_de_scene_apps_render.sh 1
+scripts/test_de_scene_drag_iconclick.sh 1
+scripts/test_de_scene_flicker_relmouse.sh 1
+scripts/test_de_scene_menu_input.sh 1
+scripts/test_de_scene_render.sh 1
+scripts/test_de_scene_termfm.sh 1
+scripts/test_de_screenshot.sh 2
+scripts/test_de_slot_exhaustion.sh 1
+scripts/test_de_term_enter_linux.sh 1
+scripts/test_de_term_render_nokey.sh 1
+scripts/test_de_visual.sh 1
+scripts/test_de_wallpaper_backdrop.sh 1
+scripts/test_de_wheel_scroll.sh 1
+scripts/test_dynamic_spawn_stress.sh 2
+scripts/test_esp_boot_log.sh 1
+scripts/test_gtk_hello.sh 1
+scripts/test_hamedit_clipboard.sh 1
+scripts/test_hamedit_save.sh 1
+scripts/test_hamUI_appspine_gop.sh 1
+scripts/test_hamUI_evloop_gop.sh 1
+scripts/test_hamUI_markupclient_gop.sh 1
+scripts/test_hamUI_menuterm_gop.sh 1
+scripts/test_hamUI_mouse_gop.sh 1
+scripts/test_hamUI_termspine_gop.sh 1
+scripts/test_hamUI_volume_gop.sh 1
+scripts/test_img_uefi_hamterm.sh 1
+scripts/test_img_uefi_hamui.sh 1
+scripts/test_installer_de_runlevel5.sh 1
+scripts/test_installer_live_debian.sh 1
+scripts/test_net_client.sh 2
+scripts/test_note_terminate.sh 1
+scripts/test_ondevice_adderc_llvm.sh 1
+scripts/test_ondevice_hostac_llvm.sh 1
+scripts/test_serial_enter_linux_sh.sh 1
+scripts/test_smp_de_runlevel5.sh 1
+scripts/test_wayland_firefox.sh 1
+scripts/test_wayland_gl_egl.sh 1
+scripts/test_wayland_phase4_live.sh 1
+scripts/test_wayland_phase4_render.sh 1
+scripts/test_wayland_phase4_term.sh 1
+scripts/test_wayland_phase5_xwayland.sh 1
+scripts/test_wayland_qt.sh 1
+scripts/test_wl_apps.sh 1

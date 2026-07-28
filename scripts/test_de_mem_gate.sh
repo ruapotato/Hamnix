@@ -44,7 +44,7 @@ fi
 # See scripts/_installer_img.sh.
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[mem_gate]" || exit 0
+installer_img_or_verdict "$INSTALLER_IMG" "[mem_gate]"
 [ -f "$INSTALLER_IMG" ] || { echo "[mem_gate] FAIL: no $INSTALLER_IMG" >&2; exit 1; }
 
 mkdir -p "$OUT_DIR"

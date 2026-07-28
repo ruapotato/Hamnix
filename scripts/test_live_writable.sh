@@ -102,13 +102,18 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
 else
     echo "$TAG rebuilding installer image via build_installer_img.sh (~6 min; HAMNIX_SKIP_BUILD=1 to reuse)"
     if ! bash "$PROJ_ROOT/scripts/build_installer_img.sh"; then
-        echo "$TAG SKIP: installer image build failed (toolchain/host gap)." >&2
-        exit 0
+        echo "$TAG RESULT: INCONCLUSIVE (installer image build FAILED)" >&2
+        exit 125
     fi
 fi
+# Reaching here means a build was ATTEMPTED just above and produced no
+# image: the tree does not build, nothing is booted and NOTHING IS
+# ASSERTED. That is INCONCLUSIVE (125), never a clean skip — the
+# by-request skip (HAMNIX_SKIP_BUILD=1) is handled above and still
+# exits 0. See scripts/_installer_img.sh + test_gate_softgreen.sh.
 if [ ! -f "$INSTALLER_IMG" ]; then
-    echo "$TAG SKIP: $INSTALLER_IMG unavailable (build gated)." >&2
-    exit 0
+    echo "$TAG RESULT: INCONCLUSIVE ($INSTALLER_IMG could not be built)" >&2
+    exit 125
 fi
 
 # --- KVM vs TCG ------------------------------------------------------

@@ -165,8 +165,24 @@ run_live() {
     # STALE-IMAGE GUARD: this live sub-gate BOOTS an image it did not build.
     # shellcheck source=_installer_img.sh
     source "$PROJ_ROOT/scripts/_installer_img.sh"
-    ensure_installer_img "$INSTALLER_IMG" "[de_panel_config]" \
-        || { echo "[panel_config] SKIP live: no usable $INSTALLER_IMG" >&2; return 0; }
+    # ensure_installer_img returns 1 for "skipped by REQUEST" and 2 for "the
+    # build ran and FAILED". Conflating them made this gate print
+    # "RESULT: PASS" for a tree that does not build (proven by construction
+    # 2026-07-28: stub build_installer_img.sh to exit 1 -> "SKIP live: no
+    # usable image" followed immediately by "RESULT: PASS", exit 0). A failed
+    # build is INCONCLUSIVE for the whole gate — the structural half proves
+    # nothing about the rendered desktop this gate exists to check.
+    ensure_installer_img "$INSTALLER_IMG" "[de_panel_config]"
+    _img_rc=$?
+    if [ "$_img_rc" -eq 1 ]; then
+        echo "[panel_config] SKIP live (by request): $INSTALLER_IMG absent —" >&2
+        echo "[panel_config]   NOTHING about the rendered desktop was checked" >&2
+        return 0
+    elif [ "$_img_rc" -ne 0 ]; then
+        echo "[panel_config] RESULT: INCONCLUSIVE ($INSTALLER_IMG could not be" >&2
+        echo "[panel_config]   built — the live desktop half never ran)" >&2
+        exit 125
+    fi
 
     OUT_DIR="${PANEL_CFG_OUT_DIR:-$(mktemp -d --tmpdir hamnix-pcfg.XXXXXX)}"
     mkdir -p "$OUT_DIR"

@@ -78,8 +78,7 @@ fi
 # than any tracked build input; HAMNIX_SKIP_BUILD=1 downgrades to a LOUD
 # stale warning, never a silent pass. shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"
-ensure_installer_img "$INSTALLER_IMG" "[wall-themes]" \
-    || { echo "[wall-themes] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
+installer_img_or_verdict "$INSTALLER_IMG" "[wall-themes]"
 
 TMPD=$(mktemp -d --tmpdir hamnix-wall-themes.XXXXXX)
 trap 'rm -rf "$TMPD"' EXIT

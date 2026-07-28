@@ -74,13 +74,16 @@ command -v socat >/dev/null 2>&1 || { echo "$TAG SKIP-RUNTIME: no socat" >&2; ex
 # shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-if declare -F ensure_installer_img >/dev/null 2>&1; then
-    ensure_installer_img "$INSTALLER_IMG" "$TAG" || {
-        echo "$TAG SKIP-RUNTIME: could not build $INSTALLER_IMG" >&2; exit 0; }
+if declare -F installer_img_or_verdict >/dev/null 2>&1; then
+    installer_img_or_verdict "$INSTALLER_IMG" "$TAG"
 else
     installer_img_warn_if_stale "$INSTALLER_IMG" "$TAG"
 fi
-[ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP-RUNTIME: $INSTALLER_IMG absent" >&2; exit 0; }
+# Reaching here without an image means the build was attempted and produced
+# nothing: INCONCLUSIVE, never a clean skip (2026-07-28 soft-green sweep).
+[ -f "$INSTALLER_IMG" ] || {
+    echo "$TAG RESULT: INCONCLUSIVE ($INSTALLER_IMG absent — nothing booted)" >&2
+    exit 125; }
 # A build in flight leaves a SHORT image behind. Booting it costs the full
 # BOOT_WAIT and then reports "no handoff", which reads like a kernel
 # regression; catch the real cause up front.

@@ -76,8 +76,7 @@ command -v socat >/dev/null 2>&1 && MON_DRIVER=socat
 # shellcheck source=_installer_img.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_installer_img.sh"
 PROJ_ROOT="${PROJ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-ensure_installer_img "$INSTALLER_IMG" "[de_desktop_icon_source]" \
-    || { echo "[deskicons] SKIP: no usable $INSTALLER_IMG" >&2; exit 0; }
+installer_img_or_verdict "$INSTALLER_IMG" "[de_desktop_icon_source]"
 
 mkdir -p "$OUT_DIR"
 echo "[deskicons] output dir: $OUT_DIR"

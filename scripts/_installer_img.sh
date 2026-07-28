@@ -33,12 +33,38 @@
 # Usage (source AFTER $INSTALLER_IMG is resolved):
 #
 #     source "$PROJ_ROOT/scripts/_installer_img.sh"
-#     ensure_installer_img "$INSTALLER_IMG" "[my_gate]" || exit 0
+#     installer_img_or_verdict "$INSTALLER_IMG" "[my_gate]"
 #
 # ensure_installer_img rebuilds when the image is missing OR stale, honours
 # HAMNIX_SKIP_BUILD=1 (reuse as-is, but LOUDLY warn when stale — never
-# silently), and returns non-zero only when it cannot produce an image
-# (caller decides SKIP vs FAIL).
+# silently), and returns non-zero only when it cannot produce an image.
+#
+# THE SECOND BUG THIS EXISTS TO KILL (2026-07-28)
+# ===============================================
+# The documented usage above USED to be `ensure_installer_img ... || exit 0`,
+# and ~20 gates copied it verbatim. That is a FALSE GREEN: ensure_installer_img
+# returns non-zero for TWO completely different situations —
+#
+#   (a) HAMNIX_SKIP_BUILD=1 and the image is absent  — a skip the CALLER asked
+#       for, on a shard that deliberately has no prebuilt image. Honest.
+#   (b) build_installer_img.sh RAN AND FAILED, or produced no image  — the tree
+#       does not build. There is nothing to boot and nothing was asserted.
+#
+# `|| exit 0` reports PASS for (b). Proven by construction on 2026-07-28:
+# stub scripts/build_installer_img.sh to `exit 1` and run
+# test_de_visual_gate / test_de_office_suite / test_webkit /
+# test_middle_paste_ondevice / test_de_wallpaper_themes / ... — every one
+# printed "ERROR: build_installer_img.sh failed" and then exited 0.
+#
+# So the two cases now have DIFFERENT return codes:
+#
+#     0  a usable image is in place
+#     1  skipped BY REQUEST (HAMNIX_SKIP_BUILD=1, image absent)   -> exit 0 ok
+#     2  UNPRODUCIBLE (build failed / no image after build)       -> INCONCLUSIVE
+#
+# Callers should not re-derive that mapping: use installer_img_or_verdict,
+# which exits with the right three-valued verdict. scripts/test_gate_softgreen.sh
+# is the meta-gate that keeps `|| exit 0` from coming back.
 
 # Directories whose tracked contents end up inside the shipped image. Kept
 # explicit (not "the whole repo") so an unrelated docs/ edit never forces a
@@ -91,7 +117,10 @@ installer_img_is_stale() {
 }
 
 # ensure_installer_img <img> <tag> — guarantee <img> exists and is not stale.
-# Returns 0 when a usable image is in place, 1 when none could be produced.
+#   0 = usable image in place
+#   1 = skipped BY REQUEST (HAMNIX_SKIP_BUILD=1 and the image is absent)
+#   2 = UNPRODUCIBLE (the build ran and failed, or produced no image)
+# Prefer installer_img_or_verdict below; it turns these into verdicts.
 ensure_installer_img() {
     local img="$1" tag="${2:-[installer_img]}"
     if installer_img_is_stale "$img"; then
@@ -112,11 +141,37 @@ ensure_installer_img() {
         fi
         bash "${PROJ_ROOT:-.}/scripts/build_installer_img.sh" || {
             echo "$tag ERROR: build_installer_img.sh failed" >&2
-            return 1
+            return 2
         }
     fi
-    [ -f "$img" ] || { echo "$tag ERROR: $img still absent after build" >&2; return 1; }
+    [ -f "$img" ] || { echo "$tag ERROR: $img still absent after build" >&2; return 2; }
     return 0
+}
+
+# installer_img_or_verdict <img> <tag> — ensure the image, or EXIT the gate
+# with the correct three-valued verdict (scripts/_verdict.sh).
+#
+# Returns 0 (and the caller carries on) when a usable image is in place.
+# Otherwise it does NOT return:
+#   * skipped by request (HAMNIX_SKIP_BUILD=1, image absent) -> exit 0
+#   * unproducible (the build FAILED)                        -> exit 125,
+#     INCONCLUSIVE. Nothing was booted, so nothing was asserted, and a gate
+#     must never report PASS for an assertion it did not observe.
+#
+# A gate with its own local INCONCLUSIVE code (the hambrowse family uses 2)
+# passes it as the optional third argument.
+installer_img_or_verdict() {
+    local img="$1" tag="${2:-[installer_img]}" inconclusive_rc="${3:-125}"
+    ensure_installer_img "$img" "$tag" && return 0
+    local rc=$?
+    if [ "$rc" -eq 1 ]; then
+        echo "$tag SKIP (by request: HAMNIX_SKIP_BUILD=1 and $img absent)" >&2
+        exit 0
+    fi
+    echo "$tag RESULT: INCONCLUSIVE — $img could not be built, so nothing" >&2
+    echo "$tag   was booted and NOTHING WAS ASSERTED. This is not a pass." >&2
+    echo "$tag   Fix the build, or re-run where the image can be produced." >&2
+    exit "$inconclusive_rc"
 }
 
 # ---------------------------------------------------------------------------
