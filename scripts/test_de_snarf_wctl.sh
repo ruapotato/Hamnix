@@ -58,8 +58,9 @@ fi
 if ! grep -Eq "^def[[:space:]]+devsnarf_read" "$SNARF_SRC"; then
     fail_link "snarf: devsnarf_read() definition gone"
 fi
-if ! grep -Eq "^def[[:space:]]+devsnarf_write" "$SNARF_SRC"; then
-    fail_link "snarf: devsnarf_write() definition gone"
+if ! grep -Eq "^def[[:space:]]+devsnarf_write\(off:" "$SNARF_SRC"; then
+    fail_link "snarf: devsnarf_write() is gone or is no longer" \
+              "offset-addressed (a chunked writer would clobber itself)"
 fi
 # 64 KiB cap is the spec'd ceiling — assert it stayed.
 if ! grep -Eq "SNARF_MAX[[:space:]]*:[[:space:]]*uint64[[:space:]]*=[[:space:]]*65536" "$SNARF_SRC"; then
@@ -135,8 +136,22 @@ fi
 if ! grep -q "devsnarf_read(off, buf, count)" "$NAMEC_SRC"; then
     fail_link "namec: devsnarf_read dispatch gone"
 fi
-if ! grep -q "devsnarf_write(buf, count)" "$NAMEC_SRC"; then
-    fail_link "namec: devsnarf_write dispatch gone"
+# The write dispatch must pass the OFFSET through. Pinning the exact old
+# argument list here ("devsnarf_write(buf, count)") was worse than useless: it
+# was green for the whole time /dev/snarf silently discarded every chunk but
+# the last of a multi-write (the shell's `echo text > /dev/snarf` writes the
+# payload and its newline separately, so the clipboard ended up holding "\n"),
+# and it went RED for the fix. Assert the invariant, not the spelling.
+if ! grep -q "devsnarf_write(off, buf, count)" "$NAMEC_SRC"; then
+    fail_link "namec: devsnarf_write dispatch gone, or no longer passes the" \
+              "write offset (a chunked write then clobbers earlier chunks)"
+fi
+if ! grep -q "devsnarf_primary_write(off, buf, count)" "$NAMEC_SRC"; then
+    fail_link "namec: devsnarf_primary_write dispatch gone, or no longer" \
+              "passes the write offset"
+fi
+if ! grep -q "devsnarf_primary_read(off, buf, count)" "$NAMEC_SRC"; then
+    fail_link "namec: devsnarf_primary_read dispatch gone"
 fi
 if ! grep -q "devwsys_wctl_read(wid, off, buf, count)" "$NAMEC_SRC"; then
     fail_link "namec: devwsys_wctl_read dispatch gone"
