@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<!-- tests/fixtures/hambrowse_urlbase.html — <base href> changes the document
+     base URL, so href/src reflect against IT and not against the page's own
+     address. Chromium is the oracle (see
+     scripts/test_hambrowse_urlreflect_host.sh). -->
+<html><head><base href="../"><title>base href</title></head><body>
+<a id="c0" href="p.html">relative under base</a>
+<a id="c1" href="/root/p">absolute path ignores base path</a>
+<img id="i0" src="q.png" alt="rel img under base">
+<script>
+  console.log('URLREF href0 = ' + document.getElementById('c0').href);
+  console.log('URLREF href1 = ' + document.getElementById('c1').href);
+  console.log('URLREF src0 = ' + document.getElementById('i0').src);
+  console.log('URLREF rawhref0 = ' + document.getElementById('c0').getAttribute('href'));
+  console.log('URLREF baseURI = ' + document.baseURI);
+  console.log('URLREF docURL = ' + document.URL);
+</script>
+</body></html>

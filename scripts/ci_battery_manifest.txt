@@ -3957,3 +3957,13 @@ bash scripts/test_jsengine_argguard_host.sh
 # pixels — with a listener-less negative-control chip that must stay dead.
 # REGISTERED 2026-07-28.
 bash scripts/test_hambrowse_ptrevents_host.sh
+# test_hambrowse_urlreflect_host: IDL URL-attribute reflection. a.href / img.src
+# read back the attribute RESOLVED against the document base URL; we reflected
+# the RAW attribute, so a page that read a.href and re-navigated got "?a=1"
+# instead of an absolute URL. The gate compares EVERY reflected value against
+# `chromium --headless` on the same fixture rather than against a hard-coded
+# table (29 values across two fixtures, one of them with a <base href>), and
+# pins the two invariants that keep the change safe: getAttribute stays RAW, and
+# with no document URL supplied the engine still reflects the raw attribute.
+# REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_urlreflect_host.sh

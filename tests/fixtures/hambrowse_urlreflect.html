@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<!-- tests/fixtures/hambrowse_urlreflect.html — IDL URL-attribute reflection.
+
+     `a.href` / `img.src` are URL-VALUED IDL attributes: they read back the
+     value RESOLVED against the document base URL, while getAttribute() reads
+     back the raw string. Every case below was measured in chromium
+     --headless against this very file; scripts/test_hambrowse_urlreflect_host.sh
+     re-measures them there rather than trusting a hard-coded table.
+
+     Case 8 is the one that motivated the fix: a page that reads a.href and
+     re-navigates used to get "?a=1" back instead of an absolute URL. -->
+<html><head><title>url reflection</title></head><body>
+<a id="c0" href="">empty</a>
+<a id="c1" href="#f">fragment</a>
+<a id="c2" href="?q=1">query</a>
+<a id="c3" href="p.html">relative</a>
+<a id="c4" href="./p.html">dot-relative</a>
+<a id="c5" href="../p.html">parent</a>
+<a id="c6" href="/root/p">absolute path</a>
+<a id="c7" href="//h/p">protocol relative</a>
+<a id="c8" href="http://x/y">absolute url</a>
+<a id="c9" href="a/b/../c">dot segments</a>
+<a id="c10" href="x/./y">dot segment</a>
+<a id="c11" href=" sp.html ">padded</a>
+<a id="c12" href="p%20q.html">percent</a>
+<a id="c13">no href at all</a>
+<img id="i0" src="pic.png" alt="rel img">
+<img id="i1" src="https://ex.test/pic.png" alt="abs img">
+<div id="d0">a div has no src and no href</div>
+<script>
+  var out = [];
+  function rec(k, v) { out.push('URLREF ' + k + ' = ' + v); }
+  for (var i = 0; i <= 13; i++) {
+    rec('href' + i, document.getElementById('c' + i).href);
+  }
+  rec('src0', document.getElementById('i0').src);
+  rec('src1', document.getElementById('i1').src);
+  // getAttribute must stay RAW — this is the half that was already right and
+  // must not be "fixed" into absolutising too.
+  rec('rawhref2', document.getElementById('c2').getAttribute('href'));
+  rec('rawsrc0', document.getElementById('i0').getAttribute('src'));
+  // src/href only exist on the interfaces that declare them.
+  rec('divsrc', typeof document.getElementById('d0').src);
+  rec('divhref', typeof document.getElementById('d0').href);
+  // document-level URL surface
+  rec('docURL', document.URL);
+  rec('baseURI', document.baseURI);
+  rec('lochref', location.href);
+  for (var j = 0; j < out.length; j++) { console.log(out[j]); }
+</script>
+</body></html>
