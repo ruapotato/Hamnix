@@ -2773,6 +2773,11 @@ def _js_host_dispatch(id: int32) -> int32:
                 gtoff: int32 = -1
                 if ek < 0 and evn > 0:
                     gtoff = _evt_intern(&dom_idtmp[0], evn)
+                # Silently DROPPING a listener is indistinguishable from a page
+                # bug: the handler simply never fires. Say which cap ate it.
+                if (ek >= 0 or gtoff >= 0) and evl_n >= EVL_MAX and dom_warn_evl == 0:
+                    dom_warn_evl = 1
+                    js_out_note(cast[Ptr[uint8]]("[engine] CEILING EVL_MAX reached: further addEventListener calls are dropped and will never fire. EVL_MAX="), EVL_MAX)
                 if (ek >= 0 or gtoff >= 0) and evl_n < EVL_MAX:
                     lk: int32 = ek
                     if ek < 0:

@@ -262,6 +262,37 @@ def js_out_ptr() -> Ptr[uint8]:
     return &out_buf[0]
 
 
+# Host-side diagnostic line, appended to the SAME buffer console.log writes, so
+# it surfaces on the harness's JSLOG channel. The embedder has hard per-page
+# ceilings (DOM_MAX element objects, EVL_MAX listeners, TX_MAX tree nodes) that
+# used to be crossed in COMPLETE SILENCE: past DOM_MAX, _dom_register_el handed
+# scripts `undefined` and the page's own loop then threw on `a[i].getAttribute`,
+# with nothing in the output naming the real cause. A ceiling that cannot report
+# itself cannot be sized against evidence, so every one of them now says so.
+# Pass n < 0 to emit the message alone.
+js_note_dbuf: Array[16, uint8]
+
+def js_out_note(msg: Ptr[uint8], n: int32):
+    save: int32 = emit_tgt
+    emit_tgt = 1
+    emit_cstr(msg)
+    if n >= 0:
+        d: int32 = 0
+        v: int32 = n
+        if v == 0:
+            js_note_dbuf[0] = 48
+            d = 1
+        while v > 0:
+            js_note_dbuf[d] = cast[uint8](48 + (v % 10))
+            v = v / 10
+            d = d + 1
+        while d > 0:
+            d = d - 1
+            emit_c(js_note_dbuf[d])
+    emit_c(10)
+    emit_tgt = save
+
+
 def js_error() -> int32:
     return err_flag
 

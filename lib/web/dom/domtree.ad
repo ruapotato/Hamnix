@@ -58,6 +58,13 @@ def _dom_build_tree_index():
                 continue
             i = je
         i = i + 1
+    # The integer tree overlay is what every traversal / selector / collection
+    # walks, so hitting TX_MAX truncates the DOM the page can SEE — silently,
+    # mid-document. Report it (runs after js_init, so the note lands in the
+    # page's own console channel).
+    if tx_n >= TX_MAX and dom_warn_tx == 0:
+        dom_warn_tx = 1
+        js_out_note(cast[Ptr[uint8]]("[engine] CEILING TX_MAX reached: the DOM tree index is truncated; later elements are invisible to traversal and selectors. TX_MAX="), TX_MAX)
     _adoption_fixup()
     tx_built = 1
 

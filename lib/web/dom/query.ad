@@ -1320,6 +1320,14 @@ def _dom_register_el() -> int32:
     if ex >= 0:
         return dom_obj[ex]
     if dom_n >= DOM_MAX:
+        # SAY SO. Returning a bare `undefined` here is what made a too-small
+        # DOM_MAX look like a bug in the PAGE: getElementsByTagName reported the
+        # right length while entries past the cap were undefined, and the page's
+        # own `a[i].getAttribute(...)` loop threw. One latched line names the
+        # real cause and gives the number to size the cap against.
+        if dom_warn_max == 0:
+            dom_warn_max = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING DOM_MAX reached: further elements are undefined to script. DOM_MAX="), DOM_MAX)
         return js_undefined()
     idx: int32 = dom_n
     dom_anchor[idx] = anchor
@@ -1344,6 +1352,9 @@ def _dom_register_el() -> int32:
     # diff against it (see dom_orig_trunc). Detects both "filled during MY
     # extraction" and "was already full when I registered".
     if dom_txt_len >= DOM_TXT_CAP - 1 or oh >= DOM_TXT_CAP - 1:
+        if dom_warn_txt == 0:
+            dom_warn_txt = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING DOM_TXT_CAP reached: textContent/innerHTML baselines truncated from here on. DOM_TXT_CAP="), DOM_TXT_CAP)
         dom_orig_trunc[idx] = 1
     else:
         dom_orig_trunc[idx] = 0

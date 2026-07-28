@@ -77,6 +77,17 @@ dom_txtbuf:  Array[65536, uint8]
 dom_txt_len: int32 = 0
 dom_n:       int32 = 0
 
+# ---- ceiling diagnostics (round 9) ---------------------------------
+# Every per-page ceiling below used to be crossed in SILENCE, which is worse
+# than crossing it: the page kept running with `undefined` elements and missing
+# listeners, and the only symptom was the page's own TypeError somewhere else.
+# Each flag latches so a 4000-element overflow prints ONE line, not 4000, and
+# is cleared by _dom_reset so a second page re-reports.
+dom_warn_max:  int32 = 0               # DOM_MAX  — element objects
+dom_warn_txt:  int32 = 0               # DOM_TXT_CAP — baseline text/html buffer
+dom_warn_evl:  int32 = 0               # EVL_MAX  — addEventListener registry
+dom_warn_tx:   int32 = 0               # TX_MAX   — integer tree index
+
 # ---- DOM tree index (task #324, browser round 2) -------------------
 # The DOM was flat/source-anchored (round 1): each element carried its source
 # span but no parent/child links, so tree-walking (`el.parentNode.children[0]
@@ -606,6 +617,10 @@ g_el_nl: uint64 = 0
 
 def _dom_reset():
     dom_n = 0
+    dom_warn_max = 0
+    dom_warn_txt = 0
+    dom_warn_evl = 0
+    dom_warn_tx = 0
     dom_idbuf_len = 0
     dom_txt_len = 0
     dom_ov_len = 0
@@ -729,17 +744,63 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
 
 # Extract the text content of src span [cs,ce) (tags stripped) into out[oo..].
 # Returns the number of bytes written.
+#
+# CHARACTER REFERENCES ARE DECODED (round 9). This used to copy source bytes
+# verbatim while the LAYOUT path decoded through _entity(), so the DOM text view
+# and the rendered text disagreed: `a&nbsp;b &amp; c &#x27;d&#x27;` came back to
+# script as those 47 literal bytes where chromium hands back `a b & c 'd'`. Real
+# pages compare, slice and regex-match textContent, so the raw form silently
+# fails their branches. We reuse the SAME decoder the renderer uses (no second
+# entity table): _entity(i) returns the source bytes consumed and leaves the
+# UTF-8 expansion in g_ent_buf[0..g_ent_len).
+#
+# <script>/<style> bodies are RAW TEXT (HTML tokenizer "script data" state):
+# their character data is NOT entity-decoded, so a JS string literal containing
+# "&amp;" or a CSS `content:"\&"` must survive byte-for-byte. chromium's
+# body.textContent includes those bodies undecoded, so we copy them verbatim.
 def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
     n: int32 = 0
     i: uint64 = cs
     while i < ce:
         c: uint8 = src_ptr[i]
         if c == 60:                                       # '<' — skip a tag
-            while i < ce and src_ptr[i] != 62:
-                i = i + 1
+            ts: uint64 = i + 1
+            je: uint64 = ts
+            while je < ce and src_ptr[je] != 62:
+                je = je + 1
+            ne: uint64 = ts
+            while ne < je and _alnum_at(ne) != 0:
+                ne = ne + 1
+            israw: int32 = 0
+            if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("script")) != 0:
+                israw = 1
+            elif _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("style")) != 0:
+                israw = 1
+            if je > ts and src_ptr[je - 1] == 47:         # '<script/>' self-close
+                israw = 0
+            i = je
             if i < ce:
                 i = i + 1
+            if israw != 0:
+                while i < ce:
+                    if src_ptr[i] == 60 and i + 1 < ce and src_ptr[i + 1] == 47:
+                        break
+                    if oo + n < DOM_TXT_CAP:
+                        dom_txtbuf[oo + n] = src_ptr[i]
+                        n = n + 1
+                    i = i + 1
             continue
+        if c == 38:                                       # '&' — character ref
+            cons: uint64 = _entity(i)
+            if cons > 0:
+                k: int32 = 0
+                while k < g_ent_len:
+                    if oo + n < DOM_TXT_CAP:
+                        dom_txtbuf[oo + n] = g_ent_buf[k]
+                        n = n + 1
+                    k = k + 1
+                i = i + cons
+                continue
         if oo + n < DOM_TXT_CAP:
             dom_txtbuf[oo + n] = c
             n = n + 1
