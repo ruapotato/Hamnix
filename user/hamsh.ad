@@ -286,7 +286,7 @@ def str_intern_n(src: Ptr[uint8], n: uint64) -> uint64:
     # lexer interns before the evaluator exists; rt_raise only sets a
     # latch + writes stderr, so it is safe from anywhere.)
     if str_cursor + n + 1 >= STR_ARENA_MAX:
-        rt_raise("string arena exhausted (STR_ARENA_MAX=1048576 bytes, no GC)")
+        rt_raise("string arena exhausted (STR_ARENA_MAX=1048576 live bytes)")
         return 0
     off: uint64 = str_cursor
     i: uint64 = 0
@@ -1486,7 +1486,11 @@ def ps_set_err(msg: Ptr[uint8]):
 
 def nd_new(kind: int32) -> int32:
     if nd_count >= NODE_MAX:
-        ps_set_err("node arena full")
+        # Reached only when the LIVE (reachable) AST alone fills the arena
+        # — gc_collect already ran at the top of this line. The old
+        # message ("node arena full") was the sole symptom of the
+        # 83-minute desktop death, so name the limit and the cause.
+        ps_set_err("node arena full: live ASTs exceed NODE_MAX=16384")
         return 0
     n: uint64 = nd_count
     nd_count = nd_count + 1
@@ -1510,7 +1514,7 @@ def nd_kid_push(node: int32, kid: int32):
     # got pushed between two block-level pushes).
     nu: uint64 = cast[uint64](node)
     if nd_kid_cursor >= 32768:
-        ps_set_err("kid pool full")
+        ps_set_err("AST kid pool full: live ASTs exceed 32768 slots")
         return
     slot: uint64 = nd_kid_cursor
     nd_kid_cursor = nd_kid_cursor + 1
@@ -3683,8 +3687,11 @@ def v_new(t: int32) -> int32:
         # accumulating and then print a plausible wrong total (review
         # §6.1). Raise instead: the fault unwinds at the next statement
         # boundary with $status=1 and a $errstr that names the limit.
+        # (The arena IS collected now — see gc_collect. Reaching this
+        # means one STATEMENT allocated 16384 live cells, not that a long
+        # session leaked them.)
         return rt_raise(
-            "value arena exhausted (VAL_MAX=16384 cells, no GC) — split the loop or shorten the session")
+            "value arena exhausted (VAL_MAX=16384 live cells) — split the loop")
     n: uint64 = val_count
     val_count = val_count + 1
     val_type[n] = t
@@ -12717,6 +12724,15 @@ def exec_statement(node: int32) -> int32:
                 return EX_NORMAL
             # alias / unalias mutate the shell's own alias table, so they
             # MUST run in-process (never spawned as an external command).
+            # `arenas` — the sustained-use diagnostic. Prints the live
+            # occupancy of every session arena plus the collection count,
+            # so "is this shell leaking?" is answerable IN the shell (and
+            # by scripts/test_hamsh_arena_soak_host.sh) instead of only
+            # after it has already died with "node arena full".
+            if cstr_eq(cmd, "arenas") != 0:
+                _builtin_arenas()
+                eval_status = 0
+                return EX_NORMAL
             if cstr_eq(cmd, "alias") != 0:
                 eval_status = builtin_alias(argc)
                 return EX_NORMAL
@@ -14758,26 +14774,492 @@ line_buf:   Array[2048, uint8]
 #  below. The rc/init path reads its script into rc_buf directly.)
 
 
+# ====================================================================
+# Arena GC — reachability-aware mark/compact  (the "83-minute desktop")
+# ====================================================================
+# THE 2026-07-28 STRESS-SOAK FATALITY LIVED HERE.
+#
+# The node / kid / value / element / string arenas are append-only across a
+# session. The OLD reclaimer was all-or-nothing:
+#
+#     if fn_count != 0: return
+#     if sc_count != 0: return
+#     ... reset every arena to baseline ...
+#
+# i.e. it recycled ONLY when the session had no `def`'d function AND no
+# variable binding at all. The DE's login shell sources /etc/rc.de-user,
+# which leaves both permanently non-zero, so the guard fired forever, the
+# node arena climbed monotonically at ~20 nodes per command, and at command
+# ~700 nd_new hit NODE_MAX and every subsequent line died with
+# "hamsh: parse error [line 1]: node arena full". The desktop became
+# completely unusable after ~83 minutes of ordinary use while the KERNEL was
+# perfectly healthy (644 MB free, 20 tasks, 1/32 windows).
+#
+# The guard was not wrong — recycling while a function body or a bound value
+# still points into the arenas is a use-after-free. It was just far too
+# coarse. The fix is to compute what is actually REACHABLE and reclaim the
+# rest: a precise mark/compact collector over all five arenas.
+#
+# The same all-or-nothing reset was ALSO silently corrupting the alias table
+# and the pushd directory stack (both hold interned string refs, and neither
+# was consulted by the old guard): with no def and no variable live, a
+# recycle wiped the string arena out from under `alias ll='ls -l'`. Those are
+# roots here, so that class is gone too.
+#
+# --- the object graph ------------------------------------------------
+#   ROOTS   fn_node[]        (function bodies)          -> nodes
+#           sc_val[]         (variable bindings)        -> value cells
+#           eval_retval, raised_val                     -> value cells
+#           sc_name[], alias_name[], alias_val[],
+#           dir_stack[]                                 -> strings
+#   nodes -> nd_a, nd_b, (nd_c for the kinds that use it as a child),
+#            the kid linked-list (nd_ks/nd_ke/nd_kid_next), nd_str
+#   cells -> val_elem span (list/set/dict), val_pay (VT_FUNC / VT_NS hold a
+#            NODE id; VT_STR holds a string ref), val_aux (VT_MOUNT string)
+#
+# nd_c is a CHILD for exactly five kinds and a scalar FLAG for the rest
+# (ND_CMD redirect bits, ND_ASSIGN export flag, ND_CALL/ND_CALLV kwarg
+# count, ND_FOR expression-mode flag). Rewriting a flag as if it were a node
+# id would silently corrupt the parse; _gc_c_is_node is the whole truth on
+# that and MUST be updated whenever a node kind starts using nd_c as a
+# child. scripts/test_hamsh_arena_soak_host.sh exercises every one of them
+# across a collection, so a missed entry fails loudly instead of quietly.
+#
+# GC runs ONLY from the top of the outermost run_source — no AST is
+# executing and no evaluator local holds a cell id at that point.
+# `source FILE` re-enters run_source from INSIDE an executing AST, so the
+# _rs_depth guard is load-bearing, not decorative.
+
+GC_MARKED: int32 = -1
+
+gc_fwd_nd:   Array[16384, int32]    # old node id  -> new node id
+gc_fwd_kd:   Array[32768, int32]    # old kid slot -> new kid slot
+gc_fwd_vl:   Array[16384, int32]    # old cell id  -> new cell id
+gc_stk_nd:   Array[16384, int32]
+gc_stk_nd_n: uint64 = 0
+gc_stk_vl:   Array[16384, int32]
+gc_stk_vl_n: uint64 = 0
+# Element-pool sweep helper: elem-pool start slot -> owning cell id. Every
+# live span is owned by exactly ONE cell (val_es is only ever assigned a
+# fresh cursor or a relocation target — never copied between cells), so the
+# spans partition the pool and an ascending sweep compacts them in place.
+gc_owner:    Array[16384, int32]
+# Strings are variable-length, so compaction stages them out and blits back.
+# A session whose LIVE strings exceed the stage keeps its arena uncompacted
+# (nodes/values still shrink) and str_intern_n's loud overflow still applies.
+GC_STR_STAGE_MAX: uint64 = 65536
+gc_str_stage: Array[65536, uint8]
+gc_str_cur:  uint64 = 0
+gc_runs:     uint64 = 0          # collections performed this session
+gc_str_skipped: uint64 = 0       # collections whose live strings overflowed
+
+
+def _gc_c_is_node(k: int32) -> int32:
+    # 1 iff nd_c of a node of kind `k` is a CHILD NODE ID (and so must be
+    # marked + forwarded). Everything else stores a scalar flag there.
+    if k == ND_IF:
+        return 1
+    if k == ND_TRY:
+        return 1
+    if k == ND_TERNARY:
+        return 1
+    if k == ND_SLICE:
+        return 1
+    if k == ND_WITH:
+        return 1
+    return 0
+
+
+def _gc_fnd(n: int32) -> int32:
+    if n <= 0:
+        return 0
+    u: uint64 = cast[uint64](n)
+    if u >= NODE_MAX:
+        return 0
+    return gc_fwd_nd[u]
+
+
+def _gc_fkd(s: int32) -> int32:
+    if s <= 0:
+        return 0
+    u: uint64 = cast[uint64](s)
+    if u >= 32768:
+        return 0
+    return gc_fwd_kd[u]
+
+
+def _gc_fvl(c: int32) -> int32:
+    if c <= 0:
+        return 0
+    u: uint64 = cast[uint64](c)
+    if u >= VAL_MAX:
+        return 0
+    return gc_fwd_vl[u]
+
+
+def _gc_push_nd(n: int32):
+    if n <= 0:
+        return
+    u: uint64 = cast[uint64](n)
+    if u >= nd_count:
+        return
+    if gc_fwd_nd[u] != 0:
+        return
+    gc_fwd_nd[u] = GC_MARKED
+    if gc_stk_nd_n >= NODE_MAX:
+        return
+    gc_stk_nd[gc_stk_nd_n] = n
+    gc_stk_nd_n = gc_stk_nd_n + 1
+
+
+def _gc_push_vl(c: int32):
+    if c <= 0:
+        return
+    u: uint64 = cast[uint64](c)
+    if u >= val_count:
+        return
+    if gc_fwd_vl[u] != 0:
+        return
+    gc_fwd_vl[u] = GC_MARKED
+    if gc_stk_vl_n >= VAL_MAX:
+        return
+    gc_stk_vl[gc_stk_vl_n] = c
+    gc_stk_vl_n = gc_stk_vl_n + 1
+
+
+def _gc_mark_values():
+    # Marking is worklist-driven (never recursive): a self-referential
+    # value (`xs = []; xs.append(xs)`) is a cycle, and the marked test at
+    # PUSH time terminates it.
+    while gc_stk_vl_n > 0:
+        gc_stk_vl_n = gc_stk_vl_n - 1
+        c: int32 = gc_stk_vl[gc_stk_vl_n]
+        u: uint64 = cast[uint64](c)
+        t: int32 = val_type[u]
+        if t == VT_FUNC or t == VT_NS:
+            _gc_push_nd(cast[int32](val_pay[u]))
+        elif t == VT_LIST or t == VT_SET:
+            es: uint64 = val_es[u]
+            ec: uint64 = val_ec[u]
+            i: uint64 = 0
+            while i < ec and es + i < LISTELEM_MAX:
+                _gc_push_vl(val_elem[es + i])
+                i = i + 1
+        elif t == VT_DICT:
+            des: uint64 = val_es[u]
+            dn: uint64 = val_ec[u] * 2
+            j: uint64 = 0
+            while j < dn and des + j < LISTELEM_MAX:
+                _gc_push_vl(val_elem[des + j])
+                j = j + 1
+
+
+def _gc_mark_nodes():
+    while gc_stk_nd_n > 0:
+        gc_stk_nd_n = gc_stk_nd_n - 1
+        n: int32 = gc_stk_nd[gc_stk_nd_n]
+        u: uint64 = cast[uint64](n)
+        _gc_push_nd(nd_a[u])
+        _gc_push_nd(nd_b[u])
+        if _gc_c_is_node(nd_kind[u]) != 0:
+            _gc_push_nd(nd_c[u])
+        slot: int32 = nd_ks[u]
+        while slot != 0:
+            su: uint64 = cast[uint64](slot)
+            if su >= 32768:
+                break
+            if gc_fwd_kd[su] != 0:
+                break                      # already walked (or a cycle)
+            gc_fwd_kd[su] = GC_MARKED
+            _gc_push_nd(nd_kid[su])
+            slot = nd_kid_next[su]
+
+
+def _gc_str_take(off: uint64, mode: int32) -> uint64:
+    # mode 0: MEASURE the live bytes. mode 1: copy the string into the
+    # staging buffer and return its post-blit arena offset. Two slots
+    # holding the SAME ref are copied twice — strings are immutable, so a
+    # duplicate is only (bounded) waste, never a semantic change.
+    if off == 0:
+        return 0                            # offset 0 == "" stays ""
+    if off >= STR_ARENA_MAX:
+        return 0
+    ln: uint64 = str_len(off)
+    if mode == 0:
+        gc_str_cur = gc_str_cur + ln + 1
+        return off
+    d: uint64 = gc_str_cur
+    if d + ln + 1 > GC_STR_STAGE_MAX:
+        return off                          # measured first — unreachable
+    i: uint64 = 0
+    while i < ln:
+        gc_str_stage[d + i] = str_arena[off + i]
+        i = i + 1
+    gc_str_stage[d + ln] = 0
+    gc_str_cur = d + ln + 1
+    return d + 1                            # arena offset 0 stays ""
+
+
+def _gc_str_pass(mode: int32):
+    # ONE enumeration of every slot that can hold a live string ref, used
+    # for both the measure and the rewrite pass so the two can never drift
+    # apart. Runs AFTER node/value compaction, so nd_count / val_count are
+    # already the post-GC live counts.
+    gc_str_cur = 0
+    n: uint64 = 1
+    while n < nd_count:
+        r: uint64 = _gc_str_take(nd_str[n], mode)
+        if mode != 0:
+            nd_str[n] = r
+        n = n + 1
+    c: uint64 = 1
+    while c < val_count:
+        t: int32 = val_type[c]
+        if t == VT_STR:
+            rs: uint64 = _gc_str_take(cast[uint64](val_pay[c]), mode)
+            if mode != 0:
+                val_pay[c] = cast[int64](rs)
+        elif t == VT_MOUNT:
+            rm: uint64 = _gc_str_take(cast[uint64](val_aux[c]), mode)
+            if mode != 0:
+                val_aux[c] = cast[int64](rm)
+        c = c + 1
+    si: uint64 = 0
+    while si < sc_count:
+        rn: uint64 = _gc_str_take(sc_name[si], mode)
+        if mode != 0:
+            sc_name[si] = rn
+        si = si + 1
+    ai: uint64 = 0
+    while ai < alias_n:
+        ra: uint64 = _gc_str_take(alias_name[ai], mode)
+        if mode != 0:
+            alias_name[ai] = ra
+        rv: uint64 = _gc_str_take(alias_val[ai], mode)
+        if mode != 0:
+            alias_val[ai] = rv
+        ai = ai + 1
+    di: uint64 = 0
+    while di < dir_stack_n:
+        rd: uint64 = _gc_str_take(dir_stack[di], mode)
+        if mode != 0:
+            dir_stack[di] = rd
+        di = di + 1
+
+
+def gc_collect():
+    gc_runs = gc_runs + 1
+    # --- 1. clear the forwarding tables (FULL width: a stale entry above
+    # the current count would forward a bogus id on the next collection).
+    i: uint64 = 0
+    while i < NODE_MAX:
+        gc_fwd_nd[i] = 0
+        i = i + 1
+    k: uint64 = 0
+    while k < 32768:
+        gc_fwd_kd[k] = 0
+        k = k + 1
+    v: uint64 = 0
+    while v < VAL_MAX:
+        gc_fwd_vl[v] = 0
+        v = v + 1
+    gc_stk_nd_n = 0
+    gc_stk_vl_n = 0
+    # --- 2. roots
+    fi: uint64 = 0
+    while fi < fn_count:
+        _gc_push_nd(fn_node[fi])
+        fi = fi + 1
+    si: uint64 = 0
+    while si < sc_count:
+        _gc_push_vl(sc_val[si])
+        si = si + 1
+    _gc_push_vl(eval_retval)
+    _gc_push_vl(raised_val)
+    # --- 3. mark. Values FIRST: a VT_FUNC / VT_NS cell roots a node tree.
+    _gc_mark_values()
+    _gc_mark_nodes()
+    # --- 4. assign the new (sliding, order-preserving) addresses
+    newn: uint64 = 1                     # node 0 stays the null node
+    n: uint64 = 1
+    while n < nd_count:
+        if gc_fwd_nd[n] == GC_MARKED:
+            gc_fwd_nd[n] = cast[int32](newn)
+            newn = newn + 1
+        n = n + 1
+    newk: uint64 = 1                     # kid slot 0 stays the terminator
+    s: uint64 = 1
+    while s < nd_kid_cursor:
+        if gc_fwd_kd[s] == GC_MARKED:
+            gc_fwd_kd[s] = cast[int32](newk)
+            newk = newk + 1
+        s = s + 1
+    newv: uint64 = 1                     # cell 0 stays nil
+    c: uint64 = 1
+    while c < val_count:
+        if gc_fwd_vl[c] == GC_MARKED:
+            gc_fwd_vl[c] = cast[int32](newv)
+            newv = newv + 1
+        c = c + 1
+    # --- 5. slide the nodes down. Ascending, and every destination is <=
+    # its source, so a write can only land on an already-processed slot.
+    n2: uint64 = 1
+    while n2 < nd_count:
+        f: int32 = gc_fwd_nd[n2]
+        if f > 0:
+            d: uint64 = cast[uint64](f)
+            kk: int32 = nd_kind[n2]
+            nd_kind[d] = kk
+            nd_a[d] = _gc_fnd(nd_a[n2])
+            nd_b[d] = _gc_fnd(nd_b[n2])
+            if _gc_c_is_node(kk) != 0:
+                nd_c[d] = _gc_fnd(nd_c[n2])
+            else:
+                nd_c[d] = nd_c[n2]        # scalar flag — copy verbatim
+            nd_i[d]   = nd_i[n2]
+            nd_str[d] = nd_str[n2]
+            nd_ks[d]  = _gc_fkd(nd_ks[n2])
+            nd_ke[d]  = _gc_fkd(nd_ke[n2])
+            nd_kn[d]  = nd_kn[n2]
+        n2 = n2 + 1
+    nd_count = newn
+    # --- 6. slide the kid slots down (relative order preserved, so each
+    # owner's linked list keeps its argument order).
+    s2: uint64 = 1
+    while s2 < nd_kid_cursor:
+        fk: int32 = gc_fwd_kd[s2]
+        if fk > 0:
+            dk: uint64 = cast[uint64](fk)
+            nd_kid[dk] = _gc_fnd(nd_kid[s2])
+            nd_kid_next[dk] = _gc_fkd(nd_kid_next[s2])
+        s2 = s2 + 1
+    nd_kid_cursor = newk
+    # --- 7. slide the value cells down
+    c2: uint64 = 1
+    while c2 < val_count:
+        fv: int32 = gc_fwd_vl[c2]
+        if fv > 0:
+            dv: uint64 = cast[uint64](fv)
+            t: int32 = val_type[c2]
+            val_type[dv] = t
+            if t == VT_FUNC or t == VT_NS:
+                val_pay[dv] = cast[int64](
+                    _gc_fnd(cast[int32](val_pay[c2])))
+            else:
+                val_pay[dv] = val_pay[c2]
+            val_f[dv]   = val_f[c2]
+            val_aux[dv] = val_aux[c2]
+            val_es[dv]  = val_es[c2]
+            val_ec[dv]  = val_ec[c2]
+        c2 = c2 + 1
+    val_count = newv
+    # --- 8. compact the shared element pool. Sweeping the POOL (not the
+    # cell table) visits the spans in ascending start order, which is what
+    # makes the in-place slide safe; cell-id order would not.
+    oi: uint64 = 0
+    while oi < LISTELEM_MAX:
+        gc_owner[oi] = 0
+        oi = oi + 1
+    co: uint64 = 1
+    while co < val_count:
+        tc: int32 = val_type[co]
+        if tc == VT_LIST or tc == VT_SET or tc == VT_DICT:
+            if val_ec[co] > 0 and val_es[co] < LISTELEM_MAX:
+                gc_owner[val_es[co]] = cast[int32](co)
+        co = co + 1
+    dst: uint64 = 0
+    p: uint64 = 0
+    while p < val_elem_cursor:
+        ow: int32 = gc_owner[p]
+        if ow == 0:
+            p = p + 1
+            continue
+        ou: uint64 = cast[uint64](ow)
+        ln: uint64 = val_ec[ou]
+        if val_type[ou] == VT_DICT:
+            ln = ln * 2
+        q: uint64 = 0
+        while q < ln and p + q < LISTELEM_MAX:
+            val_elem[dst + q] = _gc_fvl(val_elem[p + q])
+            q = q + 1
+        val_es[ou] = dst
+        dst = dst + ln
+        p = p + ln
+    val_elem_cursor = dst
+    # An empty list/dict/set has no span; point it at the top so its first
+    # append is already contiguous (what v_list_begin would have done).
+    cz: uint64 = 1
+    while cz < val_count:
+        if val_ec[cz] == 0:
+            val_es[cz] = dst
+        cz = cz + 1
+    # --- 9. rewrite the roots through the forwarding tables
+    fi2: uint64 = 0
+    while fi2 < fn_count:
+        fn_node[fi2] = _gc_fnd(fn_node[fi2])
+        fi2 = fi2 + 1
+    si2: uint64 = 0
+    while si2 < sc_count:
+        sc_val[si2] = _gc_fvl(sc_val[si2])
+        si2 = si2 + 1
+    eval_retval = _gc_fvl(eval_retval)
+    raised_val = _gc_fvl(raised_val)
+    # --- 10. compact the string arena (measure, then stage + blit back)
+    _gc_str_pass(0)
+    if gc_str_cur <= GC_STR_STAGE_MAX:
+        _gc_str_pass(1)
+        total: uint64 = gc_str_cur
+        str_arena[0] = 0
+        bi: uint64 = 0
+        while bi < total:
+            str_arena[1 + bi] = gc_str_stage[bi]
+            bi = bi + 1
+        str_cursor = 1 + total
+    else:
+        gc_str_skipped = gc_str_skipped + 1
+
+
+def _builtin_arenas():
+    # One line, machine-greppable, stable field order.
+    write_cstr1("arenas nodes=")
+    write_cstr1(render_int(cast[int64](nd_count)))
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](NODE_MAX)))
+    write_cstr1(" kids=")
+    write_cstr1(render_int(cast[int64](nd_kid_cursor)))
+    write_cstr1("/32768 vals=")
+    write_cstr1(render_int(cast[int64](val_count)))
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](VAL_MAX)))
+    write_cstr1(" elems=")
+    write_cstr1(render_int(cast[int64](val_elem_cursor)))
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](LISTELEM_MAX)))
+    write_cstr1(" str=")
+    write_cstr1(render_int(cast[int64](str_cursor)))
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](STR_ARENA_MAX)))
+    write_cstr1(" scope=")
+    write_cstr1(render_int(cast[int64](sc_count)))
+    write_cstr1(" fns=")
+    write_cstr1(render_int(cast[int64](fn_count)))
+    write_cstr1(" gc=")
+    write_cstr1(render_int(cast[int64](gc_runs)))
+    write_cstr1(" gcstrskip=")
+    write_cstr1(render_int(cast[int64](gc_str_skipped)))
+    write_cstr1("\n")
+
+
 def _maybe_recycle_arenas():
-    # The node / value / string arenas are append-only across a
-    # session. When they near capacity AND there is no live state to
-    # preserve (no `def`'d functions, no variable bindings), recycle
-    # them to baseline. With functions or variables live, we keep
-    # growing — the soft-overflow path then degrades gracefully.
-    if fn_count != 0:
-        return
-    if sc_count != 0:
-        return
+    # Collect when ANY arena nears its cap. Reachability decides what
+    # survives — a live `def` or variable no longer pins the whole session's
+    # garbage (see the header above).
     if nd_count < NODE_MAX - 1024 and val_count < VAL_MAX - 1024 and \
             str_cursor < STR_ARENA_MAX - 4096 and \
-            val_elem_cursor < LISTELEM_MAX - 1024:
+            val_elem_cursor < LISTELEM_MAX - 1024 and \
+            nd_kid_cursor < 32768 - 2048:
         return
-    nd_count = 1
-    nd_kid_cursor = 1          # slot 0 reserved as the list terminator
-    val_count = 1
-    val_elem_cursor = 0
-    str_cursor = 1
-    str_arena[0] = 0
+    gc_collect()
 
 
 def _brace_balance(buf: Ptr[uint8], n: uint64) -> int64:
@@ -14874,12 +15356,27 @@ def _phys_is_blank(buf: Ptr[uint8], n: uint64) -> int32:
     return 1
 
 
+# run_source RE-ENTERS itself: the `source FILE` builtin (and the service
+# loader's _svc_source_path) call it from INSIDE an executing AST, so at
+# depth > 1 the caller's nodes/values are live in evaluator locals that the
+# collector cannot see. Collect at depth 1 only.
+_rs_depth: int32 = 0
+
+
 def run_source(buf: Ptr[uint8], n: uint64) -> int32:
     # Lex, parse, and execute a complete logical input. Returns 1 if
-    # `exit` was requested, else 0. The node / value / string arenas
-    # are session-lifetime append-only (so variables and `def`'d
-    # functions outlive the line); _maybe_recycle_arenas reclaims them
-    # only when provably safe.
+    # `exit` was requested, else 0. The node / value / string arenas are
+    # session-lifetime append-only (so variables and `def`'d functions
+    # outlive the line); gc_collect reclaims whatever is unreachable.
+    _rs_depth = _rs_depth + 1
+    if _rs_depth == 1:
+        _maybe_recycle_arenas()
+    r: int32 = _run_source_inner(buf, n)
+    _rs_depth = _rs_depth - 1
+    return r
+
+
+def _run_source_inner(buf: Ptr[uint8], n: uint64) -> int32:
     # §18.1: a blank / whitespace-only / comment-only top-level line is
     # a silent no-op — skip lex/parse/exec entirely.
     if _line_is_blank(buf, n) != 0:
@@ -14892,7 +15389,6 @@ def run_source(buf: Ptr[uint8], n: uint64) -> int32:
     # unwound; start every top-level line with a clean latch so it can
     # never leak into an unrelated statement.
     rt_fault_clear()
-    _maybe_recycle_arenas()
     if lex_line(buf, n) < 0:
         write_cstr1("hamsh: lexical error (unterminated quote or token-limit exceeded)\n")
         return 0
