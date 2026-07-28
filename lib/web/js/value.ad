@@ -189,47 +189,299 @@ def emit_i64(v: int64):
         emit_u64(cast[uint64](v))
 
 
-# ---- shortest round-tripping fraction digits (ECMAScript Number::toString) ---
-# Scratch used by emit_num: g_fd holds the raw extracted fractional digit VALUES
-# (0..9), g_fdout the candidate after optional round-half-up of the last kept
-# digit, and g_fdcarry records a carry that propagated OUT of the fraction (e.g.
-# 0.999... -> 1.0), which bumps the integer part.
-g_fd:    Array[24, uint8]
-g_fdout: Array[24, uint8]
-g_fdcarry: int32 = 0
+# ---- ECMAScript Number::toString (ES2023 6.1.6.1.20, radix 10) --------------
+# The spec picks integers n, k and s with k >= 1, 10^(k-1) <= s < 10^k and
+# s * 10^(n-k) = the value, k AS SMALL AS POSSIBLE (the shortest digit run that
+# reads back as the same double), then chooses one of FIVE layouts from n and k:
+#
+#   k <= n <= 21   -> the s digits followed by n-k zeros            (100, 1e20)
+#   0 < n <= 21    -> s with a point after n digits                 (1.5, 3.25)
+#   -6 < n <= 0    -> "0." + (-n) zeros + s                         (0.000001)
+#   otherwise, k=1 -> s "e" sign (n-1)                              (1e+21, 1e-7)
+#   otherwise      -> s[0] "." s[1..] "e" sign (n-1)                (1.5e+300)
+#
+# The previous code only ever produced the middle three shapes: it split the
+# value into f_floor() integer part + fraction, so EXPONENT FORM did not exist.
+# `1e-7` printed 0.0000001 (V8 prints 1e-7 — the -6 < n cut) and anything past
+# 2^63 printed the clamped garbage 9223372036854775808 because the integer part
+# went through cast[uint64]. Both thresholds and the e+/e- spelling below are
+# V8's, verified value-by-value against `node`.
+#
+# The significand digits are found by normalising |x| into [1,10) with EXACT
+# powers of ten (10^0..10^22 are the only ones a double holds exactly, so the
+# scaling walks in <=22-decade steps), extracting 18 digits, and then taking the
+# SHORTEST prefix — truncated or rounded half-up — that recomposes to exactly x
+# again through the same scaling. Values needing more than 17 significant digits
+# cannot exist (a double carries at most 17), so the search is bounded.
+
+NUM_MAXD: int32 = 18
+
+g_nd:   Array[24, uint8]      # raw digits of the normalised significand
+g_ndc:  Array[24, uint8]      # the candidate digits actually printed
+g_ndt:  Array[24, uint8]      # scratch for a uint64's digits (LSB first)
+g_ndk:  int32 = 0             # how many of g_ndc are significant
+g_ndn:  int32 = 0             # decimal point position (value = 0.<g_ndc> * 10^n)
+g_p10:  Array[24, float64]    # 10^0 .. 10^22, every one exact in a double
+g_p10_ready: int32 = 0
+# 1 while formatting an INTEGRAL value whose digits were read out exactly (see
+# _num_digits): the round-trip test then runs in uint64 instead of float64.
+g_num_int: int32 = 0
 
 
-# Rebuild the float64 that the first `k` fractional digits denote (optionally
-# rounding the k-th digit UP with carry) so emit_num can pick the SHORTEST digit
-# count that reproduces the input exactly. Horner from the last digit keeps every
-# intermediate exact-ish and mirrors how a reader would parse the printed text.
-def _fdigits_recon(ip: float64, k: int32, roundup: int32) -> float64:
+def _p10_init():
+    if g_p10_ready != 0:
+        return
+    v: float64 = 1.0
+    i: int32 = 0
+    while i <= 22:
+        g_p10[i] = v
+        v = v * 10.0
+        i = i + 1
+    g_p10_ready = 1
+
+
+# v * 10^e, walking in <=22-decade steps so every individual multiply/divide has
+# an EXACT power-of-ten operand (10^23 and up are not representable). Each step
+# moves v monotonically toward the final magnitude, so no intermediate can
+# overflow to Infinity or flush to zero unless the result itself does.
+def _scale10(v: float64, e: int32) -> float64:
+    _p10_init()
+    while e > 22:
+        v = v * g_p10[22]
+        e = e - 22
+    while e < -22:
+        v = v / g_p10[22]
+        e = e + 22
+    if e > 0:
+        v = v * g_p10[e]
+    elif e < 0:
+        v = v / g_p10[0 - e]
+    return v
+
+
+# Recompose the first k candidate digits at decimal position n back into a
+# double: (the k digits read as an integer) * 10^(n-k). This is the round-trip
+# oracle the shortest-digit search below tests against.
+def _num_recon(k: int32, n: int32) -> float64:
+    # INTEGRAL values: build the candidate in uint64 (every step exact) and let
+    # ONE hardware int->double conversion round it. The float path below has to
+    # multiply by a power of ten, and this engine's float64 multiply/divide is
+    # not always the IEEE correctly-rounded result, so a 16/17-digit candidate
+    # that is NOT the same double as x could still compare equal and win the
+    # shortest-digits race (1234567890123456789 printed ...457000 instead of
+    # V8's ...456800). Integer arithmetic sidesteps that entirely.
+    u: uint64 = 0
+    iu: int32 = 0
+    while iu < k:
+        u = u * 10 + cast[uint64](g_ndc[iu])
+        iu = iu + 1
+    if g_num_int != 0 and n >= k:
+        z: int32 = n - k
+        while z > 0:
+            u = u * 10
+            z = z - 1
+        return cast[float64](cast[int64](u))
+    # The k digits (k <= 18) are EXACT in a uint64; one int->double conversion
+    # rounds once, then one power-of-ten scale rounds once. Building the same
+    # integer by Horner in float64 instead cost a rounding PER DIGIT, and that
+    # noise decided the shortest-digits race wrongly for most 17-digit values.
+    return _scale10(cast[float64](cast[int64](u)), n - k)
+
+
+# Copy the first k raw digits into the candidate buffer, optionally rounding the
+# k-th up (half-up) with carry. A carry out of the leading digit makes the value
+# 10^k, i.e. a single '1' one decade higher — reported by returning 1 so the
+# caller can bump n.
+def _num_cand(k: int32, roundup: int32) -> int32:
     i: int32 = 0
     while i < k:
-        g_fdout[i] = g_fd[i]
+        g_ndc[i] = g_nd[i]
         i = i + 1
-    g_fdcarry = 0
-    if roundup != 0:
-        carry: int32 = 1
-        j: int32 = k - 1
-        while j >= 0 and carry != 0:
-            v: int32 = cast[int32](g_fdout[j]) + 1
-            if v > 9:
-                g_fdout[j] = cast[uint8](0)
-                carry = 1
-            else:
-                g_fdout[j] = cast[uint8](v)
-                carry = 0
-            j = j - 1
-        g_fdcarry = carry
-    f: float64 = 0.0
-    j2: int32 = k - 1
-    while j2 >= 0:
-        f = (f + cast[float64](cast[int32](g_fdout[j2]))) / 10.0
-        j2 = j2 - 1
-    if g_fdcarry != 0:
-        return ip + 1.0 + f
-    return ip + f
+    if roundup == 0:
+        return 0
+    j: int32 = k - 1
+    carry: int32 = 1
+    while j >= 0 and carry != 0:
+        v: int32 = cast[int32](g_ndc[j]) + 1
+        if v > 9:
+            g_ndc[j] = cast[uint8](0)
+        else:
+            g_ndc[j] = cast[uint8](v)
+            carry = 0
+        j = j - 1
+    if carry != 0:
+        g_ndc[0] = cast[uint8](1)
+        i = 1
+        while i < k:
+            g_ndc[i] = cast[uint8](0)
+            i = i + 1
+        return 1
+    return 0
+
+
+# Fill g_ndc / g_ndk / g_ndn for a FINITE, STRICTLY POSITIVE x.
+def _num_digits(x: float64):
+    _p10_init()
+    # EXACT PATH: an integral value inside uint64 range has its decimal digits
+    # available exactly, with no float scaling in the way. That matters because
+    # the shortest-digit search below decides on the LAST digit, and a value like
+    # 2**53 (9007199254740992) has 16 significant digits — one more than a double
+    # can carry through a divide-and-extract round trip. Normalising it into
+    # [1,10) and reading digits back gave a bogus tail, so the half-up rule fired
+    # and printed 9007199254740993. Integers are also by far the most common
+    # thing a page prints. Extract them exactly here; every other value falls
+    # through to the float path.
+    if x == f_floor(x) and x < 9.0e18:
+        g_num_int = 1
+        u: uint64 = cast[uint64](x)
+        nd: int32 = 0
+        while u > 0:
+            g_nd[nd] = cast[uint8](u % 10)
+            u = u / 10
+            nd = nd + 1
+        # the loop above produced least-significant-first; reverse in place.
+        a: int32 = 0
+        b: int32 = nd - 1
+        while a < b:
+            sw: uint8 = g_nd[a]
+            g_nd[a] = g_nd[b]
+            g_nd[b] = sw
+            a = a + 1
+            b = b - 1
+        i0: int32 = nd
+        while i0 < NUM_MAXD:
+            g_nd[i0] = cast[uint8](0)
+            i0 = i0 + 1
+        _num_search(x, nd)
+        g_num_int = 0
+        return
+    g_num_int = 0
+    # MIXED PATH: |x| >= 1 with a fraction. Read the INTEGER part out of a
+    # uint64 exactly and peel the fraction from the exact remainder x - floor(x).
+    # No normalising divide is involved at all, so nothing perturbs the digits
+    # the shortest-round-trip search is about to weigh — the decade normalisation
+    # below costs a rounding, and on a 17-significant-digit value like
+    # 943226.1374251065 that rounding is what decides the final digit.
+    if x >= 1.0 and x < 9.0e18:
+        ipf: float64 = f_floor(x)
+        u2: uint64 = cast[uint64](ipf)
+        nd2: int32 = 0
+        while u2 > 0:
+            g_ndt[nd2] = cast[uint8](u2 % 10)
+            u2 = u2 / 10
+            nd2 = nd2 + 1
+        j: int32 = 0
+        while j < nd2:
+            g_nd[j] = g_ndt[nd2 - 1 - j]
+            j = j + 1
+        t2: float64 = x - ipf
+        j2: int32 = nd2
+        while j2 < NUM_MAXD:
+            t2 = t2 * 10.0
+            dv2: int32 = cast[int32](f_floor(t2))
+            if dv2 > 9:
+                dv2 = 9
+            if dv2 < 0:
+                dv2 = 0
+            g_nd[j2] = cast[uint8](dv2)
+            t2 = t2 - cast[float64](dv2)
+            j2 = j2 + 1
+        _num_search(x, nd2)
+        return
+    # ESTIMATE the decade with a cheap stepwise walk. Its ACCURACY does not
+    # matter (only its integer answer does) because the significand is then
+    # recomputed from the ORIGINAL x in one shot below — walking a decade at a
+    # time and keeping the running quotient would have cost one rounding per
+    # step (six of them for 1.2e20), and that noise lands squarely on the 17th
+    # significant digit, which is where V8 is still making decisions.
+    e10: int32 = 0
+    d: float64 = x
+    while d >= g_p10[22]:
+        d = d / g_p10[22]
+        e10 = e10 + 22
+    while d >= g_p10[8]:
+        d = d / g_p10[8]
+        e10 = e10 + 8
+    while d >= 10.0:
+        d = d / 10.0
+        e10 = e10 + 1
+    while d < 1.0 and d > 0.0:
+        if d < 1.0e-22:
+            d = d * g_p10[22]
+            e10 = e10 - 22
+        elif d < 1.0e-8:
+            d = d * g_p10[8]
+            e10 = e10 - 8
+        else:
+            d = d * 10.0
+            e10 = e10 - 1
+    # Recompute the significand from x directly: for the |decade| <= 22 range
+    # that covers essentially every number a page produces, _scale10 is a SINGLE
+    # correctly-rounded divide by an exact power of ten.
+    d = _scale10(x, 0 - e10)
+    while d >= 10.0:
+        e10 = e10 + 1
+        d = _scale10(x, 0 - e10)
+    while d < 1.0 and d > 0.0:
+        e10 = e10 - 1
+        d = _scale10(x, 0 - e10)
+    # raw significand digits, peeled one at a time (`t - digit` is exact; only
+    # the *10 rounds).
+    t: float64 = d
+    i: int32 = 0
+    while i < NUM_MAXD:
+        dv: int32 = cast[int32](f_floor(t))
+        if dv > 9:
+            dv = 9
+        if dv < 0:
+            dv = 0
+        g_nd[i] = cast[uint8](dv)
+        t = (t - cast[float64](dv)) * 10.0
+        i = i + 1
+    _num_search(x, e10 + 1)
+
+
+# SHORTEST digit prefix of g_nd that reads back as exactly x. `n0` is the decimal
+# point position of the full run (x = 0.<g_nd> * 10^n0).
+def _num_search(x: float64, n0: int32):
+    k: int32 = 1
+    while k < NUM_MAXD:
+        # Try the CORRECTLY ROUNDED k-digit candidate first (half-up on the next
+        # raw digit), and only then the other direction. Order matters once k
+        # reaches 17: an integer of 17 digits is past 2^53, so truncated and
+        # rounded-up candidates can recompose to the SAME double and both
+        # "round-trip" — testing the rounded one first makes us print V8's
+        # 123456789012345680000 rather than ...670000, and 5e-324 rather than
+        # 4e-324 for the smallest denormal.
+        up: int32 = 0
+        if g_nd[k] >= cast[uint8](5):
+            up = 1
+        bump: int32 = _num_cand(k, up)
+        if _num_recon(k, n0 + bump) == x:
+            g_ndk = k
+            g_ndn = n0 + bump
+            _num_trim()
+            return
+        bump = _num_cand(k, 1 - up)
+        if _num_recon(k, n0 + bump) == x:
+            g_ndk = k
+            g_ndn = n0 + bump
+            _num_trim()
+            return
+        k = k + 1
+    # No prefix round-trips (only reachable when the <=22-decade scaling lost a
+    # low bit on an extreme exponent): print the full 17-digit form, which is
+    # always enough to identify a double.
+    bump2: int32 = _num_cand(17, 1)
+    g_ndk = 17
+    g_ndn = n0 + bump2
+    _num_trim()
+
+
+# Trailing zeros are never part of the spec's s (it requires 10^(k-1) <= s).
+def _num_trim():
+    while g_ndk > 1 and g_ndc[g_ndk - 1] == cast[uint8](0):
+        g_ndk = g_ndk - 1
 
 
 def emit_num(x: float64):
@@ -242,70 +494,61 @@ def emit_num(x: float64):
         emit_cstr(cast[Ptr[uint8]]("Infinity"))
         return
     if x == 0.0:
-        emit_c(48)
+        emit_c(48)                               # String(-0) is "0"
         return
-    neg: int32 = 0
     if x < 0.0:
-        neg = 1
-        x = 0.0 - x
-    ip: float64 = f_floor(x)
-    frac: float64 = x - ip
-    # SHORTEST ROUND-TRIP fraction (ECMAScript 7.1.12.1 Number::toString prints
-    # the fewest digits that read back as the same double). The old code emitted
-    # a hard 12 fractional digits, so any value needing more was SILENTLY
-    # TRUNCATED — `Math.PI` printed 3.141592653589 (13 significant digits),
-    # losing 793 and turning an exact double into a different number. Extract a
-    # generous 18 digits, then take the shortest prefix (truncated OR rounded up)
-    # that reconstructs x exactly.
-    pick: int32 = 0
-    if frac > 0.0:
-        fn: int32 = 0
-        tmp: float64 = frac
-        while fn < 18:
-            tmp = tmp * 10.0
-            d: int32 = cast[int32](f_floor(tmp))
-            if d > 9:
-                d = 9
-            if d < 0:
-                d = 0
-            g_fd[fn] = cast[uint8](d)
-            fn = fn + 1
-            tmp = tmp - cast[float64](d)
-        pickup: int32 = 0
-        k: int32 = 1
-        while k <= fn:
-            if _fdigits_recon(ip, k, 0) == x:
-                pick = k
-                pickup = 0
-                break
-            if _fdigits_recon(ip, k, 1) == x:
-                pick = k
-                pickup = 1
-                break
-            k = k + 1
-        if pick == 0:
-            pick = fn
-            pickup = 0
-        # re-materialise the winning candidate into g_fdout (+ its carry flag).
-        _fdigits_recon(ip, pick, pickup)
-        if g_fdcarry != 0:
-            ip = ip + 1.0
-        # trim trailing zeros (a carry-out leaves all zeros -> no fraction at all)
-        while pick > 0 and g_fdout[pick - 1] == cast[uint8](0):
-            pick = pick - 1
-    if neg != 0:
         emit_c(45)
-    # integer part
-    if ip < 9.0e18:
-        emit_u64(cast[uint64](ip))
+        x = 0.0 - x
+    _num_digits(x)
+    k: int32 = g_ndk
+    n: int32 = g_ndn
+    i: int32 = 0
+    if k <= n and n <= 21:
+        # integer, then the zeros the exponent implies: 100, 1e20.
+        while i < k:
+            emit_c(g_ndc[i] + 48)
+            i = i + 1
+        z: int32 = n - k
+        while z > 0:
+            emit_c(48)
+            z = z - 1
+        return
+    if 0 < n and n <= 21:
+        while i < n:
+            emit_c(g_ndc[i] + 48)
+            i = i + 1
+        emit_c(46)
+        while i < k:
+            emit_c(g_ndc[i] + 48)
+            i = i + 1
+        return
+    if -6 < n and n <= 0:
+        emit_c(48)
+        emit_c(46)
+        z2: int32 = 0 - n
+        while z2 > 0:
+            emit_c(48)
+            z2 = z2 - 1
+        while i < k:
+            emit_c(g_ndc[i] + 48)
+            i = i + 1
+        return
+    # EXPONENT FORM. V8 always spells the sign: 1e+21, 1e-7, 1.5e+300.
+    emit_c(g_ndc[0] + 48)
+    if k > 1:
+        emit_c(46)
+        i = 1
+        while i < k:
+            emit_c(g_ndc[i] + 48)
+            i = i + 1
+    emit_c(101)                                  # 'e'
+    ex: int32 = n - 1
+    if ex < 0:
+        emit_c(45)
+        ex = 0 - ex
     else:
-        emit_cstr(cast[Ptr[uint8]]("1e19"))     # absurdly large; rare
-    if pick > 0:
-        emit_c(46)                               # '.'
-        j: int32 = 0
-        while j < pick:
-            emit_c(g_fdout[j] + 48)
-            j = j + 1
+        emit_c(43)
+    emit_u64(cast[uint64](ex))
 
 
 # ---- number-string helper making a fresh string value ----
@@ -379,38 +622,37 @@ def parse_num_bytes(p: Ptr[uint8], n: int32) -> float64:
         if anyo == 0:
             return 0.0 / 0.0
         return sign * ov
-    val: float64 = 0.0
+    # DECIMAL MANTISSA in uint64. Accumulating into a float64 (val*10+digit) is
+    # exact only while the running value stays under 2^53 — past that every step
+    # rounds, and this engine's float multiply is not always the IEEE
+    # correctly-rounded result, so `1234567890123456789` landed on a double one
+    # step away from the one V8 parses (and then printed ...457000 instead of
+    # ...456800). A uint64 carries 19 significant digits with no rounding at all;
+    # ONE int->double conversion at the end rounds exactly once, and the decimal
+    # exponent (digits dropped past capacity, minus fraction digits, plus any
+    # e-notation) is applied by _scale10 with exact powers of ten. Digits past
+    # the 19th cannot move a double, so they only shift the exponent.
+    mant: uint64 = 0
+    dexp: int32 = 0                              # decimal exponent owed to mant
     any2: int32 = 0
     while i < n and (is_digit(p[i]) != 0 or p[i] == 95):
         if p[i] != 95:
-            val = val * 10.0 + cast[float64](cast[int32](p[i]) - 48)
+            if mant < 900000000000000000:
+                mant = mant * 10 + cast[uint64](cast[int32](p[i]) - 48)
+            else:
+                dexp = dexp + 1                  # too big to hold: scale instead
             any2 = 1
         i = i + 1
-    # FRACTION: accumulate the digits into the SAME integer mantissa and scale
-    # ONCE at the end. The old loop added `digit * scale` with scale stepping
-    # 0.1, 0.01, ... — every one of those scales is inexact in binary, so the
-    # error compounded and the literal `0.3` parsed to 0.30000000000000004 and
-    # `123456789.123456` to 123456789.12345600128. A single divide by an EXACT
-    # power of ten (10^k is exact through 10^22) gives the correctly-rounded
-    # double the spec asks for. Digits past the 17 a double can carry no longer
-    # move the mantissa, so stop scaling then and just consume them.
     if i < n and p[i] == 46:
         i = i + 1
-        fdig: int32 = 0
         while i < n and (is_digit(p[i]) != 0 or p[i] == 95):
             if p[i] != 95:
-                if fdig < 22:
-                    val = val * 10.0 + cast[float64](cast[int32](p[i]) - 48)
-                    fdig = fdig + 1
+                if mant < 900000000000000000:
+                    mant = mant * 10 + cast[uint64](cast[int32](p[i]) - 48)
+                    dexp = dexp - 1
                 any2 = 1
             i = i + 1
-        if fdig > 0:
-            pw: float64 = 1.0
-            fk: int32 = 0
-            while fk < fdig:
-                pw = pw * 10.0
-                fk = fk + 1
-            val = val / pw
+    val: float64 = cast[float64](cast[int64](mant))
     if any2 == 0:
         return 0.0 / 0.0
     if i < n and (p[i] == 101 or p[i] == 69):    # e / E
@@ -426,13 +668,19 @@ def parse_num_bytes(p: Ptr[uint8], n: int32) -> float64:
             if p[i] != 95:
                 ev = ev * 10 + (cast[int32](p[i]) - 48)
             i = i + 1
-        k: int32 = 0
-        while k < ev:
-            if esign > 0:
-                val = val * 10.0
-            else:
-                val = val * 0.1
-            k = k + 1
+        # Apply the exponent with EXACT powers of ten (<=22 decades per step).
+        # The old loop stepped one decade at a time and, for a negative
+        # exponent, multiplied by 0.1 — which is not representable, so `1e-7`
+        # parsed to a double a few ulp off the one V8 produces and could not
+        # round-trip through emit_num. 10^k is exact through 10^22 and each step
+        # here moves monotonically toward the result, so nothing can overflow on
+        # the way to a finite answer.
+        if esign > 0:
+            dexp = dexp + ev
+        else:
+            dexp = dexp - ev
+    if dexp != 0:
+        val = _scale10(val, dexp)
     return sign * val
 
 

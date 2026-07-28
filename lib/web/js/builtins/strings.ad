@@ -480,6 +480,34 @@ def num_tofixed(x: float64, d: int32) -> int32:
     if x < 0.0:
         neg = 1
         x = 0.0 - x
+    # ES Number.prototype.toFixed step 5: |x| >= 10^21 returns ToString(x), i.e.
+    # the exponential form, NOT a fixed-point expansion. Without this the scaled
+    # value below overflows the uint64 it is cast through and (1e21).toFixed(2)
+    # printed the wrapped 92233720368547758.08.
+    if x >= 1.0e21 or is_inf(x) != 0:
+        if neg != 0:
+            emit_c(45)
+        emit_num(x)
+        ridb: int32 = bld_end()
+        emit_tgt = save
+        return v_string_id(ridb)
+    # Between 2^53 and 10^21 every double is a whole number, so the fraction is
+    # all zeros — and x * 10^d would blow past the uint64 the fixed-point path
+    # casts through ((1e20).toFixed(2) wrapped to 92233720368547758.08). Print
+    # the integer digits and pad.
+    if x >= 9007199254740992.0:
+        if neg != 0:
+            emit_c(45)
+        emit_num(x)
+        if d > 0:
+            emit_c(46)
+            zf: int32 = 0
+            while zf < d:
+                emit_c(48)
+                zf = zf + 1
+        ridc: int32 = bld_end()
+        emit_tgt = save
+        return v_string_id(ridc)
     p10: float64 = 1.0
     i: int32 = 0
     while i < d:
