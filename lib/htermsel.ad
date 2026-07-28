@@ -261,3 +261,109 @@ def htsel_clip_get(prim: int32, out: Ptr[uint8], cap: uint64) -> uint64:
         total = total + cast[uint64](r)
     sys_close(fd)
     return total
+
+
+# --- wire-line pointer step (the terminal's OWN decision logic) --------------
+# THE ALTITUDE FIX. Every host gate for this feature used to stop one layer
+# BELOW the terminal: they drove htsel_begin/extend/extract and the clipboard
+# put/get directly, so the terminal's own "which of these do I call, and when?"
+# logic — the part that was actually dead on device — had no host coverage at
+# all and nine gates could stay green while highlighting did nothing.
+#
+# That decision logic now lives HERE, pure and side-effect free, so a host test
+# can feed the exact "m <x> <y> <buttons> <dz>" bytes the compositor pushes onto
+# a window's /event ring and assert what the terminal would do. hamtermscene
+# calls this and only performs the resulting I/O.
+
+HTSEL_ACT_COPY:  int32 = 1     # left release over an active span -> set PRIMARY
+HTSEL_ACT_PASTE: int32 = 2     # middle-button rising edge -> paste PRIMARY
+
+
+def htsel_evt_parse_m(line: Ptr[uint8], ls: uint64, le: uint64,
+                      ox: Ptr[int64], oy: Ptr[int64], obtn: Ptr[int64],
+                      odz: Ptr[int64]) -> int32:
+    # Parse one "m <x> <y> <buttons> <dz>" line spanning line[ls..le) (no
+    # trailing newline). Returns 1 when at least x and y were present.
+    ox[0] = 0
+    oy[0] = 0
+    obtn[0] = 0
+    odz[0] = 0
+    if le <= ls or line[ls] != 109:            # 'm'
+        return 0
+    p: uint64 = ls + 1
+    f: uint64 = 0
+    seen: uint64 = 0
+    while f < 4:
+        while p < le and line[p] == 32:
+            p = p + 1
+        neg: int32 = 0
+        if p < le and line[p] == 45:           # '-'
+            neg = 1
+            p = p + 1
+        acc: int64 = 0
+        got: int32 = 0
+        while p < le and line[p] >= 48 and line[p] <= 57:
+            acc = acc * 10 + cast[int64](line[p]) - 48
+            p = p + 1
+            got = 1
+        if got == 0:
+            f = 4
+        else:
+            if neg != 0:
+                acc = 0 - acc
+            if f == 0:
+                ox[0] = acc
+            elif f == 1:
+                oy[0] = acc
+            elif f == 2:
+                obtn[0] = acc
+            else:
+                odz[0] = acc
+            seen = seen + 1
+            f = f + 1
+    if seen < 2:
+        return 0
+    return 1
+
+
+def htsel_mid_edge(btn: int64, prev: int64) -> int32:
+    # Middle-button (bit2) RISING edge: fires once per press, never while held.
+    # Mirrors lib/hamtextbox.ad::htb_mid_edge; the host gate asserts the two
+    # agree on every bitmap so the terminal and the editor can never diverge.
+    if (btn & 4) != 0 and (prev & 4) == 0:
+        return 1
+    return 0
+
+
+def htsel_pointer_step(x: int64, y: int64, btn: int64, prev: int64,
+                       rows_n: int64, cols_n: int64,
+                       live_tail: int32) -> int32:
+    # Advance the selection state machine for ONE pointer event and report what
+    # the caller must now do, as a bitmask of HTSEL_ACT_*. Pure: it mutates only
+    # the selection anchor/caret, never the clipboard.
+    #
+    # `live_tail` is 1 when the view sits at the live tail (row indices then
+    # address the rendered grid). Selection is gated on it; the middle-click
+    # PASTE deliberately is NOT — the edit line lives at the tail, so a paste
+    # must work even while the scrollback is wheeled up.
+    act: int32 = 0
+    left_now: int32 = 0
+    if (btn & 1) != 0:
+        left_now = 1
+    left_prev: int32 = 0
+    if (prev & 1) != 0:
+        left_prev = 1
+    if live_tail != 0:
+        row: int64 = 0
+        col: int64 = 0
+        htsel_pix_to_cell(x, y, rows_n, cols_n, &row, &col)
+        if left_now != 0 and left_prev == 0:
+            htsel_begin(row, col)              # press: drop the anchor
+        elif left_now != 0 and left_prev != 0:
+            htsel_extend(row, col)             # drag: extend the caret
+        elif left_now == 0 and left_prev != 0:
+            if htsel_active_f != 0:
+                act = act | HTSEL_ACT_COPY     # release over a span: publish
+    if htsel_mid_edge(btn, prev) != 0:
+        act = act | HTSEL_ACT_PASTE
+    return act

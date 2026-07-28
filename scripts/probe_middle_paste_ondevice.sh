@@ -161,8 +161,13 @@ try:
         print("[mid-paste] FAIL: no window ever mapped", file=sys.stderr)
         sys.exit(1)
     wid = wids[-1]
-    geo = cap("cat /dev/wsys/%s/wctl" % wid, 5)
-    gm = re.search(r"(-?\d+) (-?\d+) (\d+) (\d+) ", geo)
+    # NB: read the per-window /ctl file, NOT /wctl. The rio-shape wctl status
+    # line is backed by a SEPARATE wsys_wctl_x/y/w/h store that the scene
+    # compositor never updates, so it reports "0 0 0 0 click" for every live
+    # window; /ctl reports the compositor's real rect
+    # ("<x> <y> <w> <h> z=.. decorate=.. gen=..").
+    geo = cap("cat /dev/wsys/%s/ctl" % wid, 5)
+    gm = re.search(r"(-?\d+) (-?\d+) (\d+) (\d+) z=", geo)
     if not gm:
         print("[mid-paste] FAIL: could not read window %s geometry: %r"
               % (wid, geo), file=sys.stderr)
@@ -190,15 +195,22 @@ try:
     mouse(x2, y2, 1)            # drag        -> extend
     mouse(x2, y2, 0)            # release     -> copy to PRIMARY
     time.sleep(2)
-    prim = cap("cat /dev/snarf.primary", 6)
+    prim = cap("echo PRIMBEG; cat /dev/snarf.primary; echo; echo PRIMEND", 8)
     with lock: sel_tail = bytes(buf[sel_since:]).decode("utf-8", "replace")
     mon_cmd("screendump %s" % os.path.join(outdir, "afterdrag.ppm"))
 
     # PRIMARY CONTENT is the assertion — the marker alone is only corroborating
     # (a marker can be lost to the console gate; a file read cannot).
-    prim_body = prim.split("cat /dev/snarf.primary", 1)[-1]
-    prim_body = "".join(c for c in prim_body if c.isprintable())
-    prim_body = prim_body.replace("hamsh$", "").strip()
+    # hamsh echoes every typed character back, so the raw capture is full of
+    # cursor-motion escapes; take only what lies between the two markers on
+    # their OWN output lines and strip the escape noise.
+    pm = re.search(r"PRIMBEG(.*?)PRIMEND", prim, re.S)
+    prim_body = pm.group(1) if pm else ""
+    prim_body = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", prim_body)
+    prim_body = prim_body.replace("\r", "")
+    prim_body = "\n".join(l for l in prim_body.split("\n")
+                          if "hamsh$" not in l and "echo PRIM" not in l)
+    prim_body = prim_body.strip()
     if not prim_body:
         fails.append("a left drag over terminal text left /dev/snarf.primary "
                      "EMPTY (selection never published; marker seen: %s)"

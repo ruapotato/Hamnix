@@ -75,7 +75,8 @@ from lib.hamcomplete import hc_prefix_match
 from lib.htermsel import htsel_reset, htsel_begin, htsel_extend, htsel_active, \
     htsel_cell_selected, htsel_extract, htsel_pix_to_cell, \
     htsel_clip_put, htsel_clip_get, \
-    htsel_anchor_row, htsel_anchor_col, htsel_caret_row, htsel_caret_col
+    htsel_anchor_row, htsel_anchor_col, htsel_caret_row, htsel_caret_col, \
+    htsel_pointer_step, HTSEL_ACT_COPY, HTSEL_ACT_PASTE
 # #315: the SHARED middle-button rising-edge detector — the ONE detector every
 # text surface (terminal, editor, Notes) now uses for "middle-click pastes
 # PRIMARY", so the behaviour is uniform and the host gate covers it.
@@ -2027,49 +2028,34 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
         if wheel_marked == 0:
             wheel_marked = 1
             _cons_say(cast[Ptr[uint8]]("[hamterm] WHEEL dz applied\n"))
-    # --- click-drag text selection (#323) -------------------------------
-    left_now: int32 = 0
-    if (btn & 1) != 0:
-        left_now = 1
-    left_prev: int32 = 0
-    if (ptr_prev_buttons & 1) != 0:
-        left_prev = 1
-    # Selection is grid-row indexed, so only when following the LIVE tail
-    # (term_view_off==0). Scrollback-region selection is deferred to round 2.
+    # --- click-drag text selection + middle-click paste (#323) ----------
+    # The DECISION (press -> anchor, drag -> extend, release over a span ->
+    # publish PRIMARY, middle rising edge -> paste) lives in lib/htermsel.ad
+    # so a host gate can drive it from raw wire bytes; this function performs
+    # only the resulting I/O. Selection is grid-row indexed, hence gated on the
+    # LIVE tail (term_view_off==0); the PASTE is deliberately view-independent
+    # (the edit line lives at the tail), which htsel_pointer_step encodes.
+    live_tail: int32 = 0
     if term_view_off == 0:
-        row: int64 = 0
-        col: int64 = 0
+        live_tail = 1
+    if btn != 0 or ptr_prev_buttons != 0:
+        trow: int64 = 0
+        tcol: int64 = 0
         htsel_pix_to_cell(x, y, cast[int64](term_rows_n),
-                          cast[int64](term_cols_n), &row, &col)
-        if btn != 0 or ptr_prev_buttons != 0:
-            _ptr_trace(x, y, btn, cast[int64](ptr_prev_buttons), row, col)
-        if left_now != 0 and left_prev == 0:
-            htsel_begin(row, col)           # press: drop the anchor
-        elif left_now != 0 and left_prev != 0:
-            htsel_extend(row, col)          # drag: extend the caret
-        elif left_now == 0 and left_prev != 0:
-            # release: auto-copy the highlighted span to PRIMARY (X11-style:
-            # highlight -> middle-click paste, no key needed).
-            if htsel_active() != 0:
-                np: uint64 = _copy_selection(1)
-                if np > 0:
-                    _cons_say(cast[Ptr[uint8]](
-                        "[hamterm] SEL copied PRIMARY\n"))
-                else:
-                    _cons_say(cast[Ptr[uint8]](
-                        "[hamterm] SEL release: extract EMPTY\n"))
-            else:
-                _cons_say(cast[Ptr[uint8]](
-                    "[hamterm] SEL release: span INACTIVE\n"))
-    # middle-click: paste the PRIMARY selection into the edit line. Uses the
-    # SHARED rising-edge detector (uniform with editor/Notes). This is
-    # DELIBERATELY OUTSIDE the `term_view_off == 0` selection gate above: the
-    # edit line lives at the live tail, so a middle-click paste is view
-    # independent — it must work even while the user has wheeled the scrollback
-    # up (previously it was nested in that gate and silently did nothing unless
-    # the view happened to sit at the tail). Snap the view back to the tail first
-    # so the injected text is visible where it lands.
-    if htb_mid_edge(btn, cast[int64](ptr_prev_buttons)) != 0:
+                          cast[int64](term_cols_n), &trow, &tcol)
+        _ptr_trace(x, y, btn, cast[int64](ptr_prev_buttons), trow, tcol)
+    act: int32 = htsel_pointer_step(x, y, btn, cast[int64](ptr_prev_buttons),
+                                    cast[int64](term_rows_n),
+                                    cast[int64](term_cols_n), live_tail)
+    if (act & HTSEL_ACT_COPY) != 0:
+        np: uint64 = _copy_selection(1)
+        if np > 0:
+            _cons_say(cast[Ptr[uint8]]("[hamterm] SEL copied PRIMARY\n"))
+        else:
+            _cons_say(cast[Ptr[uint8]]("[hamterm] SEL release: extract EMPTY\n"))
+    if (act & HTSEL_ACT_PASTE) != 0:
+        # Snap the view back to the tail first so the injected text is visible
+        # where it lands.
         term_view_off = 0
         _cons_say(cast[Ptr[uint8]]("[hamterm] MID edge -> paste PRIMARY\n"))
         _paste_primary()
