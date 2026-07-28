@@ -1112,6 +1112,28 @@ def _rawtext_skip(ts: uint64, ne: uint64, je: uint64) -> uint64:
     return src_len                                        # unterminated: skip to EOF
 
 
+# Resume offset for a subtree the ELEMENT scanners must not look inside, or 0
+# when the tag at [ts,ne)/je opens no such subtree. Two cases, one helper so
+# every element-registration walk treats them alike:
+#   * <script>/<style> — RAW TEXT: their bodies are not markup at all, so a
+#     `innerHTML = '<p class="para">'` in a string literal must mint no node.
+#   * <template>       — its children are parsed into a SEPARATE inert fragment
+#     ("template contents"), so they are not in the document tree: chromium's
+#     querySelectorAll / getElementById do NOT see them (only .content does).
+#     We were registering them, so `qsa("p")` counted 2 where chromium says 1
+#     and getElementById found a node chromium returns null for — script that
+#     branches on `if (el)` then took the wrong path.
+def _inert_skip(ts: uint64, ne: uint64, je: uint64) -> uint64:
+    rt: uint64 = _rawtext_skip(ts, ne, je)
+    if rt != 0:
+        return rt
+    if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("template")) != 0:
+        if je > ts and src_ptr[je - 1] == 47:             # <template/> self-close
+            return 0
+        return _tpl_skip(je + 1, src_len)
+    return 0
+
+
 # Locate the FIRST element whose id attribute equals idp[0..idn). Sets the
 # g_el_* element globals and returns 1 on a hit.
 def _dom_find_by_id(idp: Ptr[uint8], idn: int32) -> int32:
@@ -1126,7 +1148,7 @@ def _dom_find_by_id(idp: Ptr[uint8], idn: int32) -> int32:
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1
-            rt: uint64 = _rawtext_skip(ts, ne, je)        # skip <script>/<style> body
+            rt: uint64 = _inert_skip(ts, ne, je)          # skip inert subtrees
             if rt != 0:
                 i = rt
                 continue

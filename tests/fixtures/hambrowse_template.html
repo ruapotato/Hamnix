@@ -19,6 +19,10 @@
 <!-- content AFTER all the templates must still render and still be reachable. -->
 <p id="after">TAILVISIBLE</p>
 
+<!-- Template contents are not in the DOCUMENT TREE either: chromium's
+     querySelectorAll / getElementById do not see them (only .content does). -->
+<div id="t5"><p class="real">REAL</p><template><p class="inert">INERT</p><span id="inertid">X</span></template></div>
+
 <script>
 var g = function (i) { return document.getElementById(i).textContent; };
 console.log('TPL t1=[' + g('t1') + ']');
@@ -26,5 +30,9 @@ console.log('TPL t2=[' + g('t2') + ']');
 console.log('TPL t3=[' + g('t3') + ']');
 console.log('TPL t4=[' + g('t4') + ']');
 console.log('TPL after=[' + g('after') + ']');
+console.log('TPL qsa_real=' + document.querySelectorAll('.real').length
+          + ' qsa_inert=' + document.querySelectorAll('.inert').length
+          + ' byid=' + (document.getElementById('inertid') === null ? 'null' : 'FOUND')
+          + ' kids=' + document.getElementById('t5').children.length);
 </script>
 </body></html>

@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _bytes_eq, _find_close, _hx_lower, _rawtext_skip, _scan_start_tag, _sel_isname, _sel_match_at, _hx_tag_end_p
+from lib.htmlengine import _alnum_at, _bytes_eq, _find_close, _hx_lower, _rawtext_skip, _scan_start_tag, _sel_isname, _sel_match_at, _hx_tag_end_p, _inert_skip
 
 # ====================================================================
 # DOM tree index build + true selector combinators (task #324).
@@ -51,7 +51,7 @@ def _dom_build_tree_index():
                 if sp < TX_MAX:
                     tx_stack[sp] = k
                     sp = sp + 1
-            rt: uint64 = _rawtext_skip(ts, ne, je)        # index the script/style
+            rt: uint64 = _inert_skip(ts, ne, je)          # index the script/style
             if rt != 0:                                   # node, but skip its body
                 i = rt
                 continue
@@ -774,7 +774,7 @@ def _dom_collect_selector(sel: Ptr[uint8], seln: int32, lo: uint64, \
             if hitk != 0:
                 _scan_start_tag(i)
                 js_array_push(arr, _dom_register_el())
-            rt: uint64 = _rawtext_skip(ts, ne, je)        # skip <script>/<style> body
+            rt: uint64 = _inert_skip(ts, ne, je)          # skip inert subtrees
             if rt != 0:
                 i = rt
                 continue

@@ -90,6 +90,12 @@ assert_grep 'FLOW  DELTAEPSILON' "raw-text trap does not leak the template tail 
 assert_grep 'FLOW  ZETAETA'      "quoted-attr template tag does not leak into the flow (t4)"
 assert_grep 'FLOW  TAILVISIBLE'  "content after the templates still renders"
 
+# ---- DOCUMENT TREE: selectors / id lookup must not see template contents. ---
+# chromium: qsa_real=1 qsa_inert=0 byid=null kids=2  (the <template> ELEMENT is
+# itself a child of #t5 — only its CONTENTS are out of the tree).
+assert_grep 'TPL qsa_real=1 qsa_inert=0 byid=null kids=2' \
+    "querySelectorAll/getElementById skip template contents; the template element is still a child"
+
 assert_nogrep 'TPLHIDDEN'   "no t1 template text anywhere in the output"
 assert_nogrep 'B2NESTED'    "no nested-template text anywhere in the output"
 assert_nogrep 'T3HIDDEN'    "no post-raw-text template text anywhere in the output"
