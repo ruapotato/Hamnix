@@ -14,12 +14,17 @@
 # returned "hamsh: parse error [line 1]: node arena full" and no app could
 # launch again, while the kernel was entirely healthy.
 #
-# HOW IT FORCES THE CONDITION IN ~40 SERIAL LINES INSTEAD OF ~700
+# HOW IT FORCES THE CONDITION IN MINUTES INSTEAD OF FOUR HOURS
 # The failure is driven by NODES ALLOCATED, not by wall-clock or by command
-# count. A top-level `t = 1 + 1 + ...` with 225 terms parses to ~454 nodes,
-# so 40 of them cross NODE_MAX exactly as 700 desktop commands do — the same
-# arena, the same allocator, the same reclamation decision, in a couple of
-# minutes of serial instead of four hours of DE churn.
+# count, so a top-level `t = 1 + 1 + ...` substitutes for a desktop command:
+# same arena, same allocator, same reclamation decision. It drives short
+# lines in batches and stops the moment the GUEST reports a collection.
+#
+# LEARNED THE HARD WAY: long lines do NOT work over this seam. A ~900-char
+# logical line is silently truncated on the way in — a first attempt at 40
+# lines x 225 terms landed only ~120 chars each, reached 3069 nodes, and
+# reported "occupancy never dropped" for a shell that was working perfectly.
+# Keep the lines short.
 #
 # ASSERTS
 #   1. No "node arena full" (nor kid-pool / arena-exhausted) on the device.
@@ -43,8 +48,14 @@ cd "$PROJ_ROOT"
 
 INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
 QEMU_MEM="${QEMU_MEM:-2G}"
-BIG_LINES="${BIG_LINES:-40}"
-BIG_TERMS="${BIG_TERMS:-225}"
+# Serial line length is the binding constraint, NOT node count. A ~900-char
+# logical line is silently TRUNCATED on the way in (measured: only ~120 chars
+# per line landed, so 40 "454-node" lines produced 3069 nodes and no
+# collection at all). So: short lines, many of them, and stop as soon as the
+# guest reports a collection rather than guessing how many are needed.
+BIG_TERMS="${BIG_TERMS:-25}"      # ~100 chars, ~50 nodes per line
+MAX_LINES="${MAX_LINES:-800}"
+BATCH="${BATCH:-20}"
 
 command -v qemu-system-x86_64 >/dev/null 2>&1 \
     || verdict_inconclusive "$TAG" "qemu-system-x86_64 not installed."
@@ -146,11 +157,18 @@ send 'arenas' 3
 
 # --- the churn -----------------------------------------------------------
 BIG="t = $(python3 -c "import sys; sys.stdout.write(' + '.join(['1'] * $BIG_TERMS))")"
-echo "[$TAG] driving $BIG_LINES top-level lines of ~$BIG_TERMS terms (${#BIG} chars each)"
-for _ in $(seq 1 "$BIG_LINES"); do
+echo "[$TAG] driving up to $MAX_LINES top-level lines (${#BIG} chars each) until the guest collects"
+sent=0
+while [ "$sent" -lt "$MAX_LINES" ]; do
     alive || break
-    send "$BIG" 1
-    send 'arenas' 1
+    for _ in $(seq 1 "$BATCH"); do
+        send "$BIG" 0.4
+    done
+    sent=$((sent + BATCH))
+    send 'arenas' 2
+    # Stop as soon as the DEVICE reports a collection — that is the event
+    # this gate exists to observe, and over-driving only wastes wall clock.
+    grep -aq ' gc=[1-9]' "$LOG" && { echo "[$TAG] guest collected after ~$sent lines"; break; }
 done
 
 send 'echo ARENA_MARK_B' 2

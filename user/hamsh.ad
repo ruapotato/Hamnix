@@ -14881,6 +14881,29 @@ def _gc_c_is_node(k: int32) -> int32:
     return 0
 
 
+def _gc_i_is_node(k: int32) -> int32:
+    # nd_i is ALSO polymorphic, and more quietly than nd_c: it is an
+    # operator code / flag for almost every kind, but ND_CMD parks the
+    # `2> file` stderr TARGET NODE there. Miss it and a live function body
+    # containing a stderr redirect loses its target.
+    if k == ND_CMD:
+        return 1
+    return 0
+
+
+def _gc_i_is_str(k: int32) -> int32:
+    # ...and two kinds park a STRING REF in nd_i:
+    #   ND_TRY          `except NAME as VAR` — NAME (the filter) in nd_i
+    #   ND_INDEXASSIGN  FORM 1 — the raw subscript source, re-parsed at exec
+    # Both must be forwarded through the string compaction or they point at
+    # whatever moved into their old offset.
+    if k == ND_TRY:
+        return 1
+    if k == ND_INDEXASSIGN:
+        return 1
+    return 0
+
+
 def _gc_fnd(n: int32) -> int32:
     if n <= 0:
         return 0
@@ -14974,6 +14997,8 @@ def _gc_mark_nodes():
         _gc_push_nd(nd_b[u])
         if _gc_c_is_node(nd_kind[u]) != 0:
             _gc_push_nd(nd_c[u])
+        if _gc_i_is_node(nd_kind[u]) != 0:
+            _gc_push_nd(cast[int32](nd_i[u]))
         slot: int32 = nd_ks[u]
         while slot != 0:
             su: uint64 = cast[uint64](slot)
@@ -15022,6 +15047,10 @@ def _gc_str_pass(mode: int32):
         r: uint64 = _gc_str_take(nd_str[n], mode)
         if mode != 0:
             nd_str[n] = r
+        if _gc_i_is_str(nd_kind[n]) != 0:
+            ri: uint64 = _gc_str_take(cast[uint64](nd_i[n]), mode)
+            if mode != 0:
+                nd_i[n] = cast[int64](ri)
         n = n + 1
     c: uint64 = 1
     while c < val_count:
@@ -15127,7 +15156,10 @@ def gc_collect():
                 nd_c[d] = _gc_fnd(nd_c[n2])
             else:
                 nd_c[d] = nd_c[n2]        # scalar flag — copy verbatim
-            nd_i[d]   = nd_i[n2]
+            if _gc_i_is_node(kk) != 0:
+                nd_i[d] = cast[int64](_gc_fnd(cast[int32](nd_i[n2])))
+            else:
+                nd_i[d] = nd_i[n2]   # op code / flag / str ref (step 10)
             nd_str[d] = nd_str[n2]
             nd_ks[d]  = _gc_fkd(nd_ks[n2])
             nd_ke[d]  = _gc_fkd(nd_ke[n2])

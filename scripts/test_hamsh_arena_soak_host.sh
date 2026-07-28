@@ -97,12 +97,24 @@ o.append('def f6(k) { if k > 3 { return "hi" } else { return "lo" } }')
 # f7 uses nd_c the OTHER way: the ND_ASSIGN export FLAG. Forwarding that as
 # if it were a node id is the mirror-image bug.
 o.append('def f7() { export EV=7 ; return "ok" }')
+# f8/f9 cover the OTHER polymorphic column, nd_i — quieter than nd_c and
+# missed by the first draft of the collector:
+#   ND_TRY          `except NAME as VAR` parks NAME (a STRING ref) in nd_i
+#   ND_INDEXASSIGN  FORM 1 parks the raw subscript SOURCE (a STRING ref)
+#   ND_CMD          `2> file` parks the redirect TARGET NODE in nd_i
+o.append('def f8() { try { raise "Boom" } except Boom as e { return "F:" + e } }')
+# The subscript source is a distinctive NAME, not "1": a stale one-byte ref
+# can land on identical bytes by luck and hide the bug (measured — the
+# `xs[1]` spelling did not bite when ND_INDEXASSIGN was dropped from
+# _gc_i_is_str; `xs[ixq]` does).
+o.append('def f9(xs) { ixq = 1 ; xs[ixq] = 99 ; return xs[ixq] }')
 o.append('keep = [1, 2, 3, 4, 5]')
 o.append("dd = {'a': 11, 'b': 22}")
 o.append('name = "hamnix"')
 o.append("alias ll='ls -l'")
 PROBE = ('echo PROBE ${ f0(7) } ${ f1(0) } ${ f2(5) } ${ f3([9, 8, 7, 6]) } '
          '${ f4() } ${ f5([3, 1, 2]) } ${ f6(9) } ${ f6(1) } ${ f7() } '
+         '${ f8() } ${ f9([1, 2, 3]) } '
          '${ keep[1:3] } ${ len(dd) } $name')
 o.append(PROBE)
 o.append('arenas')
@@ -208,14 +220,21 @@ fi
 # ---------------------------------------------------------------- check 4
 # Same inputs, same answers, on both sides of every collection. The first
 # PROBE is emitted BEFORE any collection has run, so it is the oracle.
+# EXACT count, not ">= 3": a PROBE whose line raised is simply ABSENT, and a
+# "all the ones I found agree" test passes vacuously on the survivors.
+# (Measured: dropping ND_TRY from _gc_i_is_str silently cut 11 PROBEs to 3.)
+EXPECT_PROBES=$(( 2 + CYCLES / 100 ))
 mapfile -t PROBES < <(grep -o 'PROBE .*' "$DUMP")
-if [ "${#PROBES[@]}" -lt 3 ]; then
-    echo "[arena-soak] FAIL: expected several PROBE lines, got ${#PROBES[@]}"
+if [ "${#PROBES[@]}" -ne "$EXPECT_PROBES" ]; then
+    echo "[arena-soak] FAIL: expected exactly $EXPECT_PROBES PROBE lines, got ${#PROBES[@]}"
+    echo "             A missing PROBE means that line RAISED — a live function"
+    echo "             body was corrupted or freed by a collection."
+    grep -n "uncaught exception" "$DUMP" | head -n 3
     fail=1
 else
     # Guard the oracle itself: a PROBE of empty/failed evaluations would make
     # "all identical" vacuously true.
-    EXPECT='PROBE 13 caught:e big 8 7 123 3 2 1 hi lo ok 2 3 2 hamnix'
+    EXPECT='PROBE 13 caught:e big 8 7 123 3 2 1 hi lo ok F:Boom 99 2 3 2 hamnix'
     if [ "${PROBES[0]}" != "$EXPECT" ]; then
         echo "[arena-soak] FAIL: baseline PROBE is not the expected evaluation"
         echo "             want: $EXPECT"
@@ -264,21 +283,35 @@ fi
 #          ND_WITH(body)
 #   FLAG   ND_CALL/ND_CALLV(kwarg count) ND_CMD(redirect bits x4)
 #          ND_FOR(expression-mode x2) ND_ASSIGN(export flag x2)
+# nd_i is polymorphic the same way (an op code / flag for most kinds, a NODE
+# for ND_CMD's `2> file` target, a STRING for ND_TRY's except-filter and for
+# ND_INDEXASSIGN's FORM-1 subscript source). That column was MISSED by the
+# collector's first draft, which is exactly why both are ratcheted.
+#
+# Counted as PARSER writes only — `nd_X[cast[uint64](...)] =` and `nd_X[nu] =`
+# — so the collector's own `nd_X[d] = ...` / nd_new's `nd_X[n] = 0` are
+# excluded by construction and the numbers do not move when the GC is edited.
 EXPECT_NDC=15
-GOT_NDC=$(grep -cE 'nd_c\[.*\] *= ' user/hamsh.ad)
-# minus nd_new's zero-init and the collector's own two lines
-GOT_NDC=$((GOT_NDC - 3))
-if [ "$GOT_NDC" -ne "$EXPECT_NDC" ]; then
-    echo "[arena-soak] FAIL: user/hamsh.ad now has $GOT_NDC nd_c writers, expected $EXPECT_NDC."
-    echo "             A node kind started (or stopped) using nd_c. Re-derive"
-    echo "             _gc_c_is_node — a CHILD it does not list gets freed under a"
-    echo "             live function; a FLAG it does list gets rewritten to garbage."
-    echo "             Then update EXPECT_NDC here."
-    grep -nE 'nd_c\[.*\] *= ' user/hamsh.ad
-    fail=1
-else
-    echo "[arena-soak] OK: nd_c writer population unchanged ($GOT_NDC) — _gc_c_is_node still derived from the current parser"
-fi
+EXPECT_NDI=27
+GOT_NDC=$(grep -cE 'nd_c\[(cast\[uint64\].*|nu)\] *= ' user/hamsh.ad)
+GOT_NDI=$(grep -cE 'nd_i\[(cast\[uint64\].*|nu)\] *= ' user/hamsh.ad)
+ratchet() {
+    local col="$1" got="$2" want="$3"
+    if [ "$got" -ne "$want" ]; then
+        echo "[arena-soak] FAIL: user/hamsh.ad now has $got parser writes to $col, expected $want."
+        echo "             A node kind started (or stopped) using $col. Re-derive the"
+        echo "             collector's _gc_* classifier for that column: a CHILD or a"
+        echo "             STRING it does not list is freed under a live function; a"
+        echo "             scalar it DOES list is rewritten to garbage. Then update"
+        echo "             the EXPECT_ value here."
+        grep -nE "$col"'\[(cast\[uint64\].*|nu)\] *= ' user/hamsh.ad
+        return 1
+    fi
+    echo "[arena-soak] OK: $col parser-write population unchanged ($got) — collector still derived from the current parser"
+    return 0
+}
+ratchet nd_c "$GOT_NDC" "$EXPECT_NDC" || fail=1
+ratchet nd_i "$GOT_NDI" "$EXPECT_NDI" || fail=1
 
 if [ "$fail" -ne 0 ]; then
     echo "[arena-soak] FAIL"
