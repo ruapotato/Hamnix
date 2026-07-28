@@ -66,6 +66,29 @@ def gc_popto(n: int32):
     gc_top = n
 
 MAX_STR: int32 = 400000
+# SP_CAP is a CUMULATIVE LIFETIME BYTE BUDGET, NOT a live-set budget. Read that
+# again before reaching for a bigger number: gc_collect_strings reclaims string
+# IDs, but sp_top only ever moves FORWARD (the pool is non-moving because
+# builtins hold raw `&sp_buf[...]` pointers across calls, and bld_begin/bld_end
+# keeps an open [_bld_start, sp_top) span across a collection). Every string the
+# program has EVER built still owns its bytes.
+#
+# Measured on the 284-page host corpus (peak sp_top per page, 800px):
+#     mean                                        25,175 B   (0.3% of SP_CAP)
+#     worst REAL page (realsites/google_search)  328,762 B   (3.9%,  25x headroom)
+#     worst ordinary fixture (hambrowse_elbudget) 748,006 B  (8.9%,  11x headroom)
+#     worst fixture overall (hambrowse_ceilings) 3,680,922 B (43.9%, 2.3x headroom)
+# So for PAGE LOADS 8 MiB is comfortable and the constant is not the problem.
+#
+# What no constant fixes: `for (var i=0;i<N;i++) { s = "row-" + i }` exhausts
+# the pool after ~520,000 iterations — about ONE SECOND of host CPU — because
+# each iteration leaks ~16 B forever. 64 MiB would buy 8 seconds; 1 GiB about 2
+# minutes. A long-lived SPA is the same story on a slower clock. The fix is BYTE
+# reclamation (compacting sp_buf during gc_collect_strings, which first requires
+# retiring the raw-pointer and open-builder assumptions above), not a larger
+# SP_CAP. Until then the ceiling is deliberately LOUD: str_intern/emit_c report
+# "[engine] CEILING string pool exhausted" and set a catchable error rather than
+# corrupting BSS (scripts/test_jsengine_strpool_clean_host.sh pins that).
 SP_CAP:  int32 = 8388608
 sp_buf: Array[8388608, uint8]           # 8 MiB string pool (bump; freed only at js_init)
 sp_top: int32 = 0

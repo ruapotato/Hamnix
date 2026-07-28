@@ -3890,3 +3890,39 @@ bash scripts/ci_run_gate.sh scripts/test_hamsh_rmglob_ondevice.sh
 # completion, so that stays un-"fixed". REGISTERED 2026-07-28 with the audit
 # that found seven live instances of the class.
 bash scripts/test_jsengine_unwind_host.sh
+# scripts/test_jsengine_tonumber_host.sh: QEMU-free gate for ToNumber(String) —
+# the ECMAScript StringNumericLiteral grammar — in lib/web/js. to_number() used
+# to hand a TAG_STR to parse_num_bytes, the LEXER's numeric scanner, which reads
+# a numeric PREFIX and ignores the rest: `+"1s"` came out 1 where node says NaN,
+# so `+el.dataset.width` on "120px" silently laid out as 120. 62 assertions,
+# each one node v20's own stdout: whole-string consumption; ""/all-whitespace ->
+# +0; Infinity/+Infinity/-Infinity (a partial fix broke exactly these); hex/
+# octal/binary and the NaN a sign in front of them produces; numeric separators
+# rejected in strings but still legal in source literals; leading AND trailing
+# trim of the full Unicode WhiteSpace+LineTerminator set but NOT U+200B; and
+# parseFloat/parseInt keeping their prefix behavior. REGISTERED 2026-07-28.
+bash scripts/test_jsengine_tonumber_host.sh
+# scripts/test_jsengine_throwguard_host.sh: QEMU-free gate that the FIRST
+# engine-raised exception WINS. The evaluator has one global completion state,
+# and throw_error() opens with `if ctl == CTL_THROW ...: return`. An audit
+# flagged that guard as possibly-dead; it is not. Delete it and 8 of the 18
+# cases here change their reported error — `nosuch.foo` becomes "TypeError:
+# cannot read property 'foo' of null or undefined" instead of "ReferenceError:
+# nosuch is not defined", because eval_expr raises, hands back `undefined`, and
+# the consumer raises its own error about that undefined. Also pins that the
+# guard does NOT swallow a later independent throw (catch, loop, finally).
+# Expectations are node v20's e.name+": "+e.message. REGISTERED 2026-07-28.
+bash scripts/test_jsengine_throwguard_host.sh
+# scripts/test_jsengine_argguard_host.sh: QEMU-free gate making "a throwing
+# ARGUMENT must not reach a mutating built-in" STRUCTURAL. Part A is a SOURCE
+# lint: all 47 eval_args_into() call sites in lib/web/js must be followed within
+# 3 lines by a CTL_THROW/err_flag check, so a new builtin that forgets one fails
+# the build instead of silently reintroducing `a.push(thrower())`. Part B proves
+# the shared choke point still reports ZERO args and rewinds call_top, across
+# array/string/Map/Set/number/regex/Function.prototype/Object.prototype, plus
+# the same builtins working normally. The obvious alternative — hoisting arg
+# evaluation into eval_call — was evaluated and REJECTED: dispatchers run before
+# member_get, so hoisting moves argument evaluation in front of a user getter
+# and turns node's "getter,arg" into "arg,getter"; that order is pinned here as
+# the last case. REGISTERED 2026-07-28.
+bash scripts/test_jsengine_argguard_host.sh
