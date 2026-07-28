@@ -185,18 +185,23 @@ mapped_count() { grep -ac "\[devwsys\] window .* mapped" "$LOG"; }
 # task_name0_at), so the panel appears as "hampanel", NOT "hampanelscene" —
 # `pgrep hampanelscene` matches nothing and silently costs you the whole
 # cross-check.
-printf 'echo MARK_PANELPID_BEGIN; pgrep hampanel; echo MARK_PANELPID_END\n' >&3
+printf 'echo MARK_PANELPID_BEGIN; cat /proc/tasks; echo MARK_PANELPID_END\n' >&3
 sleep 3
 wait_for MARK_PANELPID_END 20 || true
 PANEL_PID=$(sed -n '/MARK_PANELPID_BEGIN/,/MARK_PANELPID_END/p' "$LOG" \
-            | tr -d '\r' | grep -aoE '^[0-9]+' | head -1)
+            | tr -d '\r' | grep -a 'hampanel' | grep -aoE '^[0-9]+' | head -1)
 echo "$TAG panel pid: ${PANEL_PID:-<not found>}"
 dump_panel_fds() {
     [ -n "${PANEL_PID:-}" ] || return 0
     # fd table AND task state. The state letter is what separates "the panel
     # is spinning" from "the panel is asleep and nothing will ever wake it".
-    printf 'echo MARK_PFD_%s_BEGIN; cat /proc/%s/fd; cat /proc/%s/status; cat /proc/%s/stat; echo MARK_PFD_%s_END\n' \
-        "$1" "$PANEL_PID" "$PANEL_PID" "$PANEL_PID" "$1" >&3
+    printf 'echo MARK_PFD_%s_BEGIN; cat /proc/%s/fd; cat /proc/%s/status; echo MARK_PFD_%s_END\n' \
+        "$1" "$PANEL_PID" "$PANEL_PID" "$1" >&3
+    sleep 3
+    # The whole task table too: it carries the panel's STATE letter, which is
+    # what separates "spinning" from "asleep with nothing left to wake it".
+    printf 'echo MARK_TASKS_%s_BEGIN; cat /proc/tasks; echo MARK_TASKS_%s_END\n' \
+        "$1" "$1" >&3
     sleep 3
 }
 dump_panel_fds start
@@ -387,8 +392,7 @@ for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" | sed 's/MARK_PFD_/
 done
 
 echo "$TAG --- panel task state at each checkpoint ---"
-sed -n '/MARK_PFD_/,/MARK_PFD_.*_END/p' "$LOG" | tr -d '\r' \
-    | grep -aE '^[0-9]+ [A-Za-z]+ [A-Za-z] ' | tail -20 | sed "s/^/$TAG   /"
+grep -a 'hampanel' "$LOG" | tr -d '\r' | grep -aE '^[0-9]+' | tail -20 | sed "s/^/$TAG   /"
 
 echo "$TAG artifacts: $OUT_DIR"
 if [ "$fail" -ne 0 ]; then
