@@ -1206,7 +1206,7 @@ def regex_result_array(sid: int32, ncap: int32, start: int32, gnstart: int32, gn
         else:
             arr_push(ao, v_string_bytes(&sp_buf[st_off[sid] + s0], e0 - s0))
         g = g + 1
-    obj_set(ao, str_from_cstr(cast[Ptr[uint8]]("index")), v_number(cast[float64](start)))
+    obj_set(ao, str_from_cstr(cast[Ptr[uint8]]("index")), v_number(cast[float64](str_byte_to_u16(sid, start))))
     obj_set(ao, str_from_cstr(cast[Ptr[uint8]]("input")), v_string_id(sid))
     # .groups — an object of {name: capture} for `(?<name>...)` groups, else
     # undefined (per spec).
@@ -1243,8 +1243,8 @@ def regex_result_array(sid: int32, ncap: int32, start: int32, gnstart: int32, gn
             else:
                 pair: int32 = v_new_array()
                 po: int32 = objid_of(pair)
-                arr_push(po, v_number(cast[float64](cs)))
-                arr_push(po, v_number(cast[float64](ce)))
+                arr_push(po, v_number(cast[float64](str_byte_to_u16(sid, cs))))
+                arr_push(po, v_number(cast[float64](str_byte_to_u16(sid, ce))))
                 arr_push(io, pair)
             gk = gk + 1
         if gncount > 0:
@@ -1262,8 +1262,8 @@ def regex_result_array(sid: int32, ncap: int32, start: int32, gnstart: int32, gn
                 else:
                     gpair: int32 = v_new_array()
                     gpo: int32 = objid_of(gpair)
-                    arr_push(gpo, v_number(cast[float64](gs)))
-                    arr_push(gpo, v_number(cast[float64](ge)))
+                    arr_push(gpo, v_number(cast[float64](str_byte_to_u16(sid, gs))))
+                    arr_push(gpo, v_number(cast[float64](str_byte_to_u16(sid, ge))))
                     obj_set(igo, ks2, gpair)
                 gj = gj + 1
             obj_set(io, str_from_cstr(cast[Ptr[uint8]]("groups")), ig)
@@ -1288,19 +1288,21 @@ def regex_exec(rev: int32, strv: int32) -> int32:
     use_li: int32 = gflag | yflag
     li: int32 = 0
     if use_li != 0:
+        # .lastIndex is JS-visible, so it is in UTF-16 code units; the matcher
+        # runs over BYTES, so convert on the way in and back out again.
         li = cast[int32](to_number(obj_get_cstr(o, cast[Ptr[uint8]]("lastIndex"))))
     if li < 0:
         li = 0
-    if li > str_len(sid):
+    if li > str_u16_len(sid):
         obj_set(o, str_from_cstr(cast[Ptr[uint8]]("lastIndex")), v_number(0.0))
         return v_null()
-    start: int32 = regex_search(obj_re_prog[o], obj_re_ncap[o], sid, li, ic, ml, da, yflag)
+    start: int32 = regex_search(obj_re_prog[o], obj_re_ncap[o], sid, str_u16_to_byte(sid, li), ic, ml, da, yflag)
     if start < 0:
         if use_li != 0:
             obj_set(o, str_from_cstr(cast[Ptr[uint8]]("lastIndex")), v_number(0.0))
         return v_null()
     if use_li != 0:
-        obj_set(o, str_from_cstr(cast[Ptr[uint8]]("lastIndex")), v_number(cast[float64](rx_matchend)))
+        obj_set(o, str_from_cstr(cast[Ptr[uint8]]("lastIndex")), v_number(cast[float64](str_byte_to_u16(sid, rx_matchend))))
     return regex_result_array(sid, obj_re_ncap[o], start, obj_re_gnstart[o], obj_re_gncount[o], (obj_re_flags[o] >> 5) & 1)
 
 
@@ -1337,7 +1339,10 @@ def str_regex_search(sid: int32, rev: int32) -> int32:
     ic: int32 = (obj_re_flags[o] >> 1) & 1
     ml: int32 = (obj_re_flags[o] >> 2) & 1
     da: int32 = (obj_re_flags[o] >> 3) & 1
-    return v_number(cast[float64](regex_search(obj_re_prog[o], obj_re_ncap[o], sid, 0, ic, ml, da, 0)))
+    sr: int32 = regex_search(obj_re_prog[o], obj_re_ncap[o], sid, 0, ic, ml, da, 0)
+    if sr < 0:
+        return v_number(-1.0)
+    return v_number(cast[float64](str_byte_to_u16(sid, sr)))
 
 
 # str.match(re): non-global -> exec-style array or null; global -> array of all

@@ -782,7 +782,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
     if id == NAT_STRING_FROMCHARCODE:
         return string_fromcharcode(base, argc)
     if id == NAT_STRING_FROMCODEPOINT:
-        return string_fromcharcode(base, argc)
+        return string_fromcodepoint(base, argc)
     if id == NAT_REFLECT_GET:
         rt: int32 = arg_or(base, argc, 0)
         return member_get(rt, prop_key_of(arg_or(base, argc, 1)))
@@ -930,16 +930,39 @@ def string_raw(base: int32, argc: int32) -> int32:
 
 
 # String.fromCharCode / fromCodePoint: build a string from numeric code units.
-# The engine is byte-oriented; a code point < 256 becomes one byte, otherwise
-# its low byte (sufficient for the ASCII/Latin-1 range these tests exercise).
+# Arguments are UTF-16 code units (fromCharCode) or code points
+# (fromCodePoint); either way the result is stored as UTF-8, so
+# `String.fromCharCode(169)` is "©" and round-trips through charCodeAt.
+# Truncating to the low byte (the old behaviour) produced invalid UTF-8.
 def string_fromcharcode(base: int32, argc: int32) -> int32:
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
     i: int32 = 0
     while i < argc:
-        code: int32 = cast[int32](to_number(call_args[base + i]))
-        emit_c(cast[uint8](code & 255))
+        code: int32 = cast[int32](to_number(call_args[base + i])) & 65535
+        # A surrogate PAIR spelled out as two arguments is one code point.
+        if code >= 55296 and code < 56320 and i + 1 < argc:
+            lo: int32 = cast[int32](to_number(call_args[base + i + 1])) & 65535
+            if lo >= 56320 and lo < 57344:
+                emit_cp_utf8(65536 + ((code - 55296) << 10) + (lo - 56320))
+                i = i + 2
+                continue
+        emit_cp_utf8(code)
+        i = i + 1
+    rid: int32 = bld_end()
+    emit_tgt = save
+    return v_string_id(rid)
+
+
+# String.fromCodePoint: arguments are full code points (may be astral).
+def string_fromcodepoint(base: int32, argc: int32) -> int32:
+    save: int32 = emit_tgt
+    emit_tgt = 0
+    bld_begin()
+    i: int32 = 0
+    while i < argc:
+        emit_cp_utf8(cast[int32](to_number(call_args[base + i])))
         i = i + 1
     rid: int32 = bld_end()
     emit_tgt = save

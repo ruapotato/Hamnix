@@ -45,6 +45,7 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
         if eid >= 0:
             st_off[eid] = sp_top
             st_len[eid] = 0
+            st_asc[eid] = 1
             return eid
         return MAX_STR - 1
     off: int32 = sp_top
@@ -63,6 +64,7 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
         return MAX_STR - 1
     st_off[id] = off
     st_len[id] = n
+    st_asc[id] = 0                     # UTF-16 class not yet computed (lazy)
     return id
 
 
@@ -76,6 +78,268 @@ def str_ptr(id: int32) -> Ptr[uint8]:
 
 def str_char(id: int32, i: int32) -> uint8:
     return sp_buf[st_off[id] + i]
+
+
+# ====================================================================
+# UTF-16 INDEX LAYER.
+# ====================================================================
+# Strings are STORED as UTF-8 bytes (st_len = bytes), but every ECMAScript
+# string operation is defined over UTF-16 CODE UNITS: "©".length is 1, not 2,
+# and "café".slice(3,4) is "é", not the first byte of its two-byte sequence.
+# Indexing UTF-8 bytes as if they were code units does not merely miscount —
+# it SPLITS multi-byte sequences and produces invalid strings that propagate.
+#
+# Storage is deliberately unchanged (a UTF-16 rewrite would touch ~400 call
+# sites and every DOM/render consumer). Instead this layer converts indices at
+# the ECMAScript boundary, with a per-id ASCII flag so the overwhelmingly
+# common all-ASCII string keeps byte index == code-unit index and costs one
+# cached byte read.
+#
+# Astral (non-BMP) code points are TWO UTF-16 code units. Slicing one in half
+# yields a LONE SURROGATE, which has no UTF-8 encoding; we store it in WTF-8
+# (the surrogate encoded as a plain 3-byte sequence), so that
+# `s.slice(0,1) + s.slice(1)` still round-trips byte-for-byte.
+
+# Lazily classify a string as pure-ASCII (fast path) or not.
+def str_is_ascii(id: int32) -> int32:
+    f: int32 = cast[int32](st_asc[id])
+    if f == 0:
+        n: int32 = st_len[id]
+        o: int32 = st_off[id]
+        i: int32 = 0
+        f = 1
+        while i < n:
+            if sp_buf[o + i] >= 128:
+                f = 2
+                i = n
+            else:
+                i = i + 1
+        st_asc[id] = cast[uint8](f)
+    if f == 1:
+        return 1
+    return 0
+
+
+# Byte length of the UTF-8 sequence a lead byte starts. An invalid/continuation
+# byte counts as 1 so a malformed string still advances and terminates.
+def u8_seqlen(b: uint8) -> int32:
+    if b < 128:
+        return 1
+    if b >= 240:
+        return 4
+    if b >= 224:
+        return 3
+    if b >= 192:
+        return 2
+    return 1
+
+
+# Decode the code point starting at byte offset `o` (already bounds-checked by
+# the caller via u8_seqlen clamping). A malformed lead byte decodes to itself.
+def u8_decode(o: int32, len: int32) -> int32:
+    b0: int32 = cast[int32](sp_buf[o])
+    if len == 1:
+        return b0
+    if len == 2:
+        return ((b0 & 31) << 6) | (cast[int32](sp_buf[o + 1]) & 63)
+    if len == 3:
+        return ((b0 & 15) << 12) | ((cast[int32](sp_buf[o + 1]) & 63) << 6) \
+               | (cast[int32](sp_buf[o + 2]) & 63)
+    return ((b0 & 7) << 18) | ((cast[int32](sp_buf[o + 1]) & 63) << 12) \
+           | ((cast[int32](sp_buf[o + 2]) & 63) << 6) | (cast[int32](sp_buf[o + 3]) & 63)
+
+
+# Sequence length at byte `i`, clamped so it never runs past the string end.
+def str_seqlen_at(id: int32, i: int32) -> int32:
+    n: int32 = st_len[id]
+    l: int32 = u8_seqlen(sp_buf[st_off[id] + i])
+    if i + l > n:
+        return 1
+    return l
+
+
+# ---- length ----
+def str_u16_len(id: int32) -> int32:
+    if str_is_ascii(id) != 0:
+        return st_len[id]
+    n: int32 = st_len[id]
+    o: int32 = st_off[id]
+    i: int32 = 0
+    u: int32 = 0
+    while i < n:
+        l: int32 = u8_seqlen(sp_buf[o + i])
+        if i + l > n:
+            l = 1
+        if l == 4:
+            u = u + 2                  # astral: surrogate PAIR
+        else:
+            u = u + 1
+        i = i + l
+    return u
+
+
+# ---- index conversion ----
+# Set by str_u16_to_byte: 1 when the requested code unit is the TRAILING
+# surrogate of a pair (i.e. the returned byte offset is the START of a 4-byte
+# sequence whose SECOND half was asked for), else 0.
+u16_half: int32 = 0
+
+# UTF-16 code-unit index -> byte offset. `u` past the end returns st_len.
+def str_u16_to_byte(id: int32, u: int32) -> int32:
+    u16_half = 0
+    if str_is_ascii(id) != 0:
+        n0: int32 = st_len[id]
+        if u > n0:
+            return n0
+        return u
+    n: int32 = st_len[id]
+    o: int32 = st_off[id]
+    i: int32 = 0
+    c: int32 = 0
+    while i < n:
+        if c == u:
+            return i
+        l: int32 = u8_seqlen(sp_buf[o + i])
+        if i + l > n:
+            l = 1
+        if l == 4:
+            if c + 1 == u:
+                u16_half = 1
+                return i
+            c = c + 2
+        else:
+            c = c + 1
+        i = i + l
+    return n
+
+
+# byte offset -> UTF-16 code-unit index (offsets landing mid-sequence round
+# DOWN to the unit that sequence starts at).
+def str_byte_to_u16(id: int32, b: int32) -> int32:
+    if str_is_ascii(id) != 0:
+        return b
+    n: int32 = st_len[id]
+    o: int32 = st_off[id]
+    i: int32 = 0
+    c: int32 = 0
+    while i < n and i < b:
+        l: int32 = u8_seqlen(sp_buf[o + i])
+        if i + l > n:
+            l = 1
+        if l == 4:
+            c = c + 2
+        else:
+            c = c + 1
+        i = i + l
+    return c
+
+
+# ---- code units / code points ----
+# The UTF-16 code unit at index `u`, or -1 when out of range.
+def str_u16_at(id: int32, u: int32) -> int32:
+    if u < 0:
+        return -1
+    if str_is_ascii(id) != 0:
+        if u >= st_len[id]:
+            return -1
+        return cast[int32](sp_buf[st_off[id] + u])
+    b: int32 = str_u16_to_byte(id, u)
+    if b >= st_len[id]:
+        return -1
+    half: int32 = u16_half
+    l: int32 = str_seqlen_at(id, b)
+    cp: int32 = u8_decode(st_off[id] + b, l)
+    if l == 4:
+        cp = cp - 65536
+        if half != 0:
+            return 56320 + (cp & 1023)         # 0xDC00 + low 10 bits
+        return 55296 + ((cp >> 10) & 1023)     # 0xD800 + high 10 bits
+    return cp
+
+
+# The full code point whose FIRST code unit is at index `u` (String.prototype.
+# codePointAt semantics), or -1 when out of range. Asking for the trailing half
+# of a pair yields that lone surrogate, exactly as codePointAt does.
+def str_cp_at_u16(id: int32, u: int32) -> int32:
+    if u < 0:
+        return -1
+    if str_is_ascii(id) != 0:
+        if u >= st_len[id]:
+            return -1
+        return cast[int32](sp_buf[st_off[id] + u])
+    b: int32 = str_u16_to_byte(id, u)
+    if b >= st_len[id]:
+        return -1
+    half: int32 = u16_half
+    l: int32 = str_seqlen_at(id, b)
+    cp: int32 = u8_decode(st_off[id] + b, l)
+    if l == 4 and half != 0:
+        return 56320 + ((cp - 65536) & 1023)
+    return cp
+
+
+# ---- emission ----
+# Encode a code point as UTF-8. Surrogates (0xD800-0xDFFF) are encoded as
+# 3-byte sequences (WTF-8) so a half-sliced astral character round-trips.
+def emit_cp_utf8(cp: int32):
+    if cp < 0:
+        return
+    if cp < 128:
+        emit_c(cast[uint8](cp))
+        return
+    if cp < 2048:
+        emit_c(cast[uint8](192 | (cp >> 6)))
+        emit_c(cast[uint8](128 | (cp & 63)))
+        return
+    if cp < 65536:
+        emit_c(cast[uint8](224 | (cp >> 12)))
+        emit_c(cast[uint8](128 | ((cp >> 6) & 63)))
+        emit_c(cast[uint8](128 | (cp & 63)))
+        return
+    emit_c(cast[uint8](240 | (cp >> 18)))
+    emit_c(cast[uint8](128 | ((cp >> 12) & 63)))
+    emit_c(cast[uint8](128 | ((cp >> 6) & 63)))
+    emit_c(cast[uint8](128 | (cp & 63)))
+
+
+# ---- substring by UTF-16 range ----
+# Returns a string id for [u0, u1) in code units. Callers must have clamped
+# u0/u1 into [0, str_u16_len] with u0 <= u1.
+def str_sub_u16(id: int32, u0: int32, u1: int32) -> int32:
+    if u0 >= u1:
+        return str_new(&sp_buf[st_off[id]], 0)
+    if str_is_ascii(id) != 0:
+        return str_new(&sp_buf[st_off[id] + u0], u1 - u0)
+    b0: int32 = str_u16_to_byte(id, u0)
+    h0: int32 = u16_half
+    b1: int32 = str_u16_to_byte(id, u1)
+    h1: int32 = u16_half
+    # Whole-sequence range (the common case even for non-ASCII text): copy the
+    # bytes straight through, no re-encoding.
+    if h0 == 0 and h1 == 0:
+        return str_new(&sp_buf[st_off[id] + b0], b1 - b0)
+    # A boundary falls INSIDE an astral pair: rebuild, emitting the lone
+    # surrogate halves in WTF-8.
+    save: int32 = emit_tgt
+    emit_tgt = 0
+    bld_begin()
+    if h0 != 0:
+        emit_cp_utf8(56320 + ((u8_decode(st_off[id] + b0, 4) - 65536) & 1023))
+        b0 = b0 + 4
+    if h1 != 0:
+        i: int32 = b0
+        while i < b1:
+            emit_c(sp_buf[st_off[id] + i])
+            i = i + 1
+        emit_cp_utf8(55296 + (((u8_decode(st_off[id] + b1, 4) - 65536) >> 10) & 1023))
+    else:
+        i2: int32 = b0
+        while i2 < b1:
+            emit_c(sp_buf[st_off[id] + i2])
+            i2 = i2 + 1
+    rid: int32 = bld_end()
+    emit_tgt = save
+    return rid
 
 
 def str_eq(a: int32, b: int32) -> int32:
@@ -142,6 +406,7 @@ def bld_end() -> int32:
         return MAX_STR - 1
     st_off[id] = _bld_start
     st_len[id] = sp_top - _bld_start
+    st_asc[id] = 0                     # UTF-16 class not yet computed (lazy)
     return id
 
 

@@ -25,23 +25,36 @@ def arg_or(base: int32, argc: int32, i: int32) -> int32:
 
 def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
     sid: int32 = strid_of(sv)
-    slen: int32 = str_len(sid)
+    # `slen` is the ECMAScript length: UTF-16 CODE UNITS, not stored bytes.
+    # Every position argument and every returned index below is in those units;
+    # str_sub_u16 does the extraction so a multi-byte sequence is never split.
+    slen: int32 = str_u16_len(sid)
     if str_eq_cstr(name, cast[Ptr[uint8]]("charAt")) != 0:
         idx: int32 = 0
         if argc > 0:
             idx = cast[int32](to_number(call_args[base]))
         if idx >= 0 and idx < slen:
-            return v_string_bytes(&sp_buf[st_off[sid] + idx], 1)
+            return v_string_id(str_sub_u16(sid, idx, idx + 1))
         return v_string_cstr(cast[Ptr[uint8]](""))
     if str_eq_cstr(name, cast[Ptr[uint8]]("charCodeAt")) != 0:
         idx2: int32 = 0
         if argc > 0:
             idx2 = cast[int32](to_number(call_args[base]))
-        if idx2 >= 0 and idx2 < slen:
-            return v_number(cast[float64](cast[int32](str_char(sid, idx2))))
+        cu: int32 = str_u16_at(sid, idx2)
+        if cu >= 0:
+            return v_number(cast[float64](cu))
         return v_number(0.0 / 0.0)
     if str_eq_cstr(name, cast[Ptr[uint8]]("indexOf")) != 0:
-        return v_number(cast[float64](str_indexof(sid, strid_of(to_string_val(arg_or(base, argc, 0))))))
+        ifrom: int32 = 0
+        if argc > 1:
+            ifrom = cast[int32](to_number(call_args[base + 1]))
+            if ifrom < 0:
+                ifrom = 0
+        ibyte: int32 = str_indexof_fromb(sid, strid_of(to_string_val(arg_or(base, argc, 0))), \
+                                        str_u16_to_byte(sid, ifrom))
+        if ibyte < 0:
+            return v_number(-1.0)
+        return v_number(cast[float64](str_byte_to_u16(sid, ibyte)))
     if str_eq_cstr(name, cast[Ptr[uint8]]("toUpperCase")) != 0:
         return str_map_case(sid, 1)
     if str_eq_cstr(name, cast[Ptr[uint8]]("toLowerCase")) != 0:
@@ -63,7 +76,7 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
             en = slen
         if st > en:
             st = en
-        return v_string_bytes(&sp_buf[st_off[sid] + st], en - st)
+        return v_string_id(str_sub_u16(sid, st, en))
     if str_eq_cstr(name, cast[Ptr[uint8]]("split")) != 0:
         sep0: int32 = arg_or(base, argc, 0)
         if is_regex(sep0) != 0:
@@ -102,10 +115,12 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
             ln = slen - st2
         if ln < 0:
             ln = 0
-        return v_string_bytes(&sp_buf[st_off[sid] + st2], ln)
+        return v_string_id(str_sub_u16(sid, st2, st2 + ln))
     if str_eq_cstr(name, cast[Ptr[uint8]]("trim")) != 0:
+        # Whitespace is ASCII here, so trimming BYTES can only ever cut on a
+        # sequence boundary — no index conversion needed.
         a: int32 = 0
-        b2: int32 = slen
+        b2: int32 = str_len(sid)
         while a < b2 and is_ws(str_char(sid, a)) != 0:
             a = a + 1
         while b2 > a and is_ws(str_char(sid, b2 - 1)) != 0:
@@ -114,7 +129,10 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
     if str_eq_cstr(name, cast[Ptr[uint8]]("toString")) != 0:
         return sv
     if str_eq_cstr(name, cast[Ptr[uint8]]("lastIndexOf")) != 0:
-        return v_number(cast[float64](str_lastindexof(sid, strid_of(to_string_val(arg_or(base, argc, 0))))))
+        lbyte: int32 = str_lastindexof(sid, strid_of(to_string_val(arg_or(base, argc, 0))))
+        if lbyte < 0:
+            return v_number(-1.0)
+        return v_number(cast[float64](str_byte_to_u16(sid, lbyte)))
     if str_eq_cstr(name, cast[Ptr[uint8]]("includes")) != 0:
         return v_boolv(bool_of(str_indexof(sid, strid_of(to_string_val(arg_or(base, argc, 0)))) >= 0))
     if str_eq_cstr(name, cast[Ptr[uint8]]("startsWith")) != 0:
@@ -128,14 +146,15 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
         if ai < 0:
             ai = slen + ai
         if ai >= 0 and ai < slen:
-            return v_string_bytes(&sp_buf[st_off[sid] + ai], 1)
+            return v_string_id(str_sub_u16(sid, ai, ai + 1))
         return v_undef()
     if str_eq_cstr(name, cast[Ptr[uint8]]("codePointAt")) != 0:
         ci: int32 = 0
         if argc > 0:
             ci = cast[int32](to_number(call_args[base]))
-        if ci >= 0 and ci < slen:
-            return v_number(cast[float64](cast[int32](str_char(sid, ci))))
+        cp: int32 = str_cp_at_u16(sid, ci)
+        if cp >= 0:
+            return v_number(cast[float64](cp))
         return v_undef()
     if str_eq_cstr(name, cast[Ptr[uint8]]("concat")) != 0:
         save2: int32 = emit_tgt
@@ -154,12 +173,13 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
     if str_eq_cstr(name, cast[Ptr[uint8]]("padEnd")) != 0:
         return str_pad(sid, base, argc, 0)
     if str_eq_cstr(name, cast[Ptr[uint8]]("trimStart")) != 0:
+        bl3: int32 = str_len(sid)                  # ASCII whitespace: BYTES are safe
         a3: int32 = 0
-        while a3 < slen and is_ws(str_char(sid, a3)) != 0:
+        while a3 < bl3 and is_ws(str_char(sid, a3)) != 0:
             a3 = a3 + 1
-        return v_string_bytes(&sp_buf[st_off[sid] + a3], slen - a3)
+        return v_string_bytes(&sp_buf[st_off[sid] + a3], bl3 - a3)
     if str_eq_cstr(name, cast[Ptr[uint8]]("trimEnd")) != 0:
-        b3: int32 = slen
+        b3: int32 = str_len(sid)                   # ASCII whitespace: BYTES are safe
         while b3 > 0 and is_ws(str_char(sid, b3 - 1)) != 0:
             b3 = b3 - 1
         return v_string_bytes(&sp_buf[st_off[sid]], b3)
@@ -208,11 +228,21 @@ def str_map_case(sid: int32, upper: int32) -> int32:
 
 
 def str_indexof(hay: int32, needle: int32) -> int32:
+    return str_indexof_fromb(hay, needle, 0)
+
+
+# BYTE index of `needle` at or after BYTE offset `from` (-1 if absent).
+# Callers that expose the result to JS convert it with str_byte_to_u16.
+def str_indexof_fromb(hay: int32, needle: int32, fromb: int32) -> int32:
     hn: int32 = str_len(hay)
     nn: int32 = str_len(needle)
+    if fromb < 0:
+        fromb = 0
     if nn == 0:
-        return 0
-    i: int32 = 0
+        if fromb > hn:
+            return hn
+        return fromb
+    i: int32 = fromb
     while i + nn <= hn:
         j: int32 = 0
         while j < nn and str_char(hay, i + j) == str_char(needle, j):
@@ -275,7 +305,7 @@ def str_endswith(hay: int32, suf: int32) -> int32:
 # padStart (at_start=1) / padEnd (at_start=0). arg0 = target length,
 # arg1 = pad string (default " ").
 def str_pad(sid: int32, base: int32, argc: int32, at_start: int32) -> int32:
-    slen: int32 = str_len(sid)
+    slen: int32 = str_u16_len(sid)     # target length is in UTF-16 code units
     tgt: int32 = 0
     if argc > 0:
         tgt = cast[int32](to_number(call_args[base]))
@@ -286,7 +316,7 @@ def str_pad(sid: int32, base: int32, argc: int32, at_start: int32) -> int32:
         pad = strid_of(to_string_val(call_args[base + 1]))
     pn: int32 = 0
     if pad >= 0:
-        pn = str_len(pad)
+        pn = str_u16_len(pad)          # the filler repeats by CODE UNIT too
     need: int32 = tgt - slen
     save: int32 = emit_tgt
     emit_tgt = 0
@@ -298,7 +328,9 @@ def str_pad(sid: int32, base: int32, argc: int32, at_start: int32) -> int32:
         if pn == 0:
             emit_c(32)                 # default space
         else:
-            emit_c(str_char(pad, k % pn))
+            # emit_cp_utf8, not emit_c: the pad string may be multi-byte, and
+            # allocating a substring here would bump sp_top INSIDE the builder.
+            emit_cp_utf8(str_u16_at(pad, k % pn))
         k = k + 1
     if at_start != 0:
         emit_strid(sid)
@@ -430,10 +462,12 @@ def str_split(sid: int32, sepv: int32) -> int32:
     sep: int32 = strid_of(to_string_val(sepv))
     sl: int32 = str_len(sep)
     if sl == 0:
-        # split into chars
+        # split into UTF-16 CODE UNITS (not bytes, and — unlike the string
+        # iterator — not code points: `"\u{1d11e}".split("")` is 2 elements).
         i: int32 = 0
-        while i < n:
-            arr_push(o, v_string_bytes(&sp_buf[st_off[sid] + i], 1))
+        nu: int32 = str_u16_len(sid)
+        while i < nu:
+            arr_push(o, v_string_id(str_sub_u16(sid, i, i + 1)))
             i = i + 1
         return v
     start: int32 = 0

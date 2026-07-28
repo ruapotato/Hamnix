@@ -258,7 +258,8 @@ def member_get(objv: int32, key_sid: int32) -> int32:
     t: int32 = tag_of(objv)
     if t == TAG_STR:
         if str_eq_cstr(key_sid, cast[Ptr[uint8]]("length")) != 0:
-            return v_number(cast[float64](str_len(strid_of(objv))))
+            # ECMAScript String length is UTF-16 CODE UNITS, not stored bytes.
+            return v_number(cast[float64](str_u16_len(strid_of(objv))))
         # `str[Symbol.iterator]` as a first-class value (for-of over a string,
         # spread, and minified `x[Symbol.iterator].call(x)` idioms).
         if g_sym_iterator != 0 and str_eq(key_sid, symbol_key(g_sym_iterator)) != 0:
@@ -1040,8 +1041,10 @@ def index_get(objv: int32, idxv: int32) -> int32:
         if tag_of(idxv) == TAG_NUM:
             i: int32 = cast[int32](v_num[idxv])
             sid: int32 = strid_of(objv)
-            if i >= 0 and i < str_len(sid):
-                return v_string_bytes(&sp_buf[st_off[sid] + i], 1)
+            # `s[i]` indexes UTF-16 CODE UNITS (str_sub_u16 keeps multi-byte
+            # sequences intact instead of returning a fragment of one).
+            if i >= 0 and i < str_u16_len(sid):
+                return v_string_id(str_sub_u16(sid, i, i + 1))
             return v_undef()
     ks: int32 = prop_key_of(idxv)
     return member_get(objv, ks)
@@ -1416,10 +1419,13 @@ def spread_into_args(srcv: int32):
     if tag_of(srcv) == TAG_STR:
         sid: int32 = strid_of(srcv)
         j: int32 = 0
+        # The String iterator yields CODE POINTS (so `[..."\u{1d11e}"]` has ONE
+        # element), i.e. whole UTF-8 sequences — never single bytes.
         while j < str_len(sid):
-            call_args[call_top] = v_string_bytes(&sp_buf[st_off[sid] + j], 1)
+            jl: int32 = str_seqlen_at(sid, j)
+            call_args[call_top] = v_string_bytes(&sp_buf[st_off[sid] + j], jl)
             call_top = call_top + 1
-            j = j + 1
+            j = j + jl
         return
     # non-array iterables: materialize once, then flatten onto call_args
     tmp: int32 = v_new_array()
@@ -2007,9 +2013,10 @@ def collect_iterable_into(srcv: int32, ro: int32) -> int32:
     if tag_of(srcv) == TAG_STR:
         sid: int32 = strid_of(srcv)
         j: int32 = 0
-        while j < str_len(sid):
-            arr_push(ro, v_string_bytes(&sp_buf[st_off[sid] + j], 1))
-            j = j + 1
+        while j < str_len(sid):                     # by CODE POINT (see above)
+            jl: int32 = str_seqlen_at(sid, j)
+            arr_push(ro, v_string_bytes(&sp_buf[st_off[sid] + j], jl))
+            j = j + jl
         return 0
     if tag_of(srcv) == TAG_OBJ:
         o: int32 = objid_of(srcv)
@@ -2894,8 +2901,9 @@ def exec_forof(node: int32, env: int32):
     if tag_of(iterv) == TAG_STR:
         sid: int32 = strid_of(iterv)
         j: int32 = 0
-        while j < str_len(sid) and ctl == CTL_NONE:
-            ch: int32 = v_string_bytes(&sp_buf[st_off[sid] + j], 1)
+        while j < str_len(sid) and ctl == CTL_NONE:  # by CODE POINT (see above)
+            jl: int32 = str_seqlen_at(sid, j)
+            ch: int32 = v_string_bytes(&sp_buf[st_off[sid] + j], jl)
             it_senv: int32 = env_gc_top
             senv: int32 = env_new(env, 0)
             env_push(senv)
@@ -2905,7 +2913,7 @@ def exec_forof(node: int32, env: int32):
                 env_popto(it_senv)
                 break
             env_popto(it_senv)
-            j = j + 1
+            j = j + jl
         gc_popto(gsf)
         return
     if tag_of(iterv) == TAG_OBJ:

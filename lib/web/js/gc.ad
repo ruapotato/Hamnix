@@ -383,6 +383,7 @@ def gc_collect_strings():
         if str_mark[s] == 0:
             st_off[s] = str_free_head
             st_len[s] = 0
+            st_asc[s] = 0              # id is being recycled: drop its UTF-16 class
             str_free_head = s
             freed = freed + 1
         s = s - 1
