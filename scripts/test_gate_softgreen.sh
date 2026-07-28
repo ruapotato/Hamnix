@@ -225,49 +225,37 @@ else
     echo "$TAG   ok  every manifest line lets its gate's exit status through"
 fi
 
-# --- PART 5: the capability-vacuous ceiling ---------------------------------
-# Every CI runner in .github/workflows is `runs-on: ubuntu-latest`, which has
-# NO /dev/kvm — scripts/ci_run_gate.sh's own header says so. A manifest gate
-# that opens with `[ -e /dev/kvm ] || exit 0` therefore exits 0 on EVERY CI
-# run, forever, having observed nothing. That is not a lying verdict (the gate
-# is honest about skipping and it does assert when run on a KVM host, which is
-# how the orchestrator runs it), so it is not a FAIL here — but the population
-# must not grow unnoticed while everyone reads the battery as coverage.
+# --- PART 5: RETIRED — owned by scripts/test_gate_kvmdark.sh ----------------
+# PART 5 used to count manifest gates that open with `[ -e /dev/kvm ] || exit 0`
+# and fail if the total exceeded an integer ceiling (21). It is gone, and
+# nothing replaces it here, because scripts/test_gate_kvmdark.sh does the same
+# job strictly better and two ratchets over one population is a maintenance
+# tax that gets paid in stale numbers.
 #
-# The ceiling is a RATCHET. Lower it by moving a gate to a KVM-capable runner,
-# or by giving it a structural half that asserts before the capability check.
-# Do NOT raise it.
-CAP_CEILING=21
-echo "$TAG PART 5: manifest gates that exit 0 at a capability check (ceiling $CAP_CEILING)"
-CAPVAC=$(python3 - "$MANIFEST" <<'PY'
-import re, sys
-man = open(sys.argv[1], errors='replace').read()
-live = '\n'.join(l for l in man.split('\n') if not l.lstrip().startswith('#'))
-out = []
-for g in sorted(set(re.findall(r'scripts/test_[A-Za-z0-9_.-]+\.sh', live))):
-    try:
-        src = open(g, errors='replace').read().split('\n')
-    except OSError:
-        continue
-    for i, l in enumerate(src):
-        if l.lstrip().startswith('#'):
-            continue
-        if '/dev/kvm' in l and re.search(r'exit\s+0', '\n'.join(src[i:i + 3])):
-            out.append(g)
-            break
-print('\n'.join(out))
-PY
-)
-N_CAP=$(printf '%s\n' "$CAPVAC" | grep -c . || true)
-if [ "$N_CAP" -gt "$CAP_CEILING" ]; then
-    echo "$TAG FAIL: $N_CAP registered gate(s) exit 0 when /dev/kvm is absent," >&2
-    echo "$TAG   which is EVERY ubuntu-latest CI run. Ceiling is $CAP_CEILING:" >&2
-    printf '%s\n' "$CAPVAC" | sed "s|^|$TAG   |" >&2
-    echo "$TAG   These manifest lines report green without observing anything." >&2
-    FAILED=1
-else
-    echo "$TAG   ok  $N_CAP of $CAP_CEILING (these assert only on a KVM host)"
-fi
+# Why the integer ceiling was the weaker instrument:
+#
+#   * It ratcheted a COUNT, not a SET. Deleting one vacuous gate bought a
+#     licence to add a different one — the population churns and the number
+#     does not move. kvmdark freezes the NAMES
+#     (scripts/ci_kvmdark_baseline.txt) and its PART 3 forbids appending to
+#     that file vs HEAD, so a new finding cannot be laundered in.
+#   * The ceiling INCLUDED ITS OWN MATCH. This file's PART 5 source contained
+#     the literal '/dev/kvm' within three lines of an 'exit 0', so the scanner
+#     counted test_gate_softgreen.sh itself — 1 of the 21 was the ruler.
+#   * It had no escape hatch, so a gate for which a silent skip really is
+#     honest had nowhere to say so. kvmdark takes `# kvm-dark-ok: <why>` at
+#     the site.
+#   * It printed only a number. kvmdark prints the CENSUS — every uncovered
+#     gate by name, plus a ::warning:: annotation — on every run, so a green
+#     GitHub run states plainly what it did not cover. That is the part that
+#     actually changes behaviour.
+#
+# Both gates are registered in scripts/ci_battery_manifest.txt and both run in
+# ~1 s without QEMU, so nothing is lost by deleting the duplicate.
+echo "$TAG PART 5: capability-vacuous population — see scripts/test_gate_kvmdark.sh"
+echo "$TAG   (retired here 2026-07-28: kvmdark ratchets the NAMED SET and"
+echo "$TAG    prints a per-gate census; this file's integer ceiling was"
+echo "$TAG    strictly weaker and counted its own source as one of the 21.)"
 
 if [ "$FAILED" -ne 0 ]; then
     echo "$TAG FAIL"

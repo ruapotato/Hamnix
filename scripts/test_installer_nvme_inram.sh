@@ -43,7 +43,8 @@
 #   BOOT_TIMEOUT      per-stage seconds                 (default: 200)
 #   NVME_SIZE         blank NVMe target size            (default: 2G)
 #   OVMF_FD           OVMF firmware path                (auto-resolved)
-#   HAMNIX_SKIP_BUILD 1 = reuse build/hamnix-installer.img (default: rebuild)
+#   HAMNIX_SKIP_BUILD 1 = reuse build/hamnix-installer-autorun.img when FRESH
+#                         (default: rebuild)
 #   KEEP_LOGS         1 = keep logs + qcow2 on PASS      (default: 0)
 
 set -uo pipefail
@@ -56,7 +57,29 @@ source "$PROJ_ROOT/scripts/_build_lock.sh"
 
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-200}"
 NVME_SIZE="${NVME_SIZE:-2G}"
-INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
+# ONE PATH MUST NOT SERVE TWO VARIANTS (2026-07-28).
+#
+# This gate needs the UNATTENDED medium — built with HAMNIX_INSTALLER_AUTORUN=1,
+# which plants the auto-install trigger in the initramfs (scripts/build_
+# initramfs.py). Every other consumer of build/hamnix-installer.img needs the
+# NORMAL live medium, which boots to the desktop and installs nothing.
+#
+# It used to write the autorun build to build/hamnix-installer.img, the shared
+# path. Freshness is an MTIME COMPARISON — it cannot tell the two variants
+# apart — so on any KVM host the manifest's `HAMNIX_SKIP_BUILD=1 bash
+# scripts/test_installer_nvme_inram.sh` reused whatever happened to be at that
+# path. Whenever a NON-autorun build wrote it last (build_installer_img.sh with
+# no env, run_installer.sh's default arm, any of the ~70 DE/browser gates that
+# rebuild it when stale), this gate booted a medium that never auto-installs,
+# saw no install markers, and reported the end-to-end install BROKEN. A
+# reproducible false red on the project's primary ship vehicle. The reverse is
+# worse: an autorun image left at the shared path makes an unrelated DE gate
+# boot a medium that wipes the "target" disk unattended.
+#
+# So the autorun variant gets its own path, exactly as the DE visual gate's
+# HAMNIX_DE_SELFTEST build already does with hamnix-installer-selftest.img.
+# scripts/run_installer.sh had already picked this name for AUTO_INSTALL=1.
+INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer-autorun.img}"
 NVME_IMG="${NVME_IMG:-build/installed-nvme-inram.qcow2}"
 KERNEL_BANNER="Hamnix kernel booting"
 PROMPT_MARKER="ed-readline-first"
@@ -107,7 +130,11 @@ if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ] || installer_img_is_stale "$INSTALLER_IM
         echo "[test_installer_nvme_inram]   $INSTALLER_IMG is STALE (older than a tracked build input) — rebuilding despite HAMNIX_SKIP_BUILD=1 (~6 min)"
     fi
     rm -f "$INSTALLER_IMG"
-    HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # E2E install regression needs the unattended auto-install path
+    # HAMNIX_INSTALLER_IMG_OUT keeps the unattended build in its OWN file —
+    # see the INSTALLER_IMG comment above; without it this overwrites the
+    # shared live medium with an auto-installing one.
+    HAMNIX_INSTALLER_AUTORUN=1 HAMNIX_INSTALLER_IMG_OUT="$INSTALLER_IMG" \
+        bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # E2E install regression needs the unattended auto-install path
 fi
 if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[test_installer_nvme_inram] FAIL Stage A: $INSTALLER_IMG not built" >&2

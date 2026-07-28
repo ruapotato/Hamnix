@@ -35,7 +35,14 @@ set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ_ROOT"
 
-INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
+# The AUTORUN medium lives at its OWN path (2026-07-28). This script builds
+# with HAMNIX_INSTALLER_AUTORUN=1, which plants the unattended auto-install
+# trigger; every other consumer of build/hamnix-installer.img wants the NORMAL
+# live medium. mtime freshness cannot tell the two apart, so sharing one path
+# meant whichever variant was built last silently served both — a false red for
+# the install gate, and an unrelated gate booting a medium that auto-wipes a
+# disk. See the long note in scripts/test_installer_nvme_inram.sh.
+INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer-autorun.img}"
 NVME_SIZE="${NVME_SIZE:-2G}"
 INSTALL_WAIT="${INSTALL_WAIT:-500}"
 
@@ -58,7 +65,7 @@ fi
 
 # --- build the installer image (compiles the whole kernel) -----------
 echo "[test_net_namespace] (1/2) Build installer image (compiles kernel)"
-HAMNIX_INSTALLER_AUTORUN=1 bash scripts/build_installer_img.sh >/tmp/test_net_namespace_build.log 2>&1 || {
+HAMNIX_INSTALLER_AUTORUN=1 HAMNIX_INSTALLER_IMG_OUT="$INSTALLER_IMG" bash scripts/build_installer_img.sh >/tmp/test_net_namespace_build.log 2>&1 || {
     echo "[test_net_namespace] FAIL: installer image build failed"
     tail -30 /tmp/test_net_namespace_build.log
     exit 1

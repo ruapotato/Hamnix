@@ -51,6 +51,7 @@ FAILED=0
 ARTIFACTS="
 build/hamnix-installer.img
 build/hamnix-installer-selftest.img
+build/hamnix-installer-autorun.img
 build/hamnix-installed.qcow2
 build/hamnix-live-distro.img
 build/hamnix-rootfs.img

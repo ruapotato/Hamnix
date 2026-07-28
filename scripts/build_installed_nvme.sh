@@ -49,7 +49,14 @@ GOLDEN_NVME="${GOLDEN_NVME:-build/hamnix-installed.qcow2}"
 NVME_SIZE="${NVME_SIZE:-2G}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-200}"
 INSTALL_WAIT="${INSTALL_WAIT:-400}"
-INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
+# The AUTORUN medium lives at its OWN path (2026-07-28). This script builds
+# with HAMNIX_INSTALLER_AUTORUN=1, which plants the unattended auto-install
+# trigger; every other consumer of build/hamnix-installer.img wants the NORMAL
+# live medium. mtime freshness cannot tell the two apart, so sharing one path
+# meant whichever variant was built last silently served both — a false red for
+# the install gate, and an unrelated gate booting a medium that auto-wipes a
+# disk. See the long note in scripts/test_installer_nvme_inram.sh.
+INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer-autorun.img}"
 KERNEL_BANNER="Hamnix kernel booting"
 PROMPT_MARKER="handing off to interactive shell"
 
@@ -107,7 +114,7 @@ fresh_artifact "[build_installed_nvme]" "$GOLDEN_NVME"
 echo "[build_installed_nvme] Stage A: build ESP-only installer medium + blank NVMe target"
 if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
     rm -f "$INSTALLER_IMG"
-    HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # golden-disk build needs the unattended auto-install path
+    HAMNIX_INSTALLER_AUTORUN=1 HAMNIX_INSTALLER_IMG_OUT="$INSTALLER_IMG" bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # golden-disk build needs the unattended auto-install path
 fi
 # shellcheck source=_installer_img.sh
 source "$PROJ_ROOT/scripts/_installer_img.sh"

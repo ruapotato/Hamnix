@@ -69,7 +69,7 @@ bash scripts/test_de_uid_ns.sh
 #   a captured `ns clean { … }` template (docs/rootfs_partition.md,
 #   etc/rc.boot.full hermetic-ns invariant).
 bash scripts/test_de_terminal_namespace.sh
-bash scripts/test_hamsh.sh
+bash scripts/ci_run_gate.sh scripts/test_hamsh.sh
 bash scripts/ci_run_gate.sh scripts/test_hamsh_heartbeat.sh
 # Three sub-0.1 s, QEMU-free grep-guards recovered from the 2026-07-28
 # unregistered-gate sweep. All three had rotted against seams that MOVED (the
@@ -851,7 +851,7 @@ bash scripts/test_hambrowse_fetch_host.sh
 # drained the real response, and parsed status/headers on device (not a host
 # harness / fixture). Three-valued PASS/FAIL/INCONCLUSIVE; SKIPS cleanly when
 # /dev/kvm, OVMF, socat, python3, qemu, or the installer image is absent.
-SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_fetch_ondevice.sh
+SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_fetch_ondevice.sh
 # scripts/test_hambrowse_post_ondevice.sh: LIVE on-device gate for the JS fetch()
 # builtin doing a REAL over-the-wire HTTP POST (user/http9.ad http_post, added
 # alongside the GET path). Boots the installer image under OVMF/KVM with SLIRP,
@@ -863,7 +863,7 @@ SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_fetch_ondevice.sh
 # body onto the wire via http_post over /net (no sockets). Three-valued PASS/FAIL/
 # INCONCLUSIVE; SKIPS cleanly when /dev/kvm, OVMF, socat, python3, qemu, or the
 # installer image is absent.
-SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_post_ondevice.sh
+SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_post_ondevice.sh
 # scripts/test_hambrowse_navigation_ondevice.sh: LIVE on-device gate for the
 # browser-USABILITY tier over the wire — a LINK CLICK navigates and a FORM POST
 # submit sends its body. Boots the installer image under OVMF/KVM with SLIRP and a
@@ -876,7 +876,7 @@ SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_post_ondevice.sh
 # programmatic entry points (no flaky pointer injection). Three-valued PASS/FAIL/
 # INCONCLUSIVE; SKIPS cleanly when /dev/kvm, OVMF, python3, qemu, or the image is
 # absent.
-SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_navigation_ondevice.sh
+SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_navigation_ondevice.sh
 # scripts/test_hambrowse_visual_ondevice.sh: LIVE on-device VISUAL gate — proves
 # hambrowse RENDERS a feature-rich page onto the REAL EFI GOP framebuffer scanout
 # (the "device-working, not host-green" acceptance for this session's browser
@@ -894,7 +894,7 @@ SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_navigation_ondevice
 # PASS/FAIL/INCONCLUSIVE (blank/desktop-only frame => INCONCLUSIVE, never a pass);
 # SKIPS cleanly when /dev/kvm, OVMF, socat, python3, qemu, a PPM->PNG converter,
 # or the installer image is absent.
-SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_visual_ondevice.sh
+SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_visual_ondevice.sh
 # scripts/test_hambrowse_realpage_ondevice.sh: LIVE on-device SOFT/REPORT gate —
 # renders a REALISTIC article/landing page (flex NAV BAR with a right-aligned CTA,
 # wrapping heading+body, a 3-column CARD GRID, a bordered TABLE, ordered+unordered
@@ -911,7 +911,7 @@ SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_visual_ondevice.sh
 # maps a TCG-starved / desktop-only frame to non-failing INCONCLUSIVE. SKIPS
 # cleanly when /dev/kvm, OVMF, socat, python3, qemu, a PPM->PNG converter, or the
 # installer image is absent.
-SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_realpage_ondevice.sh
+SKIP_BUILD=1 HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_realpage_ondevice.sh
 # scripts/test_jsengine_es2020_host.sh: QEMU-free gate for the JS engine's
 # ES2015-2021 language + collection features (W3C/ECMAScript conformance
 # campaign, round 1). Modern minified/transpiled scripts abort on the first
@@ -2296,10 +2296,18 @@ HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_installer_ram_full.
 # installed root boots standalone to a shell with zero 'command not found'.
 #
 # Unlike the gates above, HAMNIX_SKIP_BUILD=1 here is NOT a licence to boot a
-# STALE image: the gate rebuilds anyway when build/hamnix-installer.img is
-# older than a tracked build input, because a stale image would green-light
-# the exact regression this gate exists to catch. It is therefore the heaviest
-# entry in the battery (~6 min build + two OVMF boots) — budget it a shard.
+# STALE image: the gate rebuilds anyway when its image is older than a tracked
+# build input, because a stale image would green-light the exact regression
+# this gate exists to catch. It is therefore the heaviest entry in the battery
+# (~6 min build + two OVMF boots) — budget it a shard.
+#
+# Its image is build/hamnix-installer-AUTORUN.img, not the shared
+# build/hamnix-installer.img (changed 2026-07-28). This gate is the only one
+# that needs the UNATTENDED medium (HAMNIX_INSTALLER_AUTORUN=1); freshness is
+# an mtime comparison and cannot tell the two variants apart, so while both
+# lived at one path, HAMNIX_SKIP_BUILD=1 reused whichever was built last. A
+# non-autorun image => no install markers => this gate reported the end-to-end
+# install broken. A reproducible false red on the primary ship vehicle.
 HAMNIX_SKIP_BUILD=1 bash scripts/test_installer_nvme_inram.sh
 
 # test_hamview_png_jpeg: hamview image viewer decodes a real PNG (lib/png.ad)
@@ -2319,7 +2327,7 @@ HAMNIX_SKIP_BUILD=1 bash scripts/test_hamview_png_jpeg.sh
 # python3 / KVM / OVMF / socat / the prebuilt installer image are absent, so a
 # battery shard with no image is a fast SKIP; it exercises fully locally / in
 # the installer CI job. Needs SLIRP networking + a host HTTP server.
-HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_fetch.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_fetch.sh
 
 # task #29: `enter linux/debian { … }` runs the real busybox-musl Debian
 # binaries in a clean per-process namespace (ls / shows the distinct Debian
@@ -2591,7 +2599,7 @@ bash scripts/test_hamlog_host.sh
 # access log proves it), plus the served magenta-PNG pixel signature. Same
 # host guards as test_hambrowse_fetch; HAMNIX_SKIP_BUILD=1 -> fast SKIP on a
 # shard with no prebuilt installer image.
-HAMNIX_SKIP_BUILD=1 bash scripts/test_hambrowse_http_features.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_hambrowse_http_features.sh
 
 # test_curl_https_redirect: on-device gate for http9's http:// -> https://
 # redirect-follow. A plain-HTTP redirector (10.0.2.201:80) 302s to a self-
@@ -2611,10 +2619,25 @@ bash scripts/ci_run_gate.sh scripts/test_curl_https_redirect.sh
 # NOTHING did). Asserts each launched app paints new pixels in its window
 # region AND that the kernel emitted enough `[devwsys] window <wid> mapped`
 # markers (fresh wids past the boot scene-app set). HOST-GUARDED: SKIPs
-# cleanly without KVM/OVMF/socat/converter; HAMNIX_SKIP_BUILD=1 makes it a
-# fast SKIP on a battery shard with no prebuilt installer image (the full
-# build + OVMF boot runs in the installer CI job / locally).
-HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_de_visual_gate.sh
+# cleanly without KVM/OVMF/socat/converter.
+#
+# NO HAMNIX_SKIP_BUILD=1 HERE, DELIBERATELY (2026-07-28). This gate's image
+# path is DEDICATED — it exports HAMNIX_DE_SELFTEST=1 and boots
+# build/hamnix-installer-selftest.img, which NOTHING ELSE IN THE TREE BUILDS.
+# So HAMNIX_SKIP_BUILD=1 on this line made the gate vacuous on EVERY host
+# including a KVM one: installer_img_or_verdict saw an absent image, took the
+# "skipped by request" branch and exited 0 having asserted nothing. Because
+# that exit 0 is by request it is softgreen-EXEMPT, so both meta-gates passed
+# it too — a gate that could never fail, on any machine, invisible to the
+# gates written to find exactly that.
+#
+# Dropping the switch costs nothing on the KVM-less runners the battery
+# normally runs on: the `[ -e /dev/kvm ]` check fires ~20 lines BEFORE the
+# image block, so those still exit 0 in milliseconds (counted by
+# scripts/test_gate_kvmdark.sh's census). On a KVM host — the orchestrator's
+# box, scripts/ci_run_kvm_battery.sh — it now builds its selftest image
+# (~6-14 min) and actually renders. That is the whole point of the gate.
+bash scripts/ci_run_gate.sh scripts/test_de_visual_gate.sh
 
 # OFFICE SUITE host gates: HamWrite (word processor), HamSheet (spreadsheet)
 # and HamSlides (presentation) are PRE-INSTALLED first-class DE apps. These
