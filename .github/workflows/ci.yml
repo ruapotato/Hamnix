@@ -498,6 +498,12 @@ jobs:
             parted \
             e2fsprogs \
             binutils
+          # hpm_sign.py needs Ed25519 from `cryptography`, and the installer
+          # image build signs the bundled hpm channel index — so this is a hard
+          # dependency of the ship-path build, exactly as in packages.yml.
+          # Without it this job died at "ModuleNotFoundError: No module named
+          # 'cryptography'" before ever reaching the boot it exists to guard.
+          python3 -m pip install --quiet cryptography
 
       - name: Build userland
         run: bash scripts/build_user.sh
