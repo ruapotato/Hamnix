@@ -300,6 +300,11 @@ def emit_cp_utf8(cp: int32):
         emit_c(cast[uint8](192 | (cp >> 6)))
         emit_c(cast[uint8](128 | (cp & 63)))
         return
+    if cp >= 56320 and cp <= 57343:
+        # trailing surrogate: fold it back into a preceding lead half if there
+        # is one (see bld_join_trail).
+        if bld_join_trail(cp) != 0:
+            return
     if cp < 65536:
         emit_c(cast[uint8](224 | (cp >> 12)))
         emit_c(cast[uint8](128 | ((cp >> 6) & 63)))
@@ -455,10 +460,43 @@ def emit_cstr(s: Ptr[uint8]):
         i = i + 1
 
 
+# WTF-8 CONCATENATION. Half-slicing an astral character leaves a LONE
+# surrogate, which we store as a 3-byte WTF-8 sequence. Re-joining the halves
+# (`s.slice(0,1) + s.slice(1) === s`, which JS says is true) must fold the
+# lead+trail pair back into the single 4-byte UTF-8 sequence, or the result
+# would merely LOOK equal while comparing unequal byte-wise. Returns 1 when a
+# pending lead surrogate at the end of the current build was consumed.
+# Costs one byte compare on the string-builder path, and only when the appended
+# text actually begins 0xED (i.e. never for ASCII or ordinary UTF-8 text).
+def bld_join_trail(trail_cp: int32) -> int32:
+    if emit_tgt != 0:
+        return 0
+    if sp_top - 3 < _bld_start:
+        return 0
+    if sp_buf[sp_top - 3] != 237:                      # 0xED
+        return 0
+    b1: int32 = cast[int32](sp_buf[sp_top - 2])
+    if b1 < 160 or b1 > 175:                           # lead half is 0xA0..0xAF
+        return 0
+    lead: int32 = u8_decode(sp_top - 3, 3)
+    if lead < 55296 or lead > 56319:
+        return 0
+    sp_top = sp_top - 3
+    emit_cp_utf8(65536 + ((lead - 55296) << 10) + (trail_cp - 56320))
+    return 1
+
+
 def emit_strid(id: int32):
     n: int32 = st_len[id]
     off: int32 = st_off[id]
     i: int32 = 0
+    # leading WTF-8 TRAIL surrogate (0xED 0xB0..0xBF ..)? try to rejoin it with
+    # a lead surrogate already at the end of the build.
+    if n >= 3 and sp_buf[off] == 237 and sp_buf[off + 1] >= 176 and sp_buf[off + 1] <= 191:
+        tcp: int32 = u8_decode(off, 3)
+        if tcp >= 56320 and tcp <= 57343:
+            if bld_join_trail(tcp) != 0:
+                i = 3
     while i < n:
         emit_c(sp_buf[off + i])
         i = i + 1
