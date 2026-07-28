@@ -1947,6 +1947,27 @@ def call_linux_futex_dump():
 # task_exit_current, so a single hook here covers both.
 umdf_task_exit_hook: Fn[None, uint64]
 
+# --- Exit-time WINDOW reclamation hook (window-server client death) ---
+#
+# A window is a resource the window server holds ON BEHALF OF a client
+# process. When that client dies — cleanly, by note, or by fault — its
+# windows must go with it: the slot, the event rings and the per-window
+# framebuffer blocks (4 MiB each) are the client's, not the server's.
+#
+# Until this hook existed, the ONLY thing that reclaimed a dead client's
+# window was wsys_reap_dead_wids(), which runs when somebody READS
+# /dev/wsys/windows — in practice the DE panel's taskbar poll. That made
+# kernel-side reclamation conditional on a USERLAND process continuing to
+# run: if the panel wedged or was killed, every subsequently-closed app
+# leaked its 4 MiB layer framebuffer for the rest of the session, and
+# nothing in the kernel could ever notice. A soak measured exactly that —
+# a permanent +16 MiB step the moment the panel stopped polling.
+#
+# The scheduler stays Layer-1-pure: it calls this hook (registered by the
+# port layer at bring-up) with the exiting task's PID. Null on a build
+# without devwsys, and then inert.
+wsys_task_exit_hook: Fn[None, uint64]
+
 # --- Exit-time NATIVE exit-sem release hook (#443 native threads) ----
 #
 # The Plan 9-shape mirror of cleartid_wake_hook. A native rfork(RFPROC|
@@ -5498,6 +5519,12 @@ def task_exit_current(code: int64):
     # crashes or exits without an explicit ungrab never wedges keyboard
     # input for the boot shell. ungrab is a no-op unless we are the holder.
     console_input_ungrab(task_table[current_idx_pcpu].pid)
+    # Window-server client death: release every window this task owned.
+    # Done HERE (not at reap) because the windows are dead the instant the
+    # client is, and because reclamation must not depend on any userland
+    # process still being alive to poll for it.
+    if wsys_task_exit_hook != cast[Fn[None, uint64]](0):
+        wsys_task_exit_hook(task_table[current_idx_pcpu].pid)
     # V2.75: drop our reference to the per-process group. If we were
     # the last referer, pgrp_ref_dec kfree's the Pgrp's heap storage,
     # so a future rfork(RFNAMEG) gets a clean kzalloc'd region. Root
@@ -6459,6 +6486,13 @@ def register_cleartid_wake_hook(hook: Fn[int32, uint64]):
     # pthread's exit unblock its joiner. A native-only build never
     # calls this, so the hook stays null and the CLEARTID path is inert.
     cleartid_wake_hook = hook
+
+
+def register_wsys_task_exit_hook(hook: Fn[None, uint64]):
+    # sys/src/9/port/devwsys.ad calls this once at bring-up so the
+    # scheduler's exit path can hand a dying client's windows back to the
+    # window server without Layer 1 naming devwsys. Null hook = inert.
+    wsys_task_exit_hook = hook
 
 
 def register_umdf_task_exit_hook(hook: Fn[None, uint64]):

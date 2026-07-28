@@ -572,6 +572,7 @@ from sys.src.port9.port.devmouse import devmouse_write_selftest
 from sys.src.port9.port.devwsys import (
     wsys_kbd_route_selftest, wsys_close_box_selftest,
     wsys_kbd_e2e_delivery_selftest,
+    wsys_exit_hook_init,
 )
 from fs.cpio import (
     cpio_init, initramfs_entry_count, initramfs_entry_name,
@@ -5755,6 +5756,10 @@ def start_kernel():
     # u_syscalls_init must precede the first Linux task.
     printk0("[boot:21b] sems_init\n")
     sems_init()
+    # Window-server client-death reclamation: a dying client's windows (and
+    # their 4 MiB framebuffers) go back to the server on task exit, with no
+    # dependence on any userland process still polling /dev/wsys/windows.
+    wsys_exit_hook_init()
 
     # --- HTTPS local smoke (TLS 1.3) gated on cpio marker -----
     # Runs only when scripts/test_net_https.sh planted /etc/tls-test

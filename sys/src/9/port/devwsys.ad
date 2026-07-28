@@ -108,6 +108,9 @@ from kernel.sched.core import (
     # task by pid as the syscall arm does.
     task_lookup_by_pid, set_task_detached, set_task_parent_pid,
     task_parent_pid,
+    # Client-death window reclamation: the scheduler calls back into the
+    # window server when a task exits (see wsys_release_wids_for_pid).
+    register_wsys_task_exit_hook,
     set_current_errstr,
     # BUG 2 FIX: closing a scene window from the compositor's pointer
     # router SIGTERMs the bound client so it winds down + is reaped.
@@ -448,20 +451,64 @@ def wsys_reap_dead_wids() -> int32:
     while w < MAX_WINDOWS:
         if wsys_slot_in_use[w] != 0:
             if _wsys_pid_alive(wsys_slot_pid[w]) == 0:
-                wid: int32 = cast[int32](w)
-                if wsys_focus_wid == wid:
-                    wsys_focus_wid = 0
-                if wsys_drag_wid == wid:
-                    wsys_drag_wid = 0
-                    wsys_drag_snap_intent = WSYS_SNAP_NONE
-                    wsys_outline_active = 0
-                if wsys_resize_wid == wid:
-                    wsys_resize_wid = 0
-                    wsys_resize_edge = 0
-                wsys_free_wid(wid)
+                _wsys_reclaim_slot(cast[int32](w))
                 n = n + 1
         w = w + 1
     return n
+
+
+def _wsys_reclaim_slot(wid: int32):
+    # Drop `wid`: clear any router state that names it (so a reclaimed slot
+    # never strands a stale focus/drag/resize target) and free the slot,
+    # which recomposes the vacated footprint and returns the window's
+    # framebuffer blocks. Shared by the liveness reaper and the client-death
+    # hook so both paths do EXACTLY the same bookkeeping.
+    if wsys_focus_wid == wid:
+        wsys_focus_wid = 0
+    if wsys_drag_wid == wid:
+        wsys_drag_wid = 0
+        wsys_drag_snap_intent = WSYS_SNAP_NONE
+        wsys_outline_active = 0
+    if wsys_resize_wid == wid:
+        wsys_resize_wid = 0
+        wsys_resize_edge = 0
+    wsys_free_wid(wid)
+
+
+def wsys_release_wids_for_pid(pid: uint64):
+    # CLIENT DEATH. Called from the scheduler's task-exit path (via the
+    # hook registered in wsys_exit_hook_init) with the PID of the task that
+    # is going away. Every window that task owned dies with it.
+    #
+    # WHY THIS EXISTS. wsys_reap_dead_wids() above answers the same question
+    # ("whose client is gone?") but only when SOMEBODY READS
+    # /dev/wsys/windows — in practice the DE panel's taskbar poll. That made
+    # the window server's memory reclamation conditional on a userland
+    # process continuing to run. A 30-minute desktop soak caught the
+    # consequence: when the panel wedged, every app closed afterwards kept
+    # its 4 MiB layer framebuffer for the rest of the session (a permanent
+    # +16 MiB step at the cycle the panel stopped), and no amount of reaping
+    # could see it, because reaping was the thing that had stopped.
+    #
+    # Unlike the reaper this does NOT consult _wsys_pid_alive: we are called
+    # from the exiting task's own context, so it is still in the task table
+    # and would read as alive. The pid match IS the liveness answer.
+    #
+    # wid 1 (foreground/root) is never owner-released — wsys_free_wid
+    # rejects wid <= 1 — so the box can never be left without a foreground.
+    if pid == 0:
+        return
+    w: uint64 = 2
+    while w < MAX_WINDOWS:
+        if wsys_slot_in_use[w] != 0 and wsys_slot_pid[w] == pid:
+            _wsys_reclaim_slot(cast[int32](w))
+        w = w + 1
+
+
+def wsys_exit_hook_init():
+    # Bring-up: wire client-death window reclamation into the scheduler's
+    # task-exit path. Called once from init/main.ad.
+    register_wsys_task_exit_hook(wsys_release_wids_for_pid)
 
 
 def wsys_alloc_wid(pid: uint64) -> int32:
