@@ -76,6 +76,17 @@ fi
 
 mapfile -t GATES < <(python3 "$SCANNER" "$PROJ_ROOT" \
                      | awk -F'\t' '$1=="DARK" {print $2}' | sort)
+# scripts/test_de_stress_soak.sh is a 30-MINUTE soak and the manifest itself
+# runs it only under HAMNIX_SOAK=1. Running it by default would burn half the
+# battery's wall clock and then be killed by the per-gate cap, reporting a
+# TIMEOUT that says nothing. Same opt-in switch, same meaning.
+if [ "${HAMNIX_SOAK:-0}" != "1" ]; then
+    mapfile -t GATES < <(printf '%s\n' "${GATES[@]}" \
+                         | grep -v 'test_de_stress_soak\.sh$' || true)
+    SOAK_NOTE=" (test_de_stress_soak excluded; set HAMNIX_SOAK=1 for the 30-min soak)"
+else
+    SOAK_NOTE=""
+fi
 if [ -n "$FILTER" ]; then
     mapfile -t GATES < <(printf '%s\n' "${GATES[@]}" | grep -- "$FILTER" || true)
 fi
@@ -86,7 +97,7 @@ if [ "$N" -eq 0 ]; then
     exit 0
 fi
 
-echo "$TAG $N KVM-dark gate(s) — the set a GitHub run does NOT cover:"
+echo "$TAG $N KVM-dark gate(s) — the set a GitHub run does NOT cover:${SOAK_NOTE:-}"
 printf '%s\n' "${GATES[@]}" | sed "s|^|$TAG   |"
 [ "$DRY" -eq 1 ] && exit 0
 
@@ -115,14 +126,39 @@ for g in "${GATES[@]}"; do
     echo
     echo "$TAG ===== $name ====="
     gt0=$(date +%s)
-    # HAMNIX_SKIP_BUILD=1: the image was just built above; a gate rebuilding
-    # it mid-battery would make every later verdict describe a DIFFERENT build.
-    HAMNIX_SKIP_BUILD=1 SKIP_BUILD=1 \
-        timeout "$PER_GATE_TIMEOUT" bash scripts/ci_run_gate.sh "$g"
-    rc=$?
+    # DELIBERATELY NOT setting HAMNIX_SKIP_BUILD=1 here.
+    #
+    # The first draft did, reasoning that the image was built once up front so
+    # no gate should rebuild it. That manufactured a FALSE RED and a FALSE
+    # GREEN in the same run:
+    #   * test_installer_nvme_inram needs its medium built with
+    #     HAMNIX_INSTALLER_AUTORUN=1 (rc.boot only auto-installs when
+    #     /etc/installer-autorun is planted). Forced to reuse the plain
+    #     image, it booted the LIVE desktop, never installed, and FAILed for
+    #     an environment reason that looks exactly like a product regression.
+    #   * test_de_visual_gate needs a DEDICATED build/hamnix-installer-
+    #     selftest.img (HAMNIX_DE_SELFTEST=1). Forced to skip the build, it
+    #     exited 0 in 0 s having booted nothing — and ci_run_gate.sh reported
+    #     PASS.
+    # Gates that need a variant image build it themselves; letting them is the
+    # whole point of running the set for real.
+    LOG=$(mktemp --tmpdir kvmbat.XXXXXX.log)
+    timeout "$PER_GATE_TIMEOUT" bash scripts/ci_run_gate.sh "$g" 2>&1 | tee "$LOG"
+    rc=${PIPESTATUS[0]}
     gt=$(( $(date +%s) - gt0 ))
     case "$rc" in
-        0)   v=PASS;         NPASS=$((NPASS+1)) ;;
+        # An exit 0 that never booted is NOT a pass. ci_run_gate.sh cannot see
+        # the difference (both are exit 0); the battery can, from the gate's
+        # own words, and must not launder it into the PASS column.
+        # Scanning the WHOLE log for a SKIP line is too loose: a build
+        # sub-step legitimately prints one (build_local_apt_repo skips its
+        # Debian rootfs) and test_de_visual_gate — which ran in full and
+        # PASSed — was misfiled as SKIPPED. Only the gate's LAST WORD counts.
+        0)  if tail -n 6 "$LOG" | grep -qiE '^\[[a-z0-9_]+\] +SKIP'; then
+                v=SKIPPED; NINC=$((NINC+1))
+            else
+                v=PASS; NPASS=$((NPASS+1))
+            fi ;;
         # 2 = the hambrowse family's LOCAL inconclusive code. ci_run_gate.sh
         # maps only 125; without this line those runs read as failures.
         2)   v=INCONCLUSIVE; NINC=$((NINC+1)) ;;
@@ -131,6 +167,7 @@ for g in "${GATES[@]}"; do
         143) v=KILLED;       NINC=$((NINC+1)) ;;
         *)   v=FAIL;         NFAIL=$((NFAIL+1)) ;;
     esac
+    rm -f "$LOG"
     echo "$TAG $name: $v (rc=$rc, ${gt}s)"
     RESULTS="$RESULTS$(printf '%-42s %-13s %5ss rc=%s' "$name" "$v" "$gt" "$rc")"$'\n'
 done
@@ -141,7 +178,7 @@ echo "$TAG ============================================================"
 echo "$TAG KVM-dark battery summary — $N gate(s), $((TOTAL/60))m$((TOTAL%60))s"
 echo "$TAG ============================================================"
 printf '%s' "$RESULTS" | sed "s|^|$TAG   |"
-echo "$TAG   PASS $NPASS   FAIL $NFAIL   INCONCLUSIVE $NINC"
+echo "$TAG   PASS $NPASS   FAIL $NFAIL   INCONCLUSIVE/SKIPPED $NINC"
 echo "$TAG A GitHub run covers NONE of the above."
 
 [ "$NFAIL" -eq 0 ] || exit 1
