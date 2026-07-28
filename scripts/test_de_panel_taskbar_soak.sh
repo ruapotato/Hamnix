@@ -164,6 +164,23 @@ fi
 snapshot 000_start
 mapped_count() { grep -ac "\[devwsys\] window .* mapped" "$LOG"; }
 
+# INDEPENDENT INSTRUMENT. The beacon is the panel talking about itself; this
+# reads the same per-task fd table from OUTSIDE the panel, through the shell,
+# so the two cannot agree by sharing a bug.
+printf 'echo MARK_PANELPID_BEGIN; pgrep hampanelscene; echo MARK_PANELPID_END\n' >&3
+sleep 3
+wait_for MARK_PANELPID_END 20 || true
+PANEL_PID=$(sed -n '/MARK_PANELPID_BEGIN/,/MARK_PANELPID_END/p' "$LOG" \
+            | grep -aoE '^[0-9]+' | head -1)
+echo "$TAG panel pid: ${PANEL_PID:-<not found>}"
+dump_panel_fds() {
+    [ -n "${PANEL_PID:-}" ] || return 0
+    printf 'echo MARK_PFD_%s_BEGIN; cat /proc/%s/fd; echo MARK_PFD_%s_END\n' \
+        "$1" "$PANEL_PID" "$1" >&3
+    sleep 3
+}
+dump_panel_fds start
+
 # --- the session -----------------------------------------------------
 # Open and close scene apps continuously, exactly as a user works, for the
 # whole soak window. Any wedge shows up as a missed serial round-trip.
@@ -202,6 +219,7 @@ while [ "$SECONDS" -lt "$SOAK_END" ]; do
             break
         fi
         snapshot "c${cyc}_desktop"
+        dump_panel_fds "c$cyc"
         b=$(grep -a '\[panelbeacon\]' "$LOG" | tail -1)
         echo "$TAG cycle $cyc  t=${SECONDS}s  $b"
     fi
@@ -233,6 +251,7 @@ sleep 35
 printf 'echo MARK_WINTABLE_BEGIN; cat /dev/wsys/windows; echo MARK_WINTABLE_END\n' >&3
 sleep 5
 wait_for MARK_WINTABLE_END 20 || say_fail "the shell never answered the final window-table read"
+dump_panel_fds final
 sleep 12          # one more beacon after the table snapshot
 snapshot 999_final
 
@@ -319,6 +338,15 @@ if [ "$WIDS_BAR" != "$WIDS_LIVE" ]; then
              "drawing [${WIDS_BAR:-<empty>}] while the live window set is [${WIDS_LIVE}]." \
              "The file is fine; the panel is not showing it."
 fi
+
+# Cross-check the beacon's self-report against the shell's independent read
+# of the panel's fd table.
+echo "$TAG --- /proc/<panel>/fd line counts, read from the shell ---"
+for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" | sed 's/MARK_PFD_//;s/_BEGIN//'); do
+    nfd=$(sed -n "/MARK_PFD_${tagn}_BEGIN/,/MARK_PFD_${tagn}_END/p" "$LOG" \
+          | grep -acE '^[0-9]+[[:space:]]')
+    echo "$TAG   $tagn: $nfd descriptors"
+done
 
 echo "$TAG artifacts: $OUT_DIR"
 if [ "$fail" -ne 0 ]; then
