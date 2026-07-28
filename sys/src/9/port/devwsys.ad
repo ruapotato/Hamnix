@@ -9174,6 +9174,38 @@ def _wsys_scene_next_int(buf: Ptr[uint8], pp: Ptr[uint64],
     return 1
 
 
+# Last (w,h) reported by _wsys_report_cache_clamp for each wid, so the
+# warning is emitted once per distinct clamp instead of once per raster.
+wsys_cache_clamp_w: Array[32, int64]
+wsys_cache_clamp_h: Array[32, int64]
+
+
+def _wsys_report_cache_clamp(u: uint64, cw: int64, ch: int64):
+    # THE INVARIANT: a window's pixel cache must be exactly as big as its
+    # geometry. When it is not, the window silently renders SHORT — which
+    # is how a 4 MiB-capped cache cost a 1920x1080 desktop 534 of its 1080
+    # rows and no gate in the suite could see it. Any clamp is now loud on
+    # the console (and scripts/test_de_resolution_edge_to_edge.sh fails on
+    # the line), so the next time a geometry outgrows its backing the boot
+    # log says so instead of the screen quietly going half blank.
+    if u >= MAX_WINDOWS:
+        return
+    gw: int64 = _wsys_win_def_w(u)
+    gh: int64 = _wsys_win_def_h(u)
+    if cw >= gw and ch >= gh:
+        wsys_cache_clamp_w[u] = 0
+        wsys_cache_clamp_h[u] = 0
+        return
+    if wsys_cache_clamp_w[u] == cw and wsys_cache_clamp_h[u] == ch:
+        return
+    wsys_cache_clamp_w[u] = cw
+    wsys_cache_clamp_h[u] = ch
+    printk3(cast[Ptr[char]]("[wsys] cache-clamp wid=%d geo_w=%d geo_h=%d\n"),
+            cast[uint64](u), cast[uint64](gw), cast[uint64](gh))
+    printk2(cast[Ptr[char]]("[wsys] cache-clamp   cache_w=%d cache_h=%d\n"),
+            cast[uint64](cw), cast[uint64](ch))
+
+
 def _wsys_rasterize_window(wid: int32):
     # Rasterize wid's CURRENT scene text into its RGBA cache — FULL redraw.
     # Thin wrapper: the whole cache is the damage box.
@@ -9216,6 +9248,7 @@ def _wsys_rasterize_window_clip(wid: int32, bx0: int64, by0: int64,
     _wsys_win_cache_dims(u, &w, &h)
     _wsys_rast_w = w
     _wsys_rast_h = h
+    _wsys_report_cache_clamp(u, w, h)
     # Clamp the damage box to the cache bounds.
     if bx0 < 0:
         bx0 = 0
@@ -10070,6 +10103,14 @@ def _wsys_present_diag(presented: int32, live: int32):
             cast[uint64](wsys_root_active), cast[uint64](wsys_shadow_ok))
     printk2("[de_present]   live_windows=%d presented=%d\n",
             cast[uint64](live), cast[uint64](presented))
+    # The ROOT COLOUR — what shows through wherever no window paints. The
+    # resolution gate (scripts/test_de_resolution_edge_to_edge.sh) asserts
+    # this colour covers ~none of the screen, which is how it proves the
+    # desktop is painted edge to edge; reporting it here means the gate
+    # never has to hard-code a theme colour it would silently outlive.
+    printk3("[de_present]   root_rgb=%d,%d,%d\n",
+            cast[uint64](wsys_root_r), cast[uint64](wsys_root_g),
+            cast[uint64](wsys_root_b))
 
 
 def _wsys_present_background():
@@ -10119,7 +10160,10 @@ def _wsys_present_background():
 # stay <= 10 or the shadow silently never installs and the whole
 # double-buffer is a no-op (the original WIP used order 12 and was inert).
 WSYS_SHADOW_ORDER:   int32  = 10          # 1024 pages = 4 MiB (MAX_ORDER)
-WSYS_SHADOW_MAX_PX:  uint64 = 1048576     # 4 MiB / 4 = 1,048,576 px
+WSYS_SHADOW_MAX_PX:  uint64 = 1048576     # 4 MiB / 4 = 1,048,576 px (buddy)
+# Beyond WSYS_SHADOW_MAX_PX the shadow comes from region_alloc instead; this
+# is the sanity ceiling on that path (4096x4096 RGBA = 64 MiB).
+WSYS_SHADOW_MAX_BYTES: uint64 = 67108864
 wsys_shadow_page:    uint64 = 0           # 0 = not yet allocated
 wsys_shadow_pitch:   uint64 = 0           # pixels per shadow row (= fb_width)
 wsys_shadow_ok:      int32  = 0           # 1 = installed & active
@@ -10170,11 +10214,24 @@ def _wsys_shadow_init_if_needed():
             fb_set_shadow_bgra(1)
             wsys_shadow_ok = 1
             return
-    if sw * sh > WSYS_SHADOW_MAX_PX:
-        # Screen too large for the shadow — leave wsys_shadow_page 0 so we
-        # don't retry every present; present falls back to direct scanout.
-        return
-    pg: uint64 = alloc_pages(WSYS_SHADOW_ORDER)
+    # Offscreen shadow backing. <= 4 MiB (i.e. <= ~1 Mpx, every mode the
+    # buddy allocator could ever serve) keeps the historical alloc_pages
+    # path byte-for-byte; a bigger screen — 1280x1024, 1920x1080, every
+    # real laptop panel — now comes from the freeable large-region
+    # allocator instead of disabling the double-buffer outright. Before
+    # this, a 1080p boot silently ran with shadow_ok=0 and composited
+    # straight to scanout, i.e. the whole-DE flicker the shadow exists to
+    # kill was back on exactly the hardware we ship to.
+    sb: uint64 = sw * sh * 4
+    pg: uint64 = 0
+    if sw * sh <= WSYS_SHADOW_MAX_PX:
+        pg = alloc_pages(WSYS_SHADOW_ORDER)
+    else:
+        if sb > WSYS_SHADOW_MAX_BYTES:
+            # Absurd geometry — leave wsys_shadow_page 0 so we don't retry
+            # every present; present falls back to direct scanout.
+            return
+        pg = region_alloc((sb + 4095) & ~cast[uint64](4095))
     if pg == 0:
         return
     wsys_shadow_page = pg

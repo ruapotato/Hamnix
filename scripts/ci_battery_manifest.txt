@@ -2554,6 +2554,20 @@ bash scripts/test_de_wallpaper_coverage_host.sh
 # and that each image actually repainted the desktop.
 bash scripts/test_de_wallpaper_fullscreen.sh
 
+# test_de_resolution_edge_to_edge: THE RESOLUTION GATE — the whole DE suite
+# booted at the OVMF default (1280x800 = 1,024,000 px) and was therefore blind
+# to a class of bug that only appears on a bigger panel. The per-window scene
+# cache lived in a fixed 4 MiB buddy block (MAX_ORDER = 10 is a hard ceiling),
+# so a window could not be taller than 4 MiB/(w*4) rows: 1280x800 just fits,
+# 1280x1024 lost 205 rows and 1920x1080 lost 534 of 1080 — the full-screen
+# desktop backdrop stopped at row 546 and the root colour filled the bottom
+# HALF of every real laptop panel, with every gate green. This one forces the
+# GOP mode (-device VGA,xres=,yres=) at 1920x1080 and 1280x1024 and asserts the
+# desktop is painted edge to edge (root colour < 2% of the frame), that no
+# window cache was clamped below its geometry ([wsys] cache-clamp), and that
+# the panels land at the TRUE screen height.
+bash scripts/test_de_resolution_edge_to_edge.sh
+
 # test_de_wallpaper_themes: THE PICTURE YOU PICKED IS THE PICTURE YOU GET.
 # The 2026-07-27 "Sunset/Ocean/Tiles don't change the background" defect passed
 # every wallpaper gate above, because they check the source text, the host
