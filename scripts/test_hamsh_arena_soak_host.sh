@@ -28,15 +28,29 @@
 #      really reclaimed, not merely allocated more slowly or capped higher.
 #   3. At least 2 collections happen, and no collection is forced to skip
 #      string compaction.
-#   4. The PROBE line — recursion, if/else, try/except, ternary, slice,
-#      expression-mode for, kwarg call, list/dict/set values, and a plain
-#      variable — prints byte-identical output BEFORE the first collection
-#      and after every later one. A mark/compact collector that forwards a
-#      node id wrongly (nd_c is a CHILD for five kinds and a scalar FLAG for
-#      the rest) corrupts exactly these.
+#   4. The PROBE line — recursion, if/else, try/except, `except NAME as VAR`,
+#      ternary, slice, expression-mode for, kwarg call, export assignment,
+#      indexed assignment, list/dict values and a plain string variable —
+#      prints byte-identical output BEFORE the first collection and after
+#      every later one, and there are EXACTLY as many PROBE lines as were
+#      driven (a corrupted body makes its line RAISE, which is an ABSENT
+#      line, not a different one).
+#
+#      This is the assertion that guards the collector's two hand-maintained
+#      classifier tables. nd_c AND nd_i are both polymorphic: a CHILD NODE
+#      for some kinds, a STRING ref for others, a scalar flag for the rest.
+#      Mutation-proven to bite here: dropping ND_IF from _gc_c_is_node,
+#      ND_TRY from _gc_i_is_str, ND_INDEXASSIGN from _gc_i_is_str.
+#      NOT observable through evaluation on this seam, and therefore resting
+#      on the check-6 ratchet instead: ND_CMD's nd_i `2>` target and
+#      ND_WITH's nd_c body — the host build stubs file redirects and bind
+#      context managers, so neither can be driven end-to-end here.
 #   5. The alias table and the pushd directory stack — both hold interned
 #      string refs and NEITHER was consulted by the old all-or-nothing
 #      recycler — survive the string-arena compaction.
+#   6. A structural ratchet on the parser's nd_c / nd_i write population, so
+#      a new user of either column cannot land without the classifiers being
+#      revisited in the same commit.
 #
 # Drive seam: the SAME shell source that runs as /init, compiled for
 # x86_64-linux and fed over a stdin pipe with --no-echo (identical to
