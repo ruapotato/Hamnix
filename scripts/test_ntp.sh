@@ -17,14 +17,17 @@
 #     host's `date -u +%s`. This proves end-to-end NTP -> kernel
 #     wall clock.
 #
-#   FALLBACK PASS (no internet / sandboxed CI):
-#     "ntpd: cannot resolve" OR "ntpd: timeout / no reply"
-#     appears — proves the binary launched and dialed but no NTP
-#     server was reachable. The /net/udp dial path is the new code
-#     under test; SLIRP's external reachability is the dependency.
+#   INCONCLUSIVE, exit 125 (no internet / sandboxed CI):
+#     "ntpd: cannot resolve" OR "ntpd: timeout / no reply" appears —
+#     the binary launched and dialed but no NTP server was reachable,
+#     so the anchor was never observed. SLIRP's external reachability
+#     is an ENVIRONMENT dependency; absence of evidence, not a pass.
 #
 #   FAIL: ntpd never produced a banner (binary missing / crashed) OR
-#         no kernel boot OR a TRAP/panic happened during the run.
+#         no kernel boot OR a TRAP/panic happened during the run OR
+#         "ntpd: cannot open /net/udp conn" — the /net/udp dial path IS
+#         the code under test, so a clone failure inside the guest is an
+#         OBSERVED violation, never an "external unavailable" skip.
 
 . "$(dirname "$0")/_build_lock.sh"
 
@@ -162,23 +165,53 @@ if [ "$anchored" -eq 1 ]; then
     exit 0
 fi
 
-# Anchor path didn't fire — accept the fallback diagnostics that prove
-# ntpd ran and dialed but didn't reach a server.
+# Anchor path didn't fire. Sort the remaining markers into the three-valued
+# vocabulary (scripts/_verdict.sh) — NOT all into "PASS".
+#
+# ORDER MATTERS, and getting it wrong was the bug (2026-07-28). The
+# `timeout / no reply` branch used to be tested BEFORE the `cannot open
+# /net/udp conn` branch, so a run in which ntpd could not clone /net/udp AT
+# ALL — and then, unsurprisingly, also timed out — printed
+#
+#     [test_ntp] PASS (/net/udp dial wired; external NTP unavailable)
+#
+# i.e. it claimed the dial path was wired using the log of a run in which the
+# dial path failed. The IN-GUEST failure is checked FIRST now.
+#
+# (1) IN-GUEST FAILURE => FAIL. `cannot open /net/udp conn` means the clone of
+#     /net/udp — THE CODE UNDER TEST per this file's header — failed inside
+#     the guest. No DNS lookup, no packet, no server: nothing external is
+#     involved. It is an OBSERVED violation of this gate's assertion.
+if grep -F -q "ntpd: cannot open /net/udp conn" "$LOG"; then
+    echo "[test_ntp] FAIL: ntpd could not open a /net/udp conn — the Plan 9"
+    echo "[test_ntp]   UDP dial path (the code under test) is broken in the"
+    echo "[test_ntp]   guest. This is NOT an 'external NTP unavailable' skip:"
+    echo "[test_ntp]   the clone never left the kernel."
+    grep -F "ntpd:" "$LOG" | tail -10 || true
+    echo "[test_ntp] --- full log (last 200 lines) ---"
+    tail -n 200 "$LOG"
+    exit 1
+fi
+# (2) EXTERNAL DEPENDENCY UNREACHABLE => INCONCLUSIVE, not PASS. ntpd
+#     demonstrably launched and dialed, but the assertion this gate is named
+#     for (NTP round-trip anchors the kernel wall clock) was never observed.
+#     Absence of evidence. ci_run_gate.sh turns 125 into a ::warning::, so
+#     this stays non-failing in CI without being counted as proof.
 if grep -F -q "ntpd: cannot resolve" "$LOG"; then
-    echo "[test_ntp] NOTE: ntpd ran; DNS unreachable in this sandbox"
-    echo "[test_ntp] PASS (ntpd wired; external DNS unavailable)"
-    exit 0
+    echo "[test_ntp] INCONCLUSIVE: ntpd ran but DNS was unreachable in this" >&2
+    echo "[test_ntp]   sandbox, so no NTP round-trip and no wall-clock anchor" >&2
+    echo "[test_ntp]   was observed. NOT a pass. Re-run with internet." >&2
+    exit 125
 fi
 if grep -F -q "ntpd: timeout / no reply" "$LOG"; then
-    echo "[test_ntp] NOTE: ntpd ran + dialed; no NTP server reachable"
-    echo "[test_ntp] PASS (/net/udp dial wired; external NTP unavailable)"
-    exit 0
+    echo "[test_ntp] INCONCLUSIVE: ntpd ran and dialed /net/udp, but no NTP" >&2
+    echo "[test_ntp]   server replied, so the anchor was never observed." >&2
+    echo "[test_ntp]   NOT a pass. Re-run with internet." >&2
+    exit 125
 fi
-if grep -F -q "ntpd: cannot open /net/udp conn" "$LOG"; then
-    echo "[test_ntp] NOTE: ntpd ran but /net/udp clone failed"
-    echo "[test_ntp] PASS (ntpd ran; UDP dial unavailable)"
-    exit 0
-fi
+# (3) A KoD / bogus reply is a REAL packet that came back over the wire and
+#     went through the wire-format parser — genuinely observed behaviour of
+#     the code under test, so this one stays a pass.
 if grep -F -q "ntpd: bogus / KoD reply" "$LOG"; then
     echo "[test_ntp] NOTE: ntpd ran; server returned a KoD / empty packet"
     echo "[test_ntp] PASS (ntpd wire-format parser exercised)"
