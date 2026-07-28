@@ -81,6 +81,7 @@ _KI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # between two gates compiling the same sources with a different /init.
 _kernel_image_key() {
     (
+        set +e +o pipefail
         cd "$_KI_ROOT" || return 1
         { hamnix_tree_fingerprint
           hamnix_build_env_fingerprint

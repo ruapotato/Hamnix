@@ -20,8 +20,17 @@
 
 _TF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# NOTE ON SHELL OPTIONS: callers are gates running under `set -euo pipefail`.
+# The pipeline below can legitimately see a file vanish between `git ls-files`
+# and `sha256sum` (a sibling gate's build-lock wipe, a generated file being
+# rewritten), which makes xargs exit 123. Inheriting the caller's -e/pipefail
+# would then abort the GATE with a bare rc=123 and no message — observed
+# 2026-07-28 on test_adder_hamalloc. The subshell therefore turns both off for
+# itself. This does NOT weaken the key: a file that could not be hashed simply
+# contributes no line, so its absence still changes the digest.
 hamnix_tree_fingerprint() {
     (
+        set +e +o pipefail
         cd "$_TF_ROOT" || return 1
         {
             git ls-files
@@ -52,7 +61,8 @@ hamnix_tree_fingerprint() {
 # unchanged tree). HAMNIX_INITRAMFS_BLOB is the one HAMNIX_ variable that
 # does select a build input, so it is named explicitly.
 hamnix_build_env_fingerprint() {
+    ( set +e +o pipefail
     { env | grep -E '^ADDER_' || true
       printf 'HAMNIX_INITRAMFS_BLOB=%s\n' "${HAMNIX_INITRAMFS_BLOB:-}"
-    } | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+    } | LC_ALL=C sort | sha256sum | cut -d' ' -f1 )
 }
