@@ -37,6 +37,9 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
     # copy that would overflow sp_buf still fails cleanly (catchable empty-string
     # id) rather than writing past sp_buf into adjacent BSS.
     if sp_top + n >= SP_CAP:
+        if sp_exhaust_noted == 0:
+            sp_exhaust_noted = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING string pool exhausted (sp_buf bytes). SP_CAP="), SP_CAP)
         set_error(cast[Ptr[uint8]]("string pool exhausted"))
         eid: int32 = str_alloc_id()
         if eid >= 0:
@@ -53,6 +56,9 @@ def str_new(p: Ptr[uint8], n: int32) -> int32:
     id: int32 = str_alloc_id()
     # Guard the id table: a full table (even after a collection) fails cleanly.
     if id < 0:
+        if sp_exhaust_noted == 0:
+            sp_exhaust_noted = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING string pool exhausted (MAX_STR ids, after a collection). MAX_STR="), MAX_STR)
         set_error(cast[Ptr[uint8]]("string pool exhausted"))
         return MAX_STR - 1
     st_off[id] = off
@@ -139,6 +145,10 @@ def bld_end() -> int32:
     return id
 
 
+# One-shot latch so an exhausted string pool reports ONCE, not once per byte.
+sp_exhaust_noted: int32 = 0
+
+
 def emit_c(c: uint8):
     if emit_tgt == 1:
         if out_top < OUT_CAP - 1:
@@ -148,6 +158,18 @@ def emit_c(c: uint8):
         if sp_top < SP_CAP - 1:
             sp_buf[sp_top] = c
             sp_top = sp_top + 1
+        else:
+            # SAY SO. str_new() guarded the BYTES and reported, but the string
+            # BUILDER (every `a + b` concatenation) came through here and just
+            # stopped writing: the program kept running and every string it
+            # built from then on was silently EMPTY. Observed as a loop printing
+            # "i=200000 n=3088906" and then blank lines, with exit status 0 and
+            # no error anywhere — the failure mode test_jsengine_strpool_clean
+            # was red for.
+            if sp_exhaust_noted == 0:
+                sp_exhaust_noted = 1
+                js_out_note(cast[Ptr[uint8]]("[engine] CEILING string pool exhausted (sp_buf bytes; strings built from here on would be empty). SP_CAP="), SP_CAP)
+            set_error(cast[Ptr[uint8]]("string pool exhausted"))
 
 
 def emit_cstr(s: Ptr[uint8]):
