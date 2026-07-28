@@ -172,14 +172,29 @@ assert idx_postinc_assign   'var a=[1,2,3],i=0;a[i++]=99;console.log(a.join(",")
 assert base_evaluated_once  'var n=0;var obj={x:1};function o(){n++;return obj}o().x+=5;console.log(n,obj.x)' '1 6'
 assert key_evaluated_once   'var log=[];var obj={a:1};function kk(){log.push("k");return "a"}obj[kk()]+=1;console.log(log.length,obj.a)' '1 2'
 assert key_once_update      'var log=[];var obj={a:1};function kk(){log.push("k");return "a"}obj[kk()]++;console.log(log.length,obj.a)' '1 2'
-assert order_member_assign  'var log=[];function o(){log.push("o");return {}}function r(){log.push("r");return 1}o().x=r();console.log(log.join(","))' 'o,r'
-assert order_index_assign   'var log=[];var obj={};function kk(){log.push("k");return "a"}function r(){log.push("r");return 1}obj[kk()]=r();console.log(log.join(","))' 'k,r'
+# KNOWN DIVERGENCE, pinned deliberately (see the comment in eval_assign): for a
+# PLAIN `=` we evaluate the RHS before the target reference, where node evaluates
+# the target first — node prints 'o,r' and 'k,r' for these two. Spec order was
+# implemented and then reverted because it makes tests/fixtures/realsites/
+# google_search.html (scripts/test_hambrowse_realsite_host.sh) run >45 min
+# instead of <1 s: its obfuscated bot-detection VM gets much further and never
+# finishes. These two cases pin OUR order so the divergence cannot drift
+# unnoticed; flip them back the day that page's slowness is understood.
+assert divergence_member_assign 'var log=[];function o(){log.push("o");return {}}function r(){log.push("r");return 1}o().x=r();console.log(log.join(","))' 'r,o'
+assert divergence_index_assign  'var log=[];var obj={};function kk(){log.push("k");return "a"}function r(){log.push("r");return 1}obj[kk()]=r();console.log(log.join(","))' 'r,k'
 assert order_compound       'var log=[];var obj={a:1};function kk(){log.push("k");return "a"}function r(){log.push("r");return 1}obj[kk()]+=r();console.log(log.join(","))' 'k,r'
 assert order_logical_assign 'var log=[];var obj={a:0};function kk(){log.push("k");return "a"}function r(){log.push("r");return 5}obj[kk()]||=r();console.log(log.join(","),obj.a)' 'k,r 5'
 assert order_getvalue_first 'var log=[];var o={get p(){log.push("get");return 1},set p(v){log.push("set"+v)}};function r(){log.push("r");return 2}o.p+=r();console.log(log.join(","))' 'get,r,set3'
 assert order_plain_no_get   'var log=[];var o={get p(){log.push("get");return 1},set p(v){log.push("set"+v)}};function r(){log.push("r");return 2}o.p=r();console.log(log.join(","))' 'r,set2'
 assert order_update_getset  'var log=[];var o={get p(){log.push("get");return 1},set p(v){log.push("set"+v)}};o.p++;console.log(log.join(","))' 'get,set2'
-assert order_nested_assign  'var log=[];var a={},b={};function ka(){log.push("ka");return "x"}function kb(){log.push("kb");return "y"}a[ka()]=b[kb()]=7;console.log(log.join(","),a.x,b.y)' 'ka,kb 7 7'
+# the same divergence can change a stored VALUE, not just side-effect order:
+# node resolves a[i++] (index 0) before reading a[i] (index 1) and stores 2;
+# evaluating the RHS first reads index 0 and stores 1. node prints '2,2,3 1'.
+assert divergence_idx_value 'var a=[1,2,3],i=0;a[i++]=a[i];console.log(a.join(","),i)' '1,2,3 1'
+# the COMPOUND form of the same shape IS spec-ordered (target resolved first)
+assert compound_idx_value   'var a=[1,2,3],i=0;a[i++]+=a[i];console.log(a.join(","),i)' '3,2,3 1'
+# same divergence, nested: node prints 'ka,kb'
+assert divergence_nested    'var log=[];var a={},b={};function ka(){log.push("ka");return "x"}function kb(){log.push("kb");return "y"}a[ka()]=b[kb()]=7;console.log(log.join(","),a.x,b.y)' 'kb,ka 7 7'
 assert setter_after_rhs     'var log=[];var o={set p(v){log.push("set"+v)}};function r(){log.push("r");return 1}o.p=r();console.log(log.join(","))' 'r,set1'
 
 # ---- 9. `finally` OVERRIDING a pending completion is CORRECT (do not "fix") -

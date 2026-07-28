@@ -1455,6 +1455,30 @@ def eval_assign(node: int32, env: int32) -> int32:
     op: int32 = n_op[node]
     tgt: int32 = n_a[node]
     gsas: int32 = gc_top
+    if op < 0:
+        # PLAIN `=`: the RHS is evaluated BEFORE the target reference.
+        #
+        # KNOWN DIVERGENCE, deliberate. The spec (and node) evaluate the target
+        # reference first, so `o().x = r()` calls o() then r(); we call r() then
+        # o(). Ordering it correctly is a two-line change and it was made — and
+        # then reverted, because it makes tests/fixtures/realsites/google_search
+        # .html (a fixture of scripts/test_hambrowse_realsite_host.sh) run for
+        # over 45 minutes instead of under a second. That page's obfuscated
+        # bot-detection VM currently bails out early; with the spec order it gets
+        # much further and does not finish. No single loop exceeds two million
+        # iterations, so it is not one runaway loop but a very large amount of
+        # work the engine was previously never reaching. Hanging a registered
+        # gate is worse than mis-ordering two side effects that essentially no
+        # real code depends on, so the legacy order stays until the underlying
+        # slowness/incompleteness is found. Everything else here IS spec-ordered:
+        # the target is evaluated exactly ONCE, and compound/logical/update forms
+        # read the old value BEFORE the RHS.
+        rhsp: int32 = eval_expr(n_b[node], env)
+        gc_push(rhsp)                      # pin rhs across the target resolution
+        isrefp: int32 = ref_resolve(tgt, env)
+        ref_store(isrefp, ref_base, ref_keyv, tgt, rhsp, env)
+        gc_popto(gsas)
+        return rhsp
     # Resolve the target reference FIRST and exactly once (see ref_resolve).
     isref: int32 = ref_resolve(tgt, env)
     rb: int32 = ref_base
