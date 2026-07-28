@@ -218,6 +218,12 @@ r_maxh:   Array[2048, int32]     # max-height (px; -1 unset)
 r_boxsz:  Array[2048, int32]     # box-sizing: 0 unset / 1 content-box / 2 border-box
 r_appear: Array[2048, int32]     # appearance: 0 unset/auto / 1 none (suppress control chrome)
 r_padx:   Array[2048, int32]     # horizontal padding sum px (0 = rule sets none)
+# LEFT-side padding only. The box model folds margin+padding of a side into ONE
+# inset column (r_ml/m_ml — see _box_add_l), which is right for a BLOCK (both
+# shift its content) but wrong for an inline-block chip, whose padding is
+# already modelled separately as its inner inset. Recording padding-left on its
+# own lets that path recover the TRUE margin-left as m_ml - m_padl.
+r_padl:   Array[2048, int32]     # left padding px (0 = rule sets none)
 r_pady:   Array[2048, int32]     # vertical padding sum px (0 = rule sets none)
 r_bordw:  Array[2048, int32]     # border width px per side (0 = rule sets none)
 # True per-side border (W3C css-backgrounds §4). Two PACKED ints per rule
@@ -386,6 +392,7 @@ m_maxh:   int32 = -1
 m_boxsz:  int32 = 0            # 0 unset / 1 content-box / 2 border-box
 m_appear: int32 = 0           # appearance cascade winner: 0 unset/auto / 1 none
 m_padx:   int32 = 0           # horizontal padding sum px (border-box width calc)
+m_padl:   int32 = 0           # LEFT padding px alone (true-margin recovery)
 m_pady:   int32 = 0           # vertical padding sum px (border-box height calc)
 m_bordw:  int32 = 0           # border width px per side (border-box calc)
 m_flexg:  int32 = -1          # flex-grow * 1000
@@ -1434,6 +1441,7 @@ d_maxh:   int32 = -1          # max-height px (-1 unset)
 d_boxsz:  int32 = 0           # box-sizing: 0 unset / 1 content-box / 2 border-box
 d_appear: int32 = 0           # appearance: 0 unset/auto / 1 none (this rule's value)
 d_padx:   int32 = 0           # horizontal padding sum (for border-box width calc)
+d_padl:   int32 = 0           # LEFT padding px alone (true-margin recovery)
 d_pady:   int32 = 0           # vertical padding sum (for border-box height calc)
 d_bordw:  int32 = 0           # border width px PER SIDE (for border-box calc)
 d_flexg:  int32 = -1          # flex-grow * 1000 (-1 unset)
@@ -3367,6 +3375,7 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
         plx: int32 = _style_len(vs, ve)
         if plx >= 0 and _prop_is(ps, pe, cast[Ptr[uint8]]("padding-left")) != 0:
             d_padx = d_padx + plx                        # for box-sizing:border-box
+            d_padl = d_padl + plx
         _box_add_l(plx)
         return 1
     if _prop_is(ps, pe, cast[Ptr[uint8]]("margin-right")) != 0 or \
@@ -3417,6 +3426,7 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
                 padl = box_lens[3]
             if padl > 0:
                 d_padx = d_padx + padl
+                d_padl = d_padl + padl
             if padr > 0:
                 d_padx = d_padx + padr
             if padt > 0:
@@ -5953,6 +5963,7 @@ def _parse_decls(a: uint64, b: uint64):
     d_boxsz = 0
     d_appear = 0
     d_padx = 0
+    d_padl = 0
     d_pady = 0
     d_bordw = 0
     d_flexg = -1
@@ -6146,6 +6157,7 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
                 r_boxsz[ri]  = d_boxsz
                 r_appear[ri] = d_appear
                 r_padx[ri]   = d_padx
+                r_padl[ri]   = d_padl
                 r_pady[ri]   = d_pady
                 r_bordw[ri]  = d_bordw
                 r_flexg[ri]  = d_flexg
@@ -7433,6 +7445,7 @@ def _cascade_match_current():
     m_boxsz = 0
     m_appear = 0
     m_padx = 0
+    m_padl = 0
     m_pady = 0
     m_bordw = 0
     m_flexg = -1
@@ -7743,6 +7756,7 @@ def _cascade_match_current():
             if r_padx[ri] > 0 and sp >= spdx:
                 spdx = sp
                 m_padx = r_padx[ri]
+                m_padl = r_padl[ri]
             if r_pady[ri] > 0 and sp >= spdy:
                 spdy = sp
                 m_pady = r_pady[ri]
@@ -8413,6 +8427,7 @@ def _parse_inline_wa(ne: uint64, te: uint64):
     d_boxsz = 0
     d_appear = 0
     d_padx = 0
+    d_padl = 0
     d_pady = 0
     d_bordw = 0
     d_flexg = -1

@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr
+from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr, m_padl, d_padl
 
 # ====================================================================
 # LAYOUT MODEL — the parsed page becomes a flat list of styled SEGMENTS.
@@ -5409,16 +5409,38 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
     boxw: int32 = contentw + pad_sum
     # Inline horizontal margins: margin-left shifts the chip right here; margin-right
     # becomes the gutter to the next inline box (applied at close).
+    #
+    # m_ml / m_mr are the box model's SIDE INSET columns, and the cascade folds
+    # margin-left AND padding-left into m_ml (see _box_add_l in css/cascade.ad) —
+    # correct for a block, where both shift its content by the same amount, but
+    # WRONG here: an inline-block chip already models its padding separately as
+    # `pad_sum` (the inner inset that grows boxw and insets the pen). Taking the
+    # folded column as the margin therefore applied padding-left a SECOND time —
+    # it shifted the whole chip (its background fill, its border and its
+    # registered hit box) right by padding-left, and pushed padding-right into the
+    # inter-chip gutter. Measured against Chrome on tests/fixtures/hambrowse_hitpill
+    # .html (body{margin-left:40px}, a{padding:10px 26px}): the first pill painted
+    # at x=67 where Chrome puts it at 40, and two source-adjacent pills got a
+    # ~32px gutter where Chrome's boxes touch. That is exactly the flex-item bug
+    # already fixed (advance computed off one box, paint off another) reaching the
+    # non-flex inline-block path. Recover the TRUE margin by subtracting this
+    # element's own padding-left / padding-right back out (m_padl / d_padl carry
+    # the left side alone; the right side is the sum minus the left). A chip with
+    # no padding subtracts 0 and is byte-identical.
     eff_ml: int32 = 0
     if m_ml >= 0:
-        eff_ml = m_ml
+        eff_ml = m_ml - m_padl
     if d_ml >= 0:
-        eff_ml = d_ml
+        eff_ml = d_ml - d_padl
+    if eff_ml < 0:
+        eff_ml = 0
     eff_mr: int32 = 0
     if m_mr >= 0:
-        eff_mr = m_mr
+        eff_mr = m_mr - (m_padx - m_padl)
     if d_mr >= 0:
-        eff_mr = d_mr
+        eff_mr = d_mr - (d_padx - d_padl)
+    if eff_mr < 0:
+        eff_mr = 0
     right: int32 = _flow_right()
     # Wrap the whole chip to the next line if it does not fit after current flow.
     if pen_x > indent_x and pen_x + eff_ml + boxw > right:
@@ -5604,6 +5626,17 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
                     chip_padt, chip_padb, 1)
         _recompute_style()
     pen_x = startx + eff_padx
+    # PIXEL flow re-sync. The renderer flows same-row prose contiguously from its
+    # OWN pen and only honours a seg's start-x when that seg carries indjump. A
+    # chip's label must start at the chip's CONTENT origin (its box left + the
+    # left padding), which is exactly pen_x here — without the jump the label was
+    # painted wherever the previous run's glyphs happened to end, so the second of
+    # two adjacent nav pills drew its text inside the FIRST pill's box. Arm the
+    # jump so the label lands in its own box. (This was previously masked by the
+    # padding-left that leaked into eff_ml/g_pending_lmarg above, which shoved the
+    # pen along by roughly the right amount for the FIRST chip and by the wrong
+    # amount for every one after it.)
+    _pending_indjump = 1
     need_space = 0
     row_dirty = 1
     g_vgap_fresh = 0
@@ -5632,8 +5665,12 @@ def _inlb_close(np: uint64, nlen: uint64):
         # the next inline content starts past the reserved box instead of abutting
         # the chip's short text. Tight text-sized chips (no explicit width) keep the
         # byte-identical no-indjump flow.
-        if inlb_fixedw[inlb_sp] != 0:
-            _pending_indjump = 1
+        # ...and the same re-sync applies to EVERY chip, not just a fixed-width
+        # one: the pen was just snapped past the chip's border box, and the pixel
+        # renderer will otherwise resume from the label's glyph end (which sits
+        # inside the box, short of its right padding) and glue the following
+        # content over the chip's own background.
+        _pending_indjump = 1
         g_yoff = g_yoff - inlb_yoff[inlb_sp]         # undo the tall-chip centring
         # vertical-align:bottom dropped the text to a lower row; snap the flow
         # cursor back to the chip's baseline row so following inline content
