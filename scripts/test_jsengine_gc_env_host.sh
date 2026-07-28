@@ -88,10 +88,12 @@ for (let j = 0; j < 500; j++) lets.push(function () { return j; });
 gc(); gc(); gc();
 var ok = 1, checked = 0;
 for (var i = 0; i < fns.length; i++) { if (fns[i]() !== i * 3 + 1) ok = 0; checked++; }
-// NOTE: this engine's per-iteration `let` binding captures j as 1..N (a
-// pre-existing quirk, unrelated to env-GC and identical on the base tree); the
-// gate asserts the engine's own deterministic value — the POINT here is that it
-// is base==stress and survives GC, not the exact off-by-one.
+// Per-iteration `let` captures j as 0..N-1, which is what node prints for the
+// same loop (verified: `for (let j=0;j<500;j++) …` sums to 124750, not 125250).
+// The engine used to be off by one here and the gate's constant was pinned to
+// that quirk; the binding was fixed without the constant following, leaving a
+// stale red. The POINT of this gate is still that the value is base==stress and
+// survives GC — it just now agrees with a real engine as well.
 var lsum = 0; for (var i = 0; i < lets.length; i++) lsum += lets[i]();
 // Churn a lot of throwaway scopes, force gc() again, re-verify the retained set.
 function churn(n) { var a = n; if (n > 0) return churn(n - 1); return a; }
@@ -100,7 +102,7 @@ gc();
 for (var i = 0; i < fns.length; i++) if (fns[i]() !== i * 3 + 1) ok = 0;
 console.log("RETAIN ok=" + ok + " checked=" + checked + " lsum=" + lsum);
 EOF
-WANT_RET="RETAIN ok=1 checked=6000 lsum=$(python3 -c 'print(sum(range(1,501)))')"
+WANT_RET="RETAIN ok=1 checked=6000 lsum=$(python3 -c 'print(sum(range(0,500)))')"
 rbase="$OUT/js_gc_env_ret.base"; rstr="$OUT/js_gc_env_ret.stress"
 "$BIN" "$ret" > "$rbase" 2>&1;                      rc_rb=$?
 HAMNIX_JS_GC_STRESS=1 "$BIN" "$ret" > "$rstr" 2>&1; rc_rs=$?
@@ -148,7 +150,7 @@ console.log(out.join(" | "));
 EOF
 # async resolves on the NEXT microtask turn, so `apr` is still 0 at the log point
 # (deterministic in this engine) — asserted as-is to lock the exact behavior.
-WANT_C="rec=720600 | let=$(python3 -c 'print(sum(j*j for j in range(1,201)))') | gen=0,2,4,6,8,10, | async=0 | cs=$(python3 -c '
+WANT_C="rec=720600 | let=$(python3 -c 'print(sum(j*j for j in range(0,200)))') | gen=0,2,4,6,8,10, | async=0 | cs=$(python3 -c '
 cnt=0
 for i in range(3000):
   if i%5==0: cnt+=1
