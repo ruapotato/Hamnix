@@ -505,6 +505,23 @@ jobs:
           # 'cryptography'" before ever reaching the boot it exists to guard.
           python3 -m pip install --quiet cryptography
 
+      - name: Install clang-19 (LLVM is the DEFAULT kernel backend)
+        # build_installer_img.sh defaults to HAMNIX_KERNEL_BACKEND=llvm and hard
+        # -errors with "needs 'clang-19' in PATH". No workflow installed it, so
+        # since the LLVM cutover this job could not build an image at all — and
+        # because it is continue-on-error, the breakage never surfaced. A
+        # non-blocking guard that cannot run guards nothing.
+        # Prefer the distro package; fall back to apt.llvm.org if absent.
+        run: |
+          if ! command -v clang-19 >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends clang-19 || {
+              wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+              chmod +x /tmp/llvm.sh
+              sudo /tmp/llvm.sh 19
+            }
+          fi
+          clang-19 --version
+
       - name: Build userland
         run: bash scripts/build_user.sh
 
