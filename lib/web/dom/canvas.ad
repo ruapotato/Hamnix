@@ -7,7 +7,7 @@ from lib.web.dom.forms import _has_word
 from lib.htmlengine import he_media_match
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -1557,6 +1557,252 @@ def _wire_history_location():
                   js_new_native_fn(js_hbase + NID_SET_LOCATION))
 
 
+# ====================================================================
+# document.cookie — an ACCESSOR pair over a document-lifetime cookie jar.
+#
+# Reading serialises every live cookie as "n1=v1; n2=v2" (the empty string when
+# the jar is empty — per the IDL it is a DOMString and is NEVER undefined, which
+# is the part MediaWiki's `document.cookie.match(...)` startup depends on).
+# Writing takes ONE Set-Cookie-shaped string: the first `;`-delimited segment is
+# the name=value pair and the rest are attributes.
+#
+# Attribute handling matches what a same-document jar can observe: domain / path
+# / secure / samesite are accepted and ignored (there is one document and one
+# origin), while an EXPIRY IN THE PAST deletes the cookie, since that is the
+# universal delete idiom. "In the past" is recognised as `max-age` <= 0 or an
+# `expires` whose 4-digit year is before 2001 — i.e. the epoch dates every
+# deletion snippet uses ("Thu, 01 Jan 1970 00:00:00 GMT"). A real future/past
+# comparison against the wall clock is deliberately not attempted.
+# ====================================================================
+def _ck_is_space(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 13:
+        return 1
+    return 0
+
+
+def _ck_lower(c: uint8) -> uint8:
+    if c >= 65 and c <= 90:
+        return cast[uint8](cast[int32](c) + 32)
+    return c
+
+
+# Find the live jar row whose name is ck_in[no..no+nl), or -1.
+def _ck_find(no: int32, nl: int32) -> int32:
+    i: int32 = 0
+    while i < ck_n:
+        if ck_dead[i] == 0 and ck_name_len[i] == nl:
+            k: int32 = 0
+            same: int32 = 1
+            while k < nl:
+                if ck_buf[ck_name_off[i] + k] != ck_in[no + k]:
+                    same = 0
+                    break
+                k = k + 1
+            if same != 0:
+                return i
+        i = i + 1
+    return -1
+
+
+# Copy ck_in[off..off+len) into ck_buf; returns the offset, or -1 when full.
+def _ck_intern(off: int32, ln: int32) -> int32:
+    if ck_buf_len + ln > CK_BUF_CAP:
+        return -1
+    o: int32 = ck_buf_len
+    k: int32 = 0
+    while k < ln:
+        ck_buf[ck_buf_len] = ck_in[off + k]
+        ck_buf_len = ck_buf_len + 1
+        k = k + 1
+    return o
+
+
+# Does the attribute segment ck_in[s..e) mark this cookie for deletion?
+# (`max-age` <= 0, or an `expires` year before 2001.)
+def _ck_attr_expires_past(s: int32, e: int32) -> int32:
+    # split at the first '='
+    eq: int32 = s
+    while eq < e and ck_in[eq] != 61:
+        eq = eq + 1
+    ns: int32 = s
+    ne: int32 = eq
+    while ns < ne and _ck_is_space(ck_in[ns]) != 0:
+        ns = ns + 1
+    while ne > ns and _ck_is_space(ck_in[ne - 1]) != 0:
+        ne = ne - 1
+    vs: int32 = eq
+    if vs < e:
+        vs = vs + 1
+    while vs < e and _ck_is_space(ck_in[vs]) != 0:
+        vs = vs + 1
+    nl: int32 = ne - ns
+    if nl == 7:
+        # "max-age"
+        ml: Ptr[uint8] = cast[Ptr[uint8]]("max-age")
+        k: int32 = 0
+        ok: int32 = 1
+        while k < 7:
+            if _ck_lower(ck_in[ns + k]) != ml[k]:
+                ok = 0
+                break
+            k = k + 1
+        if ok != 0:
+            if vs < e and ck_in[vs] == 45:            # leading '-' => negative
+                return 1
+            n: int32 = 0
+            p: int32 = vs
+            while p < e and ck_in[p] >= 48 and ck_in[p] <= 57:
+                n = n * 10 + (cast[int32](ck_in[p]) - 48)
+                p = p + 1
+            if n <= 0:
+                return 1
+            return 0
+    if nl == 7:
+        el: Ptr[uint8] = cast[Ptr[uint8]]("expires")
+        k2: int32 = 0
+        ok2: int32 = 1
+        while k2 < 7:
+            if _ck_lower(ck_in[ns + k2]) != el[k2]:
+                ok2 = 0
+                break
+            k2 = k2 + 1
+        if ok2 != 0:
+            # first 4-digit run in the date is the year ("01 Jan 1970"); a
+            # 2-digit legacy year ("01-Jan-70") counts as 1970-something too.
+            p2: int32 = vs
+            while p2 < e:
+                if ck_in[p2] >= 48 and ck_in[p2] <= 57:
+                    d0: int32 = p2
+                    y: int32 = 0
+                    while p2 < e and ck_in[p2] >= 48 and ck_in[p2] <= 57:
+                        y = y * 10 + (cast[int32](ck_in[p2]) - 48)
+                        p2 = p2 + 1
+                    if p2 - d0 == 4:
+                        if y < 2001:
+                            return 1
+                        return 0
+                else:
+                    p2 = p2 + 1
+            return 0
+    return 0
+
+
+# `document.cookie = "..."` — parse and apply one write.
+def _cookie_write() -> int32:
+    if js_arg_count() < 1:
+        return js_undefined()
+    n: int32 = _arg_bytes(0, &ck_in[0], CK_BUF_CAP)
+    # segment 0 is name=value; the rest are attributes
+    seg0: int32 = 0
+    while seg0 < n and ck_in[seg0] != 59:
+        seg0 = seg0 + 1
+    eq: int32 = 0
+    while eq < seg0 and ck_in[eq] != 61:
+        eq = eq + 1
+    no: int32 = 0
+    ne: int32 = eq
+    vo: int32 = eq
+    ve: int32 = seg0
+    if eq >= seg0:
+        # no '=' at all: browsers store it as a nameless cookie whose VALUE is
+        # the whole segment.
+        no = 0
+        ne = 0
+        vo = 0
+        ve = seg0
+    else:
+        vo = eq + 1
+    while no < ne and _ck_is_space(ck_in[no]) != 0:
+        no = no + 1
+    while ne > no and _ck_is_space(ck_in[ne - 1]) != 0:
+        ne = ne - 1
+    while vo < ve and _ck_is_space(ck_in[vo]) != 0:
+        vo = vo + 1
+    while ve > vo and _ck_is_space(ck_in[ve - 1]) != 0:
+        ve = ve - 1
+    # scan the attributes for an expiry in the past
+    del_it: int32 = 0
+    ap: int32 = seg0
+    while ap < n:
+        ap = ap + 1                                   # step over the ';'
+        as2: int32 = ap
+        while ap < n and ck_in[ap] != 59:
+            ap = ap + 1
+        if _ck_attr_expires_past(as2, ap) != 0:
+            del_it = 1
+    nl: int32 = ne - no
+    vl: int32 = ve - vo
+    row: int32 = _ck_find(no, nl)
+    if del_it != 0:
+        if row >= 0:
+            ck_dead[row] = cast[uint8](1)
+        return js_undefined()
+    vofs: int32 = _ck_intern(vo, vl)
+    if vofs < 0:
+        return js_undefined()                         # jar buffer full: drop
+    if row >= 0:
+        # Overwriting moves the cookie to the END of the serialisation, which is
+        # what Chromium does (VERIFIED against `chromium --headless` over http:
+        # a=1, b=hello, a=2 serialises as "b=hello; a=2", not "a=2; b=hello").
+        no2: int32 = ck_name_off[row]
+        nl2: int32 = ck_name_len[row]
+        j: int32 = row
+        while j + 1 < ck_n:
+            ck_name_off[j] = ck_name_off[j + 1]
+            ck_name_len[j] = ck_name_len[j + 1]
+            ck_val_off[j] = ck_val_off[j + 1]
+            ck_val_len[j] = ck_val_len[j + 1]
+            ck_dead[j] = ck_dead[j + 1]
+            j = j + 1
+        ck_name_off[ck_n - 1] = no2
+        ck_name_len[ck_n - 1] = nl2
+        ck_val_off[ck_n - 1] = vofs
+        ck_val_len[ck_n - 1] = vl
+        ck_dead[ck_n - 1] = cast[uint8](0)
+        return js_undefined()
+    if ck_n >= CK_MAX:
+        return js_undefined()
+    nofs: int32 = _ck_intern(no, nl)
+    if nofs < 0:
+        return js_undefined()
+    ck_name_off[ck_n] = nofs
+    ck_name_len[ck_n] = nl
+    ck_val_off[ck_n] = vofs
+    ck_val_len[ck_n] = vl
+    ck_dead[ck_n] = cast[uint8](0)
+    ck_n = ck_n + 1
+    return js_undefined()
+
+
+# `document.cookie` — serialise the live jar.
+def _cookie_read() -> int32:
+    out: int32 = 0
+    i: int32 = 0
+    while i < ck_n:
+        if ck_dead[i] == 0:
+            if out > 0 and out + 2 < CK_BUF_CAP:
+                ck_out[out] = 59                      # ';'
+                ck_out[out + 1] = 32                  # ' '
+                out = out + 2
+            k: int32 = 0
+            if ck_name_len[i] > 0:
+                while k < ck_name_len[i] and out < CK_BUF_CAP - 1:
+                    ck_out[out] = ck_buf[ck_name_off[i] + k]
+                    out = out + 1
+                    k = k + 1
+                if out < CK_BUF_CAP - 1:
+                    ck_out[out] = 61                  # '='
+                    out = out + 1
+            k = 0
+            while k < ck_val_len[i] and out < CK_BUF_CAP - 1:
+                ck_out[out] = ck_buf[ck_val_off[i] + k]
+                out = out + 1
+                k = k + 1
+        i = i + 1
+    ck_out[out] = 0
+    return js_new_string(&ck_out[0], cast[uint64](out))
+
+
 # window.matchMedia(query) — build a MediaQueryList. `.matches` is the LIVE
 # evaluation of the query against the viewport (he_media_match, the same subset
 # the @media cascade uses); `.media` echoes the (serialized) query. Listener
@@ -1819,6 +2065,10 @@ def _js_host_dispatch(id: int32) -> int32:
         return _obs_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
         return _mount_dispatch(rel)
+    if rel == NID_COOKIE_GET:
+        return _cookie_read()
+    if rel == NID_COOKIE_SET:
+        return _cookie_write()
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:
@@ -3417,6 +3667,14 @@ def _build_dom_interfaces():
     # The stateless element methods live HERE, once, not on every element (see
     # _attach_proto_methods: 32 fewer JS objects per registered element).
     _attach_proto_methods(g_proto_elem)
+    # el.style / el.classList carry per-element STATE, but their methods do not:
+    # one shared copy each on the real interface prototype (which also makes
+    # `el.style instanceof CSSStyleDeclaration` and
+    # `el.classList instanceof DOMTokenList` true, as in a browser).
+    g_proto_style = _dom_interface(cast[Ptr[uint8]]("CSSStyleDeclaration"), 19, 0)
+    _attach_style_natives(g_proto_style)
+    g_proto_clslist = _dom_interface(cast[Ptr[uint8]]("DOMTokenList"), 12, 0)
+    _attach_clslist_natives(g_proto_clslist)
     chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
@@ -3626,6 +3884,10 @@ def _js_build_document():
     # A document's ownerDocument is null (it IS the document) — code that walks
     # `n.ownerDocument || n` relies on the null, not on undefined.
     js_set_prop(doc, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    # document.cookie — a live accessor over the jar (see _cookie_read/_write).
+    js_define_accessor(doc, cast[Ptr[uint8]]("cookie"), 6, \
+                       js_new_native_fn(js_hbase + NID_COOKIE_GET), \
+                       js_new_native_fn(js_hbase + NID_COOKIE_SET))
     _node_constants(doc)
     js_set_prop(doc, cast[Ptr[uint8]]("querySelector"), 13, \
                 js_new_native_fn(js_hbase + NID_QUERY))

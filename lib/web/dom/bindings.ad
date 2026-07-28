@@ -32,8 +32,8 @@ from lib.htmlengine import _cssom_reset
 # loop threw "cannot read property 'getAttribute' of null". Two of google's
 # scripts died on exactly that. The arrays are int-per-element, so 1024 costs
 # ~4 KB each and comfortably covers a real content page.
-DOM_MAX:     int32  = 1024
-DOM_ID_CAP:  int32  = 32768
+DOM_MAX:     int32  = 4096
+DOM_ID_CAP:  int32  = 131072
 # Shared buffer holding each registered element's baseline textContent +
 # innerHTML. DELIBERATELY LEFT AT 64 KB. It looks like it wants to grow — a real
 # page overflows it, which sets dom_orig_trunc and suppresses inner overrides,
@@ -47,21 +47,21 @@ DOM_ID_CAP:  int32  = 32768
 DOM_TXT_CAP: int32  = 65536
 DOM_OV_CAP:  int32  = 65536
 
-dom_idbuf:   Array[32768, uint8]      # concatenated element ids (case-sensitive)
+dom_idbuf:   Array[131072, uint8]      # concatenated element ids (case-sensitive)
 dom_idbuf_len: int32 = 0
-dom_id_off:  Array[1024, int32]
-dom_id_len:  Array[1024, int32]
-dom_obj:     Array[1024, int32]        # JS object value-handle per element
-dom_clsobj:  Array[1024, int32]        # the element's classList object handle (-1 none)
-dom_anchor:  Array[1024, int32]        # source offset of the element's '<' (-1 = none)
-dom_cstart:  Array[1024, int32]        # inner-content span in the source
-dom_cend:    Array[1024, int32]
-dom_ns:      Array[1024, int32]        # tag-name span in the source
-dom_nl:      Array[1024, int32]
-dom_orig_off: Array[1024, int32]       # original textContent (in dom_txtbuf)
-dom_orig_len: Array[1024, int32]
-dom_html_off: Array[1024, int32]       # original innerHTML (raw markup, in dom_txtbuf)
-dom_html_len: Array[1024, int32]
+dom_id_off:  Array[4096, int32]
+dom_id_len:  Array[4096, int32]
+dom_obj:     Array[4096, int32]        # JS object value-handle per element
+dom_clsobj:  Array[4096, int32]        # the element's classList object handle (-1 none)
+dom_anchor:  Array[4096, int32]        # source offset of the element's '<' (-1 = none)
+dom_cstart:  Array[4096, int32]        # inner-content span in the source
+dom_cend:    Array[4096, int32]
+dom_ns:      Array[4096, int32]        # tag-name span in the source
+dom_nl:      Array[4096, int32]
+dom_orig_off: Array[4096, int32]       # original textContent (in dom_txtbuf)
+dom_orig_len: Array[4096, int32]
+dom_html_off: Array[4096, int32]       # original innerHTML (raw markup, in dom_txtbuf)
+dom_html_len: Array[4096, int32]
 # 1 when this element's textContent/innerHTML baseline was TRUNCATED because the
 # shared dom_txtbuf filled up (a big page: <html>/<body> each hold the whole
 # document's text, and a real article can exceed 64KB). A truncated baseline is
@@ -70,9 +70,9 @@ dom_html_len: Array[1024, int32]
 # the rewrite would then re-emit the ENTIRE page as escaped textContent (all tags
 # stripped -> links vanish, and <style>/<script> text leaks as prose: the MDN
 # doc page). So _dom_readback skips inner overrides for flagged elements.
-dom_orig_trunc: Array[1024, int32]
-dom_origcls_off: Array[1024, int32]    # original class attribute value
-dom_origcls_len: Array[1024, int32]
+dom_orig_trunc: Array[4096, int32]
+dom_origcls_off: Array[4096, int32]    # original class attribute value
+dom_origcls_len: Array[4096, int32]
 dom_txtbuf:  Array[65536, uint8]
 dom_txt_len: int32 = 0
 dom_n:       int32 = 0
@@ -101,18 +101,18 @@ tx_n:       int32 = 0
 tx_built:   int32 = 0
 
 # event handlers (parallel to 0..dom_n)
-dom_onclick_fn:  Array[1024, int32]    # stored JS function value, or -1
-dom_onclick_src: Array[1024, int32]    # inline onclick="..." source off, or -1
-dom_onclick_srclen: Array[1024, int32]
-dom_oninput_fn:  Array[1024, int32]    # oninput handler fn value, or -1
-dom_oninput_src: Array[1024, int32]
-dom_oninput_srclen: Array[1024, int32]
-dom_onchange_fn: Array[1024, int32]    # onchange handler fn value, or -1
-dom_onchange_src: Array[1024, int32]
-dom_onchange_srclen: Array[1024, int32]
-dom_onsubmit_fn: Array[1024, int32]    # onsubmit handler fn value, or -1 (forms)
-dom_onsubmit_src: Array[1024, int32]
-dom_onsubmit_srclen: Array[1024, int32]
+dom_onclick_fn:  Array[4096, int32]    # stored JS function value, or -1
+dom_onclick_src: Array[4096, int32]    # inline onclick="..." source off, or -1
+dom_onclick_srclen: Array[4096, int32]
+dom_oninput_fn:  Array[4096, int32]    # oninput handler fn value, or -1
+dom_oninput_src: Array[4096, int32]
+dom_oninput_srclen: Array[4096, int32]
+dom_onchange_fn: Array[4096, int32]    # onchange handler fn value, or -1
+dom_onchange_src: Array[4096, int32]
+dom_onchange_srclen: Array[4096, int32]
+dom_onsubmit_fn: Array[4096, int32]    # onsubmit handler fn value, or -1 (forms)
+dom_onsubmit_src: Array[4096, int32]
+dom_onsubmit_srclen: Array[4096, int32]
 
 # addEventListener registry — MULTIPLE listeners per (element,kind), fired in
 # registration order (round 8). The el.on<evt> property + inline on<evt>=""
@@ -206,15 +206,15 @@ cv_sstk_n:     Array[8, int32]
 
 # form-control metadata (parallel to 0..dom_n). dom_kind: 0 generic, 1 input,
 # 2 textarea, 3 select, 4 button, 5 form.
-dom_kind:      Array[1024, int32]
-dom_origval_off: Array[1024, int32]    # original value (input/textarea/select)
-dom_origval_len: Array[1024, int32]
-dom_origchecked: Array[1024, int32]    # original checked state (0/1), else -1
+dom_kind:      Array[4096, int32]
+dom_origval_off: Array[4096, int32]    # original value (input/textarea/select)
+dom_origval_len: Array[4096, int32]
+dom_origchecked: Array[4096, int32]    # original checked state (0/1), else -1
 
 # resolved form overrides (parallel to 0..dom_n). off/len/flag == -1 = unset.
-dom_ov_val_off:  Array[1024, int32]    # replacement value string
-dom_ov_val_len:  Array[1024, int32]
-dom_ov_checked:  Array[1024, int32]    # 1 checked, 0 unchecked, -1 unchanged
+dom_ov_val_off:  Array[4096, int32]    # replacement value string
+dom_ov_val_len:  Array[4096, int32]
+dom_ov_checked:  Array[4096, int32]    # 1 checked, 0 unchecked, -1 unchanged
 
 # form submission serialization result ("?a=1&b=2"), + last-navigated URL.
 dom_nav_buf:  Array[2048, uint8]
@@ -230,8 +230,8 @@ dom_body_buf: Array[2048, uint8]
 dom_body_len: int32 = 0
 # setCustomValidity() message store (parallel to 0..dom_n). len == 0 means no
 # custom error; a non-empty message forces the control invalid (customError).
-dom_customval_off: Array[1024, int32]
-dom_customval_len: Array[1024, int32]
+dom_customval_off: Array[4096, int32]
+dom_customval_len: Array[4096, int32]
 dom_customval_buf: Array[2048, uint8]
 dom_customval_top: int32 = 0
 g_prevent_default: int32 = 0         # set by event.preventDefault() in a handler
@@ -289,22 +289,22 @@ iah_buf:  Array[16384, uint8]
 iah_html: Array[16384, uint8]        # the inserted-html arg, copied out of the shared js_str_ptr scratch
 
 # resolved overrides (parallel to 0..dom_n). off/len == -1 means "not set".
-dom_ov_inner_off: Array[1024, int32]   # replacement inner (text OR html)
-dom_ov_inner_len: Array[1024, int32]
-dom_ov_inner_html: Array[1024, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
-dom_ov_col_off:  Array[1024, int32]    # colour (raw CSS value)
-dom_ov_col_len:  Array[1024, int32]
-dom_ov_bg_off:   Array[1024, int32]    # background-color
-dom_ov_bg_len:   Array[1024, int32]
-dom_ov_wt_off:   Array[1024, int32]    # font-weight
-dom_ov_wt_len:   Array[1024, int32]
-dom_ov_al_off:   Array[1024, int32]    # text-align
-dom_ov_al_len:   Array[1024, int32]
-dom_ov_wd_off:   Array[1024, int32]    # width (CSS length string, e.g. "100px")
-dom_ov_wd_len:   Array[1024, int32]
-dom_ov_cls_off:  Array[1024, int32]    # className
-dom_ov_cls_len:  Array[1024, int32]
-dom_ov_hide:     Array[1024, int32]    # 1 = display:none (drop the element)
+dom_ov_inner_off: Array[4096, int32]   # replacement inner (text OR html)
+dom_ov_inner_len: Array[4096, int32]
+dom_ov_inner_html: Array[4096, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
+dom_ov_col_off:  Array[4096, int32]    # colour (raw CSS value)
+dom_ov_col_len:  Array[4096, int32]
+dom_ov_bg_off:   Array[4096, int32]    # background-color
+dom_ov_bg_len:   Array[4096, int32]
+dom_ov_wt_off:   Array[4096, int32]    # font-weight
+dom_ov_wt_len:   Array[4096, int32]
+dom_ov_al_off:   Array[4096, int32]    # text-align
+dom_ov_al_len:   Array[4096, int32]
+dom_ov_wd_off:   Array[4096, int32]    # width (CSS length string, e.g. "100px")
+dom_ov_wd_len:   Array[4096, int32]
+dom_ov_cls_off:  Array[4096, int32]    # className
+dom_ov_cls_len:  Array[4096, int32]
+dom_ov_hide:     Array[4096, int32]    # 1 = display:none (drop the element)
 dom_ovbuf:   Array[65536, uint8]
 dom_ov_len:  int32 = 0
 dom_n_overrides: int32 = 0           # count of elements with ANY override
@@ -541,6 +541,33 @@ NID_MSGCHANNEL:   int32 = 118        # new MessageChannel() -> {port1, port2}
 NID_MSGPORT_POST: int32 = 119        # port.postMessage(data) -> deliver to the peer
 NID_MSGPORT_NOOP: int32 = 120        # port.start() / port.close() -> undefined
 NID_NODE_CTOR:    int32 = 121        # Node/Element/... — interface objects (never called)
+# --- document.cookie ---------------------------------------------------------
+# An IDL attribute that CANNOT be a data property: every read re-serialises the
+# jar and every write PARSES a Set-Cookie-shaped string. It was missing
+# entirely, so `document.cookie` read `undefined` — and MediaWiki's startup does
+#     document.cookie.match(/.../)
+# which threw "cannot read property 'match' of null or undefined" on BOTH
+# en.wikipedia.org and wiki.archlinux.org. Per the IDL it is a DOMString: the
+# empty string when the jar is empty, NEVER undefined.
+NID_COOKIE_GET:   int32 = 122        # get document.cookie -> "n1=v1; n2=v2"
+NID_COOKIE_SET:   int32 = 123        # set document.cookie = "n=v; attrs"
+
+# The cookie jar. Document-lifetime only (there is no persistent cookie store on
+# the host/native render path); name/value bytes are bump-allocated into ck_buf,
+# so re-writing the same cookie many times churns the buffer and eventually
+# stops taking new writes rather than corrupting anything.
+CK_MAX:      int32 = 64
+CK_BUF_CAP:  int32 = 8192
+ck_name_off: Array[64, int32]
+ck_name_len: Array[64, int32]
+ck_val_off:  Array[64, int32]
+ck_val_len:  Array[64, int32]
+ck_dead:     Array[64, uint8]        # 1 = deleted (max-age<=0 / expires in the past)
+ck_buf:      Array[8192, uint8]
+ck_buf_len:  int32 = 0
+ck_n:        int32 = 0
+ck_in:       Array[8192, uint8]      # setter argument scratch
+ck_out:      Array[8192, uint8]      # getter serialisation scratch
 
 # ---- DOM interface objects (Node, Element, HTMLElement, …) ------------------
 # Real frameworks feature-detect and branch on these THREE ways: `typeof Element`,
@@ -557,6 +584,8 @@ NID_NODE_CTOR:    int32 = 121        # Node/Element/... — interface objects (n
 # The prototypes stay EMPTY (the methods remain own properties on each node, as
 # before) so this is purely an identity/branding change: nothing moves, nothing
 # is enumerated differently (v_new_object's note: for-in walks own props only).
+g_proto_style: int32 = 0             # CSSStyleDeclaration.prototype (el.style links here)
+g_proto_clslist: int32 = 0           # DOMTokenList.prototype (el.classList links here)
 g_proto_node:  int32 = 0             # Node.prototype
 g_proto_elem:  int32 = 0             # HTMLElement.prototype (elements link here)
 g_proto_text:  int32 = 0             # Text.prototype
@@ -608,10 +637,14 @@ def _dom_reset():
     canv_n = 0
     tx_n = 0
     tx_built = 0
+    ck_n = 0
+    ck_buf_len = 0
     # the DOM interface objects are per-JS-context (js_init wipes the heap), so
     # drop the cached prototype handles; _js_build_document re-mints them.
     g_proto_node = 0
     g_proto_elem = 0
+    g_proto_style = 0
+    g_proto_clslist = 0
     g_proto_text = 0
     g_proto_comm = 0
     g_proto_frag = 0

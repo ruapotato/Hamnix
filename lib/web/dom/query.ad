@@ -574,13 +574,22 @@ def _new_style_obj() -> int32:
     # its `display:none !important` hide path (`typeof f.setProperty ===
     # "function" ? f.setProperty("display","none","important") : ...`), so the
     # absence of these threw inside the very first commit.
+    if g_proto_style != 0:
+        js_set_proto_v(st, g_proto_style)
+    else:
+        _attach_style_natives(st)
+    return st
+
+
+# The stateless CSSStyleDeclaration methods — one shared copy on
+# CSSStyleDeclaration.prototype, not three fresh function objects per element.
+def _attach_style_natives(st: int32):
     js_set_prop(st, cast[Ptr[uint8]]("setProperty"), 11, \
                 js_new_native_fn(js_hbase + NID_STYLE_SETPROP))
     js_set_prop(st, cast[Ptr[uint8]]("getPropertyValue"), 16, \
                 js_new_native_fn(js_hbase + NID_STYLE_GETPROP))
     js_set_prop(st, cast[Ptr[uint8]]("removeProperty"), 14, \
                 js_new_native_fn(js_hbase + NID_STYLE_REMPROP))
-    return st
 
 
 # CSS property name -> the camelCase member the style object stores it under
@@ -766,6 +775,15 @@ def _find_el_by_clsobj(objv: int32) -> int32:
 
 def _new_classlist_obj() -> int32:
     cl: int32 = js_new_object_v()
+    if g_proto_clslist != 0:
+        js_set_proto_v(cl, g_proto_clslist)
+        return cl
+    _attach_clslist_natives(cl)
+    return cl
+
+
+# The stateless DOMTokenList methods — one shared copy on DOMTokenList.prototype.
+def _attach_clslist_natives(cl: int32):
     js_set_prop(cl, cast[Ptr[uint8]]("add"), 3, \
                 js_new_native_fn(js_hbase + NID_CLSADD))
     js_set_prop(cl, cast[Ptr[uint8]]("remove"), 6, \
@@ -778,7 +796,6 @@ def _new_classlist_obj() -> int32:
                 js_new_native_fn(js_hbase + NID_CLSREPL))
     js_set_prop(cl, cast[Ptr[uint8]]("item"), 4, \
                 js_new_native_fn(js_hbase + NID_CLSITEM))
-    return cl
 
 
 # scratch for classList string rebuilds
@@ -929,9 +946,37 @@ def _attach_el_methods(o: int32):
     # BEFORE the interfaces exist (g_proto_elem == 0) need their own copy.
     if g_proto_elem == 0:
         _attach_el_natives(o)
-    # element.validity — a ValidityState object; its booleans are refreshed each
-    # time the control is validated (checkValidity/reportValidity/submit). This
-    # is per-element MUTABLE state, so it cannot be shared on the prototype.
+    _attach_validity(o)
+
+
+# Elements BARRED FROM CONSTRAINT VALIDATION have no ValidityState at all.
+# VERIFIED against `chromium --headless`: on div / span / a / form,
+# `validity`, `willValidate` and `validationMessage` are ALL undefined — only
+# input / textarea / select / button carry them (a <form> keeps checkValidity()
+# but has no `validity`). We used to stamp the trio onto EVERY element: 14
+# property slots each (the ValidityState object, its 11 booleans,
+# validationMessage, willValidate). That is both wrong and, at
+# MAX_PROP = 150000, most of the reason a 4018-element page
+# (en.wikipedia.org/wiki/Web_browser) exhausted the property pool outright.
+def _attach_validity(o: int32):
+    tn: int32 = js_get_prop(o, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tn) != TAG_STR:
+        return
+    tp: Ptr[uint8] = js_str_ptr(tn)
+    tl: int32 = _cstr_len(tp)
+    ctl: int32 = 0
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("INPUT"), 5) != 0:
+        ctl = 1
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("TEXTAREA"), 8) != 0:
+        ctl = 1
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("SELECT"), 6) != 0:
+        ctl = 1
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("BUTTON"), 6) != 0:
+        ctl = 1
+    if ctl == 0:
+        return
+    # ValidityState is per-element MUTABLE state (its booleans are refreshed on
+    # every checkValidity/reportValidity/submit), so it cannot be shared.
     vsto: int32 = js_new_object_v()
     js_set_prop(vsto, cast[Ptr[uint8]]("valueMissing"), 12, js_bool(0))
     js_set_prop(vsto, cast[Ptr[uint8]]("typeMismatch"), 12, js_bool(0))
@@ -947,6 +992,7 @@ def _attach_el_methods(o: int32):
     js_set_prop(o, cast[Ptr[uint8]]("validity"), 8, vsto)
     js_set_prop(o, cast[Ptr[uint8]]("validationMessage"), 17, \
                 js_new_string(cast[Ptr[uint8]](""), 0))
+    js_set_prop(o, cast[Ptr[uint8]]("willValidate"), 12, js_bool(1))
 
 
 # The stateless half: every element method whose behaviour depends only on the
@@ -1019,7 +1065,6 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_REPORTVALID))
     js_set_prop(o, cast[Ptr[uint8]]("setCustomValidity"), 17, \
                 js_new_native_fn(js_hbase + NID_SETCUSTOMVAL))
-    js_set_prop(o, cast[Ptr[uint8]]("willValidate"), 12, js_bool(1))
     # form.submit() — meaningful on a <form> (or a control inside one; the
     # dispatcher resolves the enclosing form). Attached universally like
     # getContext; harmless on a non-form (the dispatcher no-ops there).

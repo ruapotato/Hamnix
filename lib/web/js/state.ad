@@ -65,12 +65,12 @@ def gc_push(h: int32) -> int32:
 def gc_popto(n: int32):
     gc_top = n
 
-MAX_STR: int32 = 200000
+MAX_STR: int32 = 400000
 SP_CAP:  int32 = 8388608
 sp_buf: Array[8388608, uint8]           # 8 MiB string pool (bump; freed only at js_init)
 sp_top: int32 = 0
-st_off: Array[200000, int32]
-st_len: Array[200000, int32]
+st_off: Array[400000, int32]
+st_len: Array[400000, int32]
 n_strs: int32 = 0
 
 # ====================================================================
@@ -115,13 +115,13 @@ n_strs: int32 = 0
 #     v_string_id, where the just-built sid is momentarily un-rooted). Default
 #     str_hi_water is 80% of MAX_STR, so a program that fit the id table before
 #     NEVER triggers and stays byte-for-byte identical.
-str_mark:  Array[200000, uint8]   # per-id mark bit (GC scratch; parallels st_*)
+str_mark:  Array[400000, uint8]   # per-id mark bit (GC scratch; parallels st_*)
 str_free_head: int32 = -1         # free-id list head; chained through st_off (-1 = empty)
 STR_STRESS_GAP: int32 = 64        # stress: collect every ~this-many new string ids
 STR_MIN_FREE:  int32 = 8192       # a collection freeing fewer ids "did not free enough"
 STR_GROW:      int32 = 16384      # then raise the string water mark by this before retrying
-str_base_water: int32 = 160000    # normal string high-water (80% of MAX_STR)
-str_hi_water:  int32 = 160000     # current string high-water (raised on low-yield collections)
+str_base_water: int32 = 320000   # normal string high-water (80% of MAX_STR)
+str_hi_water:  int32 = 320000    # current string high-water (raised on low-yield collections)
 str_last_freed: int32 = 0         # ids reclaimed by the most recent string collection
 str_collections: int32 = 0        # total string collections this run (stats/debug)
 
@@ -354,13 +354,13 @@ MAP_KIND_NONE: int32 = 0
 MAP_KIND_MAP:  int32 = 1
 MAP_KIND_SET:  int32 = 2
 
-MAX_PROP: int32 = 150000
-p_next: Array[150000, int32]
-p_key:  Array[150000, int32]      # string id
-p_val:  Array[150000, int32]
-p_acc:  Array[150000, uint8]      # 1 = accessor property (p_get/p_set), 0 = data (p_val)
-p_get:  Array[150000, int32]      # accessor getter function VALUE handle, or -1
-p_set:  Array[150000, int32]      # accessor setter function VALUE handle, or -1
+MAX_PROP: int32 = 400000
+p_next: Array[400000, int32]
+p_key:  Array[400000, int32]      # string id
+p_val:  Array[400000, int32]
+p_acc:  Array[400000, uint8]      # 1 = accessor property (p_get/p_set), 0 = data (p_val)
+p_get:  Array[400000, int32]      # accessor getter function VALUE handle, or -1
+p_set:  Array[400000, int32]      # accessor setter function VALUE handle, or -1
 # ES property ATTRIBUTES, one bitmask per property slot:
 #   bit0 PF_ENUM  — [[Enumerable]]: shows in for-in / Object.keys|values|entries /
 #                   JSON.stringify / Object.assign / object spread / rest.
@@ -372,7 +372,7 @@ p_set:  Array[150000, int32]      # accessor setter function VALUE handle, or -1
 # existing value alone for an existing one. Engine-internal installs (builtin
 # methods, `Function.prototype.constructor`, class methods) clear PF_ENUM to
 # match the spec's non-enumerable built-ins.
-p_flags: Array[150000, uint8]
+p_flags: Array[400000, uint8]
 n_props: int32 = 0
 
 MAX_ENV: int32 = 80000

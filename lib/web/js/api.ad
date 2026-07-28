@@ -344,6 +344,18 @@ def js_get_prop(objv: int32, name: Ptr[uint8], n: uint64) -> int32:
     return member_get(objv, str_new(name, cast[int32](n)))
 
 
+# Define an ACCESSOR property from the host side. The embedder needs this for
+# the IDL attributes whose value cannot be a snapshot — `document.cookie` must
+# re-serialise the jar on every read and PARSE on every write, which a data
+# property cannot do. Pass -1 for a half you do not want.
+def js_define_accessor(objv: int32, name: Ptr[uint8], n: uint64, \
+                       getter: int32, setter: int32):
+    if tag_of(objv) != TAG_OBJ:
+        return
+    obj_define_accessor(objid_of(objv), str_new(name, cast[int32](n)), \
+                        getter, setter)
+
+
 def js_array_push(arrv: int32, val: int32):
     if is_array(arrv) != 0:
         arr_push(objid_of(arrv), val)

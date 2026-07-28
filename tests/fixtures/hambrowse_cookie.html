@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><title>document.cookie</title></head><body>
+<p>document.cookie jar</p>
+<script>
+// Every line of this fixture is BYTE-COMPARED against
+//   chromium --headless --dump-dom http://127.0.0.1:PORT/hambrowse_cookie.html
+// (over http:, because chromium blocks cookies on file:// URLs).
+console.log("A [" + document.cookie + "] " + typeof document.cookie);
+document.cookie = "a=1";
+document.cookie = "b=hello; path=/; SameSite=Lax";
+console.log("B [" + document.cookie + "]");
+document.cookie = "a=2";
+console.log("C [" + document.cookie + "]");
+document.cookie = "b=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+console.log("D [" + document.cookie + "]");
+document.cookie = "c=3; max-age=0";
+console.log("E [" + document.cookie + "]");
+document.cookie = "d=4; max-age=3600";
+console.log("F [" + document.cookie + "]");
+console.log("G " + JSON.stringify(document.cookie.match(/a=(\d)/)));
+document.cookie = "e=x y z";
+console.log("H [" + document.cookie + "]");
+document.cookie = "f=1; domain=127.0.0.1; secure";
+console.log("I [" + document.cookie + "]");
+document.cookie = "d=; max-age=-1";
+console.log("J [" + document.cookie + "]");
+</script>
+</body></html>

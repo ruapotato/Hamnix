@@ -1683,6 +1683,18 @@ bash scripts/test_hambrowse_qsa_host.sh
 bash scripts/test_hambrowse_events_host.sh
 bash scripts/test_hambrowse_evttypes_host.sh
 bash scripts/test_hambrowse_domr6_host.sh
+# scripts/test_hambrowse_cookie_host.sh: document.cookie. It did not exist at
+# all (reads gave `undefined`), so MediaWiki's startup `document.cookie.match()`
+# threw and killed the first script on BOTH en.wikipedia.org and
+# wiki.archlinux.org. Oracle: chromium over http: (it blocks cookies on file:),
+# re-derived live when chromium is installed.
+bash scripts/test_hambrowse_cookie_host.sh
+# scripts/test_hambrowse_elbudget_host.sh: PER-ELEMENT RESOURCE BUDGET. A
+# 1505-element page — past the old 40000-object pool ceiling AND past the old
+# 1024-element registry cap — must complete getElementsByTagName("*") with no
+# undefined entries and no pool exhausted. Every other DOM gate uses a handful
+# of elements and cannot see this class of failure.
+bash scripts/test_hambrowse_elbudget_host.sh
 bash scripts/test_hambrowse_observers_host.sh
 bash scripts/test_hambrowse_domlifecycle_host.sh
 bash scripts/test_hambrowse_evtcapture_host.sh
