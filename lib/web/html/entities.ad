@@ -146,6 +146,30 @@ def _ent_num_remap(val: uint32) -> uint32:
     return val
 
 
+# DECODE MODE (one table, two consumers).
+#
+# The renderer and the DOM text view share this decoder, but they disagree about
+# exactly ONE entity. For LAYOUT, `&nbsp;` is folded to a normal space (32): the
+# line-breaker measures and breaks on ASCII space, so handing it U+00A0 would
+# need non-breaking-space support all through flow. For the DOM TEXT VIEW,
+# chromium hands script back U+00A0 — and pages branch on it (split(' '),
+# trim(), regexes, / / tests), so folding it silently changes their
+# behaviour. Rather than fork a second table (which would drift), the ONE table
+# carries a mode flag: 0 = layout (fold to space), 1 = DOM (faithful U+00A0).
+#
+# Note the pre-existing asymmetry this does NOT touch: the NUMERIC forms
+# `&#160;`/`&#xA0;` already emit U+00A0 in both modes, because they run through
+# _ent_emit_cp(_ent_num_remap(...)) rather than the named table. Only the named
+# `&nbsp;` was folded, so only it needs the mode.
+ent_dom_mode: int32 = 0
+
+
+def _ent_nbsp_cp() -> uint32:
+    if ent_dom_mode != 0:
+        return 0xA0                                  # DOM view: real U+00A0
+    return 32                                        # layout: normal space
+
+
 def _entity(at: uint64) -> uint64:
     # `at` points at '&'. On success fills g_ent_buf/g_ent_len with the decoded
     # UTF-8 bytes and returns the number of source bytes consumed (including the
@@ -195,7 +219,7 @@ def _entity(at: uint64) -> uint64:
     if r == 0:
         r = _ent_try(body, cast[Ptr[uint8]]("apos;"), 39)
     if r == 0:
-        r = _ent_try(body, cast[Ptr[uint8]]("nbsp;"), 32)   # -> normal space
+        r = _ent_try(body, cast[Ptr[uint8]]("nbsp;"), _ent_nbsp_cp())
     if r == 0:
         r = _ent_try(body, cast[Ptr[uint8]]("copy;"), 0xA9)
     if r == 0:
@@ -684,7 +708,7 @@ def _entity(at: uint64) -> uint64:
     if r == 0:
         r = _ent_try_legacy(body, cast[Ptr[uint8]]("quot"), 34)
     if r == 0:
-        r = _ent_try_legacy(body, cast[Ptr[uint8]]("nbsp"), 32)
+        r = _ent_try_legacy(body, cast[Ptr[uint8]]("nbsp"), _ent_nbsp_cp())
     if r == 0:
         r = _ent_try_legacy(body, cast[Ptr[uint8]]("copy"), 0xA9)
     if r == 0:

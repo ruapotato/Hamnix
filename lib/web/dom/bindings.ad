@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _handle_tag, _hx_find_attr, _hx_lower, _hx_name_eq, _hx_tag_end_p
+from lib.htmlengine import _alnum_at, _handle_tag, _hx_find_attr, _hx_lower, _hx_name_eq, _hx_tag_end_p, ent_dom_mode
 from lib.htmlengine import _cssom_reset
 
 # ====================================================================
@@ -904,6 +904,12 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
 # re-derive the element's original text straight from the source span.
 def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
     n: int32 = 0
+    # This is the DOM TEXT VIEW, not layout: decode entities faithfully, so
+    # `&nbsp;` comes back as U+00A0 the way chromium hands it to script (pages
+    # split(' ') / regex on it). Restored before returning so the renderer's
+    # own _entity() calls keep folding it to a plain space for line-breaking.
+    prev_mode: int32 = ent_dom_mode
+    ent_dom_mode = 1
     i: uint64 = cs
     while i < ce:
         c: uint8 = src_ptr[i]
@@ -942,6 +948,7 @@ def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
                 continue
         n = _tw_put(oo, n, c)
         i = i + 1
+    ent_dom_mode = prev_mode
     return n
 
 

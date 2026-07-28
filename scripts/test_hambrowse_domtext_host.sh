@@ -21,10 +21,21 @@
 #   ent a<NBSP>b & c 'd' <e> © | dtext outer bold tail |
 #   dhtml outer <b>bold</b> tail | ds card 7 | cls true x | sty red |
 #   bodyhas true true | bodylen>500 true | htmllen>600 true
-# Every line below is that value byte-for-byte, with ONE documented divergence:
-# we decode &nbsp; to a normal space (U+0020), because the DOM text view reuses
-# the RENDERER's entity table (lib/web/html/entities.ad), which maps it that way
-# for layout. Chromium keeps U+00A0.
+# Every line below is that value byte-for-byte, with NO divergence.
+#
+# &nbsp; USED TO FOLD TO U+0020 here. The DOM text view shares the RENDERER's
+# entity table (lib/web/html/entities.ad), which maps &nbsp; to a plain space so
+# the line-breaker can measure and break on it. That fold leaked into the text
+# view, so script saw U+0020 where chromium hands back U+00A0 — and pages branch
+# on the difference (split(' '), trim(), regexes). The table now carries a
+# decode-MODE flag (ent_dom_mode) rather than being forked in two: layout still
+# folds, the DOM text view is faithful. Re-verified with chromium --headless
+# --dump-dom on this fixture, reading raw charCodeAt values:
+#   97,160,98,32,38,32,99,32,39,100,39,32,60,101,62,32,169
+# i.e. a, U+00A0, b, ' ', '&', ... , U+00A9 — which is what we now emit.
+#
+# RESIDUAL (tracked, not a divergence in THIS assertion): our string .length and
+# charCodeAt index UTF-8 BYTES, so that U+00A0 counts as 2 and chromium's as 1.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -57,7 +68,7 @@ assert_grep() {
     else echo "[hb-domtext] FAIL $2 (missing exact line: $1)"; fail=1; fi
 }
 
-assert_grep "JSLOG ent a b & c 'd' <e> ©"          "character references decoded in textContent (&nbsp;->space, chromium keeps U+00A0)"
+assert_grep "JSLOG ent a b & c 'd' <e> ©"         "character references decoded in textContent (&nbsp; -> U+00A0, as chromium)"
 assert_grep "JSLOG dtext outer bold tail"          "textContent strips tags"
 assert_grep "JSLOG dhtml outer <b>bold</b> tail"   "innerHTML returns the raw source span"
 assert_grep "JSLOG ds card 7"                      "lazy el.dataset: data-role + camelCased data-item-id"
