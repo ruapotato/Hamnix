@@ -25,9 +25,42 @@
 # This gate boots the live image to runlevel 5 N times and asserts, EVERY
 # boot, that:
 #   * the boot handed off to the interactive shell (rc.5 did NOT hang), AND
-#   * the compositor presented the full window set (presented >= 5 — the
-#     desktop backdrop + panel + the four core apps), AND
+#   * the scene clients actually BROUGHT UP their windows (>= RL5_MIN_WINDOWS
+#     `[devwsys] window N mapped` lines), AND
 #   * the framebuffer is non-blank (the DE actually painted pixels).
+#
+# WHY NOT `presented=` (the assertion this gate shipped with, 2026-07-12)
+# ---------------------------------------------------------------------
+# It asserted `presented >= 5` against the LAST `[de_present] ... presented=N`
+# line on the serial console. That assertion has been UNSATISFIABLE — not
+# flaky, unsatisfiable — and the gate was 5/5 red when it was finally run on a
+# KVM host on 2026-07-28. Two independent reasons, both measured:
+#
+#   1. `[de_present]` is a REAL-HW BLANK-SCREEN DIAGNOSTIC, throttled by
+#      WSYS_PRESENT_DIAG_MAX = 8 presents (sys/src/9/port/devwsys.ad). On a
+#      healthy boot it is exhausted BEFORE the scene clients map anything:
+#          [000881] [de_present]   live_windows=0 presented=0
+#          [001254] [de_present]   live_windows=0 presented=0
+#          [001280] [devwsys] window 2 mapped pid=31     <-- first window
+#      The last `presented=` the gate can ever read is therefore an
+#      early-boot snapshot, structurally 0, no matter how well the DE works.
+#   2. Even at steady state the number is out of reach. `>= 5` was calibrated
+#      on 2026-07-12, when rc.5 baked a demo-app self-test that opened four
+#      app windows. ac81cb23 (2026-07-13) moved that into
+#      /etc/rc.d/rc.5.selftest, packaged ONLY under HAMNIX_DE_SELFTEST=1, so a
+#      normal boot is the "clean first-boot desktop (no demo apps)" and maps
+#      four windows total (desktop, panel x2, toast).
+#
+# The gate went dark the day after it was written and nobody saw it, because
+# it needs /dev/kvm and every GitHub runner is ubuntu-latest — see
+# scripts/test_gate_kvmdark.sh and scripts/ci_run_kvm_battery.sh.
+#
+# The replacement asserts the same PROPERTY (the DE came up whole, not bare)
+# on a signal that is not throttled and not tied to the demo apps: the count
+# of windows the scene clients mapped. Measured at 4 on healthy boots (this
+# image and the installer gate's). This is the STRONGEST reachable form of
+# the original intent — the old one asserted nothing at all.
+#
 # ANY bare/hung boot fails the gate — turning the old coin-flip into a hard
 # regression guard.
 #
@@ -38,7 +71,8 @@
 #   INSTALLER_IMG      image path         (default: build/hamnix-installer.img)
 #   OVMF_FD            OVMF firmware      (default: auto-resolved)
 #   RL5_BOOTS          number of boots    (default: 5; the ≥8 sweep is manual)
-#   RL5_MIN_PRESENTED  min presented wins (default: 5)
+#   RL5_MIN_WINDOWS    min mapped scene windows (default: 3 — desktop +
+#                      the panel's two; the toast is transient)
 #   BOOT_WAIT          per-boot handoff timeout seconds (default: 240)
 #   HAMNIX_SKIP_BUILD  1 = require an existing image (no rebuild)
 
@@ -49,7 +83,7 @@ cd "$PROJ_ROOT"
 
 INSTALLER_IMG="${INSTALLER_IMG:-build/hamnix-installer.img}"
 RL5_BOOTS="${RL5_BOOTS:-5}"
-RL5_MIN_PRESENTED="${RL5_MIN_PRESENTED:-5}"
+RL5_MIN_WINDOWS="${RL5_MIN_WINDOWS:-3}"
 BOOT_WAIT="${BOOT_WAIT:-240}"
 HANDOFF_MARKER="handing off to interactive shell"
 
@@ -117,12 +151,15 @@ for i in $(seq 1 "$RL5_BOOTS"); do
     fi
     kill "$QP" 2>/dev/null; wait "$QP" 2>/dev/null
 
-    presented=$(grep -a "presented=" "$LOG" | tail -1 | grep -oaE "presented=[0-9]+" | cut -d= -f2)
-    presented=${presented:-0}
-    if [ "$booted" = 1 ] && [ "$presented" -ge "$RL5_MIN_PRESENTED" ] 2>/dev/null && [ "${distinct:-0}" -ge 2 ]; then
-        echo "[rl5_det] boot $i: PASS (handoff + presented=$presented>=$RL5_MIN_PRESENTED + fb painted distinct=$distinct)"
+    # Windows the scene clients actually mapped. NOT `presented=` — see the
+    # header: that diagnostic is throttled to the first 8 presents and is
+    # exhausted before the first window maps, so it can only ever read 0.
+    windows=$(grep -ac "\[devwsys\] window [0-9]* mapped" "$LOG" 2>/dev/null)
+    windows=${windows:-0}
+    if [ "$booted" = 1 ] && [ "$windows" -ge "$RL5_MIN_WINDOWS" ] 2>/dev/null && [ "${distinct:-0}" -ge 2 ]; then
+        echo "[rl5_det] boot $i: PASS (handoff + windows=$windows>=$RL5_MIN_WINDOWS + fb painted distinct=$distinct)"
     else
-        echo "[rl5_det] boot $i: FAIL (booted=$booted presented=$presented distinct=${distinct:-0}) — BARE/HUNG DESKTOP" >&2
+        echo "[rl5_det] boot $i: FAIL (booted=$booted windows=$windows distinct=${distinct:-0}) — BARE/HUNG DESKTOP" >&2
         grep -a -n "\[pf\] kernel write to RO user page\|pre-warm\|scene_de" "$LOG" | tail -12 | sed 's/^/[rl5_det]   /' >&2
         fail=1; bare=$((bare + 1))
     fi
