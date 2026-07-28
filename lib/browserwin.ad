@@ -152,6 +152,16 @@ def browserwin_url_box_w(win_w: int32) -> int32:
         sw = BW_SEARCH_MINW
     return avail - sw - 8
 
+# PUBLIC: the x pixel the URL text starts at — the SINGLE origin that both
+# _bw_draw_addr (painter) and browserwin_addr_caret_at (click hit-test) walk
+# their 13px advances from. Exported so the #315 inverse-property unit test
+# (user/hamurl_host.ad) derives the origin instead of hardcoding it: when
+# BW_ADDR_PAD moved 5 -> 24 to clear the omnibox site icon (78f5f299), a
+# hardcoded copy in the test silently went stale and reported a phantom
+# caret bug. Never open-code `NAV_BAR_W + <pad>` again — call this.
+def browserwin_addr_text_x() -> int32:
+    return NAV_BAR_W + BW_ADDR_PAD
+
 # Left px of the search pill, or -1 when the window is too narrow for one.
 def browserwin_search_x0(win_w: int32) -> int32:
     avail: int32 = _bw_band1(win_w) - NAV_BAR_W

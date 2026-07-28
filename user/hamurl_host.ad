@@ -17,7 +17,7 @@ extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 from lib.htmlpaint import htmlpaint_measure_ttf
 from lib.font_ttf import FACE_TT_SANS
 from lib.htmlengine import NAV_BAR_W, GO_W
-from lib.browserwin import browserwin_addr_caret_at
+from lib.browserwin import browserwin_addr_caret_at, browserwin_addr_text_x
 
 obuf: Array[256, uint8]
 obuf_n: uint64 = 0
@@ -90,7 +90,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         n = n + 1
 
     win_w: int32 = 1200                       # wide window -> whole URL fits
-    tx: int32 = NAV_BAR_W + 5                  # address text left edge
+    # Address text left edge, DERIVED from the layout (never hardcoded): the
+    # painter and the hit-test both start their 13px walk here. This used to
+    # read `NAV_BAR_W + 5`, which silently went stale when BW_ADDR_PAD moved
+    # 5 -> 24 to clear the omnibox site icon (78f5f299) — the test then clicked
+    # 19px LEFT of every caret pixel and reported a phantom ~3-glyph offset.
+    tx: int32 = browserwin_addr_text_x()
 
     # Inverse property: clicking caret-k's exact pixel returns k, for every k.
     k: uint64 = 0

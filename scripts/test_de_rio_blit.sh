@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# ON-DEMAND *AND CURRENTLY RED — LIKELY GATE ROT, DELETION CANDIDATE*: not in
-# ci_battery_manifest.txt because it FAILS on 55c842b9 (2026-07-28
-# unregistered-gate sweep, 0.1 s).
-#
-# Unlike the other reds from that sweep, the evidence here points at the GATE,
-# not the tree. It is a grep-guard that pins EXACT declaration text from the
-# June-2026 #442(c) design:
-#     wsys_backbuffer Array[36864000,uint8]   -> devwsys.ad now declares
-#                                                wsys_backbuffer_page (24 hits)
-#     h_v2_bb Array[4096000,uint8]            -> lib/hamui.ad now declares
-#                                                h_v2_bb_addr / h_v2_bb_w/h
-# i.e. the substrate EXISTS but was reshaped (paged backbuffers, dynamic
-# dims), so the gate reds on renames rather than on lost behaviour. It also
-# predates the DE scene-file pivot, which moved pixel ownership out of the
-# kernel entirely. Before deleting it, confirm the blit wire format ('B'/'D'
-# verbs) is asserted by a scene-era gate; if it is not, REWRITE this one
-# against the current names instead of deleting the only coverage.
+# VERDICT 2026-07-28: GATE ROT, NOT lost behaviour — and NOT a deletion
+# candidate. The 2026-07-28 sweep red was 4 links (3 and 7) pinning EXACT
+# declaration text from the June-2026 #442(c) design against a substrate that
+# had been RESHAPED, not removed:
+#     wsys_backbuffer Array[36864000,uint8] -> wsys_backbuffer_page: Array[32,
+#         uint64], demand-allocated per wid from the buddy allocator (the flat
+#         ~125 MiB BSS array OOMed a modest-RAM VM once MAX_WINDOWS hit 32)
+#     h_v2_bb Array[4096000,uint8]          -> h_v2_bb_addr + h_v2_bb_w/h/
+#         stride, a demand-zero anon mmap sized to the real window dims
+#     h_v2_msg[0] = 66/68                   -> msg[0] = 66/68 via the
+#         _h_v2_msg() accessor (same bytes, same wire format)
+# Links 1/2/4/5/6/8/9 stayed green throughout, i.e. the blit protocol itself
+# never regressed. The 'B'/'D' verb assertions are covered by NO other gate,
+# so this was rewritten against the current names rather than deleted, and
+# STRENGTHENED where the reshape created new failure modes the old flat-array
+# form could not have: backbuffer alloc/release lifecycle (a leaked 4 MiB
+# block per closed window) and the header rect/format payload.
 # scripts/test_de_rio_blit.sh — #442 (c) rio blit protocol substrate guard.
 #
 # THE KEYSTONE. graphical_stack_audit.md recommends a hard pivot away
@@ -92,11 +92,40 @@ if ! grep -E "_wctl_word_eq" "$KERN_SRC" | grep -q "\"version\""; then
 fi
 
 # --- Link 3: per-window backbuffer storage + accessor seam -----------
-# 9 windows * W*H*4 bytes. The flat Array is how the kernel holds the
-# v2 pixel state. Widened from 320x200 (2 304 000 B) to 1280x800
-# (36 864 000 B) so the panel can cover the full screen width.
-if ! grep -Eq "^wsys_backbuffer:[[:space:]]+Array\[(2304000|36864000)," "$KERN_SRC"; then
-    fail_link "link 3 (devwsys.ad): wsys_backbuffer Array[36864000,uint8] is missing - no per-window backbuffer storage"
+# The kernel's v2 pixel state. This used to be ONE flat static
+# Array[36864000,uint8] of BSS; when MAX_WINDOWS went 9 -> 32 that shape
+# (~125 MiB) OOMed a modest-RAM VM at boot, so it is now a 32-slot array of
+# POINTERS, each demand-allocated from the buddy allocator on first blit and
+# freed when the wid slot is released. Assert the CURRENT shape plus the
+# alloc/release lifecycle the pointer form introduced — a leaked or
+# never-freed block is a new failure mode the flat Array could not have.
+if ! grep -Eq "^wsys_backbuffer_page:[[:space:]]+Array\[[0-9]+,[[:space:]]*uint64\]" "$KERN_SRC"; then
+    fail_link "link 3 (devwsys.ad): wsys_backbuffer_page Array[N,uint64] is missing - no per-window backbuffer storage"
+fi
+if ! grep -Eq "^WSYS_BB_ORDER:[[:space:]]+int32" "$KERN_SRC"; then
+    fail_link "link 3 (devwsys.ad): WSYS_BB_ORDER (buddy order for a backbuffer block) is missing"
+fi
+# Lazy alloc on first use ...
+ens_body=$(awk '
+    /^def[[:space:]]+_wsys_backbuffer_ensure[[:space:]]*\(/ { inside=1; print; next }
+    /^def[[:space:]]/ { if (inside) { inside=0 } }
+    inside { print }
+' "$KERN_SRC")
+if [ -z "$ens_body" ]; then
+    fail_link "link 3 (devwsys.ad): _wsys_backbuffer_ensure() is missing - backbuffers are never allocated"
+elif ! echo "$ens_body" | grep -q "alloc_pages(WSYS_BB_ORDER)"; then
+    fail_link "link 3 (devwsys.ad): _wsys_backbuffer_ensure does not alloc_pages(WSYS_BB_ORDER)"
+fi
+# ... and release on slot teardown (else 32 windows leak ~4 MiB each).
+rel_body=$(awk '
+    /^def[[:space:]]+_wsys_backbuffer_release[[:space:]]*\(/ { inside=1; print; next }
+    /^def[[:space:]]/ { if (inside) { inside=0 } }
+    inside { print }
+' "$KERN_SRC")
+if [ -z "$rel_body" ]; then
+    fail_link "link 3 (devwsys.ad): _wsys_backbuffer_release() is missing - backbuffer blocks leak on window close"
+elif ! echo "$rel_body" | grep -q "free_pages(wsys_backbuffer_page"; then
+    fail_link "link 3 (devwsys.ad): _wsys_backbuffer_release does not free_pages the block - ~4 MiB leaks per closed window"
 fi
 for fn in wsys_backbuffer_ptr wsys_backbuffer_dims_w wsys_backbuffer_dims_h \
           wsys_backbuffer_stride wsys_bb_serial_get wsys_bb_dirty_get \
@@ -171,24 +200,41 @@ for fn in hamui_set_protocol_v2 hamui_v2_is_active hamui_v2_clear \
         fail_link "link 7 (lib/hamui.ad): client-side API ${fn}() is missing - the toolkit cannot drive the blit protocol"
     fi
 done
-# The client backbuffer must be at module scope (not a local —
-# multi-MB would blow Adder's frame). Widened to full screen
-# (1280x800x4 = 4 096 000 B) so the panel covers the full width.
-if ! grep -Eq "^h_v2_bb:[[:space:]]+Array\[(256000|4096000)," "$HAMUI_SRC"; then
-    fail_link "link 7 (lib/hamui.ad): h_v2_bb Array[4096000,uint8] client backbuffer is missing"
+# The client backbuffer must be at module scope (not a local — multi-MB
+# would blow Adder's frame). It used to be a fixed Array[4096000,uint8]
+# sized to a full 1280x800 screen; it is now a demand-zero anon mmap sized
+# to the ACTUAL window dims, so the module-scope state is the mapping
+# address plus the dims every draw primitive clips against.
+for g in h_v2_bb_addr h_v2_msg_addr h_v2_bb_w h_v2_bb_h h_v2_bb_stride; do
+    if ! grep -Eq "^${g}:[[:space:]]+uint64" "$HAMUI_SRC"; then
+        fail_link "link 7 (lib/hamui.ad): client backbuffer global ${g}: uint64 is missing"
+    fi
+done
+if ! grep -Eq "def[[:space:]]+_h_v2_alloc[[:space:]]*\(" "$HAMUI_SRC"; then
+    fail_link "link 7 (lib/hamui.ad): _h_v2_alloc() is missing - the client backbuffer is never mapped"
 fi
 # The commit primitive must compose a 'B' header (verb byte 66) and a
-# 'D' header (verb byte 68). We check via the verb-byte writes.
+# 'D' header (verb byte 68). We check via the verb-byte writes. The buffer
+# is reached through the _h_v2_msg() accessor now that it is mmap'd, so
+# match the write to the local alias rather than the old global name.
 commit_body=$(awk '
     /^def[[:space:]]+hamui_v2_commit_rect[[:space:]]*\(/ { inside=1; print; next }
     /^def[[:space:]]/ { if (inside) { inside=0 } }
     inside { print }
 ' "$HAMUI_SRC")
-if ! echo "$commit_body" | grep -q "h_v2_msg\[0\] = 66"; then
+if ! echo "$commit_body" | grep -qE "^[[:space:]]*msg\[0\] = 66\b"; then
     fail_link "link 7 (lib/hamui.ad): hamui_v2_commit_rect does NOT write a 'B' (66) verb byte - it isn't speaking the blit wire format"
 fi
-if ! echo "$commit_body" | grep -q "h_v2_msg\[0\] = 68"; then
+if ! echo "$commit_body" | grep -qE "^[[:space:]]*msg\[0\] = 68\b"; then
     fail_link "link 7 (lib/hamui.ad): hamui_v2_commit_rect does NOT write a 'D' (68) verb byte - dirty rect won't reach the kernel"
+fi
+# The 'B' payload must be tagged with the pixel format byte and both
+# headers must carry the x0/y0/x1/y1 rect (little-endian i32 quads).
+if ! echo "$commit_body" | grep -q "HAMUI_V2_FMT_RGBA8888"; then
+    fail_link "link 7 (lib/hamui.ad): the 'B' header does not carry the pixel-format byte"
+fi
+if [ "$(echo "$commit_body" | grep -c "_h_v2_emit_i32_le")" -lt 8 ]; then
+    fail_link "link 7 (lib/hamui.ad): the 'B'/'D' headers do not both emit a 4-word LE rect"
 fi
 
 # --- Link 8: compositor adoption seam in user/hamUId.ad --------------
