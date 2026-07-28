@@ -7,7 +7,7 @@ from lib.web.dom.forms import _has_word
 from lib.htmlengine import he_media_match
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -2131,6 +2131,55 @@ def _inner_accessor(rel: int32) -> int32:
     return js_undefined()
 
 
+# LAZY el.style / el.classList / el.dataset (round 9).
+#
+# Allocating all three for EVERY registered element made a 4576-element page pay
+# for ~14000 JS objects it never looks at; Chrome creates them on first access.
+# Same memoising-accessor shape as textContent above: build once, install as an
+# own data property, and every later read/write is a plain property operation.
+# An object that is not a registered source element returns undefined, exactly
+# as a missing own property did (created elements carry their own style object).
+def _lazy_el_accessor(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    idx: int32 = _find_el_by_obj(thisv)
+    if rel == NID_STYLE_ACC:
+        if idx < 0:
+            return js_undefined()
+        sv: int32 = _new_style_obj()
+        js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, sv)
+        return sv
+    if rel == NID_CLS_ACC:
+        if idx < 0:
+            return js_undefined()
+        cv: int32 = _new_classlist_obj()
+        js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, cv)
+        dom_clsobj[idx] = cv                              # maps the token list back
+        return cv
+    if rel == NID_DS_ACC:
+        if idx < 0:
+            return js_undefined()
+        # data-* live in the START TAG body: [name-end, '>').
+        dv: int32 = _build_dataset_obj(cast[uint64](dom_ns[idx] + dom_nl[idx]), \
+                                       cast[uint64](dom_cstart[idx] - 1))
+        js_set_own(thisv, cast[Ptr[uint8]]("dataset"), 7, dv)
+        return dv
+    # Setters. An accessor with NO setter silently DROPS the write, so each one
+    # installs the assigned value as an own data property — byte-for-byte the
+    # behaviour these had as plain data properties.
+    wv: int32 = js_undefined()
+    if js_arg_count() > 0:
+        wv = js_arg(0)
+    if rel == NID_STYLE_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, wv)
+    elif rel == NID_CLS_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, wv)
+        if idx >= 0:
+            dom_clsobj[idx] = wv
+    else:
+        js_set_own(thisv, cast[Ptr[uint8]]("dataset"), 7, wv)
+    return js_undefined()
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
@@ -2143,6 +2192,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _cookie_write()
     if rel >= NID_TC_GET and rel <= NID_IH_SET:
         return _inner_accessor(rel)
+    if rel >= NID_STYLE_ACC and rel <= NID_DS_ACC_SET:
+        return _lazy_el_accessor(rel)
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:
@@ -3754,6 +3805,16 @@ def _build_dom_interfaces():
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("innerHTML"), 9, \
                        js_new_native_fn(js_hbase + NID_IH_GET), \
                        js_new_native_fn(js_hbase + NID_IH_SET))
+    # style / classList / dataset: built on first access, not on registration.
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("style"), 5, \
+                       js_new_native_fn(js_hbase + NID_STYLE_ACC), \
+                       js_new_native_fn(js_hbase + NID_STYLE_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("classList"), 9, \
+                       js_new_native_fn(js_hbase + NID_CLS_ACC), \
+                       js_new_native_fn(js_hbase + NID_CLS_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("dataset"), 7, \
+                       js_new_native_fn(js_hbase + NID_DS_ACC), \
+                       js_new_native_fn(js_hbase + NID_DS_ACC_SET))
     # el.style / el.classList carry per-element STATE, but their methods do not:
     # one shared copy each on the real interface prototype (which also makes
     # `el.style instanceof CSSStyleDeclaration` and
@@ -4311,40 +4372,46 @@ def _dom_readback():
                 dom_ov_inner_len[idx] = k2
                 dom_ov_inner_html[idx] = 0
                 changed = 1
-        # style props
-        stv: int32 = js_get_prop(o, cast[Ptr[uint8]]("style"), 5)
-        r: int32 = _readback_str(stv, cast[Ptr[uint8]]("color"), 5)
-        if r >= 0:
-            dom_ov_col_off[idx] = g_rb_off
-            dom_ov_col_len[idx] = r
-            changed = 1
-        r = _readback_str(stv, cast[Ptr[uint8]]("backgroundColor"), 15)
-        if r >= 0:
-            dom_ov_bg_off[idx] = g_rb_off
-            dom_ov_bg_len[idx] = r
-            changed = 1
-        r = _readback_str(stv, cast[Ptr[uint8]]("fontWeight"), 10)
-        if r >= 0:
-            dom_ov_wt_off[idx] = g_rb_off
-            dom_ov_wt_len[idx] = r
-            changed = 1
-        r = _readback_str(stv, cast[Ptr[uint8]]("textAlign"), 9)
-        if r >= 0:
-            dom_ov_al_off[idx] = g_rb_off
-            dom_ov_al_len[idx] = r
-            changed = 1
-        r = _readback_str(stv, cast[Ptr[uint8]]("width"), 5)
-        if r >= 0:
-            dom_ov_wd_off[idx] = g_rb_off
-            dom_ov_wd_len[idx] = r
-            changed = 1
-        # display:none
-        dv: int32 = js_get_prop(stv, cast[Ptr[uint8]]("display"), 7)
-        dp: Ptr[uint8] = js_str_ptr(dv)
-        dn: int32 = _cstr_len(dp)
-        if _bytes_eq(dp, dn, cast[Ptr[uint8]]("none"), 4) != 0:
-            dom_ov_hide[idx] = 1
-            changed = 1
+        # style props. el.style is a LAZY accessor now, so reading it here for
+        # every element would materialise a CSSStyleDeclaration for all of them
+        # and undo the saving. No own property => script never touched .style =>
+        # there is nothing to read back.
+        # (member_get on undefined THROWS a TypeError, so this must be a real
+        # branch, not an undefined sentinel fed to js_get_prop.)
+        if js_has_own(o, cast[Ptr[uint8]]("style"), 5) != 0:
+          stv: int32 = js_get_prop(o, cast[Ptr[uint8]]("style"), 5)
+          r: int32 = _readback_str(stv, cast[Ptr[uint8]]("color"), 5)
+          if r >= 0:
+              dom_ov_col_off[idx] = g_rb_off
+              dom_ov_col_len[idx] = r
+              changed = 1
+          r = _readback_str(stv, cast[Ptr[uint8]]("backgroundColor"), 15)
+          if r >= 0:
+              dom_ov_bg_off[idx] = g_rb_off
+              dom_ov_bg_len[idx] = r
+              changed = 1
+          r = _readback_str(stv, cast[Ptr[uint8]]("fontWeight"), 10)
+          if r >= 0:
+              dom_ov_wt_off[idx] = g_rb_off
+              dom_ov_wt_len[idx] = r
+              changed = 1
+          r = _readback_str(stv, cast[Ptr[uint8]]("textAlign"), 9)
+          if r >= 0:
+              dom_ov_al_off[idx] = g_rb_off
+              dom_ov_al_len[idx] = r
+              changed = 1
+          r = _readback_str(stv, cast[Ptr[uint8]]("width"), 5)
+          if r >= 0:
+              dom_ov_wd_off[idx] = g_rb_off
+              dom_ov_wd_len[idx] = r
+              changed = 1
+          # display:none
+          dv: int32 = js_get_prop(stv, cast[Ptr[uint8]]("display"), 7)
+          dp: Ptr[uint8] = js_str_ptr(dv)
+          dn: int32 = _cstr_len(dp)
+          if _bytes_eq(dp, dn, cast[Ptr[uint8]]("none"), 4) != 0:
+              dom_ov_hide[idx] = 1
+              changed = 1
         # className
         clv: int32 = js_get_prop(o, cast[Ptr[uint8]]("className"), 9)
         clp: Ptr[uint8] = js_str_ptr(clv)

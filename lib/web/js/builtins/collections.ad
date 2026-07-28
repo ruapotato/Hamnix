@@ -215,12 +215,24 @@ def arr_iter_next(thisv: int32) -> int32:
 def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
     if id >= HOST_NATIVE_BASE:
         if host_dispatch_set != 0:
-            # expose args + receiver for the host dispatcher via globals
+            # expose args + receiver for the host dispatcher via globals.
+            # SAVE/RESTORE: host natives NEST. A native that reads a property
+            # can trip a lazy accessor (el.style, el.textContent) which is
+            # itself a host native, and on return the OUTER native would have
+            # found js_this()/js_arg() pointing at the inner call's receiver —
+            # observed as setAttribute('style') writing into the wrong object.
+            s_base: int32 = hostcall_base
+            s_argc: int32 = hostcall_argc
+            s_this: int32 = hostcall_this
             hostcall_base = base
             hostcall_argc = argc
             hostcall_this = thisv
             hf: Fn[int32, int32] = cast[Fn[int32, int32]](host_dispatch_addr)
-            return hf(id)
+            hrv: int32 = hf(id)
+            hostcall_base = s_base
+            hostcall_argc = s_argc
+            hostcall_this = s_this
+            return hrv
         return v_undef()
     if id == NAT_GC:
         # Test-only: force a value-arena collection. gc_disabled is >0 here (we

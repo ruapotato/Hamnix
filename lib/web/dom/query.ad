@@ -1458,7 +1458,6 @@ def _dom_register_el() -> int32:
     js_set_prop(o, cast[Ptr[uint8]]("nodeName"), 8, \
                 _tagname_upper(&src_ptr[g_el_ns], cast[int32](g_el_nl)))
     js_set_prop(o, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
-    js_set_prop(o, cast[Ptr[uint8]]("style"), 5, _new_style_obj())
     # REFLECTED STRING IDL ATTRIBUTES. `img.src`, `a.href`, `script.src`,
     # `el.title`/`img.alt` are declared as (USV)String in the IDL, so per spec
     # they are ALWAYS a string — the empty string when the content attribute is
@@ -1516,10 +1515,10 @@ def _dom_register_el() -> int32:
             js_set_prop(o, cast[Ptr[uint8]]("selectedIndex"), 13, \
                         js_number(cast[float64](_select_index(g_el_cs))))
     _attach_el_methods(o)
-    cl: int32 = _new_classlist_obj()
-    js_set_prop(o, cast[Ptr[uint8]]("classList"), 9, cl)
-    dom_clsobj[idx] = cl
-    _build_dataset(o, g_el_ns + g_el_nl, te)
+    # style / classList / dataset are LAZY accessors on HTMLElement.prototype
+    # (NID_STYLE_ACC / NID_CLS_ACC / NID_DS_ACC): 3 of the ~5.8 JS objects this
+    # used to allocate per element, for a surface most elements never expose.
+    dom_clsobj[idx] = -1
     dom_obj[idx] = o
     dom_n = idx + 1
     # Wire live traversal links. This recurses into _dom_register_el for each

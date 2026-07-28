@@ -834,7 +834,10 @@ g_dskey: Array[64, uint8]             # scratch: a camelCased data-* key
 
 # Populate `o.dataset` from the element's data-* attributes in tag body [abody,je).
 # `data-foo-bar="v"` -> dataset.fooBar == "v". Missing values -> "".
-def _build_dataset(o: int32, abody: uint64, je: uint64):
+# Returns the dataset object for the data-* attributes in the start-tag body
+# [abody, je). Split out from _build_dataset so the LAZY el.dataset accessor
+# (NID_DS_ACC) can build one on demand without going through a property write.
+def _build_dataset_obj(abody: uint64, je: uint64) -> int32:
     ds: int32 = js_new_object_v()
     i: uint64 = abody
     while i < je:
@@ -881,7 +884,11 @@ def _build_dataset(o: int32, abody: uint64, je: uint64):
                 js_set_prop(ds, &g_dskey[0], kw, js_new_string(&dom_txtbuf[0], 0))
                 i = ke
         i = i + 1
-    js_set_prop(o, cast[Ptr[uint8]]("dataset"), 7, ds)
+    return ds
+
+
+def _build_dataset(o: int32, abody: uint64, je: uint64):
+    js_set_prop(o, cast[Ptr[uint8]]("dataset"), 7, _build_dataset_obj(abody, je))
 
 
 def _dom_lookup_anchor(off: int32) -> int32:

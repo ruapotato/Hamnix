@@ -621,6 +621,21 @@ NID_IH_SET:       int32 = 127        # set el.innerHTML (parses the fragment)
 # Re-entrancy guard: the innerHTML setter runs _apply_inner_html, which itself
 # assigns properties on the same node.
 g_ih_setter_busy: int32 = 0
+# --- lazy style / classList / dataset (round 9) -------------------------------
+# Every registered element used to eagerly allocate a CSSStyleDeclaration, a
+# DOMTokenList and a dataset object — 3 of the ~5.8 JS objects per element, on
+# top of the element itself and its children array. Chrome allocates roughly
+# ONE: style/classList/dataset are created on FIRST ACCESS and most elements are
+# never touched. Same mechanism as textContent: an accessor pair on
+# HTMLElement.prototype that memoises an own data property, so once an element
+# IS touched it behaves exactly as before. This is the biggest single relief for
+# the property pool (MAX_PROP), which wikipedia alone was consuming 85-90% of.
+NID_STYLE_ACC:    int32 = 128        # get el.style      (lazy CSSStyleDeclaration)
+NID_STYLE_ACC_SET: int32 = 129       # set el.style
+NID_CLS_ACC:      int32 = 130        # get el.classList  (lazy DOMTokenList)
+NID_CLS_ACC_SET:  int32 = 131        # set el.classList
+NID_DS_ACC:       int32 = 132        # get el.dataset    (lazy, parsed from data-*)
+NID_DS_ACC_SET:   int32 = 133        # set el.dataset
 
 # The cookie jar. Document-lifetime only (there is no persistent cookie store on
 # the host/native render path); name/value bytes are bump-allocated into ck_buf,
