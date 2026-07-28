@@ -60,6 +60,18 @@ assert_grep() {
 
 # INLINE UA DEFAULTS: <sub> lowered, <sup> raised, <s>/<del> struck (2), the four
 # <kbd>/<samp>/<var> runs in monospace, and a <mark> highlight in yellow.
+#
+# The `ddx` bound was WRONG, not the engine. UAELEM ddx is the maximum ROW-START
+# x of any flowed segment, i.e. the deepest block indent on the page, and this
+# gate demanded >= 60px. MEASURED in chromium --headless on this very fixture
+# (getBoundingClientRect over every block-level descendant of <body>):
+#     DD:48  DD:48  FIGURE:48  FIGCAPTION:48  H1:8  H2:8
+# 48px is the whole page's deepest indent — the UA's `dd { margin-inline-start:
+# 40px }` plus the 8px body margin — and no browser puts a UA-default <dd> at
+# 60px. The engine reports 48, exactly chromium's number; the assertion, not the
+# render, is what had to move. The window is 40..56 so the indent must still be
+# PRESENT (a lost dd margin drops it to 8) without pinning sub-pixel font
+# metrics. Re-measured 2026-07-28.
 if awk '/^UAELEM /{
     for(i=1;i<=NF;i++){
       if($i=="sub") sub_n=$(i+1); if($i=="sup") sup_n=$(i+1);
@@ -67,10 +79,10 @@ if awk '/^UAELEM /{
       if($i=="mark") mk=$(i+1); if($i=="markbg") mb=$(i+1);
       if($i=="minpx") mp=$(i+1); if($i=="ddx") dd=$(i+1);
     }
-    ok = (sub_n>=1 && sup_n>=1 && st>=2 && mo>=4 && mk>=1 && mb=="#fff275" && mp<16 && dd>=60)
+    ok = (sub_n>=1 && sup_n>=1 && st>=2 && mo>=4 && mk>=1 && mb=="#fff275" && mp<16 && dd>=40 && dd<=56)
   }
   END{ exit(ok?0:1) }' "$DUMP"; then
-    echo "[hb-ua] PASS sub/sup raised-lowered, strike-through, mono, mark(#fff275), small<16px, dd indented>=60px"
+    echo "[hb-ua] PASS sub/sup raised-lowered, strike-through, mono, mark(#fff275), small<16px, dd indented 40-56px (chromium: 48)"
 else
     echo "[hb-ua] FAIL UAELEM inline defaults not all present"; fail=1
 fi

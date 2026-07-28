@@ -52,27 +52,37 @@ assert_grep 'LAYOUT segs=[1-9][0-9]* rows=[1-9][0-9]* ' "layout produced segment
 
 # --- infobox grid pinned to the RIGHT (large seg x) ------------------
 # The bold colspan header cell "Domestic cat" renders at a large x (>= 500).
-assert_grep '^SEG [0-9]+ (5|6|7)[0-9][0-9] #[0-9a-f]+ b1 u[0-9] l-1 bg#f8f9fa .Domestic cat.' \
+assert_grep '^SEG [0-9]+ (5|6|7)[0-9][0-9] #[0-9a-f]+ b1 u[0-9] s[0-9] l-1 bg#f8f9fa .Domestic cat.' \
     "float:right infobox header cell pinned to the right edge (large x)"
 # A data cell of the infobox grid also lands at a large x, carrying the
 # infobox background fill (background-color cascades onto the cell segments).
-assert_grep '^SEG [0-9]+ (6|7)[0-9][0-9] #[0-9a-f]+ b0 u[0-9] l-1 bg#f8f9fa .Felidae.' \
+assert_grep '^SEG [0-9]+ (6|7)[0-9][0-9] #[0-9a-f]+ b0 u[0-9] s[0-9] l-1 bg#f8f9fa .Felidae.' \
     "infobox data cell laid out on the grid at a large x, with its bg fill"
 # The float box drew a right border bar span (the '+---+' rule of the box).
-assert_grep '^SEG [0-9]+ (5|6|7)[0-9][0-9] #[0-9a-f]+ b0 u[0-9] l-1 bg- .\+-+\+.' \
+assert_grep '^SEG [0-9]+ (5|6|7)[0-9][0-9] #[0-9a-f]+ b0 u[0-9] s[0-9] l-1 bg- .\+-+\+.' \
     "floated table drew its box border"
 
 # --- body wraps on the LEFT of the float on an EARLY row -------------
-# BODYONE flows at the left margin (x=158) on row 2 — the SAME early row the
-# infobox occupies (proving beside-flow, not a stack below the table).
-assert_grep '^SEG 2 158 #[0-9a-f]+ b0 u0 l-1 bg- .BODYONE' \
+# BODYONE flows at the left margin on row 2 — the SAME early row the infobox
+# occupies (proving beside-flow, not a stack below the table).
+#
+# The x was 158 and that was WRONG, not the engine. MEASURED in chromium
+# --headless at this gate's own 900px width (getBoundingClientRect on every <p>
+# of the fixture):
+#     BODYONE@8,66.4  BODYTWO@8,136.4  BODYTHREE@8,188.4  TABLE@731.6,66.4 w160.4
+# A float:right does not indent the body's LEFT edge at all — every paragraph
+# starts at the 8px body margin, which is exactly what the engine emits. The
+# regexes also predate the `s<0|1>` strike-through field the SEG dump gained,
+# which is why all five of these assertions failed on lines that satisfy every
+# condition their own comments describe. Re-measured 2026-07-28.
+assert_grep '^SEG 2 8 #[0-9a-f]+ b0 u0 s[0-9] l-1 bg- .BODYONE' \
     "first body paragraph flows on the LEFT of the infobox, same early row"
 # The infobox has content at a large x on that same early band (rows 2-4).
 assert_grep '^SEG [234] (5|6|7)[0-9][0-9] ' \
     "infobox content co-occurs with the body on the early rows"
 
 # --- trailing paragraph clears below the float at the left -----------
-assert_grep '^SEG 1[0-9] 158 #[0-9a-f]+ b0 u0 l-1 bg- .BODYTHREE' \
+assert_grep '^SEG 1[0-9] 8 #[0-9a-f]+ b0 u0 s[0-9] l-1 bg- .BODYTHREE' \
     "paragraph after the float clears below it at the left margin"
 
 if [ "$fail" = 0 ]; then

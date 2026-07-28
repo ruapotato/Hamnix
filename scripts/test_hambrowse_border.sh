@@ -70,10 +70,26 @@ if [ "${EDGE:-}" = "#000000" ]; then
 else
     echo "[hb-border] FAIL border top edge not stroked dark (edge=$EDGE)"; fail=1
 fi
-if [ "${INSIDE:-}" = "#ffffff" ]; then
-    echo "[hb-border] PASS interior just inside the border is white padding ($INSIDE)"
+# ...and the pixel BELOW the stroke must not be the stroke colour: that is what
+# separates a real 1px line from a filled/thick box, and it is the property this
+# check was actually for.
+#
+# It used to demand `inside == #ffffff`, "clean padding". That was WRONG, not the
+# engine. MEASURED in chromium --headless on this fixture:
+#     getComputedStyle('.card').paddingTop = "0px"
+# — the fixture declares `border: 1px solid black` and NO padding, so there is no
+# padding band under the top border to be white. The sample point (box mid-x,
+# top+6) is inside the CONTENT box, and whether it is blank there depends purely
+# on how far the text run reaches: chromium's default serif renders this line
+# ~253px wide (interior ink on that row runs x=10..263 of a 624px-wide box) so
+# ITS midpoint happens to be blank, while our wider default face reaches x=321
+# and puts a glyph exactly on the sample. Same layout, different font metrics —
+# the box geometry itself matches chromium exactly (chromium rect top 314 bottom
+# 334; engine y0 314 y1 334). Re-measured 2026-07-28.
+if [ -n "${INSIDE:-}" ] && [ "${INSIDE:-}" != "${EDGE:-}" ]; then
+    echo "[hb-border] PASS the border is a 1px stroke, not a filled box (inside=$INSIDE != edge=$EDGE)"
 else
-    echo "[hb-border] FAIL interior inside the border is not clean padding (inside=$INSIDE)"; fail=1
+    echo "[hb-border] FAIL interior repeats the stroke colour — the border filled the box (inside=$INSIDE edge=$EDGE)"; fail=1
 fi
 
 # --- (B) a FLOATED bordered box (the Wikipedia-style infobox) also strokes -----
@@ -89,10 +105,21 @@ NB2=$(awk '/^BORDER n / {print $3; exit}' "$DUMP2")
 read EDGE2 INSIDE2 < <(awk '/^BORDER 0 / {for(i=1;i<=NF;i++){if($i=="edge")e=$(i+1);if($i=="inside")n=$(i+1)} print e, n; exit}' "$DUMP2")
 # The infobox fixture declares `border:1px solid #a2a9b1` (the real Wikipedia
 # infobox rule colour). The stroke must honour that DECLARED colour, not a
-# hard-coded black; `inside` stays white because the sample lands in the reserved
-# top-rule gutter ABOVE where the table's background-color fill begins.
-if [ "${NB2:-0}" -ge 1 ] && [ "${EDGE2:-}" = "#a2a9b1" ] && [ "${INSIDE2:-}" = "#ffffff" ]; then
-    echo "[hb-border] PASS floated infobox strokes a real border in its declared colour (n=$NB2 edge=$EDGE2 inside=$INSIDE2)"
+# hard-coded black — chromium agrees: getComputedStyle(table).borderTopColor is
+# rgb(162, 169, 177) = #a2a9b1, and its rendered top-edge pixel IS that colour.
+#
+# The `inside == #ffffff` half was WRONG, not the engine, and the old comment
+# said as much — it was describing an engine artifact ("the reserved top-rule
+# gutter"), not a browser. MEASURED in chromium --headless at this gate's own
+# 720px width: the table's padding-top is 0px, and the pixel one row inside its
+# top border (631, 72) is (248, 249, 250) = #f8f9fa, the table's own
+# background-color, which chromium fills right up to the stroke. White is the one
+# thing that pixel is NOT in a real browser. What the check is for is that the
+# stroke is a LINE and not a fill, so that is what it now asserts.
+# Re-measured 2026-07-28.
+if [ "${NB2:-0}" -ge 1 ] && [ "${EDGE2:-}" = "#a2a9b1" ] && \
+   [ -n "${INSIDE2:-}" ] && [ "${INSIDE2:-}" != "${EDGE2:-}" ]; then
+    echo "[hb-border] PASS floated infobox strokes a real 1px border in its declared colour (n=$NB2 edge=$EDGE2 inside=$INSIDE2)"
 else
     echo "[hb-border] FAIL floated infobox border wrong (n=${NB2:-0} edge=$EDGE2 inside=$INSIDE2)"; fail=1
 fi
