@@ -264,6 +264,12 @@ def member_get(objv: int32, key_sid: int32) -> int32:
         # spread, and minified `x[Symbol.iterator].call(x)` idioms).
         if g_sym_iterator != 0 and str_eq(key_sid, symbol_key(g_sym_iterator)) != 0:
             return v_new_native(NAT_ARR_VALUES)
+        # a numeric-STRING key indexes the string too (`s["1"]` === s[1])
+        sidx: int32 = str_as_index(key_sid)
+        if sidx >= 0:
+            ssid: int32 = strid_of(objv)
+            if sidx < str_u16_len(ssid):
+                return v_string_id(str_sub_u16(ssid, sidx, sidx + 1))
         return v_undef()
     if t == TAG_OBJ:
         o: int32 = objid_of(objv)

@@ -1556,11 +1556,16 @@ def array_from(srcv: int32, mapfn: int32, argc: int32) -> int32:
         return res
     if tag_of(srcv) == TAG_STR:
         sid: int32 = strid_of(srcv)
+        # Array.from uses the String ITERATOR: elements are CODE POINTS (whole
+        # UTF-8 sequences), and the mapFn index counts ELEMENTS, not bytes.
         j: int32 = 0
+        e: int32 = 0
         while j < str_len(sid):
-            ch: int32 = v_string_bytes(&sp_buf[st_off[sid] + j], 1)
-            array_from_push(ro, ch, j, have_map, mapfn)
-            j = j + 1
+            jl: int32 = str_seqlen_at(sid, j)
+            ch: int32 = v_string_bytes(&sp_buf[st_off[sid] + j], jl)
+            array_from_push(ro, ch, e, have_map, mapfn)
+            j = j + jl
+            e = e + 1
         return res
     if tag_of(srcv) == TAG_OBJ:
         o: int32 = objid_of(srcv)

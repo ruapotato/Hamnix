@@ -939,6 +939,18 @@ def re_is_wordb(sp: int32) -> int32:
     return 0
 
 
+# Bytes a single-character consumer (`.` / a character class) must advance.
+# The subject is UTF-8: consuming ONE BYTE of a multi-byte sequence would make
+# `"a\u00e9b".match(/./g)` return sequence FRAGMENTS — invalid strings that
+# then propagate. Consume the whole sequence so every match boundary the engine
+# ever reports lands on a character boundary.
+def re_adv(sp: int32) -> int32:
+    l: int32 = u8_seqlen(re_subj(sp))
+    if sp + l > rx_len:
+        return 1
+    return l
+
+
 def re_run(pc0: int32, sp0: int32) -> int32:
     pc: int32 = pc0
     sp: int32 = sp0
@@ -953,13 +965,13 @@ def re_run(pc0: int32, sp0: int32) -> int32:
         elif op == RI_ANY:
             if sp < rx_len and (re_da != 0 or re_subj(sp) != 10):
                 pc = pc + 1
-                sp = sp + 1
+                sp = sp + re_adv(sp)
                 continue
             return 0
         elif op == RI_CLASS:
             if sp < rx_len and re_inclass(re_x[pc], re_subj(sp)) != 0:
                 pc = pc + 1
-                sp = sp + 1
+                sp = sp + re_adv(sp)
                 continue
             return 0
         elif op == RI_MATCH:
@@ -1088,7 +1100,11 @@ def regex_search(prog_start: int32, ncap: int32, sid: int32, startpos: int32, ic
         # sticky (`y`): the match must begin exactly at startpos — no forward scan.
         if sticky != 0:
             return -1
+        # Advance the start by a whole UTF-8 sequence: a match may not BEGIN in
+        # the middle of one.
         pos = pos + 1
+        while pos < rx_len and sp_buf[rx_off + pos] >= 128 and sp_buf[rx_off + pos] < 192:
+            pos = pos + 1
     return -1
 
 
