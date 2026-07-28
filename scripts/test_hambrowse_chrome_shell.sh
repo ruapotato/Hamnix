@@ -12,8 +12,8 @@ fail=0
 # ---- (1) pure logic modules: ad-block + search engines --------------
 UBIN="$OUT/hb_chrome_test"
 echo "[hb-shell] compiling module unit harness (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_chrome_test_host.ad -o "$UBIN" 2>"$OUT/shell_unit.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_chrome_test_host.ad "$UBIN" 2>"$OUT/shell_unit.log"; then
     echo "[hb-shell] FAIL: unit harness did not compile"; cat "$OUT/shell_unit.log"; exit 1
 fi
 U="$OUT/shell_unit.txt"
@@ -39,8 +39,7 @@ assert_u 'DONE'            "unit harness ran to completion"
 # ---- (2) overlay chrome: menu + dev-tools panels --------------------
 WBIN="$OUT/hambrowse_gfx_window"
 echo "[hb-shell] compiling window compositor (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_gfx_window.ad -o "$WBIN" 2>"$OUT/shell_win.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_gfx_window.ad "$WBIN" 2>"$OUT/shell_win.log"; then
     echo "[hb-shell] FAIL: window compositor did not compile"; cat "$OUT/shell_win.log"; exit 1
 fi
 FIX="tests/fixtures/hambrowse_article.html"
@@ -88,8 +87,7 @@ else echo "[hb-shell] FAIL dev-tools header bar not found"; fail=1; fi
 
 # native browser must still compile with all the shell wiring.
 echo "[hb-shell] confirming native hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hb_shell_native.elf" 2>"$OUT/shell_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hb_shell_native.elf" 2>"$OUT/shell_native.log"; then
     echo "[hb-shell] FAIL: native hambrowse did not compile"; cat "$OUT/shell_native.log"; fail=1
 else echo "[hb-shell] PASS native hambrowse compiles with the shell wiring"; fi
 

@@ -23,8 +23,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[shotoverlay-host] compiling overlay model + harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/shotoverlay_host.ad -o "$BIN" 2>"$OUT/shotoverlay_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/shotoverlay_host.ad "$BIN" 2>"$OUT/shotoverlay_compile.log"; then
     echo "[shotoverlay-host] FAIL: host harness did not compile"
     cat "$OUT/shotoverlay_compile.log"; exit 1
 fi
@@ -83,8 +83,7 @@ assert_no_grep '^PIX desk-sel 300 300 #000000'     "selection interior shows the
 
 # --- NATIVE app consumes the shared overlay model (compiles) --------------
 echo "[shotoverlay-host] compiling NATIVE hamshotui for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamshotui.ad -o "$OUT/hamshotui_native.elf" 2>"$OUT/shotoverlay_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamshotui.ad "$OUT/hamshotui_native.elf" 2>"$OUT/shotoverlay_native.log"; then
     echo "[shotoverlay-host] FAIL: native hamshotui did not compile"
     tail -40 "$OUT/shotoverlay_native.log"; fail=1
 else

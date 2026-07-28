@@ -16,15 +16,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[ctl-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamctl_host.ad -o "$BIN" 2>"$OUT/ctl_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamctl_host.ad "$BIN" 2>"$OUT/ctl_compile.log"; then
     echo "[ctl-host] FAIL: host harness did not compile"; cat "$OUT/ctl_compile.log"; exit 1
 fi
 echo "[ctl-host] PASS host harness compiled -> $BIN"
 
 echo "[ctl-host] compiling NATIVE hamctl for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamctl.ad -o "$OUT/hamctl_native.elf" 2>"$OUT/ctl_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamctl.ad "$OUT/hamctl_native.elf" 2>"$OUT/ctl_native.log"; then
     echo "[ctl-host] FAIL: native hamctl did not compile"; cat "$OUT/ctl_native.log"; exit 1
 fi
 echo "[ctl-host] PASS native hamctl still compiles"

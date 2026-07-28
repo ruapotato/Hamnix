@@ -22,8 +22,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[deflate-host] compiling encoder host driver for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/deflate_host.ad -o "$BIN" 2>"$OUT/deflate_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/deflate_host.ad "$BIN" 2>"$OUT/deflate_compile.log"; then
     echo "[deflate-host] FAIL: host driver did not compile"; cat "$OUT/deflate_compile.log"; exit 1
 fi
 echo "[deflate-host] PASS host driver compiled -> $BIN"

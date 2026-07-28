@@ -31,8 +31,8 @@ fail=0
 command -v sed >/dev/null 2>&1 || { echo "[sed-host] SKIP: no system sed"; exit 0; }
 
 echo "[sed-host] compiling user/sed.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/sed.ad -o "$BIN" 2>"$OUT/sed_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/sed.ad "$BIN" 2>"$OUT/sed_compile.log"; then
     echo "[sed-host] FAIL: host build did not compile"; cat "$OUT/sed_compile.log"; exit 1
 fi
 echo "[sed-host] PASS host build compiled -> $BIN"

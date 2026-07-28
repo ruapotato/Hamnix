@@ -21,15 +21,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[snake-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsnakescene_host.ad -o "$BIN" 2>"$OUT/snake_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsnakescene_host.ad "$BIN" 2>"$OUT/snake_compile.log"; then
     echo "[snake-host] FAIL: host harness did not compile"; cat "$OUT/snake_compile.log"; exit 1
 fi
 echo "[snake-host] PASS host harness compiled -> $BIN"
 
 echo "[snake-host] compiling NATIVE hamsnakescene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsnakescene.ad -o "$OUT/hamsnake_native.elf" 2>"$OUT/snake_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsnakescene.ad "$OUT/hamsnake_native.elf" 2>"$OUT/snake_native.log"; then
     echo "[snake-host] FAIL: native hamsnakescene did not compile"; cat "$OUT/snake_native.log"; exit 1
 fi
 echo "[snake-host] PASS native hamsnakescene still compiles (device dual-target intact)"

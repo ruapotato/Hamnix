@@ -27,15 +27,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-btncenter] compiling text harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$OUT/hambrowse_host" 2>"$OUT/compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$OUT/hambrowse_host" 2>"$OUT/compile.log"; then
     echo "[hb-btncenter] FAIL: host harness did not compile"; cat "$OUT/compile.log"; exit 1
 fi
 echo "[hb-btncenter] PASS host harness compiled"
 
 echo "[hb-btncenter] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
     echo "[hb-btncenter] FAIL: native hambrowse did not compile"; cat "$OUT/native.log"; exit 1
 fi
 echo "[hb-btncenter] PASS native hambrowse still compiles"
@@ -56,8 +55,7 @@ fi
 
 # ---- (2) vertically-centred label: pixel check on the rendered PNG ----------
 echo "[hb-btncenter] compiling pixel backend ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$OUT/hambrowse_gfx" 2>"$OUT/gfxc.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$OUT/hambrowse_gfx" 2>"$OUT/gfxc.log"; then
     echo "[hb-btncenter] FAIL: pixel backend did not compile"; cat "$OUT/gfxc.log"; exit 1
 fi
 PPM="$OUT/btncenter.ppm"; PNG="$OUT/btncenter.png"

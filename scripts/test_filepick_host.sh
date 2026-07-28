@@ -58,8 +58,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[filepick-host] compiling the shared dialog + harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/filepick_host.ad -o "$BIN" 2>"$OUT/fp_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/filepick_host.ad "$BIN" 2>"$OUT/fp_compile.log"; then
     echo "[filepick-host] FAIL: host harness did not compile"
     cat "$OUT/fp_compile.log"; exit 1
 fi

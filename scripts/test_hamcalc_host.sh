@@ -16,15 +16,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[calc-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamcalcscene_host.ad -o "$BIN" 2>"$OUT/calc_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamcalcscene_host.ad "$BIN" 2>"$OUT/calc_compile.log"; then
     echo "[calc-host] FAIL: host harness did not compile"; cat "$OUT/calc_compile.log"; exit 1
 fi
 echo "[calc-host] PASS host harness compiled -> $BIN"
 
 echo "[calc-host] compiling NATIVE hamcalcscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamcalcscene.ad -o "$OUT/hamcalc_native.elf" 2>"$OUT/calc_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamcalcscene.ad "$OUT/hamcalc_native.elf" 2>"$OUT/calc_native.log"; then
     echo "[calc-host] FAIL: native hamcalcscene did not compile"; cat "$OUT/calc_native.log"; exit 1
 fi
 echo "[calc-host] PASS native hamcalcscene still compiles"

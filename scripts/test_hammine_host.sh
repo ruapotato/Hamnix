@@ -20,15 +20,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[mine-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamminescene_host.ad -o "$BIN" 2>"$OUT/mine_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamminescene_host.ad "$BIN" 2>"$OUT/mine_compile.log"; then
     echo "[mine-host] FAIL: host harness did not compile"; cat "$OUT/mine_compile.log"; exit 1
 fi
 echo "[mine-host] PASS host harness compiled -> $BIN"
 
 echo "[mine-host] compiling NATIVE hamminescene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamminescene.ad -o "$OUT/hammine_native.elf" 2>"$OUT/mine_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamminescene.ad "$OUT/hammine_native.elf" 2>"$OUT/mine_native.log"; then
     echo "[mine-host] FAIL: native hamminescene did not compile"; cat "$OUT/mine_native.log"; exit 1
 fi
 echo "[mine-host] PASS native hamminescene still compiles (device dual-target intact)"

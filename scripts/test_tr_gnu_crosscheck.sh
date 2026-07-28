@@ -39,9 +39,8 @@ $OUT"
 file "$ELF" | grep -q "ELF 64-bit" || fail "not a 64-bit ELF: $(file "$ELF")"
 
 # --- on-device binary must still compile clean ------------------------
-python3 -m compiler.adder compile --target=x86_64-adder-user \
-    user/tr.ad -o "$WORK/tr_native.elf" >/dev/null 2>&1 \
-    || fail "native x86_64-adder-user compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user user/tr.ad "$WORK/tr_native.elf" >/dev/null 2>&1 || fail "native x86_64-adder-user compile failed"
 echo "  ok: native tr compiles (x86_64-adder-user)"
 
 pass=0

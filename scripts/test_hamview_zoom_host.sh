@@ -51,8 +51,8 @@ fi
 # Compile the NATIVE viewer (proves the on-device binary still builds).
 # -------------------------------------------------------------------------
 echo "[hamview-zoom] compiling NATIVE hamview for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamview.ad -o "$OUT/hamview_native.elf" 2>"$OUT/hamview_native.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-adder-user user/hamview.ad "$OUT/hamview_native.elf" 2>"$OUT/hamview_native.log"; then
     echo "[hamview-zoom] FAIL: native hamview did not compile"; cat "$OUT/hamview_native.log"; exit 1
 fi
 echo "[hamview-zoom] PASS native hamview compiled"
@@ -61,8 +61,7 @@ echo "[hamview-zoom] PASS native hamview compiled"
 # Compile the host zoom harness.
 # -------------------------------------------------------------------------
 echo "[hamview-zoom] compiling host zoom harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamview_zoom_host.ad -o "$BIN" 2>"$OUT/hamview_zoom_compile.log"; then
+if ! adder_bin x86_64-linux user/hamview_zoom_host.ad "$BIN" 2>"$OUT/hamview_zoom_compile.log"; then
     echo "[hamview-zoom] FAIL: host harness did not compile"; cat "$OUT/hamview_zoom_compile.log"; exit 1
 fi
 echo "[hamview-zoom] PASS host harness compiled -> $BIN"

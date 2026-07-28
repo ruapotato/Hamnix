@@ -34,16 +34,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[pymethods-host] compiling hamsh for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsh.ad -o "$BIN" 2>"$OUT/pymethods_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsh.ad "$BIN" 2>"$OUT/pymethods_compile.log"; then
     echo "[pymethods-host] FAIL: host hamsh did not compile/link"
     cat "$OUT/pymethods_compile.log"; exit 1
 fi
 echo "[pymethods-host] PASS host hamsh compiled -> $BIN"
 
 echo "[pymethods-host] compiling NATIVE hamsh for x86_64-adder-user (regress guard) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsh.ad -o "$OUT/hamsh_pymethods_native.elf" 2>"$OUT/pymethods_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsh.ad "$OUT/hamsh_pymethods_native.elf" 2>"$OUT/pymethods_native.log"; then
     echo "[pymethods-host] FAIL: native (device) hamsh did not compile"
     cat "$OUT/pymethods_native.log"; exit 1
 fi

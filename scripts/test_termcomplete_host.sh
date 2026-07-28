@@ -18,15 +18,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[termcmp-host] compiling completion-apply layer + harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/termcomplete_host.ad -o "$BIN" 2>"$OUT/termcmp_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/termcomplete_host.ad "$BIN" 2>"$OUT/termcmp_compile.log"; then
     echo "[termcmp-host] FAIL: host harness did not compile"; cat "$OUT/termcmp_compile.log"; exit 1
 fi
 echo "[termcmp-host] PASS host harness compiled -> $BIN"
 
 echo "[termcmp-host] compiling NATIVE hamtermscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamtermscene.ad -o "$OUT/hamtermscene_native.elf" 2>"$OUT/termcmp_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamtermscene.ad "$OUT/hamtermscene_native.elf" 2>"$OUT/termcmp_native.log"; then
     echo "[termcmp-host] FAIL: native hamtermscene did not compile"; cat "$OUT/termcmp_native.log"; exit 1
 fi
 echo "[termcmp-host] PASS native hamtermscene still compiles with Tab completion"

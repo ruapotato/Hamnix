@@ -28,8 +28,8 @@ fail=0
 command -v awk >/dev/null 2>&1 || { echo "[awk-host] SKIP: no system awk"; exit 0; }
 
 echo "[awk-host] compiling user/awk.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/awk.ad -o "$BIN" 2>"$OUT/awk_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/awk.ad "$BIN" 2>"$OUT/awk_compile.log"; then
     echo "[awk-host] FAIL: host build did not compile"; cat "$OUT/awk_compile.log"; exit 1
 fi
 echo "[awk-host] PASS host build compiled -> $BIN"

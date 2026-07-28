@@ -16,14 +16,13 @@ BIN="$OUT/primary_paste_chain_host"
 mkdir -p "$OUT" build/user
 
 echo "[prim-chain] compiling host gate (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/primary_paste_chain_host.ad -o "$BIN" 2>"$OUT/prim_chain_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/primary_paste_chain_host.ad "$BIN" 2>"$OUT/prim_chain_compile.log"; then
     echo "[prim-chain] FAIL: host gate did not compile"; cat "$OUT/prim_chain_compile.log"; exit 1
 fi
 
 echo "[prim-chain] confirming /bin/haminput inspector compiles NATIVE ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/haminput.ad -o "$OUT/haminput_native.elf" 2>"$OUT/prim_chain_native.log"; then
+if ! adder_bin x86_64-adder-user user/haminput.ad "$OUT/haminput_native.elf" 2>"$OUT/prim_chain_native.log"; then
     echo "[prim-chain] FAIL: native haminput did not compile"
     cat "$OUT/prim_chain_native.log"; exit 1
 fi

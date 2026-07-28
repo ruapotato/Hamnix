@@ -171,16 +171,15 @@ fi
 
 # ---- 2. Compile the host harness -----------------------------------------
 echo "[jpeg-host] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsdl_jpeg_host.ad -o "$BIN" 2>"$OUT/hamsdl_jpeg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsdl_jpeg_host.ad "$BIN" 2>"$OUT/hamsdl_jpeg_compile.log"; then
     echo "[jpeg-host] FAIL: host harness did not compile"; cat "$OUT/hamsdl_jpeg_compile.log"; exit 1
 fi
 echo "[jpeg-host] PASS host harness compiled -> $BIN"
 
 # ---- 3. Native dual-target compile (lib/jpeg.ad + hamgame on device) -----
 echo "[jpeg-host] compiling NATIVE hamgamedemo (exercises lib/jpeg + hamgame) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamgamedemo.ad -o "$OUT/hamgamedemo_jpeg_native.elf" 2>"$OUT/hamsdl_jpeg_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamgamedemo.ad "$OUT/hamgamedemo_jpeg_native.elf" 2>"$OUT/hamsdl_jpeg_native.log"; then
     echo "[jpeg-host] FAIL: native build did not compile"; cat "$OUT/hamsdl_jpeg_native.log"; exit 1
 fi
 echo "[jpeg-host] PASS native build still compiles (device dual-target intact)"

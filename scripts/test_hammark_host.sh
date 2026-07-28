@@ -21,15 +21,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hammark-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hammark_host.ad -o "$BIN" 2>"$OUT/hm_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hammark_host.ad "$BIN" 2>"$OUT/hm_compile.log"; then
     echo "[hammark-host] FAIL: host harness did not compile"; cat "$OUT/hm_compile.log"; exit 1
 fi
 echo "[hammark-host] PASS host harness compiled -> $BIN"
 
 echo "[hammark-host] compiling NATIVE hammark for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hammark.ad -o "$OUT/hammark_native.elf" 2>"$OUT/hm_native.log"; then
+if ! adder_bin x86_64-adder-user user/hammark.ad "$OUT/hammark_native.elf" 2>"$OUT/hm_native.log"; then
     echo "[hammark-host] FAIL: native hammark did not compile"; cat "$OUT/hm_native.log"; exit 1
 fi
 echo "[hammark-host] PASS native hammark still compiles"

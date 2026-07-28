@@ -36,8 +36,8 @@ fi
 
 # --- 2. host unit test compiles + runs ------------------------------------
 echo "[dropplace] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        tests/dropplace_host.ad -o "$BIN" 2>"$OUT/dropplace_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux tests/dropplace_host.ad "$BIN" 2>"$OUT/dropplace_compile.log"; then
     echo "[dropplace] FAIL: host harness did not compile"
     cat "$OUT/dropplace_compile.log"; echo "[dropplace] RESULT: FAIL"; exit 1
 fi

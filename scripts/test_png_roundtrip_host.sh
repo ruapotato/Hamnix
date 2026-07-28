@@ -26,8 +26,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[png-rt] compiling round-trip host driver for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        tests/test_png_roundtrip_host.ad -o "$BIN" 2>"$OUT/png_rt_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux tests/test_png_roundtrip_host.ad "$BIN" 2>"$OUT/png_rt_compile.log"; then
     echo "[png-rt] FAIL: host driver did not compile"; cat "$OUT/png_rt_compile.log"; exit 1
 fi
 echo "[png-rt] PASS host driver compiled -> $BIN"

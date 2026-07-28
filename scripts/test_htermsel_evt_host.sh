@@ -22,17 +22,15 @@ BIN="$OUT/htermsel_evt_host"
 mkdir -p "$OUT"
 
 echo "[htsel-evt] compiling host gate (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/htermsel_evt_host.ad -o "$BIN" 2>"$OUT/htsel_evt_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/htermsel_evt_host.ad "$BIN" 2>"$OUT/htsel_evt_compile.log"; then
     echo "[htsel-evt] FAIL: host harness did not compile"
     cat "$OUT/htsel_evt_compile.log"
     exit 1
 fi
 
 echo "[htsel-evt] confirming the shipped terminal still compiles NATIVE ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamtermscene.ad -o "$OUT/hamtermscene_native.elf" \
-        2>"$OUT/htsel_evt_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamtermscene.ad "$OUT/hamtermscene_native.elf" 2>"$OUT/htsel_evt_native.log"; then
     echo "[htsel-evt] FAIL: native hamtermscene did not compile"
     cat "$OUT/htsel_evt_native.log"
     exit 1

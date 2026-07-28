@@ -24,16 +24,15 @@ FIX="tests/fixtures/hambrowse_adoptdom.html"
 mkdir -p "$OUT"
 
 echo "[hb-adoptdom] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/adoptdom_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/adoptdom_compile.log"; then
     echo "[hb-adoptdom] FAIL: host harness did not compile"
     cat "$OUT/adoptdom_compile.log"; exit 1
 fi
 echo "[hb-adoptdom] PASS host harness compiled -> $BIN"
 
 echo "[hb-adoptdom] confirming NATIVE hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/adoptdom_native.elf" 2>"$OUT/adoptdom_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/adoptdom_native.elf" 2>"$OUT/adoptdom_native.log"; then
     echo "[hb-adoptdom] FAIL: native hambrowse did not compile"
     cat "$OUT/adoptdom_native.log"; exit 1
 fi

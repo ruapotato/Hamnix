@@ -28,10 +28,8 @@ bash scripts/build_modules.sh >/dev/null
 
 echo "[test_socketpair] (2/5) Build tests/test_socketpair.ad -> $TEST_ELF"
 mkdir -p build/user
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_socketpair.ad \
-    -o "$TEST_ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_socketpair.ad "$TEST_ELF" >/dev/null
 
 echo "[test_socketpair] (3/5) Plant /init = hamsh + /bin/test_socketpair"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null

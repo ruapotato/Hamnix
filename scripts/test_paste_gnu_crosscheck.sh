@@ -25,8 +25,8 @@ fail=0
 command -v paste >/dev/null 2>&1 || { echo "[paste-host] SKIP: no system paste"; exit 0; }
 
 echo "[paste-host] compiling user/paste.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/paste.ad -o "$BIN" 2>"$OUT/paste_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/paste.ad "$BIN" 2>"$OUT/paste_compile.log"; then
     echo "[paste-host] FAIL: host build did not compile"; cat "$OUT/paste_compile.log"; exit 1
 fi
 echo "[paste-host] PASS host build compiled -> $BIN"

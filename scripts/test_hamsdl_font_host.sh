@@ -32,16 +32,15 @@ fail=0
 
 # ---- 1. Compile the host harness -----------------------------------------
 echo "[font-host] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsdl_font_host.ad -o "$BIN" 2>"$OUT/hamsdl_font_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsdl_font_host.ad "$BIN" 2>"$OUT/hamsdl_font_compile.log"; then
     echo "[font-host] FAIL: host harness did not compile"; cat "$OUT/hamsdl_font_compile.log"; exit 1
 fi
 echo "[font-host] PASS host harness compiled -> $BIN"
 
 # ---- 2. Native dual-target compile (lib/hamfont + hamgame on device) -----
 echo "[font-host] compiling NATIVE hamgamedemo (exercises lib/hamfont + hamgame) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamgamedemo.ad -o "$OUT/hamgamedemo_font_native.elf" 2>"$OUT/hamsdl_font_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamgamedemo.ad "$OUT/hamgamedemo_font_native.elf" 2>"$OUT/hamsdl_font_native.log"; then
     echo "[font-host] FAIL: native build did not compile"; cat "$OUT/hamsdl_font_native.log"; exit 1
 fi
 echo "[font-host] PASS native build still compiles (device dual-target intact)"

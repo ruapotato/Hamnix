@@ -16,8 +16,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[ctxmenu-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/ctxmenuscene_host.ad -o "$BIN" 2>"$OUT/ctxmenu_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/ctxmenuscene_host.ad "$BIN" 2>"$OUT/ctxmenu_compile.log"; then
     echo "[ctxmenu-host] FAIL: host harness did not compile"; cat "$OUT/ctxmenu_compile.log"; exit 1
 fi
 echo "[ctxmenu-host] PASS host harness compiled -> $BIN"
@@ -116,8 +116,7 @@ assert_grep '^CTYPE filter=\"work\" len=4 rows=3'    "typed keystrokes edit the 
 
 # --- NATIVE panel consumes the searchable chooser (compiles) -------------
 echo "[ctxmenu-host] compiling NATIVE hampanelscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hampanelscene.ad -o "$OUT/hampanelscene_native.elf" 2>"$OUT/ctxmenu_panel_native.log"; then
+if ! adder_bin x86_64-adder-user user/hampanelscene.ad "$OUT/hampanelscene_native.elf" 2>"$OUT/ctxmenu_panel_native.log"; then
     echo "[ctxmenu-host] FAIL: native hampanelscene did not compile"; tail -40 "$OUT/ctxmenu_panel_native.log"; fail=1
 else
     echo "[ctxmenu-host] PASS native hampanelscene still compiles (wired to the chooser)"
@@ -125,8 +124,7 @@ fi
 
 # --- NATIVE compositor still compiles from the shared model --------------
 echo "[ctxmenu-host] compiling NATIVE hamUId for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamUId.ad -o "$OUT/hamUId_native.elf" 2>"$OUT/ctxmenu_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamUId.ad "$OUT/hamUId_native.elf" 2>"$OUT/ctxmenu_native.log"; then
     echo "[ctxmenu-host] FAIL: native hamUId did not compile"; tail -40 "$OUT/ctxmenu_native.log"; fail=1
 else
     echo "[ctxmenu-host] PASS native hamUId still compiles"

@@ -36,10 +36,8 @@ bash scripts/build_user.sh >/dev/null
 bash scripts/build_modules.sh >/dev/null
 
 echo "[test_devtime] (2/5) Build tests/test_devtime.ad -> $TEST_ELF"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_devtime.ad \
-    -o "$TEST_ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devtime.ad "$TEST_ELF" >/dev/null
 
 echo "[test_devtime] (3/5) Plant /init = hamsh + /bin/test_devtime in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null

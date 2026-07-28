@@ -25,8 +25,8 @@ fail=0
 command -v comm >/dev/null 2>&1 || { echo "[comm-host] SKIP: no system comm"; exit 0; }
 
 echo "[comm-host] compiling user/comm.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/comm.ad -o "$BIN" 2>"$OUT/comm_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/comm.ad "$BIN" 2>"$OUT/comm_compile.log"; then
     echo "[comm-host] FAIL: host build did not compile"; cat "$OUT/comm_compile.log"; exit 1
 fi
 echo "[comm-host] PASS host build compiled -> $BIN"

@@ -23,15 +23,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamconvert-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamconvert_host.ad -o "$BIN" 2>"$OUT/hcv_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamconvert_host.ad "$BIN" 2>"$OUT/hcv_compile.log"; then
     echo "[hamconvert-host] FAIL: host harness did not compile"; cat "$OUT/hcv_compile.log"; exit 1
 fi
 echo "[hamconvert-host] PASS host harness compiled -> $BIN"
 
 echo "[hamconvert-host] compiling NATIVE hamconvert for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamconvert.ad -o "$OUT/hamconvert_native.elf" 2>"$OUT/hcv_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamconvert.ad "$OUT/hamconvert_native.elf" 2>"$OUT/hcv_native.log"; then
     echo "[hamconvert-host] FAIL: native hamconvert did not compile"; cat "$OUT/hcv_native.log"; exit 1
 fi
 echo "[hamconvert-host] PASS native hamconvert still compiles"

@@ -41,15 +41,14 @@ if [ ! -s "$MP3" ]; then
 fi
 
 echo "[hamaudio-mp3-host] compiling mp3 UI host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamaudioscene_mp3_host.ad -o "$BIN" 2>"$OUT/hamaudio_mp3_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamaudioscene_mp3_host.ad "$BIN" 2>"$OUT/hamaudio_mp3_compile.log"; then
     echo "[hamaudio-mp3-host] FAIL: host harness did not compile"; cat "$OUT/hamaudio_mp3_compile.log"; exit 1
 fi
 echo "[hamaudio-mp3-host] PASS host harness compiled -> $BIN"
 
 echo "[hamaudio-mp3-host] compiling NATIVE hamaudioscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamaudioscene.ad -o "$OUT/hamaudio_native.elf" 2>"$OUT/hamaudio_mp3_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamaudioscene.ad "$OUT/hamaudio_native.elf" 2>"$OUT/hamaudio_mp3_native.log"; then
     echo "[hamaudio-mp3-host] FAIL: native hamaudioscene did not compile"; cat "$OUT/hamaudio_mp3_native.log"; exit 1
 fi
 echo "[hamaudio-mp3-host] PASS native hamaudioscene still compiles"

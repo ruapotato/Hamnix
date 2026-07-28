@@ -31,15 +31,14 @@ rm -f "$DOC" "$ALT"
 fail=0
 
 echo "[hamslides-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamslides_host.ad -o "$BIN" 2>"$OUT/hsl_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamslides_host.ad "$BIN" 2>"$OUT/hsl_compile.log"; then
     echo "[hamslides-host] FAIL: host harness did not compile"; cat "$OUT/hsl_compile.log"; exit 1
 fi
 echo "[hamslides-host] PASS host harness compiled -> $BIN"
 
 echo "[hamslides-host] compiling NATIVE hamslides for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamslides.ad -o "$OUT/hamslides_native.elf" 2>"$OUT/hsl_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamslides.ad "$OUT/hamslides_native.elf" 2>"$OUT/hsl_native.log"; then
     echo "[hamslides-host] FAIL: native hamslides did not compile"; cat "$OUT/hsl_native.log"; exit 1
 fi
 echo "[hamslides-host] PASS native hamslides still compiles"

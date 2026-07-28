@@ -19,8 +19,8 @@ BIN="$OUT/js_host"
 mkdir -p "$OUT"
 
 echo "[js-esc] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/js_host.ad -o "$BIN" 2>"$OUT/js_esc_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/js_host.ad "$BIN" 2>"$OUT/js_esc_compile.log"; then
     echo "[js-esc] FAIL: host driver did not compile"; cat "$OUT/js_esc_compile.log"; exit 1
 fi
 echo "[js-esc] PASS host driver compiled -> $BIN"

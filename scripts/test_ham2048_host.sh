@@ -20,15 +20,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[2048-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/ham2048scene_host.ad -o "$BIN" 2>"$OUT/2048_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/ham2048scene_host.ad "$BIN" 2>"$OUT/2048_compile.log"; then
     echo "[2048-host] FAIL: host harness did not compile"; cat "$OUT/2048_compile.log"; exit 1
 fi
 echo "[2048-host] PASS host harness compiled -> $BIN"
 
 echo "[2048-host] compiling NATIVE ham2048scene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/ham2048scene.ad -o "$OUT/ham2048_native.elf" 2>"$OUT/2048_native.log"; then
+if ! adder_bin x86_64-adder-user user/ham2048scene.ad "$OUT/ham2048_native.elf" 2>"$OUT/2048_native.log"; then
     echo "[2048-host] FAIL: native ham2048scene did not compile"; cat "$OUT/2048_native.log"; exit 1
 fi
 echo "[2048-host] PASS native ham2048scene still compiles"

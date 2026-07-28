@@ -35,8 +35,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-subadv] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/subadv_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/subadv_compile.log"; then
     echo "[hb-subadv] FAIL: driver did not compile"; cat "$OUT/subadv_compile.log"; exit 1
 fi
 

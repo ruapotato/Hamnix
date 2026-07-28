@@ -21,15 +21,14 @@ FIX="tests/fixtures/hambrowse_height.html"
 mkdir -p "$OUT"
 
 echo "[hb-height] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/compile.log"; then
     echo "[hb-height] FAIL: host harness did not compile"; cat "$OUT/compile.log"; exit 1
 fi
 echo "[hb-height] PASS host harness compiled -> $BIN"
 
 echo "[hb-height] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
     echo "[hb-height] FAIL: native hambrowse did not compile"; cat "$OUT/native.log"; exit 1
 fi
 echo "[hb-height] PASS native hambrowse still compiles"

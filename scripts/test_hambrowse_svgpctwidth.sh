@@ -31,15 +31,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-svgpct] compiling pixel backend ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/svgpct_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/svgpct_compile.log"; then
     echo "[hb-svgpct] FAIL: driver did not compile"; cat "$OUT/svgpct_compile.log"; exit 1
 fi
 echo "[hb-svgpct] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-svgpct] compiling native hambrowse (dual-target) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse.native" 2>"$OUT/svgpct_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse.native" 2>"$OUT/svgpct_native.log"; then
     echo "[hb-svgpct] FAIL: native hambrowse did not compile"
     cat "$OUT/svgpct_native.log"; exit 1
 fi

@@ -16,15 +16,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[keydemo-host] compiling game-key decoder + harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/gamekey_host.ad -o "$BIN" 2>"$OUT/gamekey_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/gamekey_host.ad "$BIN" 2>"$OUT/gamekey_compile.log"; then
     echo "[keydemo-host] FAIL: host harness did not compile"; cat "$OUT/gamekey_compile.log"; exit 1
 fi
 echo "[keydemo-host] PASS host harness compiled -> $BIN"
 
 echo "[keydemo-host] compiling NATIVE keydemo for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/keydemo.ad -o "$OUT/keydemo_native.elf" 2>"$OUT/keydemo_native.log"; then
+if ! adder_bin x86_64-adder-user user/keydemo.ad "$OUT/keydemo_native.elf" 2>"$OUT/keydemo_native.log"; then
     echo "[keydemo-host] FAIL: native keydemo did not compile"; cat "$OUT/keydemo_native.log"; exit 1
 fi
 echo "[keydemo-host] PASS native keydemo still compiles"

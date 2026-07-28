@@ -43,15 +43,14 @@ if [ ! -s "$MP3" ]; then
 fi
 
 echo "[hamsdl-audio] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsdl_audio_host.ad -o "$BIN" 2>"$OUT/hamsdl_audio_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsdl_audio_host.ad "$BIN" 2>"$OUT/hamsdl_audio_compile.log"; then
     echo "[hamsdl-audio] FAIL: host harness did not compile"; cat "$OUT/hamsdl_audio_compile.log"; exit 1
 fi
 echo "[hamsdl-audio] PASS host harness compiled -> $BIN"
 
 echo "[hamsdl-audio] compiling NATIVE audio demo for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsdl_audio_demo.ad -o "$OUT/hamsdl_audio_native.elf" 2>"$OUT/hamsdl_audio_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsdl_audio_demo.ad "$OUT/hamsdl_audio_native.elf" 2>"$OUT/hamsdl_audio_native.log"; then
     echo "[hamsdl-audio] FAIL: native audio demo did not compile"; cat "$OUT/hamsdl_audio_native.log"; exit 1
 fi
 echo "[hamsdl-audio] PASS native audio demo compiles (device dual-target intact)"

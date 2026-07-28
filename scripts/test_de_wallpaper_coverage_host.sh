@@ -45,8 +45,8 @@ python3 -c 'import compiler.adder' >/dev/null 2>&1 || {
 
 mkdir -p "$OUT"
 echo "[wpcover] compiling hamdesktop for the host ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamdesktop.ad -o "$OUT/hamdesktop" >"$OUT/compile.log" 2>&1; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamdesktop.ad "$OUT/hamdesktop" >"$OUT/compile.log" 2>&1; then
     echo "[wpcover] FAIL: hamdesktop did not compile" >&2
     tail -20 "$OUT/compile.log" >&2; exit 1
 fi

@@ -58,15 +58,14 @@ rm -f "$DOC" "$ALT"
 fail=0
 
 echo "[hamwrite-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamwrite_host.ad -o "$BIN" 2>"$OUT/hw_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamwrite_host.ad "$BIN" 2>"$OUT/hw_compile.log"; then
     echo "[hamwrite-host] FAIL: host harness did not compile"; cat "$OUT/hw_compile.log"; exit 1
 fi
 echo "[hamwrite-host] PASS host harness compiled -> $BIN"
 
 echo "[hamwrite-host] compiling NATIVE hamwrite for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamwrite.ad -o "$OUT/hamwrite_native.elf" 2>"$OUT/hw_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamwrite.ad "$OUT/hamwrite_native.elf" 2>"$OUT/hw_native.log"; then
     echo "[hamwrite-host] FAIL: native hamwrite did not compile"; cat "$OUT/hw_native.log"; exit 1
 fi
 echo "[hamwrite-host] PASS native hamwrite still compiles"

@@ -28,15 +28,14 @@ FIX="tests/fixtures/hambrowse_flexcolstack.html"
 mkdir -p "$OUT"
 
 echo "[hb-flexcolstack] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/compile.log"; then
     echo "[hb-flexcolstack] FAIL: host harness did not compile"; cat "$OUT/compile.log"; exit 1
 fi
 echo "[hb-flexcolstack] PASS host harness compiled -> $BIN"
 
 echo "[hb-flexcolstack] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/native.log"; then
     echo "[hb-flexcolstack] FAIL: native hambrowse did not compile"; cat "$OUT/native.log"; exit 1
 fi
 echo "[hb-flexcolstack] PASS native hambrowse still compiles"

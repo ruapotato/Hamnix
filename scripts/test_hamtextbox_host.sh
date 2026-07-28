@@ -14,14 +14,13 @@ BIN="$OUT/hamtextbox_host"
 mkdir -p "$OUT"
 
 echo "[htb-host] compiling host unit test (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamtextbox_host.ad -o "$BIN" 2>"$OUT/htb_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamtextbox_host.ad "$BIN" 2>"$OUT/htb_compile.log"; then
     echo "[htb-host] FAIL: host harness did not compile"; cat "$OUT/htb_compile.log"; exit 1
 fi
 
 echo "[htb-host] confirming lib/hamtextbox.ad still compiles NATIVE ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hameditscene.ad -o "$OUT/hameditscene_native.elf" 2>"$OUT/htb_native.log"; then
+if ! adder_bin x86_64-adder-user user/hameditscene.ad "$OUT/hameditscene_native.elf" 2>"$OUT/htb_native.log"; then
     echo "[htb-host] FAIL: native hameditscene (uses hamtextbox) did not compile"
     cat "$OUT/htb_native.log"; exit 1
 fi

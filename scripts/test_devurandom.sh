@@ -43,9 +43,8 @@ bash scripts/build_user.sh >/dev/null || verdict_inconclusive "$TAG" "build_user
 bash scripts/build_modules.sh >/dev/null || verdict_inconclusive "$TAG" "build_modules failed"
 
 echo "[test_devurandom] (2/5) Build tests/test_devurandom.ad -> $TEST_ELF"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devurandom.ad -o "$TEST_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devurandom.ad compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devurandom.ad "$TEST_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devurandom.ad compile failed"
 
 echo "[test_devurandom] (3/5) Plant /init = hamsh + /bin/test_devurandom in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \

@@ -26,8 +26,8 @@ fail=0
 command -v join >/dev/null 2>&1 || { echo "[join-host] SKIP: no system join"; exit 0; }
 
 echo "[join-host] compiling user/join.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/join.ad -o "$BIN" 2>"$OUT/join_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/join.ad "$BIN" 2>"$OUT/join_compile.log"; then
     echo "[join-host] FAIL: host build did not compile"; cat "$OUT/join_compile.log"; exit 1
 fi
 echo "[join-host] PASS host build compiled -> $BIN"

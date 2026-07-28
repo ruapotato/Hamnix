@@ -33,15 +33,14 @@ command -v patch >/dev/null 2>&1 || { echo "[patch-host] SKIP: no system patch";
 command -v diff  >/dev/null 2>&1 || { echo "[patch-host] SKIP: no system diff";  exit 0; }
 
 echo "[patch-host] compiling user/patch.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/patch.ad -o "$PBIN" 2>"$OUT/patch_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/patch.ad "$PBIN" 2>"$OUT/patch_compile.log"; then
     echo "[patch-host] FAIL: host build did not compile"; cat "$OUT/patch_compile.log"; exit 1
 fi
 echo "[patch-host] PASS host build compiled -> $PBIN"
 
 echo "[patch-host] compiling user/diff.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/diff.ad -o "$DBIN" 2>"$OUT/patch_diff_compile.log"; then
+if ! adder_bin x86_64-linux user/diff.ad "$DBIN" 2>"$OUT/patch_diff_compile.log"; then
     echo "[patch-host] FAIL: diff host build did not compile"; cat "$OUT/patch_diff_compile.log"; exit 1
 fi
 

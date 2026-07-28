@@ -109,8 +109,8 @@ echo "$TAG fixtures: ${FIXTURES[*]}"
 
 # --- lane 1: native SSA backend (the seed's x86_64-linux host target) --
 NAT="$OUT/inflate_host.native"
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/inflate_host.ad -o "$NAT" >"$OUT/native.log" 2>&1; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/inflate_host.ad "$NAT" >"$OUT/native.log" 2>&1; then
     failed "native lane did not compile user/inflate_host.ad"
     tail -20 "$OUT/native.log" >&2
     echo "$TAG RESULT: FAIL" >&2

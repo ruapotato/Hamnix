@@ -33,15 +33,14 @@ BIN="$OUT/hambrowse_host"
 mkdir -p "$OUT"
 
 echo "[hb-nav] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/nav_native.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/nav_native.log"; then
     echo "[hb-nav] FAIL: native hambrowse (nav glue) did not compile"; cat "$OUT/nav_native.log"; exit 1
 fi
 echo "[hb-nav] PASS native hambrowse compiles (link-nav + form GET/POST glue)"
 
 echo "[hb-nav] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/nav_compile.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/nav_compile.log"; then
     echo "[hb-nav] FAIL: host harness did not compile"; cat "$OUT/nav_compile.log"; exit 1
 fi
 echo "[hb-nav] PASS host harness compiled -> $BIN"

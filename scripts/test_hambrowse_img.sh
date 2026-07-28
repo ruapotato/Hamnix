@@ -28,8 +28,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-img] compiling pixel backend (with PNG decode) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/img_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/img_compile.log"; then
     echo "[hb-img] FAIL: driver did not compile"; cat "$OUT/img_compile.log"; exit 1
 fi
 echo "[hb-img] PASS pixel backend compiled -> $BIN"

@@ -21,16 +21,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[mon-resize] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hammon_resize_host.ad -o "$BIN" 2>"$OUT/mon_resize_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hammon_resize_host.ad "$BIN" 2>"$OUT/mon_resize_compile.log"; then
     echo "[mon-resize] FAIL: host harness did not compile"; cat "$OUT/mon_resize_compile.log"; exit 1
 fi
 echo "[mon-resize] PASS host harness compiled -> $BIN"
 
 # The NATIVE app must still compile (it now parses the 'r <w> <h>' event).
 echo "[mon-resize] compiling NATIVE hammonscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hammonscene.ad -o "$OUT/hammonscene_native.elf" 2>"$OUT/mon_resize_native.log"; then
+if ! adder_bin x86_64-adder-user user/hammonscene.ad "$OUT/hammonscene_native.elf" 2>"$OUT/mon_resize_native.log"; then
     echo "[mon-resize] FAIL: native hammonscene did not compile"; cat "$OUT/mon_resize_native.log"; exit 1
 fi
 echo "[mon-resize] PASS native hammonscene still compiles"

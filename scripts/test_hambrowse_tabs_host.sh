@@ -31,8 +31,8 @@ fail=0
 # ---- 1+2. session model + strip hit test ----------------------------
 UBIN="$OUT/hambrowse_tabs_host"
 echo "[hb-tabs] compiling tab-session unit harness (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_tabs_host.ad -o "$UBIN" 2>"$OUT/tabs_unit.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_tabs_host.ad "$UBIN" 2>"$OUT/tabs_unit.log"; then
     echo "[hb-tabs] FAIL: unit harness did not compile"; cat "$OUT/tabs_unit.log"; exit 1
 fi
 U="$OUT/tabs_unit.txt"
@@ -103,8 +103,7 @@ assert_u 'DONE'              "unit harness ran to completion"
 # ---- 3. PIXELS: composite the real window with a driven "+" click ---
 WBIN="$OUT/hambrowse_gfx_window"
 echo "[hb-tabs] compiling window compositor (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_gfx_window.ad -o "$WBIN" 2>"$OUT/tabs_win.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_gfx_window.ad "$WBIN" 2>"$OUT/tabs_win.log"; then
     echo "[hb-tabs] FAIL: window compositor did not compile"; cat "$OUT/tabs_win.log"; exit 1
 fi
 FIX="tests/fixtures/hambrowse_article.html"
@@ -160,8 +159,7 @@ else echo "[hb-tabs] FAIL inactive tab not grey (got: $I0)"; fail=1; fi
 
 # ---- native browser must still build with the tab wiring ------------
 echo "[hb-tabs] confirming native hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/tabs_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/tabs_native.log"; then
     echo "[hb-tabs] FAIL: native hambrowse did not compile"; cat "$OUT/tabs_native.log"; fail=1
 else
     echo "[hb-tabs] PASS native hambrowse still compiles"

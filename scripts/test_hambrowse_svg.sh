@@ -39,23 +39,21 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-svg] compiling pixel backend (with SVG decode) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/svg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/svg_compile.log"; then
     echo "[hb-svg] FAIL: driver did not compile"; cat "$OUT/svg_compile.log"; exit 1
 fi
 echo "[hb-svg] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-svg] compiling standalone svg probe ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/svg_probe.ad -o "$PROBE" 2>"$OUT/svg_probe_compile.log"; then
+if ! adder_bin x86_64-linux user/svg_probe.ad "$PROBE" 2>"$OUT/svg_probe_compile.log"; then
     echo "[hb-svg] FAIL: svg_probe did not compile"; cat "$OUT/svg_probe_compile.log"; exit 1
 fi
 echo "[hb-svg] PASS svg probe compiled -> $PROBE"
 
 # Also confirm the NATIVE browser still compiles with the SVG dispatch wired in.
 echo "[hb-svg] compiling native hambrowse (dispatch wiring) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse.native" 2>"$OUT/svg_native_compile.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse.native" 2>"$OUT/svg_native_compile.log"; then
     echo "[hb-svg] FAIL: native hambrowse did not compile"
     cat "$OUT/svg_native_compile.log"; exit 1
 fi

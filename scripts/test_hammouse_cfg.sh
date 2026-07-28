@@ -18,8 +18,8 @@ mkdir -p "$OUT"
 BIN="$OUT/test_hammouse_cfg"
 
 echo "[hammouse-cfg] compiling host unit test ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        tests/test_hammouse_cfg.ad -o "$BIN" 2>"$OUT/hammouse_cfg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux tests/test_hammouse_cfg.ad "$BIN" 2>"$OUT/hammouse_cfg_compile.log"; then
     echo "[hammouse-cfg] FAIL: host test did not compile"
     cat "$OUT/hammouse_cfg_compile.log"
     exit 1

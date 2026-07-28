@@ -47,10 +47,8 @@ if ! bash scripts/build_modules.sh >/tmp/${TAG}_mods.log 2>&1; then
 fi
 
 echo "[$TAG] (2/5) Compile tests/test_dev_blk_ns_visibility.ad -> $TEST_ELF"
-if ! python3 -m compiler.adder compile \
-        --target=x86_64-adder-user \
-        tests/test_dev_blk_ns_visibility.ad \
-        -o "$TEST_ELF" >/tmp/${TAG}_fixture.log 2>&1; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-adder-user tests/test_dev_blk_ns_visibility.ad "$TEST_ELF" >/tmp/${TAG}_fixture.log 2>&1; then
     tail -40 /tmp/${TAG}_fixture.log >&2
     verdict_inconclusive "$TAG" "fixture compile failed — see /tmp/${TAG}_fixture.log."
 fi

@@ -28,15 +28,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[snake-host] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamgamesnake_host.ad -o "$BIN" 2>"$OUT/hamgamesnake_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamgamesnake_host.ad "$BIN" 2>"$OUT/hamgamesnake_compile.log"; then
     echo "[snake-host] FAIL: host harness did not compile"; cat "$OUT/hamgamesnake_compile.log"; exit 1
 fi
 echo "[snake-host] PASS host harness compiled -> $BIN"
 
 echo "[snake-host] compiling NATIVE hamgamesnake for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamgamesnake.ad -o "$OUT/hamgamesnake_native.elf" 2>"$OUT/hamgamesnake_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamgamesnake.ad "$OUT/hamgamesnake_native.elf" 2>"$OUT/hamgamesnake_native.log"; then
     echo "[snake-host] FAIL: native hamgamesnake did not compile"; cat "$OUT/hamgamesnake_native.log"; exit 1
 fi
 echo "[snake-host] PASS native hamgamesnake compiles (device dual-target intact)"

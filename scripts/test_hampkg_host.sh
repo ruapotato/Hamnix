@@ -18,15 +18,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hampkg-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hampkgscene_host.ad -o "$BIN" 2>"$OUT/hampkg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hampkgscene_host.ad "$BIN" 2>"$OUT/hampkg_compile.log"; then
     echo "[hampkg-host] FAIL: host harness did not compile"; cat "$OUT/hampkg_compile.log"; exit 1
 fi
 echo "[hampkg-host] PASS host harness compiled -> $BIN"
 
 echo "[hampkg-host] compiling NATIVE hampkgscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hampkgscene.ad -o "$OUT/hampkg_native.elf" 2>"$OUT/hampkg_native.log"; then
+if ! adder_bin x86_64-adder-user user/hampkgscene.ad "$OUT/hampkg_native.elf" 2>"$OUT/hampkg_native.log"; then
     echo "[hampkg-host] FAIL: native hampkgscene did not compile"; cat "$OUT/hampkg_native.log"; exit 1
 fi
 echo "[hampkg-host] PASS native hampkgscene still compiles"

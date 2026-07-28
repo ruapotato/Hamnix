@@ -34,8 +34,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[test_vk_2d] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/vk2d_host.ad -o "$BIN" 2>"$OUT/vk2d_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/vk2d_host.ad "$BIN" 2>"$OUT/vk2d_compile.log"; then
     echo "[test_vk_2d] FAIL: host harness did not compile"; cat "$OUT/vk2d_compile.log"; exit 1
 fi
 echo "[test_vk_2d] PASS host harness compiled -> $BIN"

@@ -26,15 +26,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-h1nb] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$GFX" 2>"$OUT/h1nb_gfx.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$GFX" 2>"$OUT/h1nb_gfx.log"; then
     echo "[hb-h1nb] FAIL: pixel backend did not compile"; cat "$OUT/h1nb_gfx.log"; exit 1
 fi
 echo "[hb-h1nb] PASS pixel backend compiled -> $GFX"
 
 echo "[hb-h1nb] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/h1nb_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/h1nb_native.log"; then
     echo "[hb-h1nb] FAIL: native hambrowse did not compile"; cat "$OUT/h1nb_native.log"; exit 1
 fi
 echo "[hb-h1nb] PASS native hambrowse still compiles"

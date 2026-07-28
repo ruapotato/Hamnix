@@ -39,12 +39,9 @@ bash scripts/build_user.sh >/dev/null || verdict_inconclusive "$TAG" "build_user
 bash scripts/build_modules.sh >/dev/null || verdict_inconclusive "$TAG" "build_modules failed"
 
 echo "[test_devsysinfo] (2/5) Build tests/test_devcpuinfo.ad + test_devmeminfo.ad"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devcpuinfo.ad -o "$CPU_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devcpuinfo.ad compile failed"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devmeminfo.ad -o "$MEM_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devmeminfo.ad compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devcpuinfo.ad "$CPU_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devcpuinfo.ad compile failed"
+adder_bin x86_64-adder-user tests/test_devmeminfo.ad "$MEM_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devmeminfo.ad compile failed"
 
 echo "[test_devsysinfo] (3/5) Plant /init = hamsh + /bin/test_dev{cpuinfo,meminfo} in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \

@@ -27,15 +27,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-emit] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/emit_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/emit_compile.log"; then
     echo "[hb-emit] FAIL: driver did not compile"; cat "$OUT/emit_compile.log"; exit 1
 fi
 echo "[hb-emit] PASS pixel backend compiled"
 
 echo "[hb-emit] confirming NATIVE hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/emit_native.elf" 2>"$OUT/emit_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/emit_native.elf" 2>"$OUT/emit_native.log"; then
     echo "[hb-emit] FAIL: native hambrowse did not compile"; cat "$OUT/emit_native.log"; exit 1
 fi
 echo "[hb-emit] PASS native hambrowse still compiles"

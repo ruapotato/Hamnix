@@ -41,10 +41,8 @@ echo "[test_readonly_bind] (1/4) Build userland (hamsh + coreutils)"
 bash scripts/build_user.sh >/dev/null
 
 echo "[test_readonly_bind] (2/4) Build tests/test_readonly_bind.ad -> $TEST_ELF"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_readonly_bind.ad \
-    -o "$TEST_ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_readonly_bind.ad "$TEST_ELF" >/dev/null
 
 echo "[test_readonly_bind] (3/4) Plant /init = hamsh + /bin/test_readonly_bind in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null

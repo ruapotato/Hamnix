@@ -31,8 +31,8 @@ W=640
 fail=0
 
 echo "[hb-oh] compiling host gfx driver (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/oh_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/oh_compile.log"; then
     echo "[hb-oh] FAIL: host gfx driver did not compile"; cat "$OUT/oh_compile.log"; exit 1
 fi
 echo "[hb-oh] PASS host gfx driver compiled"

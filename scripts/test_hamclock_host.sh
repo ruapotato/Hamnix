@@ -22,15 +22,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamclock-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamclock_host.ad -o "$BIN" 2>"$OUT/hc_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamclock_host.ad "$BIN" 2>"$OUT/hc_compile.log"; then
     echo "[hamclock-host] FAIL: host harness did not compile"; cat "$OUT/hc_compile.log"; exit 1
 fi
 echo "[hamclock-host] PASS host harness compiled -> $BIN"
 
 echo "[hamclock-host] compiling NATIVE hamclock for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamclock.ad -o "$OUT/hamclock_native.elf" 2>"$OUT/hc_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamclock.ad "$OUT/hamclock_native.elf" 2>"$OUT/hc_native.log"; then
     echo "[hamclock-host] FAIL: native hamclock did not compile"; cat "$OUT/hc_native.log"; exit 1
 fi
 echo "[hamclock-host] PASS native hamclock still compiles"

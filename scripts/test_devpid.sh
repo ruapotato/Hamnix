@@ -26,10 +26,8 @@ bash scripts/build_user.sh >/dev/null
 bash scripts/build_modules.sh >/dev/null
 
 echo "[test_devpid] (2/5) Build tests/test_devpid.ad -> $TEST_ELF"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_devpid.ad \
-    -o "$TEST_ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devpid.ad "$TEST_ELF" >/dev/null
 
 echo "[test_devpid] (3/5) Plant /init = hamsh + /bin/test_devpid in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null

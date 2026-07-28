@@ -21,8 +21,8 @@ BIN="$OUT/httpchunk_host"
 mkdir -p "$OUT"
 
 echo "[dechunk-host] compiling decoder unit test for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/httpchunk_host.ad -o "$BIN" 2>"$OUT/dechunk.compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/httpchunk_host.ad "$BIN" 2>"$OUT/dechunk.compile.log"; then
     echo "[dechunk-host] FAIL: host harness did not compile"
     cat "$OUT/dechunk.compile.log"; exit 1
 fi
@@ -30,8 +30,7 @@ echo "[dechunk-host] PASS host harness compiled -> $BIN"
 
 # Confirm http9.ad (which imports lib/httpchunk) still compiles native.
 echo "[dechunk-host] compiling native curl (pulls http9 + httpchunk) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/curl.ad -o "$OUT/curl_native.elf" 2>"$OUT/dechunk.native.log"; then
+if ! adder_bin x86_64-adder-user user/curl.ad "$OUT/curl_native.elf" 2>"$OUT/dechunk.native.log"; then
     echo "[dechunk-host] FAIL: native http9 consumer did not compile"
     cat "$OUT/dechunk.native.log"; exit 1
 fi

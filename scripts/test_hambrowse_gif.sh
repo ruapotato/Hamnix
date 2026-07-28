@@ -39,15 +39,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-gif] compiling pixel backend (with GIF decode) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/gif_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/gif_compile.log"; then
     echo "[hb-gif] FAIL: driver did not compile"; cat "$OUT/gif_compile.log"; exit 1
 fi
 echo "[hb-gif] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-gif] compiling standalone gif probe ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/gif_probe.ad -o "$PROBE" 2>"$OUT/gif_probe_compile.log"; then
+if ! adder_bin x86_64-linux user/gif_probe.ad "$PROBE" 2>"$OUT/gif_probe_compile.log"; then
     echo "[hb-gif] FAIL: gif_probe did not compile"; cat "$OUT/gif_probe_compile.log"; exit 1
 fi
 echo "[hb-gif] PASS gif probe compiled -> $PROBE"

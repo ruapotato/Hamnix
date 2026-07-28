@@ -19,15 +19,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hammath-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hammath_host.ad -o "$BIN" 2>"$OUT/mm_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hammath_host.ad "$BIN" 2>"$OUT/mm_compile.log"; then
     echo "[hammath-host] FAIL: host harness did not compile"; cat "$OUT/mm_compile.log"; exit 1
 fi
 echo "[hammath-host] PASS host harness compiled -> $BIN"
 
 echo "[hammath-host] compiling NATIVE hammath for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hammath.ad -o "$OUT/hammath_native.elf" 2>"$OUT/mm_native.log"; then
+if ! adder_bin x86_64-adder-user user/hammath.ad "$OUT/hammath_native.elf" 2>"$OUT/mm_native.log"; then
     echo "[hammath-host] FAIL: native hammath did not compile"; cat "$OUT/mm_native.log"; exit 1
 fi
 echo "[hammath-host] PASS native hammath still compiles"

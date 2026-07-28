@@ -32,15 +32,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-chipbg] compiling pixel backend ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/chipbg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/chipbg_compile.log"; then
     echo "[hb-chipbg] FAIL: driver did not compile"; cat "$OUT/chipbg_compile.log"; exit 1
 fi
 echo "[hb-chipbg] PASS pixel backend compiled"
 
 echo "[hb-chipbg] compiling native hambrowse ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse.native" 2>"$OUT/chipbg_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse.native" 2>"$OUT/chipbg_native.log"; then
     echo "[hb-chipbg] FAIL: native hambrowse did not compile"; cat "$OUT/chipbg_native.log"; exit 1
 fi
 echo "[hb-chipbg] PASS native hambrowse compiled"

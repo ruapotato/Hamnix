@@ -43,22 +43,20 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-xform] compiling standalone svg probe (with transform CTM) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/svg_probe.ad -o "$PROBE" 2>"$OUT/xform_probe_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/svg_probe.ad "$PROBE" 2>"$OUT/xform_probe_compile.log"; then
     echo "[hb-xform] FAIL: svg_probe did not compile"; cat "$OUT/xform_probe_compile.log"; exit 1
 fi
 echo "[hb-xform] PASS svg probe compiled -> $PROBE"
 
 echo "[hb-xform] compiling pixel backend (inline-svg + transform) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/xform_gfx_compile.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/xform_gfx_compile.log"; then
     echo "[hb-xform] FAIL: pixel backend did not compile"; cat "$OUT/xform_gfx_compile.log"; exit 1
 fi
 echo "[hb-xform] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-xform] compiling native hambrowse (dual-target) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse.native" 2>"$OUT/xform_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse.native" 2>"$OUT/xform_native.log"; then
     echo "[hb-xform] FAIL: native hambrowse did not compile"
     cat "$OUT/xform_native.log"; exit 1
 fi

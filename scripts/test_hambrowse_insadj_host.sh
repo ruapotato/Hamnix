@@ -15,15 +15,14 @@ FIX="tests/fixtures/hambrowse_insadj.html"
 mkdir -p "$OUT"
 
 echo "[hb-iah] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/iah_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/iah_compile.log"; then
     echo "[hb-iah] FAIL: host harness did not compile"; cat "$OUT/iah_compile.log"; exit 1
 fi
 echo "[hb-iah] PASS host harness compiled -> $BIN"
 
 echo "[hb-iah] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/iah_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/iah_native.log"; then
     echo "[hb-iah] FAIL: native hambrowse did not compile"; cat "$OUT/iah_native.log"; exit 1
 fi
 echo "[hb-iah] PASS native hambrowse still compiles"

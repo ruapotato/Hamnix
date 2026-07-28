@@ -26,15 +26,14 @@ STATIC="tests/fixtures/hambrowse_cssom_static.html"
 mkdir -p "$OUT"
 
 echo "[hb-cssom] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/cssom_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/cssom_compile.log"; then
     echo "[hb-cssom] FAIL: host harness did not compile"; cat "$OUT/cssom_compile.log"; exit 1
 fi
 echo "[hb-cssom] PASS host harness compiled -> $BIN"
 
 echo "[hb-cssom] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/cssom_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/cssom_native.log"; then
     echo "[hb-cssom] FAIL: native hambrowse did not compile"; cat "$OUT/cssom_native.log"; exit 1
 fi
 echo "[hb-cssom] PASS native hambrowse still compiles"

@@ -19,15 +19,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamimg-host] compiling host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamimgscene_host.ad -o "$BIN" 2>"$OUT/hamimg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamimgscene_host.ad "$BIN" 2>"$OUT/hamimg_compile.log"; then
     echo "[hamimg-host] FAIL: host harness did not compile"; cat "$OUT/hamimg_compile.log"; exit 1
 fi
 echo "[hamimg-host] PASS host harness compiled -> $BIN"
 
 echo "[hamimg-host] compiling NATIVE hamimgscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamimgscene.ad -o "$OUT/hamimgscene_native.elf" 2>"$OUT/hamimg_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamimgscene.ad "$OUT/hamimgscene_native.elf" 2>"$OUT/hamimg_native.log"; then
     echo "[hamimg-host] FAIL: native hamimgscene did not compile"; cat "$OUT/hamimg_native.log"; exit 1
 fi
 echo "[hamimg-host] PASS native hamimgscene still compiles"

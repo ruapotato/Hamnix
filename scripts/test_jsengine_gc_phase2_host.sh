@@ -26,8 +26,8 @@ BIN="$OUT/js_host"
 mkdir -p "$OUT"
 
 echo "[js-gc-p2] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/js_host.ad -o "$BIN" 2>"$OUT/js_gc_p2_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/js_host.ad "$BIN" 2>"$OUT/js_gc_p2_compile.log"; then
     echo "[js-gc-p2] FAIL: host driver did not compile"; cat "$OUT/js_gc_p2_compile.log"; exit 1
 fi
 

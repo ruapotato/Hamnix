@@ -33,15 +33,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-rp] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$GFX" 2>"$OUT/rp_gfx.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$GFX" 2>"$OUT/rp_gfx.log"; then
     echo "[hb-rp] FAIL: pixel backend did not compile"; cat "$OUT/rp_gfx.log"; exit 1
 fi
 echo "[hb-rp] PASS pixel backend compiled -> $GFX"
 
 echo "[hb-rp] confirming native hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/rp_native.elf" 2>"$OUT/rp_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/rp_native.elf" 2>"$OUT/rp_native.log"; then
     echo "[hb-rp] FAIL: native hambrowse did not compile"; cat "$OUT/rp_native.log"; exit 1
 fi
 echo "[hb-rp] PASS native hambrowse still compiles"

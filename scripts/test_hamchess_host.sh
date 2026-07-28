@@ -22,15 +22,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[chess-host] compiling engine+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamchessscene_host.ad -o "$BIN" 2>"$OUT/chess_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamchessscene_host.ad "$BIN" 2>"$OUT/chess_compile.log"; then
     echo "[chess-host] FAIL: host harness did not compile"; cat "$OUT/chess_compile.log"; exit 1
 fi
 echo "[chess-host] PASS host harness compiled -> $BIN"
 
 echo "[chess-host] compiling NATIVE hamchessscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamchessscene.ad -o "$OUT/hamchess_native.elf" 2>"$OUT/chess_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamchessscene.ad "$OUT/hamchess_native.elf" 2>"$OUT/chess_native.log"; then
     echo "[chess-host] FAIL: native hamchessscene did not compile"; cat "$OUT/chess_native.log"; exit 1
 fi
 echo "[chess-host] PASS native hamchessscene still compiles (device dual-target intact)"

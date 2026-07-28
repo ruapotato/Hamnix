@@ -17,8 +17,8 @@ mkdir -p "$OUT"
 BIN="$OUT/test_hamui_scroll_sign"
 
 echo "[hamui-scroll-sign] compiling host unit test ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        tests/test_hamui_scroll_sign.ad -o "$BIN" 2>"$OUT/scroll_sign_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux tests/test_hamui_scroll_sign.ad "$BIN" 2>"$OUT/scroll_sign_compile.log"; then
     echo "[hamui-scroll-sign] FAIL: host test did not compile"
     cat "$OUT/scroll_sign_compile.log"
     exit 1
@@ -31,8 +31,7 @@ if ! "$BIN"; then
 fi
 
 echo "[hamui-scroll-sign] confirming native hamui consumer still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamedit.ad -o "$OUT/hamedit_native.elf" 2>"$OUT/hamedit_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamedit.ad "$OUT/hamedit_native.elf" 2>"$OUT/hamedit_native.log"; then
     echo "[hamui-scroll-sign] FAIL: native hamedit did not compile"
     cat "$OUT/hamedit_native.log"
     exit 1

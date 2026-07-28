@@ -37,16 +37,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-fw] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$GFX" 2>"$OUT/fw_gfx.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$GFX" 2>"$OUT/fw_gfx.log"; then
     echo "[hb-fw] FAIL: pixel backend did not compile"; cat "$OUT/fw_gfx.log"; exit 1
 fi
 echo "[hb-fw] PASS pixel backend compiled -> $GFX"
 
 # The native browser shares the engine; keep it compiling.
 echo "[hb-fw] confirming native hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/fw_native.elf" 2>"$OUT/fw_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/fw_native.elf" 2>"$OUT/fw_native.log"; then
     echo "[hb-fw] FAIL: native hambrowse did not compile"; cat "$OUT/fw_native.log"; exit 1
 fi
 echo "[hb-fw] PASS native hambrowse still compiles"

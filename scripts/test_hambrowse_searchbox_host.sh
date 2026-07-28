@@ -30,22 +30,20 @@ FIX="tests/fixtures/hambrowse_search_input.html"
 fail=0
 
 echo "[hb-sb] compiling host chrome compositor (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_gfx_window.ad -o "$OUT/hb_gfxwin" 2>"$OUT/sb_gfx.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_gfx_window.ad "$OUT/hb_gfxwin" 2>"$OUT/sb_gfx.log"; then
     echo "[hb-sb] FAIL: gfx-window harness did not compile"; cat "$OUT/sb_gfx.log"; exit 1
 fi
 echo "[hb-sb] PASS chrome compositor compiled"
 
 echo "[hb-sb] compiling host text harness (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$OUT/hb_host" 2>"$OUT/sb_host.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$OUT/hb_host" 2>"$OUT/sb_host.log"; then
     echo "[hb-sb] FAIL: text harness did not compile"; cat "$OUT/sb_host.log"; exit 1
 fi
 echo "[hb-sb] PASS text harness compiled"
 
 echo "[hb-sb] compiling native hambrowse (x86_64-adder-user) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hb_native.elf" 2>"$OUT/sb_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hb_native.elf" 2>"$OUT/sb_native.log"; then
     echo "[hb-sb] FAIL: native browser (search-box code) did not compile"
     cat "$OUT/sb_native.log"; exit 1
 fi

@@ -24,8 +24,8 @@ FONT="fonts/dejavu-sans.ttf"
 fail=0
 
 echo "[hscale] (1/3) compiling user/font_ttf_probe.ad (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/font_ttf_probe.ad -o "$PROBE" 2>"$OUT/hscale_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/font_ttf_probe.ad "$PROBE" 2>"$OUT/hscale_compile.log"; then
     echo "[hscale] FAIL: probe did not compile"; cat "$OUT/hscale_compile.log"; exit 1
 fi
 echo "[hscale] PASS probe compiled"

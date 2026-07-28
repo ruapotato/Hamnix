@@ -57,24 +57,19 @@
 # a real compile every time.
 
 _KI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=_tree_fingerprint.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_tree_fingerprint.sh"
 
-# _kernel_image_key — SHA-256 over the source tree + the cpio payload.
+# _kernel_image_key — the shared tree fingerprint plus the cpio payload.
+# The payload is gitignored (51 MiB) but IS a kernel input: it is
+# .incbin-ed straight into the image, and it is the thing that differs
+# between two gates compiling the same sources with a different /init.
 _kernel_image_key() {
     (
         cd "$_KI_ROOT" || return 1
-        {
-            {
-                git ls-files
-                git ls-files --others --exclude-standard
-            } 2>/dev/null \
-                | grep -v '^fs/initramfs_blob\.S$' \
-                | LC_ALL=C sort -u \
-                | tr '\n' '\0' \
-                | xargs -0 -r sha256sum 2>/dev/null
-            # The cpio payload is gitignored (51 MiB) but IS a kernel input:
-            # it is .incbin-ed straight into the image, and it is the thing
-            # that differs between two gates running the same sources.
-            sha256sum fs/initramfs_blob.S.bin 2>/dev/null
+        { hamnix_tree_fingerprint
+          hamnix_build_env_fingerprint
+          sha256sum fs/initramfs_blob.S.bin 2>/dev/null
         } | sha256sum | cut -d' ' -f1
     )
 }

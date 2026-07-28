@@ -20,15 +20,14 @@ FIX="tests/fixtures/hambrowse_twofloat.html"
 mkdir -p "$OUT"
 
 echo "[hb-2f] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/2f_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/2f_compile.log"; then
     echo "[hb-2f] FAIL: host harness did not compile"; cat "$OUT/2f_compile.log"; exit 1
 fi
 echo "[hb-2f] PASS host harness compiled -> $BIN"
 
 echo "[hb-2f] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/2f_native.elf" 2>"$OUT/2f_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/2f_native.elf" 2>"$OUT/2f_native.log"; then
     echo "[hb-2f] FAIL: native hambrowse did not compile"; cat "$OUT/2f_native.log"; exit 1
 fi
 echo "[hb-2f] PASS native hambrowse still compiles"

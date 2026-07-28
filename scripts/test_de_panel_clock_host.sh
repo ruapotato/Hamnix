@@ -23,17 +23,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[panelclock-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/panelclock_host.ad -o "$BIN" 2>"$OUT/panelclock_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/panelclock_host.ad "$BIN" 2>"$OUT/panelclock_compile.log"; then
     echo "[panelclock-host] FAIL: host harness did not compile"
     cat "$OUT/panelclock_compile.log"; exit 1
 fi
 echo "[panelclock-host] PASS host harness compiled -> $BIN"
 
 echo "[panelclock-host] compiling NATIVE hampanelscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hampanelscene.ad -o "$OUT/hampanelscene_native.elf" \
-        2>"$OUT/panelclock_native.log"; then
+if ! adder_bin x86_64-adder-user user/hampanelscene.ad "$OUT/hampanelscene_native.elf" 2>"$OUT/panelclock_native.log"; then
     echo "[panelclock-host] FAIL: native hampanelscene did not compile"
     cat "$OUT/panelclock_native.log"; exit 1
 fi

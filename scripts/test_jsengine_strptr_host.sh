@@ -15,8 +15,8 @@ BIN="$OUT/js_strptr_probe"
 mkdir -p "$OUT"
 
 echo "[js-strptr] compiling probe for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/js_strptr_probe.ad -o "$BIN" 2>"$OUT/js_strptr_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/js_strptr_probe.ad "$BIN" 2>"$OUT/js_strptr_compile.log"; then
     echo "[js-strptr] FAIL: probe did not compile"; cat "$OUT/js_strptr_compile.log"; exit 1
 fi
 

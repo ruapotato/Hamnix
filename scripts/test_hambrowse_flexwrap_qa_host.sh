@@ -32,15 +32,14 @@ PNG="$OUT/flexwrapqa.png"
 mkdir -p "$OUT"
 
 echo "[hb-fwqa] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/fwqa_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/fwqa_compile.log"; then
     echo "[hb-fwqa] FAIL: host harness did not compile"; cat "$OUT/fwqa_compile.log"; exit 1
 fi
 echo "[hb-fwqa] PASS host harness compiled -> $BIN"
 
 echo "[hb-fwqa] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/fwqa_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/fwqa_native.log"; then
     echo "[hb-fwqa] FAIL: native hambrowse did not compile"; cat "$OUT/fwqa_native.log"; exit 1
 fi
 echo "[hb-fwqa] PASS native hambrowse still compiles"

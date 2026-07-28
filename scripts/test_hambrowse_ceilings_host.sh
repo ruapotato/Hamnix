@@ -23,8 +23,8 @@ FIX="tests/fixtures/hambrowse_ceilings.html"
 mkdir -p "$OUT"
 
 echo "[hb-ceil] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/ceil_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/ceil_compile.log"; then
     echo "[hb-ceil] FAIL: host harness did not compile"; cat "$OUT/ceil_compile.log"; exit 1
 fi
 echo "[hb-ceil] PASS host harness compiled -> $BIN"

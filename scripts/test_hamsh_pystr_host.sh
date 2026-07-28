@@ -29,16 +29,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[pystr-host] compiling hamsh for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsh.ad -o "$BIN" 2>"$OUT/pystr_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsh.ad "$BIN" 2>"$OUT/pystr_compile.log"; then
     echo "[pystr-host] FAIL: host hamsh did not compile/link"
     cat "$OUT/pystr_compile.log"; exit 1
 fi
 echo "[pystr-host] PASS host hamsh compiled -> $BIN"
 
 echo "[pystr-host] compiling NATIVE hamsh for x86_64-adder-user (regress guard) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsh.ad -o "$OUT/hamsh_pystr_native.elf" 2>"$OUT/pystr_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsh.ad "$OUT/hamsh_pystr_native.elf" 2>"$OUT/pystr_native.log"; then
     echo "[pystr-host] FAIL: native (device) hamsh did not compile"
     cat "$OUT/pystr_native.log"; exit 1
 fi

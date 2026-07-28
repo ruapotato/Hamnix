@@ -31,15 +31,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-mm] compiling DOM host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/mm_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/mm_compile.log"; then
     echo "[hb-mm] FAIL: host harness did not compile"; cat "$OUT/mm_compile.log"; exit 1
 fi
 echo "[hb-mm] PASS host harness compiled -> $BIN"
 
 echo "[hb-mm] confirming native hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/mm_native.elf" 2>"$OUT/mm_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/mm_native.elf" 2>"$OUT/mm_native.log"; then
     echo "[hb-mm] FAIL: native hambrowse did not compile"; cat "$OUT/mm_native.log"; exit 1
 fi
 echo "[hb-mm] PASS native hambrowse still compiles"

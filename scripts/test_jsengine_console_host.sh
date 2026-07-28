@@ -24,15 +24,14 @@ JS_BIN="$OUT/js_host"; HB_BIN="$OUT/hambrowse_host"
 fail=0
 
 echo "[js-con] compiling js_host (raw engine) for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/js_host.ad -o "$JS_BIN" 2>"$OUT/con_js_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/js_host.ad "$JS_BIN" 2>"$OUT/con_js_compile.log"; then
     echo "[js-con] FAIL: js_host did not compile"; cat "$OUT/con_js_compile.log"; exit 1
 fi
 echo "[js-con] PASS js_host compiled -> $JS_BIN"
 
 echo "[js-con] compiling hambrowse_host (browser harness) for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$HB_BIN" 2>"$OUT/con_hb_compile.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$HB_BIN" 2>"$OUT/con_hb_compile.log"; then
     echo "[js-con] FAIL: hambrowse_host did not compile"; cat "$OUT/con_hb_compile.log"; exit 1
 fi
 echo "[js-con] PASS hambrowse_host compiled -> $HB_BIN"

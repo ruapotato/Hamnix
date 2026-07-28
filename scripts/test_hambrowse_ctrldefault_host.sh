@@ -37,22 +37,20 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-ctrldef] compiling text harness (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/ctrldef_host.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/ctrldef_host.log"; then
     echo "[hb-ctrldef] FAIL: text harness did not compile"; cat "$OUT/ctrldef_host.log"; exit 1
 fi
 echo "[hb-ctrldef] PASS text harness compiled"
 
 echo "[hb-ctrldef] compiling pixel backend (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$GFX" 2>"$OUT/ctrldef_gfx.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$GFX" 2>"$OUT/ctrldef_gfx.log"; then
     echo "[hb-ctrldef] FAIL: pixel backend did not compile"; cat "$OUT/ctrldef_gfx.log"; exit 1
 fi
 echo "[hb-ctrldef] PASS pixel backend compiled"
 
 echo "[hb-ctrldef] confirming NATIVE hambrowse still compiles (x86_64-adder-user) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/ctrldef_native.elf" 2>"$OUT/ctrldef_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/ctrldef_native.elf" 2>"$OUT/ctrldef_native.log"; then
     echo "[hb-ctrldef] FAIL: native hambrowse did not compile"; cat "$OUT/ctrldef_native.log"; exit 1
 fi
 echo "[hb-ctrldef] PASS native hambrowse still compiles"

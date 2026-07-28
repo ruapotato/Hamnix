@@ -39,22 +39,19 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[url-host] compiling URL hit-test unit test (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamurl_host.ad -o "$OUT/hamurl_host" 2>"$OUT/url_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamurl_host.ad "$OUT/hamurl_host" 2>"$OUT/url_compile.log"; then
     echo "[url-host] FAIL: unit test did not compile"; cat "$OUT/url_compile.log"; exit 1
 fi
 
 echo "[url-host] compiling NATIVE hambrowse (URL caret nav + clipboard) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/url_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/url_native.log"; then
     echo "[url-host] FAIL: native hambrowse did not compile"; cat "$OUT/url_native.log"; exit 1
 fi
 echo "[url-host] PASS native hambrowse still compiles"
 
 echo "[url-host] compiling host window compositor harness ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_gfx_window.ad -o "$OUT/hambrowse_gfx_window" \
-        2>"$OUT/url_win_compile.log"; then
+if ! adder_bin x86_64-linux user/hambrowse_gfx_window.ad "$OUT/hambrowse_gfx_window" 2>"$OUT/url_win_compile.log"; then
     echo "[url-host] FAIL: gfx_window did not compile"; cat "$OUT/url_win_compile.log"; exit 1
 fi
 

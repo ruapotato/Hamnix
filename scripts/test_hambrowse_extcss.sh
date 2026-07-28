@@ -25,8 +25,8 @@ CSS="tests/fixtures/hambrowse_extcss.css"
 mkdir -p "$OUT"
 
 echo "[hb-extcss] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/extcss_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/extcss_compile.log"; then
     echo "[hb-extcss] FAIL: host harness did not compile"; cat "$OUT/extcss_compile.log"; exit 1
 fi
 echo "[hb-extcss] PASS host harness compiled -> $BIN"
@@ -78,8 +78,7 @@ refute_in '#b00020' "$PRE" \
     "warning paragraph is not red without the external sheet"
 
 echo "[hb-extcss] compiling native hambrowse (link-fetch path) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/extcss_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/extcss_native.log"; then
     echo "[hb-extcss] FAIL: native hambrowse did not compile"; cat "$OUT/extcss_native.log"; exit 1
 fi
 echo "[hb-extcss] PASS native hambrowse still compiles"

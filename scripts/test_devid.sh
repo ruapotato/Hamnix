@@ -52,12 +52,9 @@ bash scripts/build_user.sh >/dev/null || verdict_inconclusive "$TAG" "build_user
 bash scripts/build_modules.sh >/dev/null || verdict_inconclusive "$TAG" "build_modules failed"
 
 echo "[test_devid] (2/5) Build tests/test_devversion.ad + test_devhostname.ad"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devversion.ad -o "$VER_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devversion.ad compile failed"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devhostname.ad -o "$HN_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devhostname.ad compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devversion.ad "$VER_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devversion.ad compile failed"
+adder_bin x86_64-adder-user tests/test_devhostname.ad "$HN_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devhostname.ad compile failed"
 
 echo "[test_devid] (3/5) Plant /init = hamsh + /bin/test_dev{version,hostname} in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \

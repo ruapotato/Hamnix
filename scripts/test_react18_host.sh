@@ -29,8 +29,8 @@ PAGE="$OUT/react18.html"
 mkdir -p "$OUT"
 
 echo "[react18] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host.ad -o "$BIN" 2>"$OUT/react18_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/react18_compile.log"; then
     echo "[react18] FAIL: host harness did not compile"; cat "$OUT/react18_compile.log"; exit 1
 fi
 echo "[react18] PASS host harness compiled -> $BIN"

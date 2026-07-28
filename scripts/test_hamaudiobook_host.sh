@@ -29,15 +29,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamaudiobook-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamaudiobook_host.ad -o "$BIN" 2>"$OUT/hamaudiobook_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamaudiobook_host.ad "$BIN" 2>"$OUT/hamaudiobook_compile.log"; then
     echo "[hamaudiobook-host] FAIL: host harness did not compile"; cat "$OUT/hamaudiobook_compile.log"; exit 1
 fi
 echo "[hamaudiobook-host] PASS host harness compiled -> $BIN"
 
 echo "[hamaudiobook-host] compiling NATIVE hamaudiobook for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamaudiobook.ad -o "$OUT/hamaudiobook_native.elf" 2>"$OUT/hamaudiobook_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamaudiobook.ad "$OUT/hamaudiobook_native.elf" 2>"$OUT/hamaudiobook_native.log"; then
     echo "[hamaudiobook-host] FAIL: native hamaudiobook did not compile"; cat "$OUT/hamaudiobook_native.log"; exit 1
 fi
 echo "[hamaudiobook-host] PASS native hamaudiobook still compiles"

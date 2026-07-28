@@ -35,15 +35,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamfm-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamfmscene_host.ad -o "$BIN" 2>"$OUT/hamfm_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamfmscene_host.ad "$BIN" 2>"$OUT/hamfm_compile.log"; then
     echo "[hamfm-host] FAIL: host harness did not compile"; cat "$OUT/hamfm_compile.log"; exit 1
 fi
 echo "[hamfm-host] PASS host harness compiled -> $BIN"
 
 echo "[hamfm-host] compiling NATIVE hamfmscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamfmscene.ad -o "$OUT/hamfmscene_native.elf" 2>"$OUT/hamfm_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamfmscene.ad "$OUT/hamfmscene_native.elf" 2>"$OUT/hamfm_native.log"; then
     echo "[hamfm-host] FAIL: native hamfmscene did not compile"; cat "$OUT/hamfm_native.log"; exit 1
 fi
 echo "[hamfm-host] PASS native hamfmscene still compiles"

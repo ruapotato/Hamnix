@@ -29,16 +29,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[pyconst-host] compiling hamsh for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsh.ad -o "$BIN" 2>"$OUT/pyconst_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsh.ad "$BIN" 2>"$OUT/pyconst_compile.log"; then
     echo "[pyconst-host] FAIL: host hamsh did not compile/link"
     cat "$OUT/pyconst_compile.log"; exit 1
 fi
 echo "[pyconst-host] PASS host hamsh compiled -> $BIN"
 
 echo "[pyconst-host] compiling NATIVE hamsh for x86_64-adder-user (regress guard) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsh.ad -o "$OUT/hamsh_pyconst_native.elf" 2>"$OUT/pyconst_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsh.ad "$OUT/hamsh_pyconst_native.elf" 2>"$OUT/pyconst_native.log"; then
     echo "[pyconst-host] FAIL: native (device) hamsh did not compile"
     cat "$OUT/pyconst_native.log"; exit 1
 fi

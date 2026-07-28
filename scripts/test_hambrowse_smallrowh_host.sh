@@ -27,15 +27,14 @@ FIX="tests/fixtures/hambrowse_smallfont.html"
 mkdir -p "$OUT"
 
 echo "[hb-smallrowh] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$GFX" 2>"$OUT/smallrowh_gfx.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$GFX" 2>"$OUT/smallrowh_gfx.log"; then
     echo "[hb-smallrowh] FAIL: pixel backend did not compile"; cat "$OUT/smallrowh_gfx.log"; exit 1
 fi
 echo "[hb-smallrowh] PASS pixel backend compiled"
 
 echo "[hb-smallrowh] compiling native hambrowse for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/smallrowh_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/smallrowh_native.log"; then
     echo "[hb-smallrowh] FAIL: native hambrowse did not compile"; cat "$OUT/smallrowh_native.log"; exit 1
 fi
 echo "[hb-smallrowh] PASS native hambrowse still compiles"

@@ -36,15 +36,14 @@ if [ ! -s "$MP3" ] || [ ! -s "$GOLDEN" ]; then
 fi
 
 echo "[mp3-host] compiling decoder + host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/mp3decode_host.ad -o "$BIN" 2>"$OUT/mp3_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/mp3decode_host.ad "$BIN" 2>"$OUT/mp3_compile.log"; then
     echo "[mp3-host] FAIL: host harness did not compile"; cat "$OUT/mp3_compile.log"; exit 1
 fi
 echo "[mp3-host] PASS host harness compiled -> $BIN"
 
 echo "[mp3-host] compiling NATIVE hamaudioscene (.mp3 routing) for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamaudioscene.ad -o "$OUT/hamaudio_native.elf" 2>"$OUT/mp3_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamaudioscene.ad "$OUT/hamaudio_native.elf" 2>"$OUT/mp3_native.log"; then
     echo "[mp3-host] FAIL: native hamaudioscene did not compile"; cat "$OUT/mp3_native.log"; exit 1
 fi
 echo "[mp3-host] PASS native hamaudioscene still compiles"

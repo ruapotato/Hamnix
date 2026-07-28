@@ -25,14 +25,9 @@ bash scripts/build_user.sh >/dev/null
 bash scripts/build_modules.sh >/dev/null
 
 echo "[sdp] (2/5) Build tests/test_spawn_detached_page.ad -> $TEST_ELF"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_spawn_detached_page.ad \
-    -o "$TEST_ELF" >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user \
-    tests/test_sdp_child.ad \
-    -o build/user/test_sdp_child.elf >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_spawn_detached_page.ad "$TEST_ELF" >/dev/null
+adder_bin x86_64-adder-user tests/test_sdp_child.ad build/user/test_sdp_child.elf >/dev/null
 
 echo "[sdp] (3/5) Plant /init = hamsh + /bin/test_spawn_detached_page in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null

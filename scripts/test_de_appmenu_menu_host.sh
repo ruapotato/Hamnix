@@ -26,8 +26,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[appmenu-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/appmenuscene_host.ad -o "$BIN" 2>"$OUT/appmenu_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/appmenuscene_host.ad "$BIN" 2>"$OUT/appmenu_compile.log"; then
     echo "[appmenu-host] FAIL: host harness did not compile"
     cat "$OUT/appmenu_compile.log"; exit 1
 fi
@@ -164,8 +164,7 @@ assert_grep '^DISMISS press_after_release 1'   "a real NEW press after a release
 
 # --- NATIVE menu client still compiles from the shared model --------------
 echo "[appmenu-host] compiling NATIVE hamappmenu for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamappmenu.ad -o "$OUT/hamappmenu_native.elf" 2>"$OUT/appmenu_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamappmenu.ad "$OUT/hamappmenu_native.elf" 2>"$OUT/appmenu_native.log"; then
     echo "[appmenu-host] FAIL: native hamappmenu did not compile"
     tail -40 "$OUT/appmenu_native.log"; fail=1
 else

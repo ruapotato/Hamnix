@@ -41,10 +41,8 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.DRIVER_MAIN = "fused_driver_host_main.ad"
 raise SystemExit(m.main(["concat", "-o", "build/cutover/host_compiler.ad", "--with-driver"]))
 PY
-python3 -m compiler.adder compile --target=x86_64-linux \
-    build/cutover/host_compiler.ad -o build/cutover/host_ac.elf \
-    >/dev/null 2>build/cutover/host_ac.cerr \
-    || { cat build/cutover/host_ac.cerr; fail "host_ac.elf failed to build"; }
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-linux build/cutover/host_compiler.ad build/cutover/host_ac.elf >/dev/null 2>build/cutover/host_ac.cerr || { cat build/cutover/host_ac.cerr; fail "host_ac.elf failed to build"; }
 [ -x build/cutover/host_ac.elf ] || fail "no host_ac.elf produced"
 
 # --- (2) Compile a self-contained unit exercising every asm form + the

@@ -34,15 +34,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-jpeg] compiling pixel backend (with JPEG decode) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/jpeg_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/jpeg_compile.log"; then
     echo "[hb-jpeg] FAIL: driver did not compile"; cat "$OUT/jpeg_compile.log"; exit 1
 fi
 echo "[hb-jpeg] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-jpeg] compiling standalone jpeg probe ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/jpeg_probe.ad -o "$PROBE" 2>"$OUT/jpeg_probe_compile.log"; then
+if ! adder_bin x86_64-linux user/jpeg_probe.ad "$PROBE" 2>"$OUT/jpeg_probe_compile.log"; then
     echo "[hb-jpeg] FAIL: jpeg_probe did not compile"; cat "$OUT/jpeg_probe_compile.log"; exit 1
 fi
 echo "[hb-jpeg] PASS jpeg probe compiled -> $PROBE"

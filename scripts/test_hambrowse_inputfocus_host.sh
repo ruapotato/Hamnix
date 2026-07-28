@@ -28,15 +28,14 @@ BIN="$OUT/hambrowse_gfx_if"
 fail=0
 
 echo "[hb-if] compiling host gfx driver (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/if_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/if_compile.log"; then
     echo "[hb-if] FAIL: host gfx driver did not compile"; cat "$OUT/if_compile.log"; exit 1
 fi
 echo "[hb-if] PASS host gfx driver compiled"
 
 echo "[hb-if] compiling native hambrowse (x86_64-adder-user) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/if_native.elf" 2>"$OUT/if_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/if_native.elf" 2>"$OUT/if_native.log"; then
     echo "[hb-if] FAIL: native browser did not compile"; cat "$OUT/if_native.log"; exit 1
 fi
 echo "[hb-if] PASS native browser compiles (pointer-focus chain wired)"

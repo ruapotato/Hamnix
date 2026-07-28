@@ -18,16 +18,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[notes-click] compiling host click/selection gate (x86_64-linux) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamnotes_click_host.ad -o "$BIN" 2>"$OUT/notes_click_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamnotes_click_host.ad "$BIN" 2>"$OUT/notes_click_compile.log"; then
     echo "[notes-click] FAIL: host harness did not compile"
     cat "$OUT/notes_click_compile.log"; exit 1
 fi
 echo "[notes-click] PASS host harness compiled"
 
 echo "[notes-click] compiling NATIVE hamnotesscene (Ctrl+C/V driver) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamnotesscene.ad -o "$OUT/hamnotes_native.elf" 2>"$OUT/notes_click_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamnotesscene.ad "$OUT/hamnotes_native.elf" 2>"$OUT/notes_click_native.log"; then
     echo "[notes-click] FAIL: native hamnotesscene did not compile"
     cat "$OUT/notes_click_native.log"; exit 1
 fi

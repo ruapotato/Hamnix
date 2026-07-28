@@ -70,9 +70,8 @@ echo "[test_net9_host] PASS linked -> $BIN"
 # succeeds via --emit-asm (the freestanding "undefined main" link error is
 # expected and ignored — we only require the .s to be produced).
 echo "[test_net9_host] (3/4) device parity: compiling for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_device.elf" \
-        >"$OUT/hambrowse_device.log" 2>&1; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_device.elf" >"$OUT/hambrowse_device.log" 2>&1; then
     echo "[test_net9_host] FAIL: device build of user/hambrowse.ad regressed"
     cat "$OUT/hambrowse_device.log"; fail=1
 else

@@ -43,12 +43,9 @@ bash scripts/build_user.sh >/dev/null || verdict_inconclusive "$TAG" "build_user
 bash scripts/build_modules.sh >/dev/null || verdict_inconclusive "$TAG" "build_modules failed"
 
 echo "[test_devstat] (2/5) Build tests/test_devuptime.ad + test_devloadavg.ad"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devuptime.ad -o "$UP_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devuptime.ad compile failed"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devloadavg.ad -o "$LA_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devloadavg.ad compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devuptime.ad "$UP_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devuptime.ad compile failed"
+adder_bin x86_64-adder-user tests/test_devloadavg.ad "$LA_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devloadavg.ad compile failed"
 
 echo "[test_devstat] (3/5) Plant /init = hamsh + /bin/test_dev{uptime,loadavg} in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \

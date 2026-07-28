@@ -35,8 +35,8 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[dualsyntax-host] compiling hamsh for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsh.ad -o "$BIN" 2>"$OUT/dualsyntax_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsh.ad "$BIN" 2>"$OUT/dualsyntax_compile.log"; then
     echo "[dualsyntax-host] FAIL: host hamsh did not compile"
     cat "$OUT/dualsyntax_compile.log"; exit 1
 fi

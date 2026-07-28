@@ -30,16 +30,15 @@ BIN="$OUT/js_host"
 mkdir -p "$OUT"
 
 echo "[js-async] compiling engine for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/js_host.ad -o "$BIN" 2>"$OUT/js_async_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/js_host.ad "$BIN" 2>"$OUT/js_async_compile.log"; then
     echo "[js-async] FAIL: host driver did not compile"; cat "$OUT/js_async_compile.log"; exit 1
 fi
 echo "[js-async] PASS host driver compiled -> $BIN"
 
 # Confirm the NATIVE js tool still compiles from the same engine (no regress).
 echo "[js-async] compiling native js tool for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/js.ad -o "$OUT/js_native.elf" 2>"$OUT/js_async_native.log"; then
+if ! adder_bin x86_64-adder-user user/js.ad "$OUT/js_native.elf" 2>"$OUT/js_async_native.log"; then
     echo "[js-async] FAIL: native js tool did not compile"; cat "$OUT/js_async_native.log"; exit 1
 fi
 echo "[js-async] PASS native js tool still compiles"

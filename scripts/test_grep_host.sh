@@ -47,8 +47,8 @@ fi
 echo "[grep-host] cross-checking against $($GREP --version | head -1)"
 
 echo "[grep-host] compiling user/grep.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/grep.ad -o "$BIN" 2>"$OUT/grep_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/grep.ad "$BIN" 2>"$OUT/grep_compile.log"; then
     echo "[grep-host] FAIL: host build did not compile"; cat "$OUT/grep_compile.log"; exit 1
 fi
 echo "[grep-host] PASS host build compiled -> $BIN"

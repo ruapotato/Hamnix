@@ -26,15 +26,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamsoftware-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamsoftware_host.ad -o "$BIN" 2>"$OUT/hamsoftware_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamsoftware_host.ad "$BIN" 2>"$OUT/hamsoftware_compile.log"; then
     echo "[hamsoftware-host] FAIL: host harness did not compile"; cat "$OUT/hamsoftware_compile.log"; exit 1
 fi
 echo "[hamsoftware-host] PASS host harness compiled -> $BIN"
 
 echo "[hamsoftware-host] compiling NATIVE hamsoftware for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsoftware.ad -o "$OUT/hamsoftware_native.elf" 2>"$OUT/hamsoftware_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsoftware.ad "$OUT/hamsoftware_native.elf" 2>"$OUT/hamsoftware_native.log"; then
     echo "[hamsoftware-host] FAIL: native hamsoftware did not compile"; cat "$OUT/hamsoftware_native.log"; exit 1
 fi
 echo "[hamsoftware-host] PASS native hamsoftware still compiles"

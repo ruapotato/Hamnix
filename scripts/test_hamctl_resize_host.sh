@@ -20,16 +20,15 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[ctl-resize] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamctl_resize_host.ad -o "$BIN" 2>"$OUT/ctl_resize_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamctl_resize_host.ad "$BIN" 2>"$OUT/ctl_resize_compile.log"; then
     echo "[ctl-resize] FAIL: host harness did not compile"; cat "$OUT/ctl_resize_compile.log"; exit 1
 fi
 echo "[ctl-resize] PASS host harness compiled -> $BIN"
 
 # The NATIVE app must still compile (it now parses the 'r <w> <h>' event).
 echo "[ctl-resize] compiling NATIVE hamctl for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamctl.ad -o "$OUT/hamctl_native.elf" 2>"$OUT/ctl_resize_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamctl.ad "$OUT/hamctl_native.elf" 2>"$OUT/ctl_resize_native.log"; then
     echo "[ctl-resize] FAIL: native hamctl did not compile"; cat "$OUT/ctl_resize_native.log"; exit 1
 fi
 echo "[ctl-resize] PASS native hamctl still compiles"

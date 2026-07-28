@@ -29,8 +29,8 @@ fail=0
 command -v diff >/dev/null 2>&1 || { echo "[diff-host] SKIP: no system diff"; exit 0; }
 
 echo "[diff-host] compiling user/diff.ad for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/diff.ad -o "$BIN" 2>"$OUT/diff_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/diff.ad "$BIN" 2>"$OUT/diff_compile.log"; then
     echo "[diff-host] FAIL: host build did not compile"; cat "$OUT/diff_compile.log"; exit 1
 fi
 echo "[diff-host] PASS host build compiled -> $BIN"

@@ -22,15 +22,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hamsdl-host] compiling demo host harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/sdlpong_host.ad -o "$BIN" 2>"$OUT/hamsdl_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/sdlpong_host.ad "$BIN" 2>"$OUT/hamsdl_compile.log"; then
     echo "[hamsdl-host] FAIL: host harness did not compile"; cat "$OUT/hamsdl_compile.log"; exit 1
 fi
 echo "[hamsdl-host] PASS host harness compiled -> $BIN"
 
 echo "[hamsdl-host] compiling NATIVE sdlpong for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/sdlpong.ad -o "$OUT/sdlpong_native.elf" 2>"$OUT/hamsdl_native.log"; then
+if ! adder_bin x86_64-adder-user user/sdlpong.ad "$OUT/sdlpong_native.elf" 2>"$OUT/hamsdl_native.log"; then
     echo "[hamsdl-host] FAIL: native sdlpong did not compile"; cat "$OUT/hamsdl_native.log"; exit 1
 fi
 echo "[hamsdl-host] PASS native sdlpong still compiles (device dual-target intact)"

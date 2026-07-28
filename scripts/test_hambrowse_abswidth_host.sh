@@ -26,15 +26,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[hb-abswidth] compiling pixel backend for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hambrowse_host_gfx.ad -o "$BIN" 2>"$OUT/abswidth_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hambrowse_host_gfx.ad "$BIN" 2>"$OUT/abswidth_compile.log"; then
     echo "[hb-abswidth] FAIL: driver did not compile"; cat "$OUT/abswidth_compile.log"; exit 1
 fi
 echo "[hb-abswidth] PASS pixel backend compiled -> $BIN"
 
 echo "[hb-abswidth] confirming NATIVE hambrowse still compiles ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hambrowse.ad -o "$OUT/hambrowse_native.elf" 2>"$OUT/abswidth_native.log"; then
+if ! adder_bin x86_64-adder-user user/hambrowse.ad "$OUT/hambrowse_native.elf" 2>"$OUT/abswidth_native.log"; then
     echo "[hb-abswidth] FAIL: native hambrowse did not compile"; cat "$OUT/abswidth_native.log"; exit 1
 fi
 echo "[hb-abswidth] PASS native hambrowse still compiles"

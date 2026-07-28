@@ -30,15 +30,14 @@ rm -f "$PNG" "$UIPPM" "$UIPNG"
 fail=0
 
 echo "[hampaint-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hampaint_host.ad -o "$BIN" 2>"$OUT/hp_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hampaint_host.ad "$BIN" 2>"$OUT/hp_compile.log"; then
     echo "[hampaint-host] FAIL: host harness did not compile"; cat "$OUT/hp_compile.log"; exit 1
 fi
 echo "[hampaint-host] PASS host harness compiled -> $BIN"
 
 echo "[hampaint-host] compiling NATIVE hampaint for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hampaint.ad -o "$OUT/hampaint_native.elf" 2>"$OUT/hp_native.log"; then
+if ! adder_bin x86_64-adder-user user/hampaint.ad "$OUT/hampaint_native.elf" 2>"$OUT/hp_native.log"; then
     echo "[hampaint-host] FAIL: native hampaint did not compile"; cat "$OUT/hp_native.log"; exit 1
 fi
 echo "[hampaint-host] PASS native hampaint still compiles"

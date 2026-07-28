@@ -24,15 +24,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[cmp-host] compiling completion engine + harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamcomplete_host.ad -o "$BIN" 2>"$OUT/cmp_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamcomplete_host.ad "$BIN" 2>"$OUT/cmp_compile.log"; then
     echo "[cmp-host] FAIL: host harness did not compile"; cat "$OUT/cmp_compile.log"; exit 1
 fi
 echo "[cmp-host] PASS host harness compiled -> $BIN"
 
 echo "[cmp-host] compiling NATIVE hamsh for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamsh.ad -o "$OUT/hamsh_native.elf" 2>"$OUT/cmp_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamsh.ad "$OUT/hamsh_native.elf" 2>"$OUT/cmp_native.log"; then
     echo "[cmp-host] FAIL: native hamsh did not compile"; cat "$OUT/cmp_native.log"; exit 1
 fi
 echo "[cmp-host] PASS native hamsh still compiles from the shared engine"

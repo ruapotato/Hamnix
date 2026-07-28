@@ -43,12 +43,9 @@ bash scripts/build_user.sh    >/dev/null || verdict_inconclusive "$TAG" "build_u
 bash scripts/build_modules.sh >/dev/null || verdict_inconclusive "$TAG" "build_modules failed"
 
 echo "[test_devdiskstats] (2/5) Build tests/test_devdiskstats.ad + test_devsysstat.ad"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devdiskstats.ad -o "$DS_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devdiskstats.ad compile failed"
-python3 -m compiler.adder compile \
-    --target=x86_64-adder-user tests/test_devsysstat.ad -o "$SS_ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "test_devsysstat.ad compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+adder_bin x86_64-adder-user tests/test_devdiskstats.ad "$DS_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devdiskstats.ad compile failed"
+adder_bin x86_64-adder-user tests/test_devsysstat.ad "$SS_ELF" >/dev/null || verdict_inconclusive "$TAG" "test_devsysstat.ad compile failed"
 
 echo "[test_devdiskstats] (3/5) Plant /init = hamsh + /bin/test_dev{diskstats,sysstat} in cpio"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \

@@ -21,15 +21,14 @@ mkdir -p "$ROOT"
 fail=0
 
 echo "[notes-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamnotesscene_host.ad -o "$BIN" 2>"$OUT/notes_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamnotesscene_host.ad "$BIN" 2>"$OUT/notes_compile.log"; then
     echo "[notes-host] FAIL: host harness did not compile"; cat "$OUT/notes_compile.log"; exit 1
 fi
 echo "[notes-host] PASS host harness compiled -> $BIN"
 
 echo "[notes-host] compiling NATIVE hamnotesscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamnotesscene.ad -o "$OUT/hamnotes_native.elf" 2>"$OUT/notes_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamnotesscene.ad "$OUT/hamnotes_native.elf" 2>"$OUT/notes_native.log"; then
     echo "[notes-host] FAIL: native hamnotesscene did not compile"; cat "$OUT/notes_native.log"; exit 1
 fi
 echo "[notes-host] PASS native hamnotesscene still compiles"

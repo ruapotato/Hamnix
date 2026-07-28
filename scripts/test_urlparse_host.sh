@@ -22,8 +22,8 @@ BIN="$OUT/urlparse_host"
 mkdir -p "$OUT"
 
 echo "[urlparse-host] compiling URL-parse unit test for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/urlparse_host.ad -o "$BIN" 2>"$OUT/urlparse.compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/urlparse_host.ad "$BIN" 2>"$OUT/urlparse.compile.log"; then
     echo "[urlparse-host] FAIL: host harness did not compile"
     cat "$OUT/urlparse.compile.log"; exit 1
 fi
@@ -31,8 +31,7 @@ echo "[urlparse-host] PASS host harness compiled -> $BIN"
 
 # Confirm native curl (pulls http9) still compiles for the device target.
 echo "[urlparse-host] compiling native curl (pulls http9) ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/curl.ad -o "$OUT/curl_native.elf" 2>"$OUT/urlparse.native.log"; then
+if ! adder_bin x86_64-adder-user user/curl.ad "$OUT/curl_native.elf" 2>"$OUT/urlparse.native.log"; then
     echo "[urlparse-host] FAIL: native http9 consumer did not compile"
     cat "$OUT/urlparse.native.log"; exit 1
 fi

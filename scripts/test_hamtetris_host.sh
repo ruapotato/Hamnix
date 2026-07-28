@@ -21,15 +21,14 @@ mkdir -p "$OUT"
 fail=0
 
 echo "[tetris-host] compiling core+harness for x86_64-linux ..."
-if ! python3 -m compiler.adder compile --target=x86_64-linux \
-        user/hamtetrisscene_host.ad -o "$BIN" 2>"$OUT/tetris_compile.log"; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+if ! adder_bin x86_64-linux user/hamtetrisscene_host.ad "$BIN" 2>"$OUT/tetris_compile.log"; then
     echo "[tetris-host] FAIL: host harness did not compile"; cat "$OUT/tetris_compile.log"; exit 1
 fi
 echo "[tetris-host] PASS host harness compiled -> $BIN"
 
 echo "[tetris-host] compiling NATIVE hamtetrisscene for x86_64-adder-user ..."
-if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        user/hamtetrisscene.ad -o "$OUT/hamtetris_native.elf" 2>"$OUT/tetris_native.log"; then
+if ! adder_bin x86_64-adder-user user/hamtetrisscene.ad "$OUT/hamtetris_native.elf" 2>"$OUT/tetris_native.log"; then
     echo "[tetris-host] FAIL: native hamtetrisscene did not compile"; cat "$OUT/tetris_native.log"; exit 1
 fi
 echo "[tetris-host] PASS native hamtetrisscene still compiles (device dual-target intact)"
