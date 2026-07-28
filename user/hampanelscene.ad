@@ -143,6 +143,93 @@ def _u64_to_dec(v: uint64, out: Ptr[uint8]) -> uint64:
     return i
 
 
+# --- DIAGNOSTICS -> /dev/cons (serial-visible) -----------------------
+#
+# The panel is launched by rc.5 as `spawn detached` with stdio DETACHED
+# (-2/-2), so every `_writeall(1, "[panel] …")` in this file writes to
+# NOTHING: those markers can never reach the serial log, and a gate that
+# greps for them is asserting on a channel that does not exist. (Same
+# trap hamtermscene documented at its dbg_cons_fd.) Real panel telemetry
+# therefore goes to /dev/cons, whose writes land in printk -> serial.
+#
+# One long-lived fd, opened lazily on first use.
+_pdbg_cons_fd: int32 = -1
+
+
+def _pcons_fd() -> int32:
+    if _pdbg_cons_fd < 0:
+        _pdbg_cons_fd = sys_open_write(cast[Ptr[char]]("/dev/cons"))
+    return _pdbg_cons_fd
+
+
+# Telemetry is assembled into ONE line buffer and flushed with a SINGLE
+# sys_write. /dev/cons is shared with the kernel printk stream and every
+# other console writer; a line emitted as a dozen little writes interleaves
+# with a concurrent boot/driver message and arrives on the serial log as
+# shredded, ungreppable text — a gate parsing it would then report a
+# defect that is really a console race.
+_plbuf: Array[512, uint8]
+_plpos: uint64 = 0
+
+
+def _pl_s(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0 and _plpos < 511:
+        _plbuf[_plpos] = s[i]
+        _plpos = _plpos + 1
+        i = i + 1
+
+
+def _pl_d(v: uint64):
+    if _plpos + 24 < 511:
+        _plpos = _plpos + _u64_to_dec(v, &_plbuf[_plpos])
+
+
+def _pl_bytes(p: Ptr[uint8], n: uint64):
+    i: uint64 = 0
+    while i < n and _plpos < 511:
+        _plbuf[_plpos] = p[i]
+        _plpos = _plpos + 1
+        i = i + 1
+
+
+def _pl_flush():
+    cf: int32 = _pcons_fd()
+    if cf >= 0 and _plpos > 0:
+        sys_write(cf, &_plbuf[0], _plpos)
+    _plpos = 0
+
+
+# How many descriptors does THIS process currently hold open? Reads the
+# real per-task fd table through /proc/self/fd (devproc emit_proc_fd —
+# one "<fd>\t<target>\n" line per LIVE descriptor) and counts the lines.
+# Returns -1 if the file cannot be opened.
+#
+# This is the measuring instrument for the taskbar-goes-blind bug: if the
+# panel leaks a descriptor per loop iteration, this number climbs
+# monotonically until the table (TASK_NFDS) is full and every subsequent
+# open — including /dev/wsys/windows — fails.
+_fdcnt_buf: Array[1024, uint8]
+def _open_fd_count() -> int64:
+    fd: int32 = sys_open(cast[Ptr[char]]("/proc/self/fd"))
+    if fd < 0:
+        return -1
+    total: uint64 = 0
+    while total < 1023:
+        r: int64 = sys_read(fd, &_fdcnt_buf[total], 1023 - total)
+        if r <= 0:
+            break
+        total = total + cast[uint64](r)
+    sys_close(fd)
+    n: int64 = 0
+    i: uint64 = 0
+    while i < total:
+        if _fdcnt_buf[i] == 10:
+            n = n + 1
+        i = i + 1
+    return n
+
+
 # A weight-aware glyph emit: normal or bold (double-strike) per the panel's
 # font setting. Centralized so every applet honours the per-panel weight.
 def _glyphs(x: int64, y: int64, s: Ptr[uint8], color: Ptr[uint8], bold: int32):
@@ -762,12 +849,56 @@ n_tasks: uint64 = 0
 win_hash: uint64 = 0
 
 
+# Count of CONSECUTIVE failed /dev/wsys/windows refreshes, and the total
+# over the session. Non-zero here means the taskbar the user is looking at
+# is NOT the live window set.
+win_open_fails: uint64 = 0
+win_open_fails_total: uint64 = 0
+_win_fail_reported: uint64 = 0
+
+
 def _refresh_windows():
-    n_tasks = 0
     fd: int32 = sys_open(cast[Ptr[char]]("/dev/wsys/windows"))
     if fd < 0:
-        win_hash = 0
+        # LOUD, not silent. This used to `n_tasks = 0; win_hash = 0; return`,
+        # i.e. a failed open silently REPAINTED AN EMPTY TASKBAR while four
+        # windows were mapped, and nothing anywhere said so — the failure was
+        # swallowed into "the desktop has no windows", which is a lie the user
+        # sees as a broken panel. Now: keep the last known-good list (a stale
+        # taskbar is strictly better than a false-empty one), and SAY SO on
+        # /dev/cons with the panel's live descriptor count, which is what
+        # distinguishes "the compositor is momentarily busy" from "this
+        # process has run out of file descriptors".
+        win_open_fails = win_open_fails + 1
+        win_open_fails_total = win_open_fails_total + 1
+        # Report the first failure, then back off geometrically (1,2,4,8,…)
+        # so a persistent fault stays visible without flooding the console.
+        if win_open_fails >= _win_fail_reported:
+            if _win_fail_reported == 0:
+                _win_fail_reported = 1
+            else:
+                _win_fail_reported = _win_fail_reported * 2
+            _pl_s(cast[Ptr[uint8]]("[panel] ERROR open /dev/wsys/windows failed n="))
+            _pl_d(win_open_fails)
+            nfd: int64 = _open_fd_count()
+            _pl_s(cast[Ptr[uint8]](" openfds="))
+            if nfd < 0:
+                _pl_s(cast[Ptr[uint8]]("unreadable"))
+            else:
+                _pl_d(cast[uint64](nfd))
+            _pl_s(cast[Ptr[uint8]](" keeping stale taskbar tasks="))
+            _pl_d(n_tasks)
+            _pl_s(cast[Ptr[uint8]]("\n"))
+            _pl_flush()
         return
+    if win_open_fails != 0:
+        _pl_s(cast[Ptr[uint8]]("[panel] RECOVERED /dev/wsys/windows after "))
+        _pl_d(win_open_fails)
+        _pl_s(cast[Ptr[uint8]](" failed opens\n"))
+        _pl_flush()
+        win_open_fails = 0
+        _win_fail_reported = 0
+    n_tasks = 0
     buf: Array[1024, uint8]
     total: uint64 = 0
     while total < 1023:
@@ -4812,6 +4943,17 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     last_minute: uint64 = 9999
     last_win_hash: uint64 = win_hash
+    # OVER-TIME HEALTH BEACON (see scripts/test_de_panel_taskbar_soak.sh).
+    # The taskbar-goes-blind defect took ~18 MINUTES of session time to
+    # appear, so nothing that samples the panel at an instant can see it.
+    # Once every ~10 s of wall clock the panel states, on /dev/cons: how many
+    # descriptors it holds open, how many taskbar entries it is RENDERING,
+    # and how many window-list refreshes have failed. A leak shows up as a
+    # monotone `fds=` climb long before the panel goes blind, and a blind
+    # panel shows up as `tasks=` diverging from the live window set.
+    _beacon_last: uint64 = sys_get_jiffies()
+    _beacon_iters: uint64 = 0
+    BEACON_JIFFIES: uint64 = 1000                    # HZ=100 -> ~10 s
     sysmon_tick: uint64 = 0
     SAMPLE_TICKS: uint64 = 20
     cfg_tick: uint64 = 0
@@ -4824,6 +4966,39 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     while True:
         any_redraw: int32 = 0
+
+        _beacon_iters = _beacon_iters + 1
+        _bnow: uint64 = sys_get_jiffies()
+        if _bnow - _beacon_last >= BEACON_JIFFIES:
+            _beacon_last = _bnow
+            _pl_s(cast[Ptr[uint8]]("[panelbeacon] up_s="))
+            _pl_d(_bnow / 100)
+            _pl_s(cast[Ptr[uint8]](" iters="))
+            _pl_d(_beacon_iters)
+            _pl_s(cast[Ptr[uint8]](" openfds="))
+            _bfds: int64 = _open_fd_count()
+            if _bfds < 0:
+                _pl_s(cast[Ptr[uint8]]("unreadable"))
+            else:
+                _pl_d(cast[uint64](_bfds))
+            _pl_s(cast[Ptr[uint8]](" tasks="))
+            _pl_d(n_tasks)
+            _pl_s(cast[Ptr[uint8]](" winfail="))
+            _pl_d(win_open_fails_total)
+            # The taskbar BUTTON LABELS actually being drawn (wid:title),
+            # so a gate can assert on the panel's RENDERED content rather
+            # than on a count or an exit status.
+            _pl_s(cast[Ptr[uint8]](" bar="))
+            _bi: uint64 = 0
+            while _bi < n_tasks:
+                if _bi != 0:
+                    _pl_s(cast[Ptr[uint8]]("|"))
+                _pl_d(cast[uint64](task_wid[_bi]))
+                _pl_s(cast[Ptr[uint8]](":"))
+                _pl_bytes(&task_name[_bi * 64], task_namelen[_bi])
+                _bi = _bi + 1
+            _pl_s(cast[Ptr[uint8]]("\n"))
+            _pl_flush()
 
         # #327: refresh the pending drag-from-menu OFFER before draining input,
         # so a left-button RELEASE this tick commits the launcher at the drop
