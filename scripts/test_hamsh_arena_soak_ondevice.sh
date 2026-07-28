@@ -54,8 +54,15 @@ QEMU_MEM="${QEMU_MEM:-2G}"
 # collection at all). So: short lines, many of them, and stop as soon as the
 # guest reports a collection rather than guessing how many are needed.
 BIG_TERMS="${BIG_TERMS:-25}"      # ~100 chars, ~50 nodes per line
-MAX_LINES="${MAX_LINES:-800}"
-BATCH="${BATCH:-20}"
+MAX_LINES="${MAX_LINES:-500}"
+BATCH="${BATCH:-25}"
+# Measured throughput of this seam is ~120 input chars/second: the guest's
+# line editor echoes every keystroke with cursor moves, and anything faster
+# DROPS BYTES — including the newline, so consecutive lines fuse into one
+# runaway logical line and the churn stops happening at all (observed: a
+# 0.4 s cadence produced "t = 1 + 1 t = 1 + 1 +t = 1 ..." on one line).
+# Gate the pace on the measured rate, with margin.
+LINE_PAUSE="${LINE_PAUSE:-1.5}"
 
 command -v qemu-system-x86_64 >/dev/null 2>&1 \
     || verdict_inconclusive "$TAG" "qemu-system-x86_64 not installed."
@@ -162,10 +169,16 @@ sent=0
 while [ "$sent" -lt "$MAX_LINES" ]; do
     alive || break
     for _ in $(seq 1 "$BATCH"); do
-        send "$BIG" 0.4
+        send "$BIG" "$LINE_PAUSE"
     done
     sent=$((sent + BATCH))
-    send 'arenas' 2
+    before=$(grep -aco 'arenas nodes=' "$LOG")
+    send 'arenas' 3
+    after=$(grep -aco 'arenas nodes=' "$LOG")
+    if [ "$after" -le "$before" ]; then
+        verdict_inconclusive "$TAG" \
+            "the guest stopped answering 'arenas' after ~$sent lines — serial input is being dropped, so nothing about reclamation was observed."
+    fi
     # Stop as soon as the DEVICE reports a collection — that is the event
     # this gate exists to observe, and over-driving only wastes wall clock.
     grep -aq ' gc=[1-9]' "$LOG" && { echo "[$TAG] guest collected after ~$sent lines"; break; }
