@@ -1095,8 +1095,32 @@ SYS_REBOOT:         uint64 = 169                # a0=magic1, a1=magic2, a2=cmd, 
 # dropping the trailing --root-pass VALUE. /bin/install then saw
 # --root-pass as argc-1 (no following arg) and bailed with
 # "unknown option: --root-pass". 32 restores headroom for that and more.
-MAX_ARGV:      uint64 = 32
-MAX_ARG_BYTES: uint64 = 256
+#
+# Bumped 32 -> 2048 (2026-07-28), and -- the part that actually matters --
+# EXCEEDING IT IS NOW LOUD. _exec_snapshot_one used to stop at max_entries
+# and NUL-terminate, so an over-long argv was SILENTLY TRUNCATED and the
+# program ran on a vector that was not what its caller passed. Chained with
+# hamsh's own 64-slot argv arena, `rm *` in a 200-file directory unlinked a
+# handful of files and exited 0. Truncation now returns -E2BIG from execve,
+# BEFORE any address-space teardown, so the caller stays intact and the
+# command does not half-run.
+#
+# 2048 is sized against the real resource, not guessed: argv strings and the
+# argv pointer array are written onto the child's user stack from ustack_top
+# down, inside the LINUX_USTACK_EAGER_SIZE (256 KiB) eagerly-mapped prefix.
+# Worst case: 2048 pointers * 8 = 16 KiB, plus MAX_ARG_TOTAL (64 KiB) of
+# argv string bytes, plus envp's 16 KiB + 512 B = ~96.5 KiB, leaving ~160 KiB
+# of eager stack for the program itself. hamsh's ARGV_MAX is 2048 too and its
+# guard trips one slot EARLIER (argv_n + 1 >= ARGV_MAX), so the shell always
+# raises before the kernel has to.
+MAX_ARGV:      uint64 = 2048
+# Per-string cap. 1024 covers any path this kernel can name (255-byte
+# components, 256-byte copyin_path budget) with room for long flag values.
+MAX_ARG_BYTES: uint64 = 1024
+# TOTAL argv string bytes -- usually the binding constraint (2048 * 1024
+# would be 2 MiB) and what keeps the child's eager user-stack reservation
+# bounded. Exhausting it is E2BIG, not silence.
+MAX_ARG_TOTAL: uint64 = 65536
 
 # U17: matching caps for envp[] on the Linux process init-stack.
 # Each env string is the literal "NAME=VALUE\0" bytes; both name and
@@ -1105,6 +1129,7 @@ MAX_ARG_BYTES: uint64 = 256
 # headroom for what future export semantics might add.
 MAX_ENVP:      uint64 = 64
 MAX_ENV_BYTES: uint64 = 256
+MAX_ENV_TOTAL: uint64 = 16384    # total envp string bytes
 
 # Linux ELF user stack: 2 MiB (512 pages = buddy order 9), DECOUPLED to a
 # high USER VA (LINUX_USTACK_VBASE) over a low alloc_pages() phys run.
@@ -1664,10 +1689,24 @@ def copyin_path(uptr: uint64, kdst: Ptr[uint8], cap: uint64) -> int64:
 #
 # Single global snapshot: execve is already serialized at this granularity
 # (elf_load_blob uses global elf_last_* state), so one BSS buffer is correct.
-EXEC_ARG_BLOB_SZ: uint64 = 28672              # argv(32*256) + envp(64*256) + slack
-_exec_str_blob:  Array[28672, uint8]
-_exec_argv_ptrs: Array[33, uint64]            # MAX_ARGV + NULL terminator
+# Blob layout: [0, MAX_ARG_TOTAL) is argv's bump region, [MAX_ARG_TOTAL,
+# EXEC_ARG_BLOB_SZ) is envp's. Giving each array its OWN limit is what stops
+# a huge argv from silently starving envp (and vice versa) -- with one shared
+# cursor the loser of the race just truncated, with no diagnostic.
+EXEC_ARG_BLOB_SZ: uint64 = 81920              # MAX_ARG_TOTAL + MAX_ENV_TOTAL
+_exec_str_blob:  Array[81920, uint8]
+_exec_argv_ptrs: Array[2049, uint64]          # MAX_ARGV + NULL terminator
 _exec_envp_ptrs: Array[65, uint64]            # MAX_ENVP + NULL terminator
+# Scratch for the init-stack builders. These were `str_addrs: Array[16,
+# uint64]` LOCALS in _build_user_argv / _build_user_argv_linux while
+# _argv_count already returned up to MAX_ARGV (32) entries -- so any exec
+# with 17+ arguments wrote PAST the local array and over its neighbouring
+# stack slots. The graphical installer marshals exactly 17 words, which is
+# the shape MAX_ARGV was raised to 32 for. Hoisted into BSS and sized from
+# MAX_ARGV; execve is already serialized by _execve_lock, the same reason
+# the snapshot arrays above can be single globals.
+_exec_str_addrs: Array[2048, uint64]
+_exec_env_addrs: Array[64, uint64]
 
 # binfmt_script (shebang) support. When do_execve's target begins with
 # "#!", the kernel must run the named interpreter with the script path as
@@ -1680,7 +1719,7 @@ _exec_envp_ptrs: Array[65, uint64]            # MAX_ENVP + NULL terminator
 _shebang_interp: Array[256, uint8]            # interp path
 _shebang_optarg: Array[256, uint8]            # optional single arg after interp
 _shebang_script: Array[256, uint8]            # the script path itself
-_shebang_argv_ptrs: Array[20, uint64]         # rebuilt argv (NULL-terminated)
+_shebang_argv_ptrs: Array[2049, uint64]       # rebuilt argv (MAX_ARGV + NUL)
 
 
 def _exec_parse_shebang(blob: uint64, sz: uint64,
@@ -1747,30 +1786,62 @@ def _str_copy_z(dst: Ptr[uint8], src: Ptr[char]) -> uint64:
 
 def _exec_snapshot_one(arr_user: uint64, out_ptrs: Ptr[uint64],
                        max_entries: uint64, max_bytes: uint64,
-                       blob_base: uint64, blob_off_io: Ptr[uint64]) -> int64:
+                       blob_base: uint64, blob_off_io: Ptr[uint64],
+                       blob_limit: uint64,
+                       overflow_io: Ptr[uint64]) -> int64:
     # Copy one NULL-terminated user array of cstring pointers (argv or envp)
     # into the kernel blob. out_ptrs[] receives kernel addresses of each
-    # copied string and is NULL-terminated. blob_off_io is the shared bump
-    # cursor into _exec_str_blob (advanced past each string + its NUL).
-    # Returns the entry count (>= 0) on success, or -14 (-EFAULT) on a
-    # faulting user pointer. arr_user == 0 yields an empty (count 0) array.
+    # copied string and is NULL-terminated. blob_off_io is the bump cursor
+    # into _exec_str_blob; blob_limit is the END of THIS array's region of
+    # the blob (argv and envp get disjoint regions so neither can starve the
+    # other without saying so).
+    #
+    # Returns the entry count (>= 0), or -14 (-EFAULT) on a faulting user
+    # pointer. arr_user == 0 yields an empty (count 0) array.
+    #
+    # overflow_io[0] is the SILENCE FIX. It reports that the caller's vector
+    # did NOT fit and was therefore not fully copied:
+    #     0 = everything fit
+    #     1 = more than max_entries entries
+    #     2 = the byte budget ran out
+    #     3 = one individual string was longer than max_bytes
+    # Before this, all three cases just `break`d and NUL-terminated -- the
+    # exec then ran with a quietly shortened argv. The caller turns a nonzero
+    # overflow on argv into -E2BIG (see exec_snapshot_args), which do_execve
+    # returns BEFORE any address-space teardown, so the caller is intact and
+    # the command is simply not run.
+    overflow_io[0] = 0
     n: uint64 = 0
     if arr_user != 0:
-        while n < max_entries:
+        while True:
             slot: uint64 = 0
             if get_user_64(arr_user + n * 8, &slot) < 0:
                 return cast[int64](-14)
             if slot == 0:
                 break
+            if n >= max_entries:
+                overflow_io[0] = 1
+                break
             off: uint64 = blob_off_io[0]
+            if off >= blob_limit:
+                overflow_io[0] = 2
+                break
             cap: uint64 = max_bytes
-            if off + cap > EXEC_ARG_BLOB_SZ:
-                cap = EXEC_ARG_BLOB_SZ - off
-            if cap == 0:
-                break                              # blob exhausted; stop early
+            if off + cap > blob_limit:
+                cap = blob_limit - off
             r: int64 = strncpy_from_user(blob_base + off, slot, cap)
             if r < 0:
                 return cast[int64](-14)
+            # strncpy_from_user copies at most cap-1 real bytes and always
+            # NUL-terminates, so r == cap - 1 means the source string may
+            # have been CUT. Treat that as overflow rather than handing the
+            # program a truncated argument.
+            if cast[uint64](r) + 1 >= cap:
+                if cap < max_bytes:
+                    overflow_io[0] = 2         # byte budget ran out
+                else:
+                    overflow_io[0] = 3         # single argument too long
+                break
             out_ptrs[n] = blob_base + off
             blob_off_io[0] = off + cast[uint64](r) + 1   # incl. NUL
             n = n + 1
@@ -1786,27 +1857,40 @@ def exec_snapshot_args(argv_user: uint64, envp_user: uint64) -> int64:
     # raw user a1/a2.
     blob_base: uint64 = cast[uint64](&_exec_str_blob[0])
     blob_off: uint64 = 0
+    ovf: uint64 = 0
     ra: int64 = _exec_snapshot_one(argv_user, &_exec_argv_ptrs[0],
                                    MAX_ARGV, MAX_ARG_BYTES,
-                                   blob_base, &blob_off)
+                                   blob_base, &blob_off,
+                                   MAX_ARG_TOTAL, &ovf)
     if ra < 0:
         return ra
+    if ovf != 0:
+        # ARGUMENT LIST TOO LONG. This is the loud replacement for a silent
+        # truncation: the caller keeps its image (nothing has been torn down
+        # yet) and gets the POSIX errno for exactly this condition, so a
+        # shell reports "argument list too long" instead of running a
+        # partial command and exiting 0.
+        printk_set_level(PRINTK_LEVEL_ERR)
+        printk2("execve: argument list too long (kind=%d, entries=%d) -> -E2BIG\n",
+                ovf, ra)
+        set_current_errstr("execve: argument list too long")
+        return cast[int64](-7)                     # -E2BIG
+    # envp's region starts where argv's ends.
+    blob_off = MAX_ARG_TOTAL
+    env_ovf: uint64 = 0
     re: int64 = _exec_snapshot_one(envp_user, &_exec_envp_ptrs[0],
                                    MAX_ENVP, MAX_ENV_BYTES,
-                                   blob_base, &blob_off)
+                                   blob_base, &blob_off,
+                                   EXEC_ARG_BLOB_SZ, &env_ovf)
+    if env_ovf != 0:
+        # envp overflow does NOT fail the exec (see the -EFAULT rationale
+        # below: a bad env must never stop a program from running), but it is
+        # no longer silent -- a missing variable in a child is otherwise an
+        # unattributable mystery.
+        printk_set_level(PRINTK_LEVEL_ERR)
+        printk2("execve: environment TRUNCATED (kind=%d, kept=%d entries)\n",
+                env_ovf, re)
     if re < 0:
-        # envp is OPTIONAL. argv faulting is a genuine error (the program
-        # has no arguments — fail the exec), but a garbage/unreadable envp
-        # must degrade to an EMPTY environment, NOT abort the whole exec.
-        # The native 2-arg sys_execve(path, argv) carries NO env; its asm
-        # stub zeros %rdx, but a caller that reaches SYS_EXECVE without that
-        # stub (or any path that leaves %rdx holding a small non-pointer
-        # like 0x35) would otherwise fault the envp walk and -EFAULT the
-        # exec — which regressed /init's exec of /bin/hamsh (the native
-        # heartbeat). access_ok can't catch a low-but-non-null garbage
-        # value, so we tolerate it here: an un-snapshottable envp yields an
-        # empty env. A VALID 3-arg envp (sys_execve_env) snapshots fine and
-        # is unaffected.
         _exec_envp_ptrs[0] = 0                     # empty env, NUL-terminated
     return 0
 
@@ -1889,7 +1973,10 @@ def _build_user_argv(ustack_top: uint64, argv_user: uint64,
     # Copy strings down from ustack_top. Track the bottom of the
     # string region; that's where the argv pointer array begins.
     str_sp: uint64 = ustack_top
-    str_addrs: Array[16, uint64]
+    # _exec_str_addrs (BSS, MAX_ARGV wide). This WAS `str_addrs: Array[16,
+    # uint64]` while _argv_count already returned up to MAX_ARGV entries --
+    # a plain out-of-bounds write over neighbouring stack slots for any exec
+    # with 17+ arguments.
     i: uint64 = 0
     while i < argc:
         src: uint64 = cast[Ptr[uint64]](argv_user + i * 8)[0]
@@ -1897,7 +1984,7 @@ def _build_user_argv(ustack_top: uint64, argv_user: uint64,
         str_sp = str_sp - n
         memcpy(cast[Ptr[uint8]](str_sp),
                cast[Ptr[uint8]](src), n)
-        str_addrs[i] = str_sp
+        _exec_str_addrs[i] = str_sp
         i = i + 1
 
     # 8-byte align the pointer array.
@@ -1910,7 +1997,7 @@ def _build_user_argv(ustack_top: uint64, argv_user: uint64,
     while i > 0:
         i = i - 1
         str_sp = str_sp - 8
-        cast[Ptr[uint64]](str_sp)[0] = str_addrs[i]
+        cast[Ptr[uint64]](str_sp)[0] = _exec_str_addrs[i]
 
     argv_addr: uint64 = str_sp
 
@@ -2005,7 +2092,10 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
     _ua_stac()
     # 1. Copy argv strings down from ustack_top.
     str_sp: uint64 = ustack_top
-    str_addrs: Array[16, uint64]
+    # _exec_str_addrs (BSS, MAX_ARGV wide). This WAS `str_addrs: Array[16,
+    # uint64]` while _argv_count already returned up to MAX_ARGV entries --
+    # a plain out-of-bounds write over neighbouring stack slots for any exec
+    # with 17+ arguments.
     i: uint64 = 0
     while i < argc:
         src: uint64 = cast[Ptr[uint64]](argv_user + i * 8)[0]
@@ -2013,7 +2103,7 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
         str_sp = str_sp - n
         memcpy(cast[Ptr[uint8]](str_sp),
                cast[Ptr[uint8]](src), n)
-        str_addrs[i] = str_sp
+        _exec_str_addrs[i] = str_sp
         i = i + 1
 
     # 1b. Copy envp strings just below the argv strings. Each entry
@@ -2021,7 +2111,6 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
     #     pointers point into the parent's address space; we own the
     #     copy now, so subsequent edits to the parent's env table
     #     can't disturb the child's view.
-    env_addrs: Array[64, uint64]
     i = 0
     while i < envc:
         src: uint64 = cast[Ptr[uint64]](envp_user + i * 8)[0]
@@ -2029,7 +2118,7 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
         str_sp = str_sp - n
         memcpy(cast[Ptr[uint8]](str_sp),
                cast[Ptr[uint8]](src), n)
-        env_addrs[i] = str_sp
+        _exec_env_addrs[i] = str_sp
         i = i + 1
 
     # 2. 16 bytes of AT_RANDOM material. Hamnix has no entropy source
@@ -2168,7 +2257,7 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
     while i > 0:
         i = i - 1
         str_sp = str_sp - 8
-        cast[Ptr[uint64]](str_sp)[0] = env_addrs[i]
+        cast[Ptr[uint64]](str_sp)[0] = _exec_env_addrs[i]
 
     # 6. argv array: NULL terminator then argv[N-1] .. argv[0].
     str_sp = str_sp - 8
@@ -2177,7 +2266,7 @@ def _build_user_argv_linux(ustack_top: uint64, argv_user: uint64,
     while i > 0:
         i = i - 1
         str_sp = str_sp - 8
-        cast[Ptr[uint64]](str_sp)[0] = str_addrs[i]
+        cast[Ptr[uint64]](str_sp)[0] = _exec_str_addrs[i]
 
     # 7. argc — the user's new *rsp.
     str_sp = str_sp - 8
@@ -2386,8 +2475,18 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
         ai = ai + 1
         # Append the original argv from index 1 onward (argv[0] = the
         # script name is replaced by scriptpath above).
+        # `ai < 19` used to cap this SILENTLY: a shebang script invoked with
+        # more than ~16 arguments had its tail dropped and the interpreter
+        # ran on a shortened vector -- the same silent-partial-action class
+        # as the argv snapshot cap. The buffer is now MAX_ARGV-sized and an
+        # overflow is -E2BIG (still before any teardown, caller intact).
         si: uint64 = 1
-        while _exec_argv_ptrs[si] != 0 and ai < 19:
+        while _exec_argv_ptrs[si] != 0:
+            if ai + 1 >= MAX_ARGV:
+                printk_set_level(PRINTK_LEVEL_ERR)
+                printk1("execve: shebang argv too long (%d) -> -E2BIG\n", ai)
+                set_current_errstr("execve: argument list too long")
+                return cast[int64](-7)             # -E2BIG
             _shebang_argv_ptrs[ai] = _exec_argv_ptrs[si]
             ai = ai + 1
             si = si + 1

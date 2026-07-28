@@ -252,8 +252,11 @@ NODE_MAX:      uint64 = 16384    # AST node arena (session-lifetime)
 # silent when a long enough session eventually reaches it.
 STR_ARENA_MAX: uint64 = 1048576  # interned string bytes (session)
 VAL_MAX:       uint64 = 16384    # value cells (session-lifetime)
-SCOPE_MAX:     uint64 = 128      # variable bindings (one flat table)
-ARGV_MAX:      uint64 = 64       # argv slots for an external command
+SCOPE_MAX:     uint64 = 1024     # variable bindings (one flat table)
+# ARGV_MAX — the shell's ARG_MAX. See the long note at _argv_push_cstr: this
+# is NOT a "pick a number" cap, it is sized to the kernel's execve argument
+# budget (arch/x86/kernel/syscall.ad MAX_ARGV) and exhaustion is LOUD.
+ARGV_MAX:      uint64 = 2048     # argv slots for an external command
 LISTELEM_MAX:  uint64 = 16384    # list/dict element slots (shared pool)
 
 
@@ -4616,16 +4619,21 @@ def v_render_str_only(v: int32) -> Ptr[uint8]:
 # The arrays and the cap must AGREE; they are sized from SCOPE_MAX's
 # literal value here, and scope_set now raises on overflow instead of
 # silently dropping the binding (see rt_raise).
-# MONOTONIC-GROWTH CEILING (2026-07-28 audit, unfixed but LOUD): there is no
-# `unset`, and scope_pop_frame only rewinds FUNCTION frames — so the depth-0
-# global table only ever grows, one slot per DISTINCT name the session ever
-# binds. A long interactive session that names 128 different variables raises
-# "scope: too many variables" and cannot bind another. Loud, not silent, so it
-# is a usability ceiling rather than a corruption; the fix is an `unset`
-# builtin plus compaction of the global frame, which is its own commit.
-sc_name:  Array[128, uint64]
-sc_val:   Array[128, int32]
-sc_frame: Array[128, int32]
+# MONOTONIC-GROWTH CEILING (raised + made recoverable 2026-07-28): there was
+# no `unset`, and scope_pop_frame only rewinds FUNCTION frames — so the
+# depth-0 global table only ever grew, one slot per DISTINCT name the session
+# ever bound, and a long interactive session that named 128 different
+# variables raised "scope: too many variables" and could bind no more. This
+# one was always LOUD (a ceiling, never corruption), so it was the least
+# urgent of the family, but a ceiling with no way back down is still a dead
+# session. Two changes: the table is 1024 wide, and `unset NAME...`
+# (scope_unset below, dispatched as a builtin) actually REMOVES a binding and
+# compacts the table, so the ceiling is now recoverable from inside the shell
+# instead of only by restarting it. The removed cell also stops being a GC
+# root, so unsetting a large list reclaims it.
+sc_name:  Array[1024, uint64]
+sc_val:   Array[1024, int32]
+sc_frame: Array[1024, int32]
 sc_count: uint64 = 0
 sc_depth: int32 = 0
 
@@ -4659,7 +4667,7 @@ def scope_set(name: uint64, val: int32):
     if sc_count >= SCOPE_MAX:
         # NEVER silently drop a binding: the script would then read the
         # variable back as nil and compute a confidently wrong answer.
-        rt_raise("scope: too many variables (SCOPE_MAX=128 bindings)")
+        rt_raise("scope: too many variables (SCOPE_MAX=1024 bindings) — use `unset NAME` to free slots")
         return
     sc_name[sc_count]  = name
     sc_val[sc_count]   = val
@@ -4677,6 +4685,48 @@ def scope_get(name: uint64) -> int32:
             if cstr_eq(str_ptr(sc_name[i]), str_ptr(name)) != 0:
                 return sc_val[i]
     return 0     # cell 0 = nil
+
+
+def scope_unset(name: uint64) -> int32:
+    # Remove the binding for `name` visible in the current frame (the frame
+    # itself first, then the global frame) and COMPACT the table so the slot
+    # is genuinely reusable — this is what turns SCOPE_MAX from a one-way
+    # ceiling into a budget. Returns 1 if a binding was removed, 0 if the
+    # name was not bound.
+    #
+    # SAFETY vs scope_pop_frame's `mark` discipline. A mark is the sc_count
+    # captured at frame ENTRY; popping restores sc_count to it. Compaction
+    # shifts every slot ABOVE the removed index down by one, so removing a
+    # slot BELOW an outstanding mark would leave that mark one too high and
+    # scope_pop_frame would resurrect a stale slot. Two cases:
+    #
+    #   sc_frame[i] == sc_depth  — the slot belongs to the CURRENT frame, so
+    #                              i >= this frame's mark >= every outer
+    #                              mark. Nothing below any mark moves. Safe.
+    #   sc_frame[i] == 0, sc_depth != 0
+    #                            — a GLOBAL slot seen from inside a call:
+    #                              i < the current mark. NOT safe to compact;
+    #                              refused loudly rather than corrupting the
+    #                              frame stack (`unset` a global at the top
+    #                              level, where sc_depth == 0 and there is no
+    #                              outstanding mark at all).
+    i: uint64 = sc_count
+    while i > 0:
+        i = i - 1
+        if sc_frame[i] == sc_depth or sc_frame[i] == 0:
+            if cstr_eq(str_ptr(sc_name[i]), str_ptr(name)) != 0:
+                if sc_frame[i] != sc_depth:
+                    rt_raise("unset: cannot unset a global from inside a function")
+                    return 0
+                j: uint64 = i
+                while j + 1 < sc_count:
+                    sc_name[j]  = sc_name[j + 1]
+                    sc_val[j]   = sc_val[j + 1]
+                    sc_frame[j] = sc_frame[j + 1]
+                    j = j + 1
+                sc_count = sc_count - 1
+                return 1
+    return 0
 
 
 def scope_has(name: uint64) -> int32:
@@ -4925,10 +4975,10 @@ def eval_err(msg: Ptr[uint8]) -> int32:
 # `def` registers a function: name + the ND_DEF node. Functions persist
 # across lines (the node arena does NOT reset while a def is live), so
 # defs live in their own small arena copied out of the per-line nodes.
-FN_MAX:       uint64 = 32
-fn_name:      Array[512, uint8]   # 32 * 16
+FN_MAX:       uint64 = 512
+fn_name:      Array[8192, uint8]  # 512 * 16
 FN_NAME_MAX:  uint64 = 16
-fn_node:      Array[32, int32]
+fn_node:      Array[512, int32]
 fn_count:     uint64 = 0
 
 
@@ -8192,8 +8242,8 @@ def dict_get(d: int32, key: int32) -> int32:
 # containing spaces stays one argument.
 
 # argv assembly arenas. The argv strings are interned; argv_ptr holds
-# cstring pointers for spawn() (NULL-terminated).
-argv_ptr:   Array[64, uint64]
+# cstring pointers for spawn() (NULL-terminated). Sized from ARGV_MAX.
+argv_ptr:   Array[2048, uint64]
 argv_n:     uint64 = 0
 
 # Globbing scratch.
@@ -8204,19 +8254,47 @@ def _argv_reset():
     argv_n = 0
 
 
-def _argv_push_cstr(s: Ptr[uint8]):
-    # KNOWN SILENT CAP (2026-07-28 audit, unfixed, and the sharpest of the
-    # family): argument 64 onward is DROPPED with no error and no status —
-    # `rm *` in a 200-file directory silently removes the first 63 and
-    # reports success. Deserves the rt_raise treatment str_intern_n got,
-    # but that is a behaviour change for every glob-heavy script and wants
-    # its own commit + gate.
+def _argv_overflow() -> int32:
+    # THE SILENT-PARTIAL-ACTION FIX (2026-07-28). Until this commit
+    # _argv_push_cstr simply `return`ed once argv was full: argument 64
+    # onward was DROPPED with no error, no status, and no diagnostic. The
+    # consequence was the worst failure mode in the tree — a PARTIAL action
+    # reported as COMPLETE. `rm *` in a 200-file directory removed the first
+    # 63 files and exited 0, so the user believed the directory was empty.
+    # `cp`/`mv`/`chmod`/`tar` over a glob did part of their job and said
+    # nothing. Not a crash and not a wrong answer: a half-done one.
+    #
+    # It is now LOUD, on the established hamsh path (rt_raise — same as
+    # nd_new / v_new / str_intern_n / scope_set / _comp_push / pushd's
+    # DIRSTACK_MAX / lex_line's TOK_MAX), AND it is SAFE: exec_statement,
+    # run_one_command_x, the `{ … }` capture and the for-loop word-list all
+    # check rt_fault right after _argv_build and refuse to run the command
+    # at all. Nothing is deleted, copied or moved when the vector overflows.
+    #
+    # The cap itself moved 64 -> 2048. It is not an arbitrary number: argv
+    # ultimately lands on the child's user stack via execve, so the ceiling
+    # is a REAL OS resource limit (POSIX ARG_MAX / E2BIG), not a shell
+    # bookkeeping choice. 2048 is what the kernel's matching MAX_ARGV budget
+    # allows within the 256 KiB eager user-stack region
+    # (arch/x86/kernel/syscall.ad: 2048 pointers = 16 KiB + a 64 KiB argv
+    # string budget). Both sides raise/E2BIG at the same wall, so there is no
+    # window where hamsh accepts a vector the kernel then truncates.
+    rt_raise("argv: too many arguments (ARGV_MAX=2048 words) — command NOT run")
+    return 0
+
+
+def _argv_push_cstr(s: Ptr[uint8]) -> int32:
+    # Returns 1 when the word was pushed, 0 when argv is full (and the
+    # overflow has been raised). Callers that render a value BEFORE
+    # pushing pre-check with the same guard so a corrupt element count
+    # cannot spin forever (see the IDLE-CPU HANG FIX notes below).
     if argv_n + 1 >= ARGV_MAX:
-        return
+        return _argv_overflow()
     # intern so the pointer survives val_reset
     ref: uint64 = str_intern_cstr(s)
     argv_ptr[argv_n] = cast[uint64](str_ptr(ref))
     argv_n = argv_n + 1
+    return 1
 
 
 def _argv_push_value(v: int32):
@@ -8232,8 +8310,10 @@ def _argv_push_value(v: int32):
             # count `val_ec` is corrupt/huge (a malformed/uninitialised
             # VT_LIST handle) therefore spun here forever inside
             # v_render_str_only, pegging a core — the VT login shells' idle
-            # hang. Nothing more can be pushed once argv is full, so stop.
+            # hang. Nothing more can be pushed once argv is full, so stop —
+            # LOUDLY (_argv_overflow), never as a silent truncation.
             if argv_n + 1 >= ARGV_MAX:
+                _argv_overflow()
                 return
             elem: int32 = v_list_get(v, i)
             _argv_push_cstr(v_render_str_only(elem))
@@ -8248,6 +8328,7 @@ def _argv_push_value(v: int32):
         bn: uint64 = val_ec[cast[uint64](bl)]
         while bi < bn:
             if argv_n + 1 >= ARGV_MAX:      # see VT_LIST arm above
+                _argv_overflow()
                 return
             _argv_push_cstr(v_render_str_only(v_list_get(bl, bi)))
             bi = bi + 1
@@ -8278,8 +8359,10 @@ def _argv_build(cmdnode: int32) -> int32:
         # kid-count nd_kn is corrupt/huge (a malformed AST) must not spin
         # this loop — each pass eval_expr()+_argv_push_value() renders a
         # value, so an unbounded nd_kn pegged a core inside v_render_str_only
-        # (the VT login shells' idle hang). Stop once argv is full.
+        # (the VT login shells' idle hang). Stop once argv is full — and say
+        # so, so the command is refused rather than silently truncated.
         if argv_n + 1 >= ARGV_MAX:
+            _argv_overflow()
             break
         kid: int32 = nd_kid_at(cmdnode, i)
         kk: int32 = nd_kind[cast[uint64](kid)]
@@ -8315,12 +8398,13 @@ def _argv_glob_expand(pattern: Ptr[uint8]):
 # substitution is single-level (an alias whose expansion names itself does
 # NOT recurse) so it can never loop. This is a purely interactive/scripting
 # convenience — it is NOT persisted and never touches the namespace.
-ALIAS_MAX:  uint64 = 64
-alias_name: Array[64, uint64]           # interned name refs
-alias_val:  Array[64, uint64]           # interned replacement-text refs
+ALIAS_MAX:  uint64 = 512
+alias_name: Array[512, uint64]          # interned name refs
+alias_val:  Array[512, uint64]          # interned replacement-text refs
 alias_n:    uint64 = 0
 _alias_words_scratch: Array[512, uint8]
 _alias_name_scratch:  Array[128, uint8]
+_alias_saved:         Array[2048, uint64]   # ARGV_MAX; see _alias_expand
 
 
 def _alias_find(name: Ptr[uint8]) -> int32:
@@ -8337,13 +8421,19 @@ def _alias_set(name: Ptr[uint8], val: Ptr[uint8]):
     if idx >= 0:
         alias_val[cast[uint64](idx)] = str_intern_cstr(val)
         return
-    # KNOWN SILENT CAP (2026-07-28 audit, unfixed): the 65th distinct alias
-    # is dropped and `alias x=y` still reports success — the alias simply
-    # never fires. Same shape as the FN_MAX drop in exec_def.
-    if alias_n < ALIAS_MAX:
-        alias_name[alias_n] = str_intern_cstr(name)
-        alias_val[alias_n] = str_intern_cstr(val)
-        alias_n = alias_n + 1
+    # WAS A SILENT CAP (fixed 2026-07-28): the 65th distinct alias was
+    # dropped while `alias x=y` still reported success — the alias simply
+    # never fired, and `ll` silently became "command not found" much later.
+    # The table is now 512 wide and exhaustion RAISES, so an alias either
+    # exists or the definition fails out loud. builtin_alias propagates
+    # eval_status from the latch, so `alias x=y` no longer reports 0 on a
+    # binding that did not happen.
+    if alias_n >= ALIAS_MAX:
+        rt_raise("alias: too many aliases (ALIAS_MAX=512) — alias NOT defined")
+        return
+    alias_name[alias_n] = str_intern_cstr(name)
+    alias_val[alias_n] = str_intern_cstr(val)
+    alias_n = alias_n + 1
 
 
 def _alias_remove(name: Ptr[uint8]) -> int32:
@@ -8385,11 +8475,15 @@ def _alias_expand():
     idx: int32 = _alias_find(cast[Ptr[uint8]](argv_ptr[0]))
     if idx < 0:
         return
-    saved: Array[64, uint64]
+    # `_alias_saved` is module BSS, not a stack local: at ARGV_MAX = 2048 an
+    # Array[2048, uint64] local would put 16 KiB on a 256 KiB user stack in
+    # the middle of the exec path. Alias expansion never overlaps itself (a
+    # nested _argv_build completes before the outer one calls _alias_expand),
+    # so a single shared buffer is correct.
     savc: uint64 = 0
     ti: uint64 = 1
-    while ti < argv_n and savc < 63:
-        saved[savc] = argv_ptr[ti]
+    while ti < argv_n and savc + 1 < ARGV_MAX:
+        _alias_saved[savc] = argv_ptr[ti]
         savc = savc + 1
         ti = ti + 1
     vp: Ptr[uint8] = str_ptr(alias_val[cast[uint64](idx)])
@@ -8397,9 +8491,16 @@ def _alias_expand():
     _alias_push_words(vp)
     si: uint64 = 0
     while si < savc:
-        if argv_n + 1 < ARGV_MAX:
-            argv_ptr[argv_n] = saved[si]
-            argv_n = argv_n + 1
+        # The alias's own words plus the surviving arguments can together
+        # exceed ARGV_MAX (`alias g='grep -n --color'` in front of a
+        # 2046-file glob). Refuse LOUDLY rather than dropping the tail
+        # arguments — dropping them is exactly the `rm *` failure again,
+        # just reached through an alias.
+        if argv_n + 1 >= ARGV_MAX:
+            _argv_overflow()
+            break
+        argv_ptr[argv_n] = _alias_saved[si]
+        argv_n = argv_n + 1
         si = si + 1
     argv_ptr[argv_n] = 0
 
@@ -9057,6 +9158,11 @@ def builtin_alias(argc: int32) -> int32:
                 k = k + 1
             _alias_name_scratch[k] = 0
             _alias_set(&_alias_name_scratch[0], &a[cast[uint64](eq) + 1])
+            # A table-full raise must SHOW UP in $status: reporting 0 for a
+            # binding that was not made is the silent-success half of the
+            # bug _alias_set just fixed.
+            if rt_fault != 0:
+                rc = 1
         else:
             idx: int32 = _alias_find(a)
             if idx >= 0:
@@ -9080,6 +9186,27 @@ def builtin_unalias(argc: int32) -> int32:
             write_str(2, "unalias: ")
             write_str(2, a)
             write_str(2, ": not found\n")
+            rc = 1
+        ai = ai + 1
+    return rc
+
+
+def builtin_unset(argc: int32) -> int32:
+    # `unset NAME...` — remove each named variable binding, freeing its
+    # slot in the flat scope table (and un-rooting its value for the GC).
+    # rc 1 if any name was not bound, matching bash's `unset` only in the
+    # useful part: hamsh reports the miss rather than silently succeeding.
+    if argc <= 1:
+        write_str(2, "unset: missing name\n")
+        return 1
+    rc: int32 = 0
+    ai: int32 = 1
+    while ai < argc:
+        a: Ptr[uint8] = cast[Ptr[uint8]](argv_ptr[cast[uint64](ai)])
+        if scope_unset(str_intern_cstr(a)) == 0:
+            write_str(2, "unset: ")
+            write_str(2, a)
+            write_str(2, ": not set\n")
             rc = 1
         ai = ai + 1
     return rc
@@ -11007,6 +11134,14 @@ def run_one_command_x(cmdnode: int32, in_pipe: int32, out_pipe: int32,
         argc = cast[int32](argv_n)
     else:
         argc = _argv_build(cmdnode)
+        # A fault raised while BUILDING argv (argv overflow, or a fault in
+        # an argument expression) must abort the command outright — running
+        # a TRUNCATED vector is the silent-partial-action bug. exec_statement
+        # has the same guard for the prebuilt path.
+        if rt_fault != 0:
+            if do_wait == 0:
+                return -1
+            return 1
     if argc == 0:
         return 0
     cmd: Ptr[uint8] = cast[Ptr[uint8]](argv_ptr[0])
@@ -11568,7 +11703,7 @@ CAPTURE_FD: int32 = 9
 
 
 # Saved argv arena for the nested-capture case (see below).
-cap_argv_save: Array[64, uint64]
+cap_argv_save: Array[2048, uint64]   # ARGV_MAX
 
 
 def _run_and_capture(cmdnode: int32) -> uint64:
@@ -11600,6 +11735,10 @@ def _run_and_capture(cmdnode: int32) -> uint64:
     # Spawn the command; bind the pipe write end at its /fd/1.
     argc: int32 = _argv_build(cmdnode)
     pid: int32 = -1
+    # As on the statement path: a truncated argv must NOT be run. The
+    # substitution yields the empty string and the latch propagates.
+    if rt_fault != 0:
+        argc = 0
     if argc > 0:
         cmd: Ptr[uint8] = cast[Ptr[uint8]](argv_ptr[0])
         rc_b: int32 = run_builtin(cmd, argc)
@@ -12242,10 +12381,13 @@ def exec_def(node: int32) -> int32:
     # REPLACED body become garbage and actually be reclaimed.
     nu: uint64 = cast[uint64](node)
     if fn_count >= FN_MAX:
-        # KNOWN SILENT CAP (2026-07-28 audit, unfixed): the 33rd `def` is
-        # silently ignored — the session then reports "undefined name" at
-        # the CALL, miles from the cause. Sibling of the caps listed at
-        # _alias_set / _argv_push_cstr / the _argstk push.
+        # WAS A SILENT CAP (fixed 2026-07-28): the 33rd `def` was silently
+        # ignored, so the session failed later at the CALL with "undefined
+        # name" — a diagnostic pointing miles away from the cause. The
+        # registry is now 512 wide (a sourced library of shell functions
+        # fits) and exhaustion RAISES here, at the `def` that could not be
+        # recorded, naming the limit.
+        rt_raise("def: too many functions (FN_MAX=512) — function NOT defined")
         return EX_NORMAL
     np: Ptr[uint8] = str_ptr(nd_str[nu])
     # replace if already defined
@@ -12347,6 +12489,11 @@ def exec_for(node: int32) -> int32:
                     si = si + 1
                 return EX_NORMAL
     argc: int32 = _argv_build(node)
+    # `for f in *` over an oversized glob: iterating a TRUNCATED word list
+    # is the same silent-partial-action bug wearing a loop. Abort; the
+    # enclosing exec_block converts the latch into EX_ERROR.
+    if rt_fault != 0:
+        return EX_NORMAL
     items: int32 = v_list_begin()
     j: int32 = 0
     while j < argc:
@@ -12756,6 +12903,11 @@ def exec_statement(node: int32) -> int32:
                 return EX_NORMAL
             if cstr_eq(cmd, "unalias") != 0:
                 eval_status = builtin_unalias(argc)
+                return EX_NORMAL
+            # `unset` mutates the shell's own scope table, so — like
+            # alias/unalias — it MUST run in-process, never spawned.
+            if cstr_eq(cmd, "unset") != 0:
+                eval_status = builtin_unset(argc)
                 return EX_NORMAL
         # argv is already built; run the command directly
         eval_status = _run_prebuilt_command(node, argc)
@@ -15512,17 +15664,28 @@ def cont_prompt():
 # One physical input line, generously larger than any line a human
 # types interactively (and smaller than LINE_MAX so a full edited line
 # always fits into line_buf with room for the appended newline).
-ED_LINE_MAX: uint64 = 1024
-ed_buf:   Array[1024, uint8]    # the line being edited (no NUL needed)
+ED_LINE_MAX: uint64 = 2047      # < LINE_MAX (2048) so the '\n' always fits
+ed_buf:   Array[2047, uint8]    # the line being edited (no NUL needed)
 ed_len:   uint64 = 0            # number of live bytes in ed_buf
 ed_cur:   uint64 = 0            # cursor position, 0..ed_len
+# SILENT-TRUNCATION LATCH (2026-07-28, same class as the argv cap).
+# _ed_insert_at_cursor used to simply `return` once the buffer was full, so a
+# pasted / script-fed command line longer than the buffer became a DIFFERENT,
+# SHORTER command that then ran as if it were what the user asked for —
+# `rm a b c … z` losing its tail is the argv bug reached through the reader.
+# The overflow now latches here; ed_readline refuses to submit a line that
+# was truncated, so an over-long line fails loudly and runs NOTHING.
+ed_truncated: int32 = 0
 
 # --- command history (ring buffer) ----------------------------------
 # Each slot is a fixed-width line image. A modest ring depth keeps the
 # static footprint small while covering a long interactive session.
 HIST_MAX:  uint64 = 48          # ring depth
-HIST_WID:  uint64 = 1024        # bytes per stored line (== ED_LINE_MAX)
-hist_buf:  Array[49152, uint8]  # HIST_MAX * HIST_WID, flattened
+# HIST_WID must stay == ED_LINE_MAX. When it was smaller, _hist_append
+# clamped the stored copy (copy_n > HIST_WID) — so recalling an over-long
+# line with Up gave back a SILENTLY SHORTENED command that Enter then ran.
+HIST_WID:  uint64 = 2047        # bytes per stored line (== ED_LINE_MAX)
+hist_buf:  Array[98256, uint8]  # HIST_MAX * HIST_WID, flattened
 hist_len:  Array[48, uint64]    # live byte count of each slot
 hist_count: uint64 = 0          # number of lines ever appended
 # hist_view: -1 == editing a fresh line; >=0 == browsing history,
@@ -15611,9 +15774,9 @@ def _hist_load(back: uint64):
 # $HOME/.hamsh_history (falling back to /.hamsh_history when HOME is
 # unset or the bare root placeholder), one command per line, capped at
 # the ring depth (O_TRUNC on save keeps it bounded).
-HIST_FILE_MAX: uint64 = 49152    # read cap == HIST_MAX * HIST_WID
+HIST_FILE_MAX: uint64 = 98256    # read cap == HIST_MAX * HIST_WID
 hist_path_buf: Array[256, uint8]
-hist_file_buf: Array[49152, uint8]
+hist_file_buf: Array[98256, uint8]
 
 
 def _hist_path() -> Ptr[char]:
@@ -15939,6 +16102,7 @@ def ed_readline() -> int64:
                 sys_yield()
     ed_len = 0
     ed_cur = 0
+    ed_truncated = 0
     ed_esc_state = 0
     ed_esc_param = 0
     rb: Array[1, uint8]
@@ -16040,6 +16204,17 @@ def ed_readline() -> int64:
             if ed_local_echo != 0:
                 _ed_putc(13)
                 _ed_putc(10)
+            if ed_truncated != 0:
+                # The line overflowed ED_LINE_MAX while it was being
+                # assembled. Running the SHORTENED line would execute a
+                # command the user never wrote (`rm a b … z` minus its
+                # tail). Refuse it, loudly, and hand the caller an empty
+                # line so nothing is parsed or run.
+                write_str(2, "hamsh: input line too long (ED_LINE_MAX=2047 bytes) — line NOT run\n")
+                ed_len = 0
+                ed_cur = 0
+                ed_truncated = 0
+                return 0
             return cast[int64](ed_len)
         if c == 3:                            # Ctrl-C — abandon line
             _ed_esc(cast[Ptr[uint8]]("^C\r\n"))
@@ -16099,6 +16274,10 @@ def ed_readline() -> int64:
 def _ed_insert_at_cursor(c: uint8):
     # Insert one byte at ed_cur, shifting the tail right.
     if ed_len + 1 >= ED_LINE_MAX:
+        # LATCH, don't silently swallow — see ed_truncated. The line is now
+        # not what the user/script asked for, and ed_readline will refuse to
+        # submit it rather than run a shortened command.
+        ed_truncated = 1
         return
     i: uint64 = ed_len
     while i > ed_cur:

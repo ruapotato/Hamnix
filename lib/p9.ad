@@ -331,6 +331,17 @@ def _p9_exec_failed(path: Ptr[char], rc: int32) -> int32:
     # does not return on success). Reports the failure on stderr — LOUDLY
     # and distinctly for -ENOMEM — and exits with a status that tells the
     # two cases apart. Never returns.
+    if rc == -7:
+        # -E2BIG. The kernel refused the argument vector rather than
+        # SILENTLY TRUNCATING it (see arch/x86/kernel/syscall.ad
+        # exec_snapshot_args). Say so explicitly: a bare 127 here reads as
+        # "command not found", which would send the user hunting for the
+        # wrong bug entirely.
+        _p9_werr(cast[Ptr[uint8]]("exec: argument list too long (E2BIG) running "))
+        _p9_werr(cast[Ptr[uint8]](path))
+        _p9_werr(cast[Ptr[uint8]](" - the command was NOT run; nothing was changed\n"))
+        sys_exit(126)
+        return 126
     if rc == -12:
         _p9_werr(cast[Ptr[uint8]]("exec: OUT OF MEMORY (ENOMEM) loading "))
         _p9_werr(cast[Ptr[uint8]](path))

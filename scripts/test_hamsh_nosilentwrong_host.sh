@@ -84,9 +84,20 @@ run scope65 "$(scope_script 65)"
 want "SCOPE first=1 second=2" "case 1a: the 65th binding no longer corrupts v1/v2"
 run scope128 "$(scope_script 128)"
 want "SCOPE first=1 second=2" "case 1b: a full 128-binding table is intact"
-run scope140 "$(scope_script 140)"
+# SCOPE_MAX moved 128 -> 1024 (2026-07-28) when `unset` landed; the property
+# under test is unchanged — overflow RAISES, it never corrupts or drops.
+run scope1024 "$(scope_script 1024)"
+want "SCOPE first=1 second=2" "case 1b2: a full 1024-binding table is intact"
+run scope1040 "$(scope_script 1040)"
 want "runtime error: scope: too many variables" \
      "case 1c: overflowing the scope table ERRORS (never corrupts)"
+# case 1d: `unset` makes the ceiling RECOVERABLE. Before it existed the
+# depth-0 table only ever grew — one slot per distinct name ever bound — so a
+# session that hit SCOPE_MAX was dead until restarted.
+run scope_unset "$(printf 'a = 1\nb = 2\nunset a\necho GONE $a END\necho KEPT_$b\nunset a\n')"
+want "GONE  END" "case 1d: unset actually removes the binding"
+want "KEPT_2"  "case 1e: unset leaves its neighbours intact"
+want "unset: a: not set" "case 1f: unset of an unbound name reports the miss"
 
 # ---------------------------------------------------------------- case 2
 # review §6.1: summing 0..19999 printed a plausible wrong total with an
