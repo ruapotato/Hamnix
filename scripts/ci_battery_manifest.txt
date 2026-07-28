@@ -44,6 +44,27 @@ bash scripts/test_de_uid_ns.sh
 bash scripts/test_de_terminal_namespace.sh
 bash scripts/test_hamsh.sh
 bash scripts/ci_run_gate.sh scripts/test_hamsh_heartbeat.sh
+# Three sub-0.1 s, QEMU-free grep-guards recovered from the 2026-07-28
+# unregistered-gate sweep. All three had rotted against seams that MOVED (the
+# hamUI dual-target split of the app cores; lib/filepick.ad replacing hamedit's
+# bespoke Save-As prompt; the kernel/client backbuffers becoming demand-
+# allocated instead of flat BSS arrays) and were rewritten against the current
+# names — no assertion weakened, each mutation-tested to prove it still bites.
+# DE scene calculator + editor features: calc resize wired into the event loop,
+# calc keyboard mappings (digits/+/=/./%/backspace), hamedit soft-wrap, the
+# WSYS keys-ring depth, and Ctrl-S-with-no-file raising the SHARED Save-As
+# chooser rather than dead-ending.
+bash scripts/test_de_scene_calc_edit_features.sh
+# Window-resize re-layout: the compositor emits 'r <w> <h>', a geometry change
+# re-rasterizes at the new size, and terminal/filemgr/editor/calculator each
+# parse it AND actually call their apply handler — the "maximized window paints
+# a small quadrant" bug class.
+bash scripts/test_de_resize_event_relayout.sh
+# #442(c) rio blit protocol substrate: the kernel 'B'/'D'/'C' verb parser, the
+# per-window backbuffer alloc/release lifecycle, the client-side rasterizer's
+# wire format, and the compositor's v2 adoption seam. The only gate asserting
+# the blit verbs.
+bash scripts/test_de_rio_blit.sh
 # QEMU-free host gate for the 2048 scene app: renders the board, drives scripted
 # input + the #129 slide animation, AND asserts BOUNDED per-move render cost
 # (settled display-list size + animation-list length at move 120 ~= move 5, with
@@ -116,6 +137,15 @@ bash scripts/test_hamwrite_host.sh
 # file I/O, and that all four apps really route through the one component.
 # Renders PNGs a human can look at. Native builds of all four still compile.
 bash scripts/test_filepick_host.sh
+# QEMU-free host gate for the #315 URL-bar text substrate (~64 s, nearly all of
+# it compiling): a deterministic unit test that browserwin_addr_caret_at is the
+# EXACT inverse of the address text's 13px caret pixels (clicking mid-URL lands
+# the caret on the clicked glyph — the user-reported "can't move the cursor in
+# the URL bar" bug), that the NATIVE hambrowse still builds, and a host render
+# of a highlighted URL span. Recovered from the 2026-07-28 unregistered-gate
+# sweep, where it was red only because the test hardcoded a text origin that
+# BW_ADDR_PAD had since moved; it now derives it via browserwin_addr_text_x().
+bash scripts/test_hamurl_host.sh
 # QEMU-free host gate for hamSDL, the SDL2-flavored native game library
 # (lib/hamsdl.ad core + lib/hamsdl_dev.ad device + lib/hamsdl_host.ad host) and
 # its demo game (lib/sdlpong.ad, a one-paddle bounce). Compiles the demo's host

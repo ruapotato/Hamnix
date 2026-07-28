@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
-# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s). It is a
-# grep-guard from 2026-06-19 that requires named handlers in the pre-scene-
-# pivot app shape: _fm_apply_resize() in user/hamfmscene.ad,
-# _calc_apply_resize() plus an 'r' (114) resize-event branch in
-# user/hamcalcscene.ad. Those symbols are gone. Either the resize re-layout
-# behaviour moved (scene-file pivot) and this gate needs rewriting against the
-# new seam, or it regressed and nobody noticed for six weeks — a maximized
-# window rendering into a small quadrant is exactly the bug it was written
-# for, so DECIDE WHICH by driving the DE, not by reading the grep.
+# VERDICT 2026-07-28: GATE ROT, NOT lost behaviour. The 2026-07-28 sweep red
+# was link 4 only, and it was looking in the wrong FILES. The hamUI
+# dual-target split (26675f57) moved each app's layout + input state machine
+# into an extern-free lib/*core.ad, leaving only the wsys transport in
+# user/*scene.ad — so _calc_apply_resize() is alive and well in
+# lib/hamcalccore.ad (called from hamcalc_resize_line, which the native
+# transport feeds every /event line), and the file manager's handler is
+# _parse_resize() + an inline fm_w/fm_h + fmc_set_geometry() apply. All four
+# clients parse 'r' (114) and re-layout; nothing regressed. Rewritten to
+# assert transport and core separately, and to require that each apply
+# handler is actually CALLED, which is the failure the gate exists for
+# (re-layout present but dead = maximized window paints a small quadrant).
 # scripts/test_de_resize_event_relayout.sh — structural regression guard for
 # the window-resize TEAR + "maximized window renders to a small quadrant" bug
 # (DE BUG 1).
@@ -72,27 +74,57 @@ if ! printf '%s\n' "$apply_body" | grep -qE '_wsys_geo_post_change'; then
 fi
 
 # --- LINK 4: resize-aware clients parse the 'r' event --------------------
-# Terminal, file manager and editor must each parse the 'r' resize line.
-declare -A CLIENT_FN=(
-    [user/hamtermscene.ad]="_term_apply_resize"
-    [user/hamfmscene.ad]="_fm_apply_resize"
-    [user/hameditscene.ad]="_ed_apply_resize"
-    [user/hamcalcscene.ad]="_calc_apply_resize"
+# Terminal, file manager, editor and calculator must each parse the 'r'
+# resize line and re-layout from it.
+#
+# The apps are no longer single files. The hamUI dual-target split
+# (26675f57 and friends) moved each app's layout + input state machine into
+# an extern-free lib/*core.ad so it can also run on the dev host, leaving
+# ONLY the wsys transport (open /event, read it) in user/*scene.ad. So the
+# two halves are asserted separately: TRANSPORT must open /event, CORE must
+# own the 'r' (114) parse and the apply handler. Checking both in one file
+# is what made this gate red for six weeks on a tree that was fine.
+#
+# label | transport (opens /event) | core (parses 114 + applies) | apply fn
+CLIENTS=(
+    "terminal|user/hamtermscene.ad|user/hamtermscene.ad|_term_apply_resize"
+    "filemgr|user/hamfmscene.ad|user/hamfmscene.ad|_parse_resize"
+    "editor|user/hameditscene.ad|user/hameditscene.ad|_ed_apply_resize"
+    "calculator|user/hamcalcscene.ad|lib/hamcalccore.ad|_calc_apply_resize"
 )
-for src in "${!CLIENT_FN[@]}"; do
-    fn="${CLIENT_FN[$src]}"
-    [ -f "$src" ] || { fail_link "link 4: $src missing"; continue; }
-    if ! grep -qE "def ${fn}" "$src"; then
-        fail_link "link 4: $src has no resize handler ${fn}()"
+for row in "${CLIENTS[@]}"; do
+    IFS='|' read -r label transport core fn <<<"$row"
+    for f in "$transport" "$core"; do
+        [ -f "$f" ] || { fail_link "link 4 ($label): $f missing"; continue 2; }
+    done
+    # TRANSPORT: must open the window's /event file for resize notifications.
+    if ! grep -qE '"/event"' "$transport"; then
+        fail_link "link 4 ($label): $transport does not open its /event file for resize notifications"
     fi
-    # Must open the /event file and react to the 'r' (114) type byte.
-    if ! grep -qE '"/event"' "$src"; then
-        fail_link "link 4: $src does not open its /event file for resize notifications"
+    # CORE: must own the resize handler ...
+    if ! grep -qE "def ${fn}\b" "$core"; then
+        fail_link "link 4 ($label): $core has no resize handler ${fn}()"
     fi
-    if ! grep -qE '114' "$src"; then
-        fail_link "link 4: $src does not test the 'r' (114) resize event type"
+    # ... and dispatch on the 'r' (114) event-type byte.
+    if ! grep -qE '(!=|==) *114|\[0\] *(!=|==) *114' "$core"; then
+        fail_link "link 4 ($label): $core does not test the 'r' (114) resize event type"
+    fi
+    # The parse must be WIRED: some function in the core has to actually call
+    # the apply handler, else the re-layout is dead code (the exact shape of
+    # the original DE BUG 1 — a maximized window painting a small quadrant).
+    if [ "$(grep -cE "\b${fn}\(" "$core")" -lt 2 ]; then
+        fail_link "link 4 ($label): ${fn}() is defined but never called in $core (resize re-layout is dead code)"
     fi
 done
+# The calculator's core is reached through a public wrapper the native
+# transport drains /event into; assert that seam explicitly since it spans
+# the two files.
+if ! grep -qE 'def hamcalc_resize_line' lib/hamcalccore.ad; then
+    fail_link "link 4 (calculator): lib/hamcalccore.ad has no hamcalc_resize_line() public resize seam"
+fi
+if ! grep -qE 'hamcalc_resize_line\(' user/hamcalcscene.ad; then
+    fail_link "link 4 (calculator): user/hamcalcscene.ad never feeds /event lines to hamcalc_resize_line (resize dead)"
+fi
 
 if [ "$fail" = "0" ]; then
     echo "PASS: DE resize-event re-layout intact"
