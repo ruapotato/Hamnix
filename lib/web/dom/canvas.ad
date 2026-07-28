@@ -4,6 +4,8 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.web.dom.forms import _has_word
+from lib.jsengine import _url_resolve, url_buf_a
+from lib.htmlengine import _attr_decode_at, doc_url, doc_url_len, base_url, base_url_len, url_bscratch, DOC_URL_CAP
 from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
@@ -4224,6 +4226,20 @@ def _js_build_document():
                   js_new_native_fn(js_hbase + NID_RO_CTOR))
     # window.history + window.location methods (History API / Location).
     _wire_history_location()
+    # The DOCUMENT URL, when the front-end supplied one: <base href> is applied
+    # (HTML "document base URL"), then location.* / document.URL /
+    # document.baseURI / document.documentURI are filled in from it. Without a
+    # document URL none of this runs and location stays the about:blank stub the
+    # JS engine installs, exactly as before.
+    _apply_base_href()
+    if doc_url_len > 0:
+        _url_parse_into(g_js_location, &doc_url[0], doc_url_len)
+        js_set_prop(js_doc, cast[Ptr[uint8]]("URL"), 3, \
+                    js_new_string(&doc_url[0], cast[uint64](doc_url_len)))
+        js_set_prop(js_doc, cast[Ptr[uint8]]("documentURI"), 11, \
+                    js_new_string(&doc_url[0], cast[uint64](doc_url_len)))
+        js_set_prop(js_doc, cast[Ptr[uint8]]("baseURI"), 7, \
+                    js_new_string(&base_url[0], cast[uint64](base_url_len)))
 
 
 # Eagerly register every <form> and its fields, exposing document.forms and
@@ -5622,6 +5638,69 @@ def _evt_std_kind(p: Ptr[uint8], n: int32) -> int32:
     return -1
 
 
+# Is p[0..n) an event type a POINTER PRESS delivers? Measured against chromium
+# (CDP Input.dispatchMouseEvent mousePressed+mouseReleased on a <div> listening
+# for every candidate type) — one left click delivers, in this order:
+#     pointerover pointerenter mouseover mouseenter
+#     pointerdown mousedown pointerup mouseup click
+# so an element whose ONLY listener is any of those is something a user reaches
+# by putting the pointer on it and pressing. dblclick/auxclick/contextmenu ride
+# the same press machinery (a second/other-button press) and mousemove/
+# pointermove/mouseout/mouseleave/pointerout/pointerleave the same hover, so all
+# of them make the element pointer-live too; touchstart/touchend are the touch
+# spelling real mobile-first pages use for the same gesture.
+#
+# This is the EVENT-TYPE half of the hit-test reachability gap: _el_has_handler
+# used to match evl_kind == 0 (click) alone, so `el.addEventListener('mousedown',
+# …)` — a menu button, a drag handle, a custom slider — had NO handler as far as
+# the coordinate hit-test was concerned, was never wrapped in a synthetic
+# "#__evt_N" link, and a pointer press on its pixels resolved to nothing.
+def _is_pointer_type(p: Ptr[uint8], n: int32) -> int32:
+    if n < 5 or n > 12:
+        return 0
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("click"), 5) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("dblclick"), 8) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("auxclick"), 8) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("contextmenu"), 11) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mousedown"), 9) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mouseup"), 7) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mousemove"), 9) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mouseover"), 9) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mouseout"), 8) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mouseenter"), 10) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("mouseleave"), 10) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerdown"), 11) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerup"), 9) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointermove"), 11) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerover"), 11) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerout"), 10) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerenter"), 12) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("pointerleave"), 12) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("touchstart"), 10) != 0:
+        return 1
+    if _bytes_eq(p, n, cast[Ptr[uint8]]("touchend"), 8) != 0:
+        return 1
+    return 0
+
+
 # Intern a generic event-type string into evt_tybuf; returns its offset, or -1
 # if the buffer is full. Interning is de-duplicated so removeEventListener can
 # compare by offset OR by bytes (we compare by bytes to stay robust).
@@ -5993,6 +6072,16 @@ def _dispatch_generic(target_el: int32, typp: Ptr[uint8], typn: int32, \
             if _fire_generic(disp_path[i], typp, typn, evtobj, EPHASE_BUBBLE) != 0:
                 ran = 1
             i = i + 1
+        # terminal hop: document-level delegation. _dispatch_event has always
+        # ended its bubble at _fire_docel, but the string-typed twin stopped at
+        # the source root — so `document.addEventListener('mousedown', …)`, the
+        # delegation idiom real pages use for menus and outside-click dismissal,
+        # never fired for an event raised on an element. Chromium bubbles every
+        # type to the document; so do we now.
+        if g_stop_prop == 0:
+            g_stop_immediate = 0
+            if _fire_docel(-1, typp, typn, evtobj) != 0:
+                ran = 1
     _set_ephase(evtobj, EPHASE_NONE)
     if evtobj >= 0:
         js_set_prop(evtobj, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
@@ -6235,12 +6324,23 @@ def he_dom_click_index(idx: int32) -> int32:
         return 1
     if idx >= dom_n:
         return 0
+    # A real POINTER PRESS is not one `click` event. Measured with chromium over
+    # CDP (Input.dispatchMouseEvent mousePressed+mouseReleased at the element's
+    # centre, a <div> listening for every candidate type), one left click
+    # delivers NINE events in this order:
+    #     pointerover pointerenter mouseover mouseenter
+    #     pointerdown mousedown pointerup mouseup click
+    # We used to deliver only the last one, so a menu button / drag handle /
+    # custom control whose handler is on mousedown (or pointerdown, or
+    # mouseover) never ran even once its element became hit-testable. Deliver
+    # the whole sequence, then the click.
+    seq: int32 = _fire_pointer_seq(idx)
     # a real click routes through the same bubbling dispatch core as
     # el.dispatchEvent(), so ancestor click listeners fire.
     ev: int32 = _new_event_obj()
     js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
                 js_new_string(cast[Ptr[uint8]]("click"), 5))
-    if _dispatch_event(idx, 0, ev) == 0:
+    if _dispatch_event(idx, 0, ev) == 0 and seq == 0:
         return 0
     # A handler may schedule deferred work (setTimeout/queueMicrotask) — real
     # sites debounce input, kick off async-then-update flows, "run after this
@@ -6252,6 +6352,57 @@ def he_dom_click_index(idx: int32) -> int32:
     _js_capture_console()
     _relayout()
     return 1
+
+
+# Dispatch ONE string-typed pointer event at `idx`. `bub` = 0 for the two
+# non-bubbling "enter" types (chromium: pointerenter/mouseenter do not bubble).
+def _fire_ptr_evt(idx: int32, typp: Ptr[uint8], typn: int32, bub: int32) -> int32:
+    ev: int32 = _new_event_obj()
+    js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
+                js_new_string(typp, cast[uint64](typn)))
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(bub))
+    return _dispatch_generic(idx, typp, typn, ev)
+
+
+# Is ANY live string-typed pointer listener registered anywhere on the page?
+# Fast-out for _fire_pointer_seq: with none registered the eight extra dispatches
+# cannot reach a handler, so skipping them is unobservable — and it keeps every
+# page that registers no pointer listener (which is every existing host gate)
+# byte-identical, allocating no extra event objects into the JS arena.
+def _any_pointer_listener() -> int32:
+    li: int32 = 0
+    while li < evl_n:
+        if evl_dead[li] == 0 and evl_kind[li] == GEN_KIND and \
+           _is_pointer_type(&evt_tybuf[evl_type_off[li]], evl_type_len[li]) != 0:
+            return 1
+        li = li + 1
+    return 0
+
+
+# Deliver the pointer-press event sequence a real click delivers BEFORE `click`,
+# in chromium's measured order (see he_dom_click_index). Returns 1 if any
+# listener ran.
+def _fire_pointer_seq(idx: int32) -> int32:
+    if _any_pointer_listener() == 0:
+        return 0
+    ran: int32 = 0
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("pointerover"), 11, 1) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("pointerenter"), 12, 0) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("mouseover"), 9, 1) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("mouseenter"), 10, 0) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("pointerdown"), 11, 1) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("mousedown"), 9, 1) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("pointerup"), 9, 1) != 0:
+        ran = 1
+    if _fire_ptr_evt(idx, cast[Ptr[uint8]]("mouseup"), 7, 1) != 0:
+        ran = 1
+    return ran
 
 
 # Look up a registered DOM element by id, registering it on demand (the JS
@@ -6895,8 +7046,13 @@ def _el_has_handler(idx: int32) -> int32:
         return 1
     li: int32 = 0
     while li < evl_n:
-        if evl_dead[li] == 0 and evl_el[li] == idx and evl_kind[li] == 0:
-            return 1
+        if evl_dead[li] == 0 and evl_el[li] == idx:
+            if evl_kind[li] == 0:
+                return 1
+            if evl_kind[li] == GEN_KIND and \
+               _is_pointer_type(&evt_tybuf[evl_type_off[li]], \
+                                evl_type_len[li]) != 0:
+                return 1
         li = li + 1
     return 0
 
@@ -8015,3 +8171,33 @@ def _obs_dispatch(rel: int32) -> int32:
         _obs_deliver_all()
         return js_undefined()
     return js_undefined()
+
+
+# Compute the DOCUMENT BASE URL: the document URL, overridden by the first
+# <base href> in the source (itself resolved against the document URL, per the
+# HTML spec's "document base URL" — chromium behaves the same way). Called once
+# per page before any element reflects href/src.
+def _apply_base_href():
+    base_url_len = 0
+    while base_url_len < doc_url_len:
+        base_url[base_url_len] = doc_url[base_url_len]
+        base_url_len = base_url_len + 1
+    if doc_url_len <= 0:
+        return
+    i: uint64 = 0
+    while i < src_len:
+        if src_ptr[i] == 60 and i + 1 < src_len and \
+           _tagname_is(i + 1, cast[Ptr[uint8]]("base")) != 0:
+            ts: uint64 = i + 1
+            je: uint64 = _hx_tag_end_p(src_ptr, src_len, ts)
+            if _hx_find_attr(ts, je, cast[Ptr[uint8]]("href")) != 0:
+                bl: int32 = _attr_decode_at(&url_bscratch[0], 0, DOC_URL_CAP)
+                if bl > 0:
+                    n2: int32 = _url_resolve(&url_bscratch[0], bl, \
+                                             &doc_url[0], doc_url_len)
+                    base_url_len = 0
+                    while base_url_len < n2:
+                        base_url[base_url_len] = url_buf_a[base_url_len]
+                        base_url_len = base_url_len + 1
+            return
+        i = i + 1

@@ -1389,3 +1389,66 @@ def _sel_rightmost(sel: Ptr[uint8], seln: int32):
         j = j + 1
 
 
+
+
+# ====================================================================
+# DOCUMENT URL (base for IDL URL-attribute reflection)
+# ====================================================================
+# `a.href` / `img.src` are IDL URL-reflecting attributes: the spec — and every
+# real browser — returns the attribute value RESOLVED against the document's
+# base URL, while `getAttribute('href')` returns the raw string. We reflected
+# the RAW string on both, so a page that reads `a.href` and re-navigates got a
+# RELATIVE url. Measured with chromium --headless on a file:// fixture:
+#
+#     <a href="?a=1">     chromium a.href = file:///.../href1.html?a=1
+#                         hambrowse a.href = ?a=1
+#     <img src="pic.png"> chromium img.src = file:///.../pic.png
+#                         hambrowse img.src = pic.png
+#     getAttribute('href') = "?a=1" in BOTH (that one was already right)
+#
+# The RESOLVER is not new: lib/web/js/builtins/url.ad already implements WHATWG
+# relative-URL resolution for `new URL(ref, base)` (_url_resolve -> url_buf_a).
+# This only supplies the document base URL it had no way to know, so the two
+# spellings of the same operation cannot drift apart.
+#
+# The base URL is the document URL, overridden by <base href> if the document
+# has one (itself resolved against the document URL — the HTML spec's
+# "document base URL"). A front-end supplies the document URL through
+# he_set_document_url(); when it supplies NONE (doc_url_len == 0) resolution is
+# skipped entirely and the raw attribute is reflected exactly as before, so any
+# front-end that has not been taught its own URL is byte-identical to before.
+DOC_URL_CAP:  int32 = 2048
+doc_url:      Array[2048, uint8]     # the document's own URL ("" = unknown)
+doc_url_len:  int32 = 0
+base_url:     Array[2048, uint8]     # document base URL (<base href> applied)
+base_url_len: int32 = 0
+url_bscratch: Array[2048, uint8]     # scratch: the decoded <base href> value
+
+
+# Set the document URL (and, until _apply_base_href runs, the base URL). Safe to
+# call with n <= 0 to clear it back to "no URL known".
+def he_set_document_url(p: Ptr[uint8], n: int32):
+    doc_url_len = 0
+    while doc_url_len < n and doc_url_len < DOC_URL_CAP:
+        doc_url[doc_url_len] = p[doc_url_len]
+        doc_url_len = doc_url_len + 1
+    base_url_len = 0
+    while base_url_len < doc_url_len:
+        base_url[base_url_len] = doc_url[base_url_len]
+        base_url_len = base_url_len + 1
+
+
+def he_doc_url_ptr() -> Ptr[uint8]:
+    return &doc_url[0]
+
+
+def he_doc_url_len() -> int32:
+    return doc_url_len
+
+
+def he_base_url_ptr() -> Ptr[uint8]:
+    return &base_url[0]
+
+
+def he_base_url_len() -> int32:
+    return base_url_len

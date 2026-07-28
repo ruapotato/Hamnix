@@ -65,6 +65,7 @@ from lib.jsengine import js_set_fetch_transport
 from lib.htmlengine import he_layout, \
     he_js_console_ptr, he_js_console_len, he_js_error, \
     he_set_click_links, he_link_evt_index, he_dom_click_index, \
+    he_set_document_url, \
     he_n_images, he_img_name_ptr, he_img_name_len, \
     he_css_reset, he_css_append, he_css_scan_links, \
     he_css_link_count, he_css_link_off, he_css_link_len, \
@@ -974,6 +975,11 @@ def _set_cur_url(u: Ptr[uint8]):
         i = i + 1
     cur_url[i] = 0
     _sync_addr_from_url()
+    # Tell the ENGINE the document URL, so IDL URL reflection (a.href / img.src)
+    # returns the ABSOLUTISED url a real browser returns instead of the raw
+    # attribute. Without this a page that reads `a.href` and re-navigates gets a
+    # relative string back (measured against chromium --headless).
+    he_set_document_url(&cur_url[0], cast[int32](i))
 
 
 # Fetch `url` into src_ptr/src_len. Sets the status line. cur_url must be set.

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!-- tests/fixtures/hambrowse_ptrevents.html — POINTER-EVENT reachability.
+
+     Three targets whose ONLY listener is a NON-click pointer event (mousedown /
+     mouseover / pointerdown), and a fourth chip with NO listener at all as the
+     negative control (it must stay dead, so a gate cannot go green by the
+     engine simply wrapping every element). Each handler writes an identifying
+     string into #log, so a coordinate-driven click proves BOTH that the element
+     was reachable (HITLINK >= 0) and that the handler actually RAN (its string
+     is painted into the page).
+
+     The chips carry flat, unique background colours so a gate can recover each
+     one's painted rect from the rendered PPM and aim its click at real pixels
+     rather than at engine-reported geometry. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .chip { width: 220px; height: 40px; }
+  #md { background: #c8dcf0; }
+  #ov { background: #f0d2c8; }
+  #pd { background: #d2f0c8; }
+  #no { background: #f0e6c8; }
+</style></head><body>
+<div id="md" class="chip">MDCHIP</div>
+<div id="ov" class="chip">OVCHIP</div>
+<div id="pd" class="chip">PDCHIP</div>
+<div id="no" class="chip">NOCHIP</div>
+<p id="log">nohandler</p>
+<script>
+  var seen = [];
+  function note(s) {
+    seen.push(s);
+    document.getElementById('log').textContent = seen.join(' ');
+  }
+  document.getElementById('md').addEventListener('mousedown', function () { note('RAN-md'); });
+  document.getElementById('ov').addEventListener('mouseover', function () { note('RAN-ov'); });
+  document.getElementById('pd').addEventListener('pointerdown', function () { note('RAN-pd'); });
+</script>
+</body></html>

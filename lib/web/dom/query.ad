@@ -4,6 +4,8 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _attr_decode_at
+from lib.htmlengine import base_url, base_url_len
+from lib.jsengine import _url_resolve, url_buf_a
 from lib.htmlengine import _ebox_find, _attr_op_match, _build_dataset, _bytes_eq, _content_right, _cstr_len, _dom_lookup_anchor, _extract_html, _extract_text, _find_cre_by_obj, _has_word, _hx_find_attr, _hx_lower, _idbytes_eq, _input_type_is, _is_undef_str, _left_margin, _match_chain, _nth_match, _palette_rgb, _parse_nth, _sel_attr_name_end, _sel_isname, _sel_parse, _sel_split, _select_index, _select_text, _tx_by_anchor, _tx_next_sibling, _tx_prev_sibling, _upper, css_color_rgb
 
 # ====================================================================
@@ -1362,6 +1364,54 @@ def _reflect_str_attr(o: int32, te: uint64, name: Ptr[uint8], nlen: uint64):
     js_set_prop(o, name, nlen, js_new_string(&dom_txtbuf[ro], cast[uint64](rl)))
 
 
+# Expose a URL-VALUED content attribute (href / src) as the IDL property. Unlike
+# _reflect_str_attr this reflects the value RESOLVED against the document base
+# URL, which is what every browser returns and what a page that re-navigates
+# through `a.href` depends on. `getAttribute('href')` keeps returning the raw
+# string (it reads the source span directly and never comes through here) —
+# measured in chromium, which likewise returns "?a=1" from getAttribute and
+# "file:///…/page.html?a=1" from .href.
+#
+# When the front-end never supplied a document URL (base_url_len == 0) the
+# resolver copies the reference through unchanged, so this is byte-identical to
+# _reflect_str_attr and no existing render moves.
+def _reflect_url_attr(o: int32, te: uint64, name: Ptr[uint8], nlen: uint64):
+    ro: int32 = dom_txt_len
+    rl: int32 = 0
+    present: int32 = 0
+    if _hx_find_attr(g_el_ns, te, name) != 0:
+        present = 1
+        rl = _attr_decode_at(&dom_txtbuf[0], dom_txt_len, DOM_TXT_CAP)
+        dom_txt_len = dom_txt_len + rl
+    if present != 0 and base_url_len > 0:
+        # HTML "parse a URL" strips leading/trailing ASCII whitespace from the
+        # attribute first. Measured: chromium resolves href=" sp.html " to
+        # .../sp.html, and an EMPTY href="" to the document URL itself (an
+        # element with NO href attribute still reflects "", which is why the
+        # PRESENCE of the attribute — not its length — is what gates this).
+        sa: int32 = ro
+        sb: int32 = ro + rl
+        while sa < sb and dom_txtbuf[sa] <= 32:
+            sa = sa + 1
+        while sb > sa and dom_txtbuf[sb - 1] <= 32:
+            sb = sb - 1
+        if sb <= sa:
+            # RFC 3986 5.3: an EMPTY reference resolves to the base URL with its
+            # fragment removed. (lib/web/js/builtins/url.ad's _url_resolve takes
+            # the relative-path merge branch here and yields the base DIRECTORY,
+            # so the empty case is resolved directly. chromium: href="" reads
+            # back as the page's own URL.)
+            fe: int32 = 0
+            while fe < base_url_len and base_url[fe] != 35:
+                fe = fe + 1
+            js_set_prop(o, name, nlen, js_new_string(&base_url[0], cast[uint64](fe)))
+            return
+        n2: int32 = _url_resolve(&dom_txtbuf[sa], sb - sa, &base_url[0], base_url_len)
+        js_set_prop(o, name, nlen, js_new_string(&url_buf_a[0], cast[uint64](n2)))
+        return
+    js_set_prop(o, name, nlen, js_new_string(&dom_txtbuf[ro], cast[uint64](rl)))
+
+
 def _dom_register_el() -> int32:
     anchor: int32 = cast[int32](g_el_lt)
     ex: int32 = _dom_lookup_anchor(anchor)
@@ -1515,9 +1565,9 @@ def _dom_register_el() -> int32:
     # a/area/link/base, alt on img/input/area. `title` IS a global HTMLElement
     # attribute and DOES read "" on a <div> (measured), so it stays universal.
     if _tag_has_src(g_el_ns, g_el_nl) != 0:
-        _reflect_str_attr(o, te, cast[Ptr[uint8]]("src"), 3)
+        _reflect_url_attr(o, te, cast[Ptr[uint8]]("src"), 3)
     if _tag_has_href(g_el_ns, g_el_nl) != 0:
-        _reflect_str_attr(o, te, cast[Ptr[uint8]]("href"), 4)
+        _reflect_url_attr(o, te, cast[Ptr[uint8]]("href"), 4)
     if _tag_has_alt(g_el_ns, g_el_nl) != 0:
         _reflect_str_attr(o, te, cast[Ptr[uint8]]("alt"), 3)
     _reflect_str_attr(o, te, cast[Ptr[uint8]]("title"), 5)

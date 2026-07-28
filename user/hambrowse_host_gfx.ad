@@ -36,6 +36,7 @@ from lib.htmlengine import he_layout, he_n_images, he_img_name_ptr, \
     he_dom_set_value, he_dom_click, he_dom_set_checked, he_dom_submit, \
     he_set_scroll_rows, he_seg_field, he_seg_appear, he_seg_ctrlrows, \
     he_seg_btnrad, he_seg_btnbord, he_set_click_links, he_link_evt_index, \
+    he_set_document_url, \
     he_dom_is_textfield, he_dom_is_submit, he_dom_set_value_index, \
     he_dom_get_value, he_dom_click_index
 from lib.jsengine import js_set_drain
@@ -723,6 +724,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # explicit width/height take the decoded image's NATURAL size.
     src_ptr = &html_buf[0]
     src_len = html_len
+    # Optional DOCUMENT URL: an argv token pair "url <URL>" (see
+    # user/hambrowse_host.ad). Absent by default => raw-attribute reflection,
+    # byte-identical to before.
+    uix: int32 = 1
+    while uix + 1 < argc:
+        if _streq(cast[Ptr[uint8]](argv[uix]), cast[Ptr[uint8]]("url")) != 0:
+            uxp: Ptr[uint8] = cast[Ptr[uint8]](argv[uix + 1])
+            he_set_document_url(uxp, cast[int32](_slen(uxp)))
+        uix = uix + 1
     # TRUE reflow: measure candidate lines in real TrueType advances so prose
     # wraps to the window width instead of growing the canvas sideways. Must be
     # installed after the faces load and before the first he_layout().

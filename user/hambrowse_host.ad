@@ -37,7 +37,7 @@ from lib.htmlengine import he_layout, he_seg_color_hex, he_rgb_hex, \
     he_set_click_links, he_dom_id_index, he_dom_is_textfield, \
     he_dom_is_submit, he_dom_field_form, he_dom_set_value_index, \
     he_dom_submit_index, he_dom_get_value, \
-    he_css_reset, he_css_append, he_set_module_resolver
+    he_css_reset, he_css_append, he_set_module_resolver, he_set_document_url
 
 
 # ---- tiny libc-free helpers ----------------------------------------
@@ -551,6 +551,18 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 _writeall(2, cast[Ptr[uint8]]("hambrowse_host: cannot open css\n"))
                 return 1
             css_loaded = 1
+
+    # Optional DOCUMENT URL: any argv token pair "url <URL>" tells the engine the
+    # page's own address, which is what IDL URL reflection (a.href / img.src) and
+    # location.href / document.URL / document.baseURI resolve against. ABSENT by
+    # default, and with no document URL the engine reflects the raw attribute
+    # exactly as before — so every existing invocation stays byte-identical.
+    ui: int32 = 1
+    while ui + 1 < argc:
+        if _streq(cast[Ptr[uint8]](argv[ui]), cast[Ptr[uint8]]("url")) != 0:
+            up: Ptr[uint8] = cast[Ptr[uint8]](argv[ui + 1])
+            he_set_document_url(up, cast[int32](_slen(up)))
+        ui = ui + 1
 
     src_ptr = &file_buf[0]
     src_len = file_len

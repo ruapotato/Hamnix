@@ -3946,3 +3946,14 @@ bash scripts/test_jsengine_throwguard_host.sh
 # and turns node's "getter,arg" into "arg,getter"; that order is pinned here as
 # the last case. REGISTERED 2026-07-28.
 bash scripts/test_jsengine_argguard_host.sh
+# test_hambrowse_ptrevents_host: the EVENT-TYPE half of pointer reachability.
+# _el_has_handler() matched CLICK only, so an element whose sole listener is
+# mousedown / mouseover / pointerdown was never wrapped in the "#__evt_N" link
+# the coordinate hit-test resolves and a press on its pixels hit nothing at all;
+# and once reachable, a press still delivered `click` alone, so the handler that
+# asked for mousedown never ran. Chromium (CDP Input.dispatchMouseEvent) is the
+# oracle for both halves: one click delivers nine events, ending in click.
+# Coordinate-driven like hitcoord/chipcoord — the clicks are aimed at PAINTED
+# pixels — with a listener-less negative-control chip that must stay dead.
+# REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_ptrevents_host.sh
