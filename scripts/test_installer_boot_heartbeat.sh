@@ -116,7 +116,24 @@ HEARTBEAT_RE='\[hamsh-alive\]'
 # Treat it as fatal so the poll loop below breaks out the instant it
 # appears instead of burning the full BOOT_TIMEOUT waiting for a heartbeat
 # that will never come.
-FATAL_RE='TRAP: vector|triple fault|double fault|cpu_reset|#DF|\[trap-diag\] halting'
+# FALSE-POSITIVE FIX (2026-07-28). This pattern used to carry a bare `#DF`
+# term. NOTHING in the kernel ever prints "#DF" on a real double fault — a
+# genuine vector-8 fault comes out of arch/x86/kernel/traps.ad as
+# "TRAP: vector 0x08" (already matched) or through the IST-backed diagnostic
+# as "[trap-diag] halting". The ONLY serial line in the whole tree containing
+# the literal "#DF" is the BENIGN handler-INSTALL announcement emitted on
+# EVERY healthy boot:
+#     [boot:40.97] trap_df_install (IST-backed #DF handler)
+#     [trap-df] IST-backed #DF handler installed (vector 0x08, IST1 -> ...)
+# So the term matched every boot, healthy or not, and made this gate report
+# "fatal-trap indication present ... regression #402 signature" for a boot
+# whose ACTUAL failure was "no heartbeat". That mis-signal cost real
+# investigation time on 2026-07-28 (a double fault was chased that never
+# happened). Match what the kernel actually prints, nothing else.
+# "triple fault" / "cpu_reset" / "double fault" are QEMU `-d` vocabulary and
+# never reach the guest serial log either, but they are harmless (no line in
+# the tree contains them) and are kept for logs captured with -d cpu_reset.
+FATAL_RE='TRAP: vector|triple fault|double fault|cpu_reset|\[trap-diag\] halting'
 
 say() { echo "[test_installer_boot_heartbeat] $*"; }
 

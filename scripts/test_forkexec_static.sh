@@ -38,4 +38,13 @@ qemu_drive "$LOG" "$ELF" "[hamsh] M16.35 shell ready" 120 \
 echo "[fes] --- output ---"; cat "$LOG"; echo "[fes] --- end ---"
 echo "=== VERDICT ==="
 grep -aF "FES: parent reaped child status=0" "$LOG" && echo "PASS" || echo "FAIL"
-grep -aiE "NX exec-fault|capturing core|code=139|coredump" "$LOG" && echo "FAULT-SEEN" || true
+# FALSE-POSITIVE FIX (2026-07-28): the bare `coredump` term matched the
+# BENIGN boot lines every healthy boot prints --
+#     [boot:30.d] coredump gate
+#     [coredump] skipped (no /etc/coredump-test marker)
+#     [coredump] module linked; fatal-sig table OK
+# -- so this gate printed FAULT-SEEN on a completely clean run. The real
+# evidence of a fault is a coredump actually being TAKEN ("[coredump] pid=N
+# capturing core..."), an NX exec-fault, or a 139 exit; match only those.
+grep -aiE "NX exec-fault|capturing core|code=139|\[coredump\] wrote /tmp/core" "$LOG" \
+    && echo "FAULT-SEEN" || true
