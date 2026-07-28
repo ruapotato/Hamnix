@@ -1864,6 +1864,78 @@ ptr_prev_buttons: int32 = 0
 sel_text:  Array[12288, uint8]            # extracted selection (copy payload)
 paste_buf: Array[4096, uint8]             # PRIMARY read on middle-click paste
 
+# --- pointer TRACE to /dev/cons (serial-visible) ----------------------
+# The selection/paste markers used to go to fd 1, which for a DE daemon
+# launched detached is NOT the serial console — so every on-device gate that
+# grepped serial for them was asserting on a channel that could never carry
+# them. All pointer-path markers now go to /dev/cons (writes -> printk ->
+# serial), the same channel the NS_PROBE / COLD_START markers already used.
+dbg_cons_fd: int32 = -1
+ptr_trace_n: uint64 = 0                   # bounded so live mousing can't flood
+ptr_seen: int32 = 0                       # one-shot "an 'm' line arrived"
+
+
+def _cons_fd() -> int32:
+    if dbg_cons_fd < 0:
+        dbg_cons_fd = sys_open_write(cast[Ptr[char]]("/dev/cons"))
+    return dbg_cons_fd
+
+
+def _cons_say(s: Ptr[uint8]):
+    cf: int32 = _cons_fd()
+    if cf >= 0:
+        sys_write(cf, s, _slen(s))
+
+
+def _ptr_trace(x: int64, y: int64, btn: int64, prev: int64,
+               row: int64, col: int64):
+    # ONE line per pointer event with a button edge, capped. Proves (a) the
+    # 'm' line reached this app's /event ring, (b) the parsed fields, and
+    # (c) the grid cell the pixels mapped to.
+    if ptr_trace_n >= 40:
+        return
+    ptr_trace_n = ptr_trace_n + 1
+    cf: int32 = _cons_fd()
+    if cf < 0:
+        return
+    l: Array[128, uint8]
+    p: uint64 = 0
+    pfx: Ptr[uint8] = cast[Ptr[uint8]]("[hamterm] PTR x=")
+    while pfx[p] != 0:
+        l[p] = pfx[p]
+        p = p + 1
+    p = p + _u64_to_dec(cast[uint64](x), &l[p])
+    l[p] = 32
+    p = p + 1
+    l[p] = 121                              # 'y'
+    p = p + 1
+    l[p] = 61
+    p = p + 1
+    p = p + _u64_to_dec(cast[uint64](y), &l[p])
+    l[p] = 32
+    p = p + 1
+    l[p] = 98                               # 'b'
+    p = p + 1
+    l[p] = 61
+    p = p + 1
+    p = p + _u64_to_dec(cast[uint64](btn), &l[p])
+    l[p] = 47                               # '/'
+    p = p + 1
+    p = p + _u64_to_dec(cast[uint64](prev), &l[p])
+    l[p] = 32
+    p = p + 1
+    l[p] = 114                              # 'r'
+    p = p + 1
+    l[p] = 61
+    p = p + 1
+    p = p + _u64_to_dec(cast[uint64](row), &l[p])
+    l[p] = 47
+    p = p + 1
+    p = p + _u64_to_dec(cast[uint64](col), &l[p])
+    l[p] = 10
+    p = p + 1
+    sys_write(cf, &l[0], p)
+
 
 def _copy_selection(prim: int32) -> uint64:
     # Extract the active grid selection -> text and WRITE it to the CLIPBOARD
@@ -1882,6 +1954,18 @@ def _paste_primary():
     # line editor as if typed (CR folded to NL, i.e. a pasted newline submits the
     # line — standard terminal middle-click behaviour).
     n: uint64 = htsel_clip_get(1, &paste_buf[0], 4096)
+    pl: Array[64, uint8]
+    pp: uint64 = 0
+    ppfx: Ptr[uint8] = cast[Ptr[uint8]]("[hamterm] PASTE primary n=")
+    while ppfx[pp] != 0:
+        pl[pp] = ppfx[pp]
+        pp = pp + 1
+    pp = pp + _u64_to_dec(n, &pl[pp])
+    pl[pp] = 10
+    pp = pp + 1
+    cfp: int32 = _cons_fd()
+    if cfp >= 0:
+        sys_write(cfp, &pl[0], pp)
     i: uint64 = 0
     while i < n:
         c: uint8 = paste_buf[i]
@@ -1931,6 +2015,9 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
         return
     _evt_next_field(&p, le, &btn)           # buttons bitmap (may be 0)
     _evt_next_field(&p, le, &dz)           # wheel notch (may be absent -> 0)
+    if ptr_seen == 0:
+        ptr_seen = 1
+        _cons_say(cast[Ptr[uint8]]("[hamterm] PTR ring live\n"))
     if dz != 0:
         _scroll_by(dz)
         # End-to-end delivery proof (boot console): a wheel notch reached this
@@ -1939,7 +2026,7 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
         # flood the console.
         if wheel_marked == 0:
             wheel_marked = 1
-            _writeall(1, cast[Ptr[uint8]]("[hamterm] WHEEL dz applied\n"))
+            _cons_say(cast[Ptr[uint8]]("[hamterm] WHEEL dz applied\n"))
     # --- click-drag text selection (#323) -------------------------------
     left_now: int32 = 0
     if (btn & 1) != 0:
@@ -1954,6 +2041,8 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
         col: int64 = 0
         htsel_pix_to_cell(x, y, cast[int64](term_rows_n),
                           cast[int64](term_cols_n), &row, &col)
+        if btn != 0 or ptr_prev_buttons != 0:
+            _ptr_trace(x, y, btn, cast[int64](ptr_prev_buttons), row, col)
         if left_now != 0 and left_prev == 0:
             htsel_begin(row, col)           # press: drop the anchor
         elif left_now != 0 and left_prev != 0:
@@ -1964,8 +2053,14 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
             if htsel_active() != 0:
                 np: uint64 = _copy_selection(1)
                 if np > 0:
-                    _writeall(1, cast[Ptr[uint8]](
+                    _cons_say(cast[Ptr[uint8]](
                         "[hamterm] SEL copied PRIMARY\n"))
+                else:
+                    _cons_say(cast[Ptr[uint8]](
+                        "[hamterm] SEL release: extract EMPTY\n"))
+            else:
+                _cons_say(cast[Ptr[uint8]](
+                    "[hamterm] SEL release: span INACTIVE\n"))
     # middle-click: paste the PRIMARY selection into the edit line. Uses the
     # SHARED rising-edge detector (uniform with editor/Notes). This is
     # DELIBERATELY OUTSIDE the `term_view_off == 0` selection gate above: the
@@ -1976,6 +2071,7 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
     # so the injected text is visible where it lands.
     if htb_mid_edge(btn, cast[int64](ptr_prev_buttons)) != 0:
         term_view_off = 0
+        _cons_say(cast[Ptr[uint8]]("[hamterm] MID edge -> paste PRIMARY\n"))
         _paste_primary()
     ptr_prev_buttons = cast[int32](btn)
 
