@@ -171,7 +171,7 @@ printf 'echo MARK_PANELPID_BEGIN; pgrep hampanelscene; echo MARK_PANELPID_END\n'
 sleep 3
 wait_for MARK_PANELPID_END 20 || true
 PANEL_PID=$(sed -n '/MARK_PANELPID_BEGIN/,/MARK_PANELPID_END/p' "$LOG" \
-            | grep -aoE '^[0-9]+' | head -1)
+            | tr -d '\r' | grep -aoE '^[0-9]+' | head -1)
 echo "$TAG panel pid: ${PANEL_PID:-<not found>}"
 dump_panel_fds() {
     [ -n "${PANEL_PID:-}" ] || return 0
@@ -325,7 +325,7 @@ fi
 
 # (4) RENDERED TASKBAR == REALITY, 20+ minutes in.
 WIDS_LIVE=$(sed -n '/MARK_WINTABLE_BEGIN/,/MARK_WINTABLE_END/p' "$LOG" \
-            | grep -aoE '^[0-9]+ ' | tr -d ' ' | sort -n | tr '\n' ',')
+            | tr -d '\r' | grep -aoE '^[0-9]+ ' | tr -d ' ' | sort -n | tr '\n' ',')
 BAR=$(tail -1 "$OUT_DIR/beacons.txt" | sed -n 's/.* bar=\(.*\)$/\1/p')
 WIDS_BAR=$(printf '%s' "$BAR" | tr '|' '\n' | sed -n 's/^\([0-9]\+\):.*/\1/p' | sort -n | tr '\n' ',')
 echo "$TAG /dev/wsys/windows wids : ${WIDS_LIVE:-<none>}"
@@ -347,7 +347,7 @@ fi
 echo "$TAG --- /proc/<panel>/fd line counts, read from the shell ---"
 for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" | sed 's/MARK_PFD_//;s/_BEGIN//'); do
     nfd=$(sed -n "/MARK_PFD_${tagn}_BEGIN/,/MARK_PFD_${tagn}_END/p" "$LOG" \
-          | grep -acE '^[0-9]+[[:space:]]')
+          | tr -d '\r' | grep -acE '^[0-9]+[[:space:]]')
     echo "$TAG   $tagn: $nfd descriptors"
 done
 
