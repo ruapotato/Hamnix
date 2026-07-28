@@ -1,0 +1,140 @@
+# user/inflate_host.ad — HOST driver for lib/zlib/inflate.ad (built for
+# the x86_64-linux Adder target; runs directly on the dev host, no QEMU).
+#
+# Counterpart to user/deflate_host.ad. It reads a real .gz file whole,
+# streams it through the SAME `inflate_feed` state machine that hpm's
+# package installer, the HTTP gzip transfer decoder and the squashfs
+# reader use, and writes the decompressed bytes out. The gate
+# scripts/test_inflate_llvm_host.sh byte-compares the result against
+# the system gunzip — for BOTH compiler lanes (the native SSA backend
+# AND the LLVM backend), which is the whole point: a backend that
+# miscompiles the inflater silently produces a SHORT or EMPTY output
+# and every gzip consumer on the image (hpm install, apt-over-http,
+# tar -xz) breaks with a confusing downstream error instead.
+#
+# USAGE (built to build/host/inflate_host):
+#   inflate_host INFILE.gz OUTFILE
+#
+# Exit status: 0 on a fully inflated stream (EOS reached, CRC32 + ISIZE
+# verified inside the inflater), 1 on any I/O or inflate failure.
+# On failure it prints a one-line diagnostic to stderr carrying the
+# state the caller needs: rc, done, and the byte counts.
+
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+
+from lib.zlib.inflate import (
+    InflateState,
+    inflate_init,
+    inflate_feed,
+)
+
+
+IN_CAP:  uint64 = 4194304        # 4 MiB whole-file .gz input
+OUT_CAP: uint64 = 16777216       # 16 MiB decompressed output
+
+in_buf:  Array[4194304, uint8]
+out_buf: Array[16777216, uint8]
+inf:     InflateState
+
+
+def write_all(fd: int32, buf: Ptr[uint8], length: uint64) -> int32:
+    wrote: uint64 = 0
+    while wrote < length:
+        wr: int64 = sys_write(fd,
+                              cast[Ptr[uint8]](cast[uint64](buf) + wrote),
+                              length - wrote)
+        if wr <= 0:
+            return -1
+        wrote = wrote + cast[uint64](wr)
+    return 0
+
+
+def put_str(fd: int32, s: Ptr[uint8]):
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    write_all(fd, s, n)
+
+
+dec_buf: Array[24, uint8]
+
+
+def put_u64(fd: int32, v: uint64):
+    if v == 0:
+        dec_buf[0] = 48
+        write_all(fd, &dec_buf[0], 1)
+        return
+    i: uint64 = 0
+    t: uint64 = v
+    while t > 0:
+        dec_buf[i] = cast[uint8](48 + (t % 10))
+        t = t / 10
+        i = i + 1
+    j: uint64 = i
+    while j > 0:
+        j = j - 1
+        write_all(fd, &dec_buf[j], 1)
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    if argc < 3:
+        put_str(2, cast[Ptr[uint8]]("usage: inflate_host IN.gz OUT\n"))
+        return 2
+    in_name:  Ptr[char] = cast[Ptr[char]](argv[1])
+    out_name: Ptr[char] = cast[Ptr[char]](argv[2])
+
+    in_fd: int32 = sys_open(in_name)
+    if in_fd < 0:
+        put_str(2, cast[Ptr[uint8]]("inflate_host: cannot open input\n"))
+        return 1
+    total: uint64 = 0
+    while total < IN_CAP:
+        n: int64 = sys_read(in_fd,
+                            cast[Ptr[uint8]](cast[uint64](&in_buf[0]) + total),
+                            IN_CAP - total)
+        if n < 0:
+            sys_close(in_fd)
+            return 1
+        if n == 0:
+            break
+        total = total + cast[uint64](n)
+    sys_close(in_fd)
+
+    inflate_init(&inf)
+    out_consumed: uint64 = 0
+    in_consumed:  uint64 = 0
+    done: int32 = 0
+    rc: int32 = inflate_feed(&inf, &in_buf[0], total,
+                             &out_buf[0], OUT_CAP,
+                             &out_consumed, &in_consumed, &done)
+    if rc < 0 or done == 0:
+        put_str(2, cast[Ptr[uint8]]("inflate_host: FAIL rc="))
+        put_u64(2, cast[uint64](cast[int64](rc) & 0xFF))
+        put_str(2, cast[Ptr[uint8]](" done="))
+        put_u64(2, cast[uint64](done))
+        put_str(2, cast[Ptr[uint8]](" in="))
+        put_u64(2, in_consumed)
+        put_str(2, cast[Ptr[uint8]]("/"))
+        put_u64(2, total)
+        put_str(2, cast[Ptr[uint8]](" out="))
+        put_u64(2, out_consumed)
+        put_str(2, cast[Ptr[uint8]](" phase="))
+        put_u64(2, cast[uint64](cast[int64](inf.phase)))
+        put_str(2, cast[Ptr[uint8]](" err="))
+        put_u64(2, cast[uint64](cast[int64](inf.err) & 0xFF))
+        put_str(2, cast[Ptr[uint8]]("\n"))
+        return 1
+
+    out_fd: int32 = sys_open_write(out_name)
+    if out_fd < 0:
+        put_str(2, cast[Ptr[uint8]]("inflate_host: cannot open output\n"))
+        return 1
+    if write_all(out_fd, &out_buf[0], out_consumed) != 0:
+        sys_close(out_fd)
+        return 1
+    sys_close(out_fd)
+    return 0

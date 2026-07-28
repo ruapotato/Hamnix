@@ -3767,6 +3767,90 @@ def ssa_lower_deref_store(bb: uint32, stmt: uint32, target: uint32) -> uint32:
     return ssa_cur_bb
 
 
+# Byte size one declaration of type `tnode` needs in a stack slot: an
+# `Array[N, T]` needs N*sizeof(T), a Struct/Class VALUE its full st_total, a
+# float its float width, an integer scalar its primitive width.  0 means "not
+# slot-modelable" (a shape the classifier below bails on anyway) and is treated
+# by the widener as "no information" — never as "needs zero bytes".
+def ssa_decl_slot_bytes(tnode: uint32) -> uint32:
+    if tnode == 0:
+        return 0
+    if nd_kind[tnode] == ND_ARRAY_TYPE:
+        delem: uint32 = nd_a[tnode]
+        if delem == 0 or nd_kind[delem] == ND_ARRAY_TYPE:
+            return 0
+        if type_float_width(delem) != 0:
+            return 0
+        desz: uint32 = prim_type_size(delem)
+        if desz != 1 and desz != 2 and desz != 4 and desz != 8:
+            return 0
+        return cast[uint32](nd_num[tnode]) * desz
+    dsidx: uint32 = struct_lookup_by_node(tnode)
+    if dsidx != 0:
+        return st_total[dsidx - 1]
+    dfw: uint32 = type_float_width(tnode)
+    if dfw != 0:
+        return dfw
+    dsz: uint32 = prim_type_size(tnode)
+    if dsz != 1 and dsz != 2 and dsz != 4 and dsz != 8:
+        return 0
+    return dsz
+
+
+# REDECLARATION WIDENING (LLVM/memory path only).
+#
+# Adder names are FUNCTION-scoped, not block-scoped: `sym: uint8` in one branch
+# and `sym: uint32` in another intern to the SAME name id and therefore SHARE a
+# single stack slot.  ssa_intern_local used to reuse an already-classified
+# memory local verbatim, which froze the slot at the FIRST declaration's byte
+# size and access width.  A later, WIDER declaration then:
+#
+#   * had its stores run PAST THE END of the undersized slot (a 4-byte
+#     `store i32` into an `alloca [1 x i8]`), corrupting whatever the frame
+#     layout happened to put next — the classic "works at -O0, corrupts at -O2"
+#     shape; and
+#   * was truncated to the narrow width on every read/write of the slot.
+#
+# This is exactly how lib/zlib/inflate.ad's `_dyn_header_decode` broke under the
+# LLVM lane: its phase-1 `sym: uint8` gave the shared slot 1 byte, and the
+# phase-2 `sym: uint32` — whose address is handed to `_huff_decode(..., &sym)`
+# as a `Ptr[uint32]` — had the callee's 4-byte store overrun it.  The inflater
+# then wedged in the dynamic-Huffman header and `inflate_feed` returned "need
+# more input" with ZERO bytes decoded, so every gzip consumer on the image (hpm
+# package install, HTTP gzip transfer decoding, tar -xz) silently produced an
+# EMPTY result.  Fix the SHARED slot instead: grow it to the widest declaration.
+#
+# Native path is untouched and byte-identical: with ssa_mem_model == 0 every
+# memory classification bails BEFORE setting ssa_ismem, so ssa_ismem is never 1
+# and this widener never runs.
+def ssa_widen_mem_local(nid: uint32, tnode: uint32):
+    slot: uint32 = ssa_mem_addr[nid]
+    if slot == 0:
+        return
+    need: uint32 = ssa_decl_slot_bytes(tnode)
+    if need == 0:
+        return
+    if cast[uint64](need) > sv_imm[slot]:
+        sv_imm[slot] = cast[uint64](need)
+    # Scalar-over-scalar redeclaration: the two declarations share ONE slot, so
+    # the shared access width has to be the WIDER of the two or the wider
+    # declaration's value is truncated on every store and sign/zero-extended
+    # from the wrong width on every load.  Arrays, structs and floats keep their
+    # own element typing (mixing those under one name is pathological — growing
+    # the slot is all the safety they need).
+    if ssa_mem_isarr[nid] != 0 or ssa_local_fw[nid] != 0:
+        return
+    if nd_kind[tnode] == ND_ARRAY_TYPE or struct_lookup_by_node(tnode) != 0:
+        return
+    if type_float_width(tnode) != 0:
+        return
+    if need > ssa_mem_esz[nid]:
+        ssa_mem_esz[nid] = need
+        ssa_mem_esgn[nid] = type_signedness(tnode)
+        ssa_local_size[nid] = need
+        ssa_local_sgn[nid] = type_signedness(tnode)
+
+
 # =======================================================================
 # statement lowering: threads the current block; returns fallthrough block
 # (0 == control cannot fall through, e.g. after return/break/continue).
@@ -3780,7 +3864,10 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
     # param) is reused as-is: never re-create its alloca (which would append to a
     # possibly-terminated entry).  Promotable locals fall through and re-classify
     # exactly as before (preserving redeclaration behaviour / byte-identity).
+    # A redeclaration under the same name may need MORE room than the first one
+    # got, though — grow the shared slot rather than silently under-allocate it.
     if ssa_ismem[nid] != 0:
+        ssa_widen_mem_local(nid, tnode)
         return nid
     # A pointer local/param records its pointee width so `*p` picks a load size;
     # this is orthogonal to promotability (a plain pointer scalar stays SSA).
