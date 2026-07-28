@@ -159,12 +159,50 @@ if ! awk '/devwsys_readonly_write\(buf, count\)/{found=1} END{exit !found}' "$NA
 fi
 # Both constants must appear in the readonly OR-chain (which terminates
 # at devwsys_readonly_write).
-if ! grep -A 10 "DEV_WSYS_OUTPUT or dev_type == DEV_WSYS_NS" "$NAMEC_SRC" \
-        | grep -q "devwsys_readonly_write"; then
+#
+# GATE-ROT FIX (2026-07-28). This was:
+#     grep -A 10 "DEV_WSYS_OUTPUT or dev_type == DEV_WSYS_NS" | grep -q readonly
+#     grep -A 10 "DEV_WSYS_PID or dev_type == DEV_WSYS_UID"   | grep -q readonly
+# i.e. it anchored on ONE SPECIFIC CONTINUATION LINE of a multi-line `if`
+# condition and asserted the chain's terminating `return` sat within 10 lines of
+# it. That is a check on LINE DISTANCE, not on routing. The read-only OR-chain in
+# _devtab_write() grows by one line every time a new read-only DE surface lands,
+# so the terminator drifted to NS+19 / UID+18 and both greps went red — while the
+# route they were guarding was not merely intact but had been EXTENDED.
+#
+# Evidence this is rot and not a lost route:
+#   * `git log -S DEV_WSYS_UID -- sys/src/9/port/namec.ad` returns exactly ONE
+#     commit ever (9747a0b6, its introduction). Nothing removed or renamed it.
+#   * Replaying the two old greps over every historical revision of namec.ad
+#     shows the NS check flipping red at 2caa9512 and the UID check at 13575674
+#     — both commits that ADDED a surface (SESSUI, DESKTOP) to this same chain.
+#     Two earlier reds self-HEALED when a later commit reflowed the identical
+#     clauses onto fewer lines: proof the signal was line count, not semantics.
+#   * `grep -n readonly` over namec.ad + devwsys.ad finds exactly one such
+#     function, `devwsys_readonly_write`, with its original signature — there is
+#     no renamed replacement handler.
+#   * _devtab_write's fallthrough is `return -1`, so even a genuinely unrouted
+#     dev ID would REJECT the write. The old failure text ("writes now
+#     accepted!") could not have been true for this file under any edit.
+#
+# The replacement extracts the chain STRUCTURALLY — from its `if dev_type ==
+# DEV_WSYS or` head through its terminating `return` — and asserts both
+# constants are inside it AND that it returns devwsys_readonly_write. Immune to
+# further growth of the chain, and stronger than the old check because it also
+# pins the terminator rather than merely finding the name somewhere nearby.
+RO_CHAIN="$(awk '
+    /^[[:space:]]*if dev_type == DEV_WSYS or/ { inb = 1 }
+    inb { print }
+    inb && /^[[:space:]]*return / { exit }
+' "$NAMEC_SRC")"
+[ -n "$RO_CHAIN" ] || fail_link "namec: the read-only DE-surface OR-chain is gone entirely"
+if ! printf '%s\n' "$RO_CHAIN" | grep -q "return devwsys_readonly_write(buf, count)"; then
+    fail_link "namec: the read-only OR-chain no longer terminates in devwsys_readonly_write"
+fi
+if ! printf '%s\n' "$RO_CHAIN" | grep -q "dev_type == DEV_WSYS_NS"; then
     fail_link "namec: DEV_WSYS_NS no longer routed to devwsys_readonly_write (writes to /ns now accepted!)"
 fi
-if ! grep -A 10 "DEV_WSYS_PID or dev_type == DEV_WSYS_UID" "$NAMEC_SRC" \
-        | grep -q "devwsys_readonly_write"; then
+if ! printf '%s\n' "$RO_CHAIN" | grep -q "dev_type == DEV_WSYS_UID"; then
     fail_link "namec: DEV_WSYS_UID no longer routed to devwsys_readonly_write (writes to /uid now accepted!)"
 fi
 
