@@ -4978,6 +4978,20 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _beacon_last: uint64 = sys_get_jiffies()
     _beacon_iters: uint64 = 0
     BEACON_JIFFIES: uint64 = 1000                    # HZ=100 -> ~10 s
+    # Iteration-count fallback. The wall-clock cadence alone is a single
+    # point of failure for the whole instrument: if sys_get_jiffies() does
+    # not advance for this task, the beacon never fires and the gate can
+    # only report "no telemetry" — which is what happened on the first
+    # attempt with /dev/cons and is indistinguishable from a dead panel.
+    # An iteration counter cannot stall while the loop is running, so the
+    # two together separate "the panel stopped looping" from "the clock
+    # stopped ticking".
+    BEACON_ITERS: uint64 = 600                       # ~10 s at the 16ms park
+    _beacon_next_iter: uint64 = 1                    # beacon on iteration 1
+    _pl_s(cast[Ptr[uint8]]("[panelbeacon] loop entry jiffies="))
+    _pl_d(_beacon_last)
+    _pl_s(cast[Ptr[uint8]]("\n"))
+    _pl_flush()
     sysmon_tick: uint64 = 0
     SAMPLE_TICKS: uint64 = 20
     cfg_tick: uint64 = 0
@@ -4993,8 +5007,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
         _beacon_iters = _beacon_iters + 1
         _bnow: uint64 = sys_get_jiffies()
+        _bdue: int32 = 0
         if _bnow - _beacon_last >= BEACON_JIFFIES:
+            _bdue = 1
+        if _beacon_iters >= _beacon_next_iter:
+            _bdue = 1
+        if _bdue != 0:
             _beacon_last = _bnow
+            _beacon_next_iter = _beacon_iters + BEACON_ITERS
             _pl_s(cast[Ptr[uint8]]("[panelbeacon] up_s="))
             _pl_d(_bnow / 100)
             _pl_s(cast[Ptr[uint8]](" iters="))
