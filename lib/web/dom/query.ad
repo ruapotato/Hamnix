@@ -895,15 +895,63 @@ def _node_identity(o: int32, proto: int32):
         js_set_proto_v(o, proto)
 
 
+# Install the STATELESS element methods on HTMLElement.prototype, ONCE.
+#
+# They used to be stamped as own properties of every element object, and each
+# `js_new_native_fn` allocates a JS object: MEASURED at ~46 objects per
+# registered element, of which 32 were these methods. With MAX_OBJ = 40000 and
+# DOM_MAX = 1024 that meant a SINGLE `document.getElementsByTagName("*")` on any
+# page with ~870+ elements registered enough elements to exhaust the object pool
+# outright — "object pool exhausted", JSERR, and every remaining script on the
+# page dead. en.wikipedia.org (4018 elements) and wiki.archlinux.org (2151) both
+# died exactly there.
+#
+# Hoisting them to the prototype is also what a real browser does: in Chromium
+# `a.appendChild === b.appendChild` is TRUE (both resolve to the one
+# Node.prototype.appendChild), and `Object.keys(el)` does NOT list methods.
+# Own-property lookups still find them through the obj_proto chain, and an
+# element that needs to SHADOW one (createElementNS' namespaceURI) still can.
+def _attach_proto_methods(p: int32):
+    # Element.namespaceURI. Every element the HTML parser produces is in the
+    # XHTML namespace; createElementNS overwrites this per element afterwards.
+    # React's host-context stack reads `node.namespaceURI` to decide whether to
+    # create children with createElement or createElementNS.
+    js_set_prop(p, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                js_new_string(cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28))
+    _attach_el_natives(p)
+
+
 # Attach the element-level native methods to a DOM element object.
 def _attach_el_methods(o: int32):
     _node_identity(o, g_proto_elem)
-    # Element.namespaceURI. Every element the HTML parser produces is in the
-    # XHTML namespace; createElementNS overwrites this afterwards. React's
-    # host-context stack reads `node.namespaceURI` to decide whether to create
-    # children with createElement or createElementNS.
-    js_set_prop(o, cast[Ptr[uint8]]("namespaceURI"), 12, \
-                js_new_string(cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28))
+    # The stateless methods live on HTMLElement.prototype (see
+    # _attach_proto_methods) — inherited, not copied. Only elements created
+    # BEFORE the interfaces exist (g_proto_elem == 0) need their own copy.
+    if g_proto_elem == 0:
+        _attach_el_natives(o)
+    # element.validity — a ValidityState object; its booleans are refreshed each
+    # time the control is validated (checkValidity/reportValidity/submit). This
+    # is per-element MUTABLE state, so it cannot be shared on the prototype.
+    vsto: int32 = js_new_object_v()
+    js_set_prop(vsto, cast[Ptr[uint8]]("valueMissing"), 12, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("typeMismatch"), 12, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("patternMismatch"), 15, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("tooLong"), 7, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("tooShort"), 8, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("rangeUnderflow"), 14, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("rangeOverflow"), 13, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("stepMismatch"), 12, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("badInput"), 8, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("customError"), 11, js_bool(0))
+    js_set_prop(vsto, cast[Ptr[uint8]]("valid"), 5, js_bool(1))
+    js_set_prop(o, cast[Ptr[uint8]]("validity"), 8, vsto)
+    js_set_prop(o, cast[Ptr[uint8]]("validationMessage"), 17, \
+                js_new_string(cast[Ptr[uint8]](""), 0))
+
+
+# The stateless half: every element method whose behaviour depends only on the
+# receiver (`this`), so ONE function object can serve every element.
+def _attach_el_natives(o: int32):
     js_set_prop(o, cast[Ptr[uint8]]("addEventListener"), 16, \
                 js_new_native_fn(js_hbase + NID_ADDEVT))
     js_set_prop(o, cast[Ptr[uint8]]("appendChild"), 11, \
@@ -971,23 +1019,6 @@ def _attach_el_methods(o: int32):
                 js_new_native_fn(js_hbase + NID_REPORTVALID))
     js_set_prop(o, cast[Ptr[uint8]]("setCustomValidity"), 17, \
                 js_new_native_fn(js_hbase + NID_SETCUSTOMVAL))
-    # element.validity — a ValidityState object; its booleans are refreshed each
-    # time the control is validated (checkValidity/reportValidity/submit).
-    vsto: int32 = js_new_object_v()
-    js_set_prop(vsto, cast[Ptr[uint8]]("valueMissing"), 12, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("typeMismatch"), 12, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("patternMismatch"), 15, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("tooLong"), 7, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("tooShort"), 8, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("rangeUnderflow"), 14, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("rangeOverflow"), 13, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("stepMismatch"), 12, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("badInput"), 8, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("customError"), 11, js_bool(0))
-    js_set_prop(vsto, cast[Ptr[uint8]]("valid"), 5, js_bool(1))
-    js_set_prop(o, cast[Ptr[uint8]]("validity"), 8, vsto)
-    js_set_prop(o, cast[Ptr[uint8]]("validationMessage"), 17, \
-                js_new_string(cast[Ptr[uint8]](""), 0))
     js_set_prop(o, cast[Ptr[uint8]]("willValidate"), 12, js_bool(1))
     # form.submit() — meaningful on a <form> (or a control inside one; the
     # dispatcher resolves the enclosing form). Attached universally like
