@@ -20,8 +20,11 @@
 #     supported over the ASCII range, top-level and inside [...] classes.
 #
 # DEFERRED (documented in docs/browser_w3c_conformance.md): astral/Latin-1
-# code-point property matching (byte engine); `.`/case-fold operate on bytes;
+# code-point property matching (byte engine); case-fold operates on bytes;
 # astral members inside a [...] class (a byte bitmap cannot hold them).
+# NOTE: `.` and character classes now consume a WHOLE UTF-8 sequence rather
+# than one byte (they used to return sequence FRAGMENTS), so the engine behaves
+# as if `u` were always on for single-character consumers.
 #
 # Builds with the frozen Python seed compiler (dependency-light, no self-host).
 
@@ -61,7 +64,12 @@ assert flags_has_u    'console.log(/a/giu.flags.indexOf("u")>=0)'             't
 
 # ---- string-literal \u{CP} decoding (lexer) ----
 assert str_braced     'console.log("\u{41}\u{42}\u{43}")'                      'ABC'
-assert str_astral_len 'console.log("\u{1F600}".length)'                        '4'
+# An astral code point is TWO UTF-16 code units, so .length is 2 — measured
+# `node -e 'console.log("\u{1F600}".length)'` => 2, and chromium --headless
+# (title probe) => "L=2,55357". The former expectation of 4 was the engine's
+# stored UTF-8 BYTE count, which neither oracle produces.
+assert str_astral_len 'console.log("\u{1F600}".length)'                        '2'
+assert str_astral_cca 'console.log("\u{1F600}".charCodeAt(0))'                  '55357'
 assert str_surrogate  'console.log("😀"==="\u{1F600}")'             'true'
 
 # ---- \u{CP} code-point escapes in u-mode ----
