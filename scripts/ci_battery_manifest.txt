@@ -1558,6 +1558,13 @@ bash scripts/test_hambrowse_inputfocus_host.sh
 # getBoundingClientRect + elementFromPoint cross-check that a padded anchor's hit
 # area really is box-wide, not text-wide.
 bash scripts/test_hambrowse_hitcoord_host.sh
+# test_hambrowse_chipcoord_host: inline-block CHIP geometry, asserted by painted
+# pixels + a coordinate click (not by element id). Chips had padding-left applied
+# twice, moving fill, border and the registered link box together -> clicks missed.
+bash scripts/test_hambrowse_chipcoord_host.sh
+# test_hambrowse_onclickhit_host: elements whose ONLY handler is an inline on*=
+# attribute got no DOM record, so no #__evt_N wrap and no coordinate hit-test.
+bash scripts/test_hambrowse_onclickhit_host.sh
 # HTML FORMS (W3C): form.submit() GET-serializes text/checkbox/radio/select into
 # an action?k=v query + cancelable/bubbling submit event + input/textarea value
 # get/set (formsubmit); and method=POST request-body serialization
