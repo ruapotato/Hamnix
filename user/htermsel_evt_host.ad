@@ -1,0 +1,320 @@
+# user/htermsel_evt_host.ad — QEMU-free host gate for the TERMINAL's OWN
+# pointer event handling: raw "m <x> <y> <buttons> <dz>" wire bytes in,
+# PRIMARY-selection published / PRIMARY pasted out.
+#
+# WHY THIS GATE EXISTS (assertion altitude)
+# =========================================
+# Nine host gates already covered this feature and all nine were green while
+# highlight-to-middle-click-paste was completely dead on device. They were
+# green honestly: every one of them stopped one layer BELOW the terminal's own
+# event handling. htermsel_host drives htsel_begin/extend/extract directly;
+# snarf_primary_host drives the clipboard buffer API directly;
+# primary_paste_chain_host joins those two but still calls the state machine by
+# hand; htb_evt_paste_host does drive a wire line, but through the hamtextbox
+# (editor / Notes) path, not the terminal's grid path. NOTHING asserted the
+# terminal's answer to "given these bytes on my /event ring, what do I do?" —
+# which is precisely the code that was not running.
+#
+# So this gate starts from the BYTES the compositor pushes onto the ring
+# (sys/src/9/port/devwsys.ad::_wsys_evt_emit_pointer builds exactly this line)
+# and asserts the observable OUTCOME in the REAL kernel clipboard device:
+#
+#   "m <x> <y> 1 0" press  ->  anchor
+#   "m <x> <y> 1 0" drag   ->  extend
+#   "m <x> <y> 0 0" release->  HTSEL_ACT_COPY -> devsnarf PRIMARY holds the
+#                              extracted grid text
+#   "m <x> <y> 4 0" middle ->  HTSEL_ACT_PASTE, once per press, and the
+#                              PRIMARY read-back is what the drag published
+#
+# It also pins the two rules a live-DE regression is most likely to break:
+# selection is gated on the live tail, the PASTE is NOT; and the terminal's
+# middle-edge detector must agree with the editor's on every button bitmap.
+
+from sys.src.port9.port.devsnarf import devsnarf_primary_write, \
+    devsnarf_primary_read, devsnarf_write, devsnarf_read
+from lib.htermsel import htsel_reset, htsel_active, htsel_extract, \
+    htsel_pix_to_cell, htsel_evt_parse_m, htsel_mid_edge, htsel_pointer_step, \
+    htsel_anchor_row, htsel_anchor_col, htsel_caret_row, htsel_caret_col, \
+    HTSEL_ACT_COPY, HTSEL_ACT_PASTE, \
+    HTSEL_X0, HTSEL_CELL_W, HTSEL_Y0, HTSEL_LINE_H
+from lib.hamtextbox import htb_mid_edge
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+_fails:  int32 = 0
+_passes: int32 = 0
+
+STRIDE: uint64 = 40
+COLS:   uint64 = 40
+ROWS:   uint64 = 4
+grid:     Array[160, uint8]
+grid_len: Array[4, uint64]
+
+wire:  Array[64, uint8]
+selbuf: Array[256, uint8]
+outbuf: Array[256, uint8]
+
+
+def _puts(s: Ptr[uint8]):
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    sys_write(1, s, n)
+
+
+def _check(cond: int32, name: Ptr[uint8]):
+    if cond != 0:
+        _passes = _passes + 1
+        _puts(cast[Ptr[uint8]]("[htsel-evt] PASS "))
+    else:
+        _fails = _fails + 1
+        _puts(cast[Ptr[uint8]]("[htsel-evt] FAIL "))
+    _puts(name)
+    _puts(cast[Ptr[uint8]]("\n"))
+
+
+def _check_text(out: Ptr[uint8], n: uint64, want: Ptr[uint8],
+                name: Ptr[uint8]):
+    wl: uint64 = 0
+    while want[wl] != 0:
+        wl = wl + 1
+    ok: int32 = 1
+    if n != wl:
+        ok = 0
+    else:
+        i: uint64 = 0
+        while i < n:
+            if out[i] != want[i]:
+                ok = 0
+            i = i + 1
+    if ok != 0:
+        _passes = _passes + 1
+        _puts(cast[Ptr[uint8]]("[htsel-evt] PASS "))
+        _puts(name)
+        _puts(cast[Ptr[uint8]]("\n"))
+    else:
+        _fails = _fails + 1
+        _puts(cast[Ptr[uint8]]("[htsel-evt] FAIL "))
+        _puts(name)
+        _puts(cast[Ptr[uint8]](" got=\""))
+        sys_write(1, out, n)
+        _puts(cast[Ptr[uint8]]("\" want=\""))
+        _puts(want)
+        _puts(cast[Ptr[uint8]]("\"\n"))
+
+
+def _set_row(r: uint64, s: Ptr[uint8]):
+    n: uint64 = 0
+    base: uint64 = r * STRIDE
+    while s[n] != 0:
+        grid[base + n] = s[n]
+        n = n + 1
+    grid_len[r] = n
+
+
+def _emit_dec(v: int64, p: uint64) -> uint64:
+    # Render a (possibly negative) decimal into `wire` at p; returns the new
+    # position.
+    if v < 0:
+        wire[p] = 45                           # '-'
+        return _emit_dec(0 - v, p + 1)
+    if v == 0:
+        wire[p] = 48
+        return p + 1
+    d: Array[24, uint8]
+    n: uint64 = 0
+    x: int64 = v
+    while x > 0:
+        d[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    q: uint64 = p
+    while n > 0:
+        n = n - 1
+        wire[q] = d[n]
+        q = q + 1
+    return q
+
+
+def _build_wire(x: int64, y: int64, btn: int64, dz: int64) -> uint64:
+    # Build the EXACT bytes _wsys_evt_emit_pointer pushes: "m <x> <y> <b> <dz>".
+    wire[0] = 109                              # 'm'
+    wire[1] = 32
+    p: uint64 = _emit_dec(x, 2)
+    wire[p] = 32
+    p = _emit_dec(y, p + 1)
+    wire[p] = 32
+    p = _emit_dec(btn, p + 1)
+    wire[p] = 32
+    p = _emit_dec(dz, p + 1)
+    return p
+
+
+# Feed one wire line through the SHIPPED parser + decision step. Returns the
+# HTSEL_ACT_* bitmask, or -1 if the line did not parse.
+prev_btn: int64 = 0
+
+
+def _feed(x: int64, y: int64, btn: int64, live_tail: int32) -> int32:
+    n: uint64 = _build_wire(x, y, btn, 0)
+    px: int64 = 0
+    py: int64 = 0
+    pb: int64 = 0
+    pdz: int64 = 0
+    if htsel_evt_parse_m(&wire[0], 0, n, &px, &py, &pb, &pdz) == 0:
+        return -1
+    act: int32 = htsel_pointer_step(px, py, pb, prev_btn,
+                                    cast[int64](ROWS), cast[int64](COLS),
+                                    live_tail)
+    prev_btn = pb
+    return act
+
+
+# Window-content-local pixel at the centre of grid cell (row,col) — the same
+# geometry lib/htermsel.ad maps back.
+def _cx(col: int64) -> int64:
+    return HTSEL_X0 + col * HTSEL_CELL_W + HTSEL_CELL_W / 2
+
+
+def _cy(row: int64) -> int64:
+    return HTSEL_Y0 + row * HTSEL_LINE_H + HTSEL_LINE_H / 2
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    _set_row(0, cast[Ptr[uint8]]("hamsh$ ls /"))
+    _set_row(1, cast[Ptr[uint8]]("cannot open /nope: no such file"))
+    _set_row(2, cast[Ptr[uint8]]("hamsh$ "))
+    _set_row(3, cast[Ptr[uint8]](""))
+
+    # --- 1. the wire line the compositor really emits parses ------------
+    n: uint64 = _build_wire(123, 45, 4, -2)
+    px: int64 = 0
+    py: int64 = 0
+    pb: int64 = 0
+    pdz: int64 = 0
+    ok: int32 = htsel_evt_parse_m(&wire[0], 0, n, &px, &py, &pb, &pdz)
+    _check(ok, cast[Ptr[uint8]]("wire_line_parses"))
+    _check(cast[int32](px == 123 and py == 45 and pb == 4 and pdz == -2),
+           cast[Ptr[uint8]]("wire_fields_exact"))
+    # A pointer line with only x/y (no buttons/dz) must still parse, and a
+    # non-'m' line must not.
+    wire[0] = 114                              # 'r'
+    _check(cast[int32](htsel_evt_parse_m(&wire[0], 0, n, &px, &py, &pb,
+                                         &pdz) == 0),
+           cast[Ptr[uint8]]("resize_line_rejected"))
+
+    # --- 2. press / drag / release publishes PRIMARY --------------------
+    htsel_reset()
+    prev_btn = 0
+    devsnarf_primary_write(cast[Ptr[uint8]](""), 0)
+    a0: int32 = _feed(_cx(0), _cy(1), 0, 1)     # move in, no button
+    a1: int32 = _feed(_cx(0), _cy(1), 1, 1)     # PRESS  -> anchor (1,0)
+    _check(cast[int32](a1 == 0), cast[Ptr[uint8]]("press_publishes_nothing"))
+    _check(cast[int32](htsel_anchor_row() == 1 and htsel_anchor_col() == 0),
+           cast[Ptr[uint8]]("press_anchor_is_the_clicked_cell"))
+    a2: int32 = _feed(_cx(10), _cy(1), 1, 1)    # DRAG   -> extend
+    _check(cast[int32](htsel_active() != 0),
+           cast[Ptr[uint8]]("drag_activates_span"))
+    _check(cast[int32](htsel_caret_col() == 10),
+           cast[Ptr[uint8]]("drag_caret_tracks_pixels"))
+    # The RELEASE carries the final pointer position; the span must reach it
+    # (a terminal that ignored it would copy a truncated line).
+    a3: int32 = _feed(_cx(30), _cy(1), 0, 1)    # RELEASE -> extend + copy
+    _check(cast[int32]((a3 & HTSEL_ACT_COPY) != 0),
+           cast[Ptr[uint8]]("release_over_span_asks_for_a_PRIMARY_copy"))
+
+    # The terminal's I/O half: extract + publish, exactly as hamtermscene does.
+    sn: uint64 = htsel_extract(&grid[0], &grid_len[0], STRIDE, COLS,
+                               &selbuf[0], 256)
+    _check(cast[int32](sn > 0), cast[Ptr[uint8]]("extract_is_not_empty"))
+    _check(cast[int32](htsel_caret_col() == 30),
+           cast[Ptr[uint8]]("release_extends_the_span_to_the_release_cell"))
+    devsnarf_primary_write(&selbuf[0], sn)
+    rn: uint64 = 0
+    while rn < 256:
+        r: int64 = devsnarf_primary_read(rn, &outbuf[rn], 256 - rn)
+        if r <= 0:
+            break
+        rn = rn + cast[uint64](r)
+    _check_text(&outbuf[0], rn, cast[Ptr[uint8]]("cannot open /nope: no such file"),
+                cast[Ptr[uint8]]("PRIMARY_holds_the_highlighted_text"))
+
+    # --- 3. a bare click (no drag) must NOT clobber PRIMARY -------------
+    # X11 semantics: only a real span replaces the primary selection.
+    htsel_reset()
+    prev_btn = 0
+    b1: int32 = _feed(_cx(3), _cy(0), 1, 1)
+    b2: int32 = _feed(_cx(3), _cy(0), 0, 1)
+    _check(cast[int32]((b2 & HTSEL_ACT_COPY) == 0),
+           cast[Ptr[uint8]]("bare_click_does_not_publish"))
+
+    # --- 4. middle click pastes, once per press ------------------------
+    htsel_reset()
+    prev_btn = 0
+    m1: int32 = _feed(_cx(2), _cy(2), 4, 1)     # middle DOWN
+    _check(cast[int32]((m1 & HTSEL_ACT_PASTE) != 0),
+           cast[Ptr[uint8]]("middle_down_asks_for_a_paste"))
+    m2: int32 = _feed(_cx(2), _cy(2), 4, 1)     # still HELD
+    _check(cast[int32]((m2 & HTSEL_ACT_PASTE) == 0),
+           cast[Ptr[uint8]]("held_middle_does_not_repeat"))
+    m3: int32 = _feed(_cx(2), _cy(2), 0, 1)     # UP
+    _check(cast[int32]((m3 & HTSEL_ACT_PASTE) == 0),
+           cast[Ptr[uint8]]("middle_up_does_not_paste"))
+    # …and what a paste would read is what the drag published.
+    rn = 0
+    while rn < 256:
+        r2: int64 = devsnarf_primary_read(rn, &outbuf[rn], 256 - rn)
+        if r2 <= 0:
+            break
+        rn = rn + cast[uint64](r2)
+    _check_text(&outbuf[0], rn, cast[Ptr[uint8]]("cannot open /nope: no such file"),
+                cast[Ptr[uint8]]("paste_reads_back_the_published_span"))
+
+    # --- 5. the two view-gating rules ----------------------------------
+    # Selection is grid-row indexed -> only at the live tail…
+    htsel_reset()
+    prev_btn = 0
+    v1: int32 = _feed(_cx(0), _cy(1), 1, 0)     # press, scrollback wheeled up
+    v2: int32 = _feed(_cx(9), _cy(1), 1, 0)
+    _check(cast[int32](htsel_active() == 0),
+           cast[Ptr[uint8]]("scrolled_back_view_starts_no_selection"))
+    # …but the PASTE must still fire (the edit line lives at the tail). This is
+    # the regression that made middle-click silently do nothing whenever the
+    # user had scrolled.
+    prev_btn = 0
+    v3: int32 = _feed(_cx(2), _cy(2), 4, 0)
+    _check(cast[int32]((v3 & HTSEL_ACT_PASTE) != 0),
+           cast[Ptr[uint8]]("paste_works_while_scrolled_back"))
+
+    # --- 6. terminal and editor agree on the middle edge ---------------
+    agree: int32 = 1
+    bi: int64 = 0
+    while bi < 8:
+        pi: int64 = 0
+        while pi < 8:
+            if htsel_mid_edge(bi, pi) != htb_mid_edge(bi, pi):
+                agree = 0
+            pi = pi + 1
+        bi = bi + 1
+    _check(agree, cast[Ptr[uint8]]("mid_edge_matches_hamtextbox_on_all_bitmaps"))
+
+    # --- 7. pixel->cell round trip over the whole grid -----------------
+    rt: int32 = 1
+    rr: int64 = 0
+    while rr < cast[int64](ROWS):
+        cc: int64 = 0
+        while cc < cast[int64](COLS):
+            gr: int64 = 0
+            gc: int64 = 0
+            htsel_pix_to_cell(_cx(cc), _cy(rr), cast[int64](ROWS),
+                              cast[int64](COLS), &gr, &gc)
+            if gr != rr or gc != cc:
+                rt = 0
+            cc = cc + 1
+        rr = rr + 1
+    _check(rt, cast[Ptr[uint8]]("cell_centre_pixels_map_back_to_their_cell"))
+
+    _puts(cast[Ptr[uint8]]("[htsel-evt] done\n"))
+    if _fails != 0:
+        return 1
+    return 0

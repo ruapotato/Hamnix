@@ -258,6 +258,23 @@ bash scripts/test_htb_evt_paste_host.sh
 # detector, and asserts the extracted text is what a paste reads back. Also
 # native-compiles the new /bin/haminput Input Event Inspector. Host-only; ms.
 bash scripts/test_primary_paste_chain_host.sh
+# Guards the namec inline-cdev id gate: DEV_MAX must sit STRICTLY above every
+# inline DEV_* constant, because _chan_id_valid rejects dev_type >= DEV_MAX and
+# then EVERY read/write on that device returns -EBADF before the cdev body runs
+# — silently (cat prints nothing, exit 0). This has bitten four times; the
+# fourth (DEV_SNARF_PRIMARY=132 vs DEV_MAX=131) killed the X11 PRIMARY
+# selection outright and no clipboard gate could see it, because host gates
+# call devsnarf_primary_read/write directly and bypass the gate. Host-only; ms.
+bash scripts/test_devmax_covers_all_ids.sh
+# QEMU-free gate at the altitude the nine PRIMARY-selection gates missed: it
+# feeds the RAW "m <x> <y> <buttons> <dz>" bytes the compositor pushes onto a
+# window's /event ring through the terminal's OWN decision step
+# (lib/htermsel.ad::htsel_pointer_step, which the shipped hamtermscene calls)
+# and asserts the outcome in the REAL kernel clipboard device: a drag-release
+# publishes the highlighted grid text to PRIMARY, a bare click does not, a
+# middle press pastes exactly once, and a paste still fires while the
+# scrollback is wheeled up. Host-only; milliseconds.
+bash scripts/test_htermsel_evt_host.sh
 # QEMU-free host gate for the user-reported "clicking the default theme drops my
 # desktop icons" bug: applying a theme/wallpaper bumps the kernel wallpaper gen,
 # the desktop wakes and on the SAME wake runs its periodic refresh, and the old

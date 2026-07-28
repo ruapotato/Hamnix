@@ -362,6 +362,12 @@ def htsel_pointer_step(x: int64, y: int64, btn: int64, prev: int64,
         elif left_now != 0 and left_prev != 0:
             htsel_extend(row, col)             # drag: extend the caret
         elif left_now == 0 and left_prev != 0:
+            # RELEASE. Extend to the release cell FIRST: the release event
+            # carries the final pointer position, and every real terminal
+            # selects up to where the button came up. Without this the last
+            # motion before the release is silently dropped and the copied
+            # span is short by however far the user moved in the final frame.
+            htsel_extend(row, col)
             if htsel_active_f != 0:
                 act = act | HTSEL_ACT_COPY     # release over a span: publish
     if htsel_mid_edge(btn, prev) != 0:

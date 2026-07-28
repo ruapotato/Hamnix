@@ -884,7 +884,15 @@ DEV_WSYS_WINDOWS:      int32 = 130   # /dev/wsys/windows (wid-less app-window li
 # /dev/wsys/windows opened fine but EVERY read returned -EBADF before
 # devwsys_windows_read, so the panel taskbar saw zero app windows. Keep
 # DEV_MAX = (highest inline dev_type) + 1.
-DEV_MAX:       int32 = 131
+# It was then 131, which excluded DEV_SNARF_PRIMARY = 132 (declared far above,
+# beside DEV_SNARF): /dev/snarf.primary OPENED fine, but every read AND every
+# write returned -EBADF before devsnarf_primary_read/write ever ran — so
+# highlighting text stored nothing and a middle-click paste read back nothing.
+# That was the entire "mid mouse does not paste the highlighted text" bug, and
+# no host gate could see it: host gates call devsnarf_primary_read/write
+# DIRECTLY and never pass through this validity gate.
+# scripts/test_devmax_covers_all_ids.sh now fails if this drifts again.
+DEV_MAX:       int32 = 133
 
 # The FAT write-mode bit as carried in a DEV_FAT_FILE chan's back_slot
 # (a copy of fs/vfs.ad's FAT_FD_WRITE_BIT / fs/fat.ad's
