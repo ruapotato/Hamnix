@@ -296,6 +296,23 @@ bash scripts/test_hamsh_dualsyntax_host.sh
 # identically on both sides of every collection; and a structural ratchet on
 # the nd_c child-vs-flag table the collector depends on.
 bash scripts/test_hamsh_arena_soak_host.sh
+# QEMU-free host gate (~25 s, mostly the two compiles) for the SILENT
+# PARTIAL-ACTION class in hamsh — an operation that does part of its work and
+# reports success. The 2026-07-28 report: `rm *` in a 200-file directory
+# removed a handful of files and EXITED 0, because _argv_push_cstr dropped
+# argument 64 onward with no error and no status (and the kernel's exec argv
+# snapshot then truncated again at MAX_ARGV=32). Deliberately asserts on the
+# OBSERVABLE EFFECT, never on exit status — asserting on exit status is
+# exactly what missed this for so long. Covers all five siblings found in the
+# same file: argv (200 args must all arrive; overflow raises AND the command
+# does not run), alias (the 200th alias must fire; past ALIAS_MAX the
+# definition fails loudly), the input-line buffer (an over-long line is
+# refused, not silently shortened), def/FN_MAX (the 100th def is callable; an
+# unregistered name RAISES instead of yielding a silent nil), and the lexer
+# fix that makes `rm *` / `ls *.txt` parse at all — with `x * y`, `x * 2` and
+# `2 ** 3` asserted still-arithmetic so the glob rule cannot cost
+# multiplication.
+bash scripts/test_hamsh_argvcap_host.sh
 # QEMU-free host gate for the hamML colour parser's 8-digit "#rrggbbaa" alpha
 # path (user/hamUId.ad parse_color). Regression guard for the user-reported
 # "screenshot with a selected area turns the whole screen black" bug: the
@@ -3808,3 +3825,12 @@ bash scripts/test_napi.sh
 # (INCONCLUSIVE) without KVM/OVMF or an installer image; ~5 min with a
 # prebuilt image.
 bash scripts/ci_run_gate.sh scripts/test_hamsh_arena_soak_ondevice.sh
+# test_hamsh_rmglob_ondevice: THE reproducer for the silent partial-delete,
+# end to end on the shipped image under UEFI/OVMF. Creates a 230-file
+# directory on the device, runs `rm *`, and asserts the directory is EMPTY by
+# COUNTING what survived — not by checking that rm exited 0, which it did on
+# the broken build. Counts BEFORE the delete too, so "the directory was empty
+# all along" is ruled out rather than assumed (and reports INCONCLUSIVE, not
+# PASS, if the create loop did not finish over the serial seam). Host-gate
+# companion: scripts/test_hamsh_argvcap_host.sh.
+bash scripts/ci_run_gate.sh scripts/test_hamsh_rmglob_ondevice.sh

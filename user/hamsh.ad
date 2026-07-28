@@ -958,8 +958,50 @@ def lex_line(buf: Ptr[uint8], n: uint64) -> int32:
         if c == 43 and p + 1 < n and buf[p + 1] != 61 \
                 and _is_word_char(buf[p + 1]) != 0:
             plus_start = 1
+        # A word BEGINNING with a glob metacharacter (`*`, `?`). Without
+        # this, `rm *` — the single most common shell idiom there is — was a
+        # PARSE ERROR ("unexpected token after command"), because a leading
+        # `*` always reached the operator dispatch and lexed as OP_STAR. So
+        # did `ls *.txt`. Only globs whose word happened to start with an
+        # ident (`f*`, `./*`, `/tmp/x/*`) ever worked.
+        #
+        # The disambiguation mirrors the `/`-as-division rule above and is
+        # deliberately CONSERVATIVE — multiplication must not regress:
+        #   * the previous token must not be value-producing, so `2 * 3`,
+        #     `$x * 2` and `f(a) * 2` stay arithmetic;
+        #   * a following `*` is never a glob lead, so `a ** b` stays POW;
+        #   * GLUED word content (`*.txt`, `*x`, `*/`) is a glob outright —
+        #     hamsh arithmetic is always space-flanked, so a glued `*` can
+        #     never be the operator;
+        #   * a BARE `*` (space/EOL after it) is a glob only when what
+        #     follows is not an operand — `rm *`, `rm * ;` glob, while
+        #     `x * y` and `x * 2` stay multiplication.
+        glob_start: int32 = 0
+        if c == 42 or c == 63:
+            if _prev_tok_is_value() == 0:
+                gnx: uint8 = 0
+                if p + 1 < n:
+                    gnx = buf[p + 1]
+                if gnx == 42:
+                    glob_start = 0                 # '**' — power, never glob
+                elif _is_word_char(gnx) != 0:
+                    glob_start = 1                 # glued: '*.txt', '*x', '*/'
+                else:
+                    # Bare '*' / '?': scan past blanks and refuse the glob
+                    # reading only if a real operand follows.
+                    gq: uint64 = p + 1
+                    while gq < n and _is_space(buf[gq]) != 0:
+                        gq = gq + 1
+                    glob_start = 1
+                    if gq < n:
+                        go: uint8 = buf[gq]
+                        if _is_ident_start(go) != 0 or _is_digit(go) != 0 \
+                                or go == 36 or go == 34 or go == 39 \
+                                or go == 40 or go == 91 or go == 96:
+                            glob_start = 0         # `x * y`, `x * 2`, `x * (…)`
         if _is_ident_start(c) != 0 or c == 47 or c == 46 \
-                or opt_start != 0 or plus_start != 0:  # ident / '/' '.' / '-opt' / '+arg'
+                or opt_start != 0 or plus_start != 0 \
+                or glob_start != 0:  # ident / '/' '.' / '-opt' / '+arg' / glob
             wl: uint64 = 0
             # A '+' lead is not itself in the word-char class, so seed it
             # explicitly; the '-' / '/' / '.' leads ARE word chars and are
@@ -4927,6 +4969,32 @@ def rt_raise_name(np: Ptr[uint8]) -> int32:
         o = o + 1
         i = i + 1
     suf: Ptr[uint8] = "' — glued arithmetic? write `a - b` with spaces"
+    i = 0
+    while suf[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = suf[i]
+        o = o + 1
+        i = i + 1
+    _rtname_buf[o] = 0
+    return rt_raise(&_rtname_buf[0])
+
+
+def rt_raise_undef_fn(np: Ptr[uint8]) -> int32:
+    # Undefined FUNCTION call. Distinct from rt_raise_name (whose hint is
+    # about glued arithmetic in a bare word): the usual cause here is a `def`
+    # that never registered, or a typo in the call.
+    pre: Ptr[uint8] = "call to undefined function '"
+    i: uint64 = 0
+    o: uint64 = 0
+    while pre[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = pre[i]
+        o = o + 1
+        i = i + 1
+    i = 0
+    while np[i] != 0 and o + 1 < 160:
+        _rtname_buf[o] = np[i]
+        o = o + 1
+        i = i + 1
+    suf: Ptr[uint8] = "' — was its `def` ever run?"
     i = 0
     while suf[i] != 0 and o + 1 < 160:
         _rtname_buf[o] = suf[i]
@@ -11804,6 +11872,9 @@ def _run_and_capture(cmdnode: int32) -> uint64:
 # survives. A non-recursive evaluator would lift this — out of scope.
 call_depth:     int32 = 0
 CALL_DEPTH_MAX: int32 = 12
+# Positional / keyword argument slots per call. See call_user_fn: this used
+# to be a bare 16 with `and ai < 16` guards that silently dropped the rest.
+CALL_ARGS_MAX:  uint64 = 64
 
 
 def call_user_fn(nameref: uint64, callnode: int32) -> int32:
@@ -11818,7 +11889,14 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
             break
         fi = fi + 1
     if found < 0:
-        return 0
+        # Was: `return 0` — a silent nil. Calling a function that was never
+        # registered therefore produced an EMPTY/zero value that flowed on
+        # into the expression as if it were an answer. That is exactly how
+        # the old FN_MAX=32 silent drop presented: `def`ing the 33rd
+        # function no-op'd, and the failure surfaced as `echo ${ f() }`
+        # printing NOTHING. Both halves are now loud — exec_def raises when
+        # the registry is full, and an unknown name raises HERE.
+        return rt_raise_undef_fn(np)
     if call_depth >= CALL_DEPTH_MAX:
         # Was: set $errstr, return nil — and in EXPRESSION context that
         # nil silently became 0, so `f(20)` with a recursive f printed a
@@ -11832,18 +11910,26 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
     # ND_KWARG kids counted by nd_c — are not positional parameters).
     nkw: uint64 = cast[uint64](nd_c[cast[uint64](callnode)])
     nargs: uint64 = nd_kn[cast[uint64](callnode)] - nkw
-    argvals: Array[16, int32]
+    # CALL_ARGS_MAX positional slots. At 16 (and with the binding loop's
+    # matching `pi < 16`) a call with more arguments SILENTLY dropped the
+    # rest and bound the surplus parameters to nil — same silent-partial
+    # shape as the argv cap, one layer up. Wider now, and loud past it.
+    argvals: Array[64, int32]
+    if nargs > CALL_ARGS_MAX:
+        return rt_raise("call: too many arguments (CALL_ARGS_MAX=64)")
     ai: uint64 = 0
-    while ai < nargs and ai < 16:
+    while ai < nargs:
         argvals[ai] = eval_expr(nd_kid_at(callnode, ai))
         ai = ai + 1
     # Keyword arguments (`f(x=5)`) — the trailing nkw ND_KWARG kids.
     # Evaluate their values in the CALLER's scope, then match by NAME
     # against the parameter list below.
-    kwnames: Array[16, uint64]
-    kwvals:  Array[16, int32]
+    kwnames: Array[64, uint64]
+    kwvals:  Array[64, int32]
+    if nkw > CALL_ARGS_MAX:
+        return rt_raise("call: too many keyword arguments (CALL_ARGS_MAX=64)")
     ki: uint64 = 0
-    while ki < nkw and ki < 16:
+    while ki < nkw:
         kwn: int32 = nd_kid_at(callnode, nargs + ki)
         kwnames[ki] = nd_str[cast[uint64](kwn)]
         kwvals[ki] = eval_expr(nd_a[cast[uint64](kwn)])
@@ -11855,7 +11941,7 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
     while pi < nparams:
         pnode: int32 = nd_kid_at(defnode, pi)
         pname: uint64 = nd_str[cast[uint64](pnode)]
-        if pi < nargs and pi < 16:
+        if pi < nargs:
             scope_set(pname, argvals[pi])
         else:
             # No positional arg: try a keyword match, then the param's
@@ -11863,7 +11949,7 @@ def call_user_fn(nameref: uint64, callnode: int32) -> int32:
             # fall back to 0 (an unbound omitted param).
             bound: int32 = 0
             kj: uint64 = 0
-            while kj < nkw and kj < 16:
+            while kj < nkw:
                 if cstr_eq(str_ptr(pname), str_ptr(kwnames[kj])) != 0:
                     scope_set(pname, kwvals[kj])
                     bound = 1
