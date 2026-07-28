@@ -4616,6 +4616,13 @@ def v_render_str_only(v: int32) -> Ptr[uint8]:
 # The arrays and the cap must AGREE; they are sized from SCOPE_MAX's
 # literal value here, and scope_set now raises on overflow instead of
 # silently dropping the binding (see rt_raise).
+# MONOTONIC-GROWTH CEILING (2026-07-28 audit, unfixed but LOUD): there is no
+# `unset`, and scope_pop_frame only rewinds FUNCTION frames — so the depth-0
+# global table only ever grows, one slot per DISTINCT name the session ever
+# binds. A long interactive session that names 128 different variables raises
+# "scope: too many variables" and cannot bind another. Loud, not silent, so it
+# is a usability ceiling rather than a corruption; the fix is an `unset`
+# builtin plus compaction of the global frame, which is its own commit.
 sc_name:  Array[128, uint64]
 sc_val:   Array[128, int32]
 sc_frame: Array[128, int32]
