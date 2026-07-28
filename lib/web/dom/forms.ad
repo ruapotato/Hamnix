@@ -975,6 +975,18 @@ def _handle_tag(ts: uint64, te: uint64):
             _word_flush()
             _enter_skip(np, nlen)
             return
+        # <template>: its children are parsed into a SEPARATE, inert document
+        # fragment (HTML "template contents"). They are not part of the document
+        # tree, so they never render and never appear in an ancestor's
+        # textContent — only script reaching through .content sees them. We
+        # rendered them as ordinary flow, so every web-component / framework
+        # page leaked its unexpanded markup into the visible text (mdn_html
+        # ships 23 templates holding ~59.7 KiB, and over-reported body
+        # .textContent by 52036 chars against chromium).
+        if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("template")) != 0:
+            _word_flush()
+            _enter_skip(np, nlen)
+            return
         # <canvas>: reserve its pixel box (blitting the script-drawn buffer) and
         # SKIP any fallback content. Handled here, before the element stack is
         # touched, so it opens no unbalanced scope (like script/style above).

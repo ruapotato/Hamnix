@@ -902,6 +902,53 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
 #                                          oracle — streams, allocates nothing)
 # Mode 2 is why the readback no longer needs a stored baseline at all: it can
 # re-derive the element's original text straight from the source span.
+# Skip a <template> body. `frm` points just past the template start tag's '>',
+# `ce` bounds the search. Returns the offset just past the matching </template>.
+#
+# <template> children are parsed into a SEPARATE inert fragment ("template
+# contents"), so they are NOT part of the document tree: an ancestor's
+# textContent must not include them (chromium on `<div>A<template><p>HIDDEN
+# </p></template>B</div>` returns "AB", we returned "AHIDDENB"). Templates
+# nest, so this counts depth. A <script>/<style> body inside the template is
+# RAW TEXT and is stepped over wholesale, so a "</template>" appearing inside a
+# JS string literal cannot end the skip early — the same trap that used to
+# break _find_close on books.toscrape ("<html" x5) and google ("<body" x3).
+def _tpl_skip(frm: uint64, ce: uint64) -> uint64:
+    depth: int32 = 1
+    i: uint64 = frm
+    while i < ce:
+        if src_ptr[i] != 60:                              # '<'
+            i = i + 1
+            continue
+        if i + 1 < ce and src_ptr[i + 1] == 47:           # '</'
+            if _hx_name_eq(i + 2, 8, cast[Ptr[uint8]]("template")) != 0:
+                depth = depth - 1
+                i = _hx_tag_end_p(src_ptr, ce, i + 2)
+                if i < ce:
+                    i = i + 1
+                if depth == 0:
+                    return i
+                continue
+            i = i + 1
+            continue
+        ts: uint64 = i + 1
+        je: uint64 = _hx_tag_end_p(src_ptr, ce, ts)
+        ne: uint64 = ts
+        while ne < je and _alnum_at(ne) != 0:
+            ne = ne + 1
+        if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("template")) != 0:
+            if je == ts or src_ptr[je - 1] != 47:         # not self-closing
+                depth = depth + 1
+        rt: uint64 = _rawtext_skip(ts, ne, je)            # <script>/<style> body
+        if rt != 0:
+            i = rt
+            continue
+        i = je
+        if i < ce:
+            i = i + 1
+    return ce                                             # unterminated
+
+
 def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
     n: int32 = 0
     # This is the DOM TEXT VIEW, not layout: decode entities faithfully, so
@@ -925,11 +972,18 @@ def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
                 israw = 1
             elif _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("style")) != 0:
                 israw = 1
+            istpl: int32 = 0
+            if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("template")) != 0:
+                istpl = 1
             if je > ts and src_ptr[je - 1] == 47:         # '<script/>' self-close
                 israw = 0
+                istpl = 0
             i = je
             if i < ce:
                 i = i + 1
+            if istpl != 0:                                # inert fragment: no text
+                i = _tpl_skip(i, ce)
+                continue
             if israw != 0:
                 while i < ce:
                     if src_ptr[i] == 60 and i + 1 < ce and src_ptr[i + 1] == 47:
