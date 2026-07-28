@@ -2575,6 +2575,14 @@ bash scripts/test_de_wallpaper_fullscreen.sh
 # window cache was clamped below its geometry ([wsys] cache-clamp), and that
 # the panels land at the TRUE screen height.
 bash scripts/test_de_resolution_edge_to_edge.sh
+# test_arm64_llvm_kernel: the ARM64 LLVM lane (A9 preemptive EL0 multitasking +
+# the A10 real Adder-compiled EL0 user program, checksum cross-checked against a
+# native x86-64 run of the same source). 101s, aarch64 TCG -- it does NOT contend
+# with the x86 QEMU gates. REGISTERED 2026-07-28 because the lane had silently
+# STOPPED BUILDING on main (api_autostubs regeneration collided with the
+# hand-maintained stubs.c snapshot -> multiple definition) and nothing in CI
+# built it, so nothing noticed. An unbuilt lane rots; this is the cheapest guard.
+bash scripts/test_arm64_llvm_kernel.sh
 
 # test_de_wallpaper_themes: THE PICTURE YOU PICKED IS THE PICTURE YOU GET.
 # The 2026-07-27 "Sunset/Ocean/Tiles don't change the background" defect passed
