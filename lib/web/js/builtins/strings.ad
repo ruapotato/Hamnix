@@ -564,6 +564,32 @@ def uri_unescape(v: int32) -> int32:
     return v_string_id(rid)
 
 
+# The BYTE before the sequence at `i` decodes back to which code point? Walks
+# off the continuation bytes. Returns -1 at the start of the string.
+def str_cp_before(sid: int32, i: int32) -> int32:
+    j: int32 = i - 1
+    while j > 0 and (str_char(sid, j) & 192) == 128:
+        j = j - 1
+    if j < 0:
+        return -1
+    return u8_decode(st_off[sid] + j, str_seqlen_at(sid, j))
+
+
+# GREEK FINAL SIGMA: lowercase U+03A3 is U+03C2 at the end of a word and
+# U+03C3 elsewhere. node: "ΑΣ" -> "ας" but "ΑΣΒ" -> "ασβ" and lone "Σ" -> "σ".
+def sigma_final(sid: int32, i: int32, l: int32) -> int32:
+    n: int32 = str_len(sid)
+    before: int32 = str_cp_before(sid, i)
+    if before < 0 or cp_is_cased(before) == 0:
+        return 0                           # nothing cased before: not final
+    if i + l >= n:
+        return 1
+    after: int32 = u8_decode(st_off[sid] + i + l, str_seqlen_at(sid, i + l))
+    if cp_is_cased(after) != 0:
+        return 0
+    return 1
+
+
 def str_map_case(sid: int32, upper: int32) -> int32:
     save: int32 = emit_tgt
     emit_tgt = 0
@@ -572,14 +598,35 @@ def str_map_case(sid: int32, upper: int32) -> int32:
     i: int32 = 0
     while i < n:
         c: uint8 = str_char(sid, i)
-        if upper != 0:
-            if c >= 97 and c <= 122:
-                c = c - 32
+        if c < 128:
+            # ASCII fast path: one byte in, one byte out, no table lookup.
+            if upper != 0:
+                if c >= 97 and c <= 122:
+                    c = c - 32
+            else:
+                if c >= 65 and c <= 90:
+                    c = c + 32
+            emit_c(c)
+            i = i + 1
+            continue
+        l: int32 = str_seqlen_at(sid, i)
+        cp: int32 = u8_decode(st_off[sid] + i, l)
+        m: int32 = case_multi(cp, upper)
+        if m > 0:
+            k: int32 = 0
+            while k < m:
+                emit_cp_utf8(cm_out[k])
+                k = k + 1
+        elif upper != 0:
+            emit_cp_utf8(cp_toupper(cp))
+        elif cp == 0x03A3:
+            if sigma_final(sid, i, l) != 0:
+                emit_cp_utf8(0x03C2)
+            else:
+                emit_cp_utf8(0x03C3)
         else:
-            if c >= 65 and c <= 90:
-                c = c + 32
-        emit_c(c)
-        i = i + 1
+            emit_cp_utf8(cp_tolower(cp))
+        i = i + l
     id: int32 = bld_end()
     emit_tgt = save
     return v_string_id(id)

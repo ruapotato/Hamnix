@@ -1,0 +1,632 @@
+# lib/web/js/builtins/unicase.ad — UNICODE case mapping for
+# String.prototype.toUpperCase / toLowerCase.
+#
+# WHY: case mapping was ASCII-ONLY. "café".toUpperCase() was "CAFé",
+# "ПРИВЕТ".toLowerCase() came back unchanged and "ß".toUpperCase() was not
+# "SS" — wrong on every page not written in English, and wrong in the two
+# places case mapping actually gets used on the web: normalising user input
+# before comparison, and normalising markup/CSS keywords that arrived with
+# non-ASCII text mixed in.
+#
+# SHAPE. The whole BMP SIMPLE (1:1) mapping compresses to 305 RANGE RULES,
+# because Unicode lays case pairs out in exactly two patterns:
+#   CM_PAIR  — alternating upper/lower (Latin Extended-A/B, Cyrillic 0460+):
+#              an EVEN offset from the rule start is the capital and odd is
+#              the small letter, so toUpper is `cp - 1` on odd offsets and
+#              toLower is `cp + 1` on even ones.
+#   CM_CONST — one constant delta across the range (Latin-1's +-32, Greek's
+#              +-32, Cyrillic 0410-044F's +-32, ...).
+# Lookup is a binary search over the rule starts, so any BMP character costs
+# ~9 comparisons; pure-ASCII text never reaches the table at all (there is a
+# byte fast path in str_map_case).
+#
+# The FULL (1:many) mappings do not compress, so they are a flat sorted table
+# of 102 uppercase entries (ss -> SS, the fi/fl/ffi ligatures, the polytonic
+# Greek iota-subscript expansions, ...) and 1 lowercase entry (U+0130, the
+# dotted capital I, -> "i" + U+0307), searched the same way.
+#
+# COVERAGE, stated exactly:
+#   * COMPLETE for the BMP, U+0080..U+FFFF, simple AND full, in both
+#     directions. Both tables were GENERATED FROM `node` ITSELF — every code
+#     point's .toUpperCase()/.toLowerCase() was dumped and the ranges derived
+#     from that dump, then replayed code point by code point against it with a
+#     completeness check that nothing cased was left out. node is the oracle,
+#     not a spec reading: an earlier pass generated from Python's unicodedata
+#     and diverged from node on 10 code points (U+019B, U+0264, U+1C89/8A,
+#     U+A7CB..U+A7DC) where node's ICU carries a newer Unicode version.
+#   * NOT covered: ASTRAL (non-BMP) case mapping — Deseret, Adlam, Warang
+#     Citi, Vithkuqi. Those code points pass through unchanged. They are
+#     absent from essentially all web text, and covering them means a second
+#     table for a plane nothing on the web writes in.
+#   * Locale-sensitive mappings (Turkish dotless i, Lithuanian retained dot)
+#     are deliberately NOT applied: toUpperCase/toLowerCase are locale-
+#     INDEPENDENT by spec, which is exactly what this does.
+#   * The Greek FINAL SIGMA context rule IS applied: lowercasing U+03A3 gives
+#     U+03C2 at the end of a word and U+03C3 otherwise (node: "ΑΣ" -> "ας",
+#     "ΑΣΒ" -> "ασβ", lone "Σ" -> "σ").
+
+CM_CONST: int32 = 0
+CM_PAIR:  int32 = 1
+
+CM_CAP: int32 = 384
+cm_lo:   Array[384, int32]
+cm_hi:   Array[384, int32]
+cm_kind: Array[384, int32]
+cm_du:   Array[384, int32]         # CM_CONST: delta to the UPPERCASE form
+cm_dl:   Array[384, int32]         # CM_CONST: delta to the LOWERCASE form
+cm_n: int32 = 0
+
+# 1:many tables (uppercase / lowercase), sorted by code point. A 2-character
+# expansion stores 0 in the third slot.
+MU_CAP: int32 = 128
+mu_cp: Array[128, int32]
+mu_a:  Array[128, int32]
+mu_b:  Array[128, int32]
+mu_c:  Array[128, int32]
+mu_n: int32 = 0
+
+ml_cp: Array[8, int32]
+ml_a:  Array[8, int32]
+ml_b:  Array[8, int32]
+ml_c:  Array[8, int32]
+ml_n: int32 = 0
+
+# Where case_multi leaves its result.
+cm_out: Array[4, int32]
+
+
+def cm_add(lo: int32, hi: int32, kind: int32, du: int32, dl: int32):
+    if cm_n >= CM_CAP:
+        return
+    cm_lo[cm_n] = lo
+    cm_hi[cm_n] = hi
+    cm_kind[cm_n] = kind
+    cm_du[cm_n] = du
+    cm_dl[cm_n] = dl
+    cm_n = cm_n + 1
+
+
+def mu_add(cp: int32, a: int32, b: int32, c: int32):
+    if mu_n >= MU_CAP:
+        return
+    mu_cp[mu_n] = cp
+    mu_a[mu_n] = a
+    mu_b[mu_n] = b
+    mu_c[mu_n] = c
+    mu_n = mu_n + 1
+
+
+def ml_add(cp: int32, a: int32, b: int32, c: int32):
+    if ml_n >= 8:
+        return
+    ml_cp[ml_n] = cp
+    ml_a[ml_n] = a
+    ml_b[ml_n] = b
+    ml_c[ml_n] = c
+    ml_n = ml_n + 1
+
+
+# Rule index covering `cp`, or -1. Binary search: the rules are emitted in
+# ascending order and never overlap (both properties are asserted by the
+# generator that produced the table).
+def cm_find(cp: int32) -> int32:
+    a: int32 = 0
+    b: int32 = cm_n - 1
+    while a <= b:
+        m: int32 = (a + b) / 2
+        if cp < cm_lo[m]:
+            b = m - 1
+        elif cp > cm_hi[m]:
+            a = m + 1
+        else:
+            return m
+    return -1
+
+
+def mu_find(cp: int32) -> int32:
+    a: int32 = 0
+    b: int32 = mu_n - 1
+    while a <= b:
+        m: int32 = (a + b) / 2
+        if cp < mu_cp[m]:
+            b = m - 1
+        elif cp > mu_cp[m]:
+            a = m + 1
+        else:
+            return m
+    return -1
+
+
+def cp_toupper(cp: int32) -> int32:
+    if cp < 128:
+        if cp >= 97 and cp <= 122:
+            return cp - 32
+        return cp
+    if cp > 65535:
+        return cp                          # astral: not covered (see header)
+    cm_init()
+    i: int32 = cm_find(cp)
+    if i < 0:
+        return cp
+    if cm_kind[i] == CM_PAIR:
+        if ((cp - cm_lo[i]) & 1) != 0:
+            return cp - 1                  # odd offset = the small letter
+        return cp
+    return cp + cm_du[i]
+
+
+def cp_tolower(cp: int32) -> int32:
+    if cp < 128:
+        if cp >= 65 and cp <= 90:
+            return cp + 32
+        return cp
+    if cp > 65535:
+        return cp
+    cm_init()
+    i: int32 = cm_find(cp)
+    if i < 0:
+        return cp
+    if cm_kind[i] == CM_PAIR:
+        if ((cp - cm_lo[i]) & 1) == 0:
+            return cp + 1                  # even offset = the capital
+        return cp
+    return cp + cm_dl[i]
+
+
+# Does `cp` have a case at all? Used for the final-sigma context test. (The
+# spec's Cased property also covers a few caseless-but-cased modifier letters;
+# the difference is not observable in real text.)
+def cp_is_cased(cp: int32) -> int32:
+    if cp_toupper(cp) != cp or cp_tolower(cp) != cp:
+        return 1
+    return 0
+
+
+# 1:many mapping. Fills cm_out and returns the count, or 0 when `cp` has no
+# multi-character mapping in the requested direction.
+def case_multi(cp: int32, upper: int32) -> int32:
+    if cp < 128 or cp > 65535:
+        return 0
+    cm_init()
+    if upper == 0:
+        i: int32 = 0
+        while i < ml_n:
+            if ml_cp[i] == cp:
+                cm_out[0] = ml_a[i]
+                cm_out[1] = ml_b[i]
+                cm_out[2] = ml_c[i]
+                if ml_c[i] == 0:
+                    return 2
+                return 3
+            i = i + 1
+        return 0
+    j: int32 = mu_find(cp)
+    if j < 0:
+        return 0
+    cm_out[0] = mu_a[j]
+    cm_out[1] = mu_b[j]
+    cm_out[2] = mu_c[j]
+    if mu_c[j] == 0:
+        return 2
+    return 3
+
+
+# ====================================================================
+# THE TABLES. GENERATED by dumping every BMP code point's toUpperCase() /
+# toLowerCase() from `node` and deriving the ranges from that dump; each rule
+# is then replayed code point by code point against the same dump. Regenerate
+# rather than hand-edit.
+# ====================================================================
+def cm_init():
+    if cm_n != 0:
+        return
+    cm_add(0x00B5, 0x00B5, CM_CONST, 743, 0)
+    cm_add(0x00C0, 0x00D6, CM_CONST, 0, 32)
+    cm_add(0x00D8, 0x00DE, CM_CONST, 0, 32)
+    cm_add(0x00E0, 0x00F6, CM_CONST, -32, 0)
+    cm_add(0x00F8, 0x00FE, CM_CONST, -32, 0)
+    cm_add(0x00FF, 0x00FF, CM_CONST, 121, 0)
+    cm_add(0x0100, 0x012F, CM_PAIR, 0, 0)
+    cm_add(0x0131, 0x0131, CM_CONST, -232, 0)
+    cm_add(0x0132, 0x0137, CM_PAIR, 0, 0)
+    cm_add(0x0139, 0x0148, CM_PAIR, 0, 0)
+    cm_add(0x014A, 0x0177, CM_PAIR, 0, 0)
+    cm_add(0x0178, 0x0178, CM_CONST, 0, -121)
+    cm_add(0x0179, 0x017E, CM_PAIR, 0, 0)
+    cm_add(0x017F, 0x017F, CM_CONST, -300, 0)
+    cm_add(0x0180, 0x0180, CM_CONST, 195, 0)
+    cm_add(0x0181, 0x0181, CM_CONST, 0, 210)
+    cm_add(0x0182, 0x0185, CM_PAIR, 0, 0)
+    cm_add(0x0186, 0x0186, CM_CONST, 0, 206)
+    cm_add(0x0187, 0x0188, CM_PAIR, 0, 0)
+    cm_add(0x0189, 0x018A, CM_CONST, 0, 205)
+    cm_add(0x018B, 0x018C, CM_PAIR, 0, 0)
+    cm_add(0x018E, 0x018E, CM_CONST, 0, 79)
+    cm_add(0x018F, 0x018F, CM_CONST, 0, 202)
+    cm_add(0x0190, 0x0190, CM_CONST, 0, 203)
+    cm_add(0x0191, 0x0192, CM_PAIR, 0, 0)
+    cm_add(0x0193, 0x0193, CM_CONST, 0, 205)
+    cm_add(0x0194, 0x0194, CM_CONST, 0, 207)
+    cm_add(0x0195, 0x0195, CM_CONST, 97, 0)
+    cm_add(0x0196, 0x0196, CM_CONST, 0, 211)
+    cm_add(0x0197, 0x0197, CM_CONST, 0, 209)
+    cm_add(0x0198, 0x0199, CM_PAIR, 0, 0)
+    cm_add(0x019A, 0x019A, CM_CONST, 163, 0)
+    cm_add(0x019B, 0x019B, CM_CONST, 42561, 0)
+    cm_add(0x019C, 0x019C, CM_CONST, 0, 211)
+    cm_add(0x019D, 0x019D, CM_CONST, 0, 213)
+    cm_add(0x019E, 0x019E, CM_CONST, 130, 0)
+    cm_add(0x019F, 0x019F, CM_CONST, 0, 214)
+    cm_add(0x01A0, 0x01A5, CM_PAIR, 0, 0)
+    cm_add(0x01A6, 0x01A6, CM_CONST, 0, 218)
+    cm_add(0x01A7, 0x01A8, CM_PAIR, 0, 0)
+    cm_add(0x01A9, 0x01A9, CM_CONST, 0, 218)
+    cm_add(0x01AC, 0x01AD, CM_PAIR, 0, 0)
+    cm_add(0x01AE, 0x01AE, CM_CONST, 0, 218)
+    cm_add(0x01AF, 0x01B0, CM_PAIR, 0, 0)
+    cm_add(0x01B1, 0x01B2, CM_CONST, 0, 217)
+    cm_add(0x01B3, 0x01B6, CM_PAIR, 0, 0)
+    cm_add(0x01B7, 0x01B7, CM_CONST, 0, 219)
+    cm_add(0x01B8, 0x01B9, CM_PAIR, 0, 0)
+    cm_add(0x01BC, 0x01BD, CM_PAIR, 0, 0)
+    cm_add(0x01BF, 0x01BF, CM_CONST, 56, 0)
+    cm_add(0x01C4, 0x01C4, CM_CONST, 0, 2)
+    cm_add(0x01C5, 0x01C5, CM_CONST, -1, 1)
+    cm_add(0x01C6, 0x01C6, CM_CONST, -2, 0)
+    cm_add(0x01C7, 0x01C7, CM_CONST, 0, 2)
+    cm_add(0x01C8, 0x01C8, CM_CONST, -1, 1)
+    cm_add(0x01C9, 0x01C9, CM_CONST, -2, 0)
+    cm_add(0x01CA, 0x01CA, CM_CONST, 0, 2)
+    cm_add(0x01CB, 0x01CB, CM_CONST, -1, 1)
+    cm_add(0x01CC, 0x01CC, CM_CONST, -2, 0)
+    cm_add(0x01CD, 0x01DC, CM_PAIR, 0, 0)
+    cm_add(0x01DD, 0x01DD, CM_CONST, -79, 0)
+    cm_add(0x01DE, 0x01EF, CM_PAIR, 0, 0)
+    cm_add(0x01F1, 0x01F1, CM_CONST, 0, 2)
+    cm_add(0x01F2, 0x01F2, CM_CONST, -1, 1)
+    cm_add(0x01F3, 0x01F3, CM_CONST, -2, 0)
+    cm_add(0x01F4, 0x01F5, CM_PAIR, 0, 0)
+    cm_add(0x01F6, 0x01F6, CM_CONST, 0, -97)
+    cm_add(0x01F7, 0x01F7, CM_CONST, 0, -56)
+    cm_add(0x01F8, 0x021F, CM_PAIR, 0, 0)
+    cm_add(0x0220, 0x0220, CM_CONST, 0, -130)
+    cm_add(0x0222, 0x0233, CM_PAIR, 0, 0)
+    cm_add(0x023A, 0x023A, CM_CONST, 0, 10795)
+    cm_add(0x023B, 0x023C, CM_PAIR, 0, 0)
+    cm_add(0x023D, 0x023D, CM_CONST, 0, -163)
+    cm_add(0x023E, 0x023E, CM_CONST, 0, 10792)
+    cm_add(0x023F, 0x0240, CM_CONST, 10815, 0)
+    cm_add(0x0241, 0x0242, CM_PAIR, 0, 0)
+    cm_add(0x0243, 0x0243, CM_CONST, 0, -195)
+    cm_add(0x0244, 0x0244, CM_CONST, 0, 69)
+    cm_add(0x0245, 0x0245, CM_CONST, 0, 71)
+    cm_add(0x0246, 0x024F, CM_PAIR, 0, 0)
+    cm_add(0x0250, 0x0250, CM_CONST, 10783, 0)
+    cm_add(0x0251, 0x0251, CM_CONST, 10780, 0)
+    cm_add(0x0252, 0x0252, CM_CONST, 10782, 0)
+    cm_add(0x0253, 0x0253, CM_CONST, -210, 0)
+    cm_add(0x0254, 0x0254, CM_CONST, -206, 0)
+    cm_add(0x0256, 0x0257, CM_CONST, -205, 0)
+    cm_add(0x0259, 0x0259, CM_CONST, -202, 0)
+    cm_add(0x025B, 0x025B, CM_CONST, -203, 0)
+    cm_add(0x025C, 0x025C, CM_CONST, 42319, 0)
+    cm_add(0x0260, 0x0260, CM_CONST, -205, 0)
+    cm_add(0x0261, 0x0261, CM_CONST, 42315, 0)
+    cm_add(0x0263, 0x0263, CM_CONST, -207, 0)
+    cm_add(0x0264, 0x0264, CM_CONST, 42343, 0)
+    cm_add(0x0265, 0x0265, CM_CONST, 42280, 0)
+    cm_add(0x0266, 0x0266, CM_CONST, 42308, 0)
+    cm_add(0x0268, 0x0268, CM_CONST, -209, 0)
+    cm_add(0x0269, 0x0269, CM_CONST, -211, 0)
+    cm_add(0x026A, 0x026A, CM_CONST, 42308, 0)
+    cm_add(0x026B, 0x026B, CM_CONST, 10743, 0)
+    cm_add(0x026C, 0x026C, CM_CONST, 42305, 0)
+    cm_add(0x026F, 0x026F, CM_CONST, -211, 0)
+    cm_add(0x0271, 0x0271, CM_CONST, 10749, 0)
+    cm_add(0x0272, 0x0272, CM_CONST, -213, 0)
+    cm_add(0x0275, 0x0275, CM_CONST, -214, 0)
+    cm_add(0x027D, 0x027D, CM_CONST, 10727, 0)
+    cm_add(0x0280, 0x0280, CM_CONST, -218, 0)
+    cm_add(0x0282, 0x0282, CM_CONST, 42307, 0)
+    cm_add(0x0283, 0x0283, CM_CONST, -218, 0)
+    cm_add(0x0287, 0x0287, CM_CONST, 42282, 0)
+    cm_add(0x0288, 0x0288, CM_CONST, -218, 0)
+    cm_add(0x0289, 0x0289, CM_CONST, -69, 0)
+    cm_add(0x028A, 0x028B, CM_CONST, -217, 0)
+    cm_add(0x028C, 0x028C, CM_CONST, -71, 0)
+    cm_add(0x0292, 0x0292, CM_CONST, -219, 0)
+    cm_add(0x029D, 0x029D, CM_CONST, 42261, 0)
+    cm_add(0x029E, 0x029E, CM_CONST, 42258, 0)
+    cm_add(0x0345, 0x0345, CM_CONST, 84, 0)
+    cm_add(0x0370, 0x0373, CM_PAIR, 0, 0)
+    cm_add(0x0376, 0x0377, CM_PAIR, 0, 0)
+    cm_add(0x037B, 0x037D, CM_CONST, 130, 0)
+    cm_add(0x037F, 0x037F, CM_CONST, 0, 116)
+    cm_add(0x0386, 0x0386, CM_CONST, 0, 38)
+    cm_add(0x0388, 0x038A, CM_CONST, 0, 37)
+    cm_add(0x038C, 0x038C, CM_CONST, 0, 64)
+    cm_add(0x038E, 0x038F, CM_CONST, 0, 63)
+    cm_add(0x0391, 0x03A1, CM_CONST, 0, 32)
+    cm_add(0x03A3, 0x03AB, CM_CONST, 0, 32)
+    cm_add(0x03AC, 0x03AC, CM_CONST, -38, 0)
+    cm_add(0x03AD, 0x03AF, CM_CONST, -37, 0)
+    cm_add(0x03B1, 0x03C1, CM_CONST, -32, 0)
+    cm_add(0x03C2, 0x03C2, CM_CONST, -31, 0)
+    cm_add(0x03C3, 0x03CB, CM_CONST, -32, 0)
+    cm_add(0x03CC, 0x03CC, CM_CONST, -64, 0)
+    cm_add(0x03CD, 0x03CE, CM_CONST, -63, 0)
+    cm_add(0x03CF, 0x03CF, CM_CONST, 0, 8)
+    cm_add(0x03D0, 0x03D0, CM_CONST, -62, 0)
+    cm_add(0x03D1, 0x03D1, CM_CONST, -57, 0)
+    cm_add(0x03D5, 0x03D5, CM_CONST, -47, 0)
+    cm_add(0x03D6, 0x03D6, CM_CONST, -54, 0)
+    cm_add(0x03D7, 0x03D7, CM_CONST, -8, 0)
+    cm_add(0x03D8, 0x03EF, CM_PAIR, 0, 0)
+    cm_add(0x03F0, 0x03F0, CM_CONST, -86, 0)
+    cm_add(0x03F1, 0x03F1, CM_CONST, -80, 0)
+    cm_add(0x03F2, 0x03F2, CM_CONST, 7, 0)
+    cm_add(0x03F3, 0x03F3, CM_CONST, -116, 0)
+    cm_add(0x03F4, 0x03F4, CM_CONST, 0, -60)
+    cm_add(0x03F5, 0x03F5, CM_CONST, -96, 0)
+    cm_add(0x03F7, 0x03F8, CM_PAIR, 0, 0)
+    cm_add(0x03F9, 0x03F9, CM_CONST, 0, -7)
+    cm_add(0x03FA, 0x03FB, CM_PAIR, 0, 0)
+    cm_add(0x03FD, 0x03FF, CM_CONST, 0, -130)
+    cm_add(0x0400, 0x040F, CM_CONST, 0, 80)
+    cm_add(0x0410, 0x042F, CM_CONST, 0, 32)
+    cm_add(0x0430, 0x044F, CM_CONST, -32, 0)
+    cm_add(0x0450, 0x045F, CM_CONST, -80, 0)
+    cm_add(0x0460, 0x0481, CM_PAIR, 0, 0)
+    cm_add(0x048A, 0x04BF, CM_PAIR, 0, 0)
+    cm_add(0x04C0, 0x04C0, CM_CONST, 0, 15)
+    cm_add(0x04C1, 0x04CE, CM_PAIR, 0, 0)
+    cm_add(0x04CF, 0x04CF, CM_CONST, -15, 0)
+    cm_add(0x04D0, 0x052F, CM_PAIR, 0, 0)
+    cm_add(0x0531, 0x0556, CM_CONST, 0, 48)
+    cm_add(0x0561, 0x0586, CM_CONST, -48, 0)
+    cm_add(0x10A0, 0x10C5, CM_CONST, 0, 7264)
+    cm_add(0x10C7, 0x10C7, CM_CONST, 0, 7264)
+    cm_add(0x10CD, 0x10CD, CM_CONST, 0, 7264)
+    cm_add(0x10D0, 0x10FA, CM_CONST, 3008, 0)
+    cm_add(0x10FD, 0x10FF, CM_CONST, 3008, 0)
+    cm_add(0x13A0, 0x13EF, CM_CONST, 0, 38864)
+    cm_add(0x13F0, 0x13F5, CM_CONST, 0, 8)
+    cm_add(0x13F8, 0x13FD, CM_CONST, -8, 0)
+    cm_add(0x1C80, 0x1C80, CM_CONST, -6254, 0)
+    cm_add(0x1C81, 0x1C81, CM_CONST, -6253, 0)
+    cm_add(0x1C82, 0x1C82, CM_CONST, -6244, 0)
+    cm_add(0x1C83, 0x1C84, CM_CONST, -6242, 0)
+    cm_add(0x1C85, 0x1C85, CM_CONST, -6243, 0)
+    cm_add(0x1C86, 0x1C86, CM_CONST, -6236, 0)
+    cm_add(0x1C87, 0x1C87, CM_CONST, -6181, 0)
+    cm_add(0x1C88, 0x1C88, CM_CONST, 35266, 0)
+    cm_add(0x1C89, 0x1C8A, CM_PAIR, 0, 0)
+    cm_add(0x1C90, 0x1CBA, CM_CONST, 0, -3008)
+    cm_add(0x1CBD, 0x1CBF, CM_CONST, 0, -3008)
+    cm_add(0x1D79, 0x1D79, CM_CONST, 35332, 0)
+    cm_add(0x1D7D, 0x1D7D, CM_CONST, 3814, 0)
+    cm_add(0x1D8E, 0x1D8E, CM_CONST, 35384, 0)
+    cm_add(0x1E00, 0x1E95, CM_PAIR, 0, 0)
+    cm_add(0x1E9B, 0x1E9B, CM_CONST, -59, 0)
+    cm_add(0x1E9E, 0x1E9E, CM_CONST, 0, -7615)
+    cm_add(0x1EA0, 0x1EFF, CM_PAIR, 0, 0)
+    cm_add(0x1F00, 0x1F07, CM_CONST, 8, 0)
+    cm_add(0x1F08, 0x1F0F, CM_CONST, 0, -8)
+    cm_add(0x1F10, 0x1F15, CM_CONST, 8, 0)
+    cm_add(0x1F18, 0x1F1D, CM_CONST, 0, -8)
+    cm_add(0x1F20, 0x1F27, CM_CONST, 8, 0)
+    cm_add(0x1F28, 0x1F2F, CM_CONST, 0, -8)
+    cm_add(0x1F30, 0x1F37, CM_CONST, 8, 0)
+    cm_add(0x1F38, 0x1F3F, CM_CONST, 0, -8)
+    cm_add(0x1F40, 0x1F45, CM_CONST, 8, 0)
+    cm_add(0x1F48, 0x1F4D, CM_CONST, 0, -8)
+    cm_add(0x1F51, 0x1F51, CM_CONST, 8, 0)
+    cm_add(0x1F53, 0x1F53, CM_CONST, 8, 0)
+    cm_add(0x1F55, 0x1F55, CM_CONST, 8, 0)
+    cm_add(0x1F57, 0x1F57, CM_CONST, 8, 0)
+    cm_add(0x1F59, 0x1F59, CM_CONST, 0, -8)
+    cm_add(0x1F5B, 0x1F5B, CM_CONST, 0, -8)
+    cm_add(0x1F5D, 0x1F5D, CM_CONST, 0, -8)
+    cm_add(0x1F5F, 0x1F5F, CM_CONST, 0, -8)
+    cm_add(0x1F60, 0x1F67, CM_CONST, 8, 0)
+    cm_add(0x1F68, 0x1F6F, CM_CONST, 0, -8)
+    cm_add(0x1F70, 0x1F71, CM_CONST, 74, 0)
+    cm_add(0x1F72, 0x1F75, CM_CONST, 86, 0)
+    cm_add(0x1F76, 0x1F77, CM_CONST, 100, 0)
+    cm_add(0x1F78, 0x1F79, CM_CONST, 128, 0)
+    cm_add(0x1F7A, 0x1F7B, CM_CONST, 112, 0)
+    cm_add(0x1F7C, 0x1F7D, CM_CONST, 126, 0)
+    cm_add(0x1F88, 0x1F8F, CM_CONST, 0, -8)
+    cm_add(0x1F98, 0x1F9F, CM_CONST, 0, -8)
+    cm_add(0x1FA8, 0x1FAF, CM_CONST, 0, -8)
+    cm_add(0x1FB0, 0x1FB1, CM_CONST, 8, 0)
+    cm_add(0x1FB8, 0x1FB9, CM_CONST, 0, -8)
+    cm_add(0x1FBA, 0x1FBB, CM_CONST, 0, -74)
+    cm_add(0x1FBC, 0x1FBC, CM_CONST, 0, -9)
+    cm_add(0x1FBE, 0x1FBE, CM_CONST, -7205, 0)
+    cm_add(0x1FC8, 0x1FCB, CM_CONST, 0, -86)
+    cm_add(0x1FCC, 0x1FCC, CM_CONST, 0, -9)
+    cm_add(0x1FD0, 0x1FD1, CM_CONST, 8, 0)
+    cm_add(0x1FD8, 0x1FD9, CM_CONST, 0, -8)
+    cm_add(0x1FDA, 0x1FDB, CM_CONST, 0, -100)
+    cm_add(0x1FE0, 0x1FE1, CM_CONST, 8, 0)
+    cm_add(0x1FE5, 0x1FE5, CM_CONST, 7, 0)
+    cm_add(0x1FE8, 0x1FE9, CM_CONST, 0, -8)
+    cm_add(0x1FEA, 0x1FEB, CM_CONST, 0, -112)
+    cm_add(0x1FEC, 0x1FEC, CM_CONST, 0, -7)
+    cm_add(0x1FF8, 0x1FF9, CM_CONST, 0, -128)
+    cm_add(0x1FFA, 0x1FFB, CM_CONST, 0, -126)
+    cm_add(0x1FFC, 0x1FFC, CM_CONST, 0, -9)
+    cm_add(0x2126, 0x2126, CM_CONST, 0, -7517)
+    cm_add(0x212A, 0x212A, CM_CONST, 0, -8383)
+    cm_add(0x212B, 0x212B, CM_CONST, 0, -8262)
+    cm_add(0x2132, 0x2132, CM_CONST, 0, 28)
+    cm_add(0x214E, 0x214E, CM_CONST, -28, 0)
+    cm_add(0x2160, 0x216F, CM_CONST, 0, 16)
+    cm_add(0x2170, 0x217F, CM_CONST, -16, 0)
+    cm_add(0x2183, 0x2184, CM_PAIR, 0, 0)
+    cm_add(0x24B6, 0x24CF, CM_CONST, 0, 26)
+    cm_add(0x24D0, 0x24E9, CM_CONST, -26, 0)
+    cm_add(0x2C00, 0x2C2F, CM_CONST, 0, 48)
+    cm_add(0x2C30, 0x2C5F, CM_CONST, -48, 0)
+    cm_add(0x2C60, 0x2C61, CM_PAIR, 0, 0)
+    cm_add(0x2C62, 0x2C62, CM_CONST, 0, -10743)
+    cm_add(0x2C63, 0x2C63, CM_CONST, 0, -3814)
+    cm_add(0x2C64, 0x2C64, CM_CONST, 0, -10727)
+    cm_add(0x2C65, 0x2C65, CM_CONST, -10795, 0)
+    cm_add(0x2C66, 0x2C66, CM_CONST, -10792, 0)
+    cm_add(0x2C67, 0x2C6C, CM_PAIR, 0, 0)
+    cm_add(0x2C6D, 0x2C6D, CM_CONST, 0, -10780)
+    cm_add(0x2C6E, 0x2C6E, CM_CONST, 0, -10749)
+    cm_add(0x2C6F, 0x2C6F, CM_CONST, 0, -10783)
+    cm_add(0x2C70, 0x2C70, CM_CONST, 0, -10782)
+    cm_add(0x2C72, 0x2C73, CM_PAIR, 0, 0)
+    cm_add(0x2C75, 0x2C76, CM_PAIR, 0, 0)
+    cm_add(0x2C7E, 0x2C7F, CM_CONST, 0, -10815)
+    cm_add(0x2C80, 0x2CE3, CM_PAIR, 0, 0)
+    cm_add(0x2CEB, 0x2CEE, CM_PAIR, 0, 0)
+    cm_add(0x2CF2, 0x2CF3, CM_PAIR, 0, 0)
+    cm_add(0x2D00, 0x2D25, CM_CONST, -7264, 0)
+    cm_add(0x2D27, 0x2D27, CM_CONST, -7264, 0)
+    cm_add(0x2D2D, 0x2D2D, CM_CONST, -7264, 0)
+    cm_add(0xA640, 0xA66D, CM_PAIR, 0, 0)
+    cm_add(0xA680, 0xA69B, CM_PAIR, 0, 0)
+    cm_add(0xA722, 0xA72F, CM_PAIR, 0, 0)
+    cm_add(0xA732, 0xA76F, CM_PAIR, 0, 0)
+    cm_add(0xA779, 0xA77C, CM_PAIR, 0, 0)
+    cm_add(0xA77D, 0xA77D, CM_CONST, 0, -35332)
+    cm_add(0xA77E, 0xA787, CM_PAIR, 0, 0)
+    cm_add(0xA78B, 0xA78C, CM_PAIR, 0, 0)
+    cm_add(0xA78D, 0xA78D, CM_CONST, 0, -42280)
+    cm_add(0xA790, 0xA793, CM_PAIR, 0, 0)
+    cm_add(0xA794, 0xA794, CM_CONST, 48, 0)
+    cm_add(0xA796, 0xA7A9, CM_PAIR, 0, 0)
+    cm_add(0xA7AA, 0xA7AA, CM_CONST, 0, -42308)
+    cm_add(0xA7AB, 0xA7AB, CM_CONST, 0, -42319)
+    cm_add(0xA7AC, 0xA7AC, CM_CONST, 0, -42315)
+    cm_add(0xA7AD, 0xA7AD, CM_CONST, 0, -42305)
+    cm_add(0xA7AE, 0xA7AE, CM_CONST, 0, -42308)
+    cm_add(0xA7B0, 0xA7B0, CM_CONST, 0, -42258)
+    cm_add(0xA7B1, 0xA7B1, CM_CONST, 0, -42282)
+    cm_add(0xA7B2, 0xA7B2, CM_CONST, 0, -42261)
+    cm_add(0xA7B3, 0xA7B3, CM_CONST, 0, 928)
+    cm_add(0xA7B4, 0xA7C3, CM_PAIR, 0, 0)
+    cm_add(0xA7C4, 0xA7C4, CM_CONST, 0, -48)
+    cm_add(0xA7C5, 0xA7C5, CM_CONST, 0, -42307)
+    cm_add(0xA7C6, 0xA7C6, CM_CONST, 0, -35384)
+    cm_add(0xA7C7, 0xA7CA, CM_PAIR, 0, 0)
+    cm_add(0xA7CB, 0xA7CB, CM_CONST, 0, -42343)
+    cm_add(0xA7CC, 0xA7CD, CM_PAIR, 0, 0)
+    cm_add(0xA7D0, 0xA7D1, CM_PAIR, 0, 0)
+    cm_add(0xA7D6, 0xA7DB, CM_PAIR, 0, 0)
+    cm_add(0xA7DC, 0xA7DC, CM_CONST, 0, -42561)
+    cm_add(0xA7F5, 0xA7F6, CM_PAIR, 0, 0)
+    cm_add(0xAB53, 0xAB53, CM_CONST, -928, 0)
+    cm_add(0xAB70, 0xABBF, CM_CONST, -38864, 0)
+    cm_add(0xFF21, 0xFF3A, CM_CONST, 0, 32)
+    cm_add(0xFF41, 0xFF5A, CM_CONST, -32, 0)
+
+    mu_add(0x00DF, 0x0053, 0x0053, 0x0000)
+    mu_add(0x0149, 0x02BC, 0x004E, 0x0000)
+    mu_add(0x01F0, 0x004A, 0x030C, 0x0000)
+    mu_add(0x0390, 0x0399, 0x0308, 0x0301)
+    mu_add(0x03B0, 0x03A5, 0x0308, 0x0301)
+    mu_add(0x0587, 0x0535, 0x0552, 0x0000)
+    mu_add(0x1E96, 0x0048, 0x0331, 0x0000)
+    mu_add(0x1E97, 0x0054, 0x0308, 0x0000)
+    mu_add(0x1E98, 0x0057, 0x030A, 0x0000)
+    mu_add(0x1E99, 0x0059, 0x030A, 0x0000)
+    mu_add(0x1E9A, 0x0041, 0x02BE, 0x0000)
+    mu_add(0x1F50, 0x03A5, 0x0313, 0x0000)
+    mu_add(0x1F52, 0x03A5, 0x0313, 0x0300)
+    mu_add(0x1F54, 0x03A5, 0x0313, 0x0301)
+    mu_add(0x1F56, 0x03A5, 0x0313, 0x0342)
+    mu_add(0x1F80, 0x1F08, 0x0399, 0x0000)
+    mu_add(0x1F81, 0x1F09, 0x0399, 0x0000)
+    mu_add(0x1F82, 0x1F0A, 0x0399, 0x0000)
+    mu_add(0x1F83, 0x1F0B, 0x0399, 0x0000)
+    mu_add(0x1F84, 0x1F0C, 0x0399, 0x0000)
+    mu_add(0x1F85, 0x1F0D, 0x0399, 0x0000)
+    mu_add(0x1F86, 0x1F0E, 0x0399, 0x0000)
+    mu_add(0x1F87, 0x1F0F, 0x0399, 0x0000)
+    mu_add(0x1F88, 0x1F08, 0x0399, 0x0000)
+    mu_add(0x1F89, 0x1F09, 0x0399, 0x0000)
+    mu_add(0x1F8A, 0x1F0A, 0x0399, 0x0000)
+    mu_add(0x1F8B, 0x1F0B, 0x0399, 0x0000)
+    mu_add(0x1F8C, 0x1F0C, 0x0399, 0x0000)
+    mu_add(0x1F8D, 0x1F0D, 0x0399, 0x0000)
+    mu_add(0x1F8E, 0x1F0E, 0x0399, 0x0000)
+    mu_add(0x1F8F, 0x1F0F, 0x0399, 0x0000)
+    mu_add(0x1F90, 0x1F28, 0x0399, 0x0000)
+    mu_add(0x1F91, 0x1F29, 0x0399, 0x0000)
+    mu_add(0x1F92, 0x1F2A, 0x0399, 0x0000)
+    mu_add(0x1F93, 0x1F2B, 0x0399, 0x0000)
+    mu_add(0x1F94, 0x1F2C, 0x0399, 0x0000)
+    mu_add(0x1F95, 0x1F2D, 0x0399, 0x0000)
+    mu_add(0x1F96, 0x1F2E, 0x0399, 0x0000)
+    mu_add(0x1F97, 0x1F2F, 0x0399, 0x0000)
+    mu_add(0x1F98, 0x1F28, 0x0399, 0x0000)
+    mu_add(0x1F99, 0x1F29, 0x0399, 0x0000)
+    mu_add(0x1F9A, 0x1F2A, 0x0399, 0x0000)
+    mu_add(0x1F9B, 0x1F2B, 0x0399, 0x0000)
+    mu_add(0x1F9C, 0x1F2C, 0x0399, 0x0000)
+    mu_add(0x1F9D, 0x1F2D, 0x0399, 0x0000)
+    mu_add(0x1F9E, 0x1F2E, 0x0399, 0x0000)
+    mu_add(0x1F9F, 0x1F2F, 0x0399, 0x0000)
+    mu_add(0x1FA0, 0x1F68, 0x0399, 0x0000)
+    mu_add(0x1FA1, 0x1F69, 0x0399, 0x0000)
+    mu_add(0x1FA2, 0x1F6A, 0x0399, 0x0000)
+    mu_add(0x1FA3, 0x1F6B, 0x0399, 0x0000)
+    mu_add(0x1FA4, 0x1F6C, 0x0399, 0x0000)
+    mu_add(0x1FA5, 0x1F6D, 0x0399, 0x0000)
+    mu_add(0x1FA6, 0x1F6E, 0x0399, 0x0000)
+    mu_add(0x1FA7, 0x1F6F, 0x0399, 0x0000)
+    mu_add(0x1FA8, 0x1F68, 0x0399, 0x0000)
+    mu_add(0x1FA9, 0x1F69, 0x0399, 0x0000)
+    mu_add(0x1FAA, 0x1F6A, 0x0399, 0x0000)
+    mu_add(0x1FAB, 0x1F6B, 0x0399, 0x0000)
+    mu_add(0x1FAC, 0x1F6C, 0x0399, 0x0000)
+    mu_add(0x1FAD, 0x1F6D, 0x0399, 0x0000)
+    mu_add(0x1FAE, 0x1F6E, 0x0399, 0x0000)
+    mu_add(0x1FAF, 0x1F6F, 0x0399, 0x0000)
+    mu_add(0x1FB2, 0x1FBA, 0x0399, 0x0000)
+    mu_add(0x1FB3, 0x0391, 0x0399, 0x0000)
+    mu_add(0x1FB4, 0x0386, 0x0399, 0x0000)
+    mu_add(0x1FB6, 0x0391, 0x0342, 0x0000)
+    mu_add(0x1FB7, 0x0391, 0x0342, 0x0399)
+    mu_add(0x1FBC, 0x0391, 0x0399, 0x0000)
+    mu_add(0x1FC2, 0x1FCA, 0x0399, 0x0000)
+    mu_add(0x1FC3, 0x0397, 0x0399, 0x0000)
+    mu_add(0x1FC4, 0x0389, 0x0399, 0x0000)
+    mu_add(0x1FC6, 0x0397, 0x0342, 0x0000)
+    mu_add(0x1FC7, 0x0397, 0x0342, 0x0399)
+    mu_add(0x1FCC, 0x0397, 0x0399, 0x0000)
+    mu_add(0x1FD2, 0x0399, 0x0308, 0x0300)
+    mu_add(0x1FD3, 0x0399, 0x0308, 0x0301)
+    mu_add(0x1FD6, 0x0399, 0x0342, 0x0000)
+    mu_add(0x1FD7, 0x0399, 0x0308, 0x0342)
+    mu_add(0x1FE2, 0x03A5, 0x0308, 0x0300)
+    mu_add(0x1FE3, 0x03A5, 0x0308, 0x0301)
+    mu_add(0x1FE4, 0x03A1, 0x0313, 0x0000)
+    mu_add(0x1FE6, 0x03A5, 0x0342, 0x0000)
+    mu_add(0x1FE7, 0x03A5, 0x0308, 0x0342)
+    mu_add(0x1FF2, 0x1FFA, 0x0399, 0x0000)
+    mu_add(0x1FF3, 0x03A9, 0x0399, 0x0000)
+    mu_add(0x1FF4, 0x038F, 0x0399, 0x0000)
+    mu_add(0x1FF6, 0x03A9, 0x0342, 0x0000)
+    mu_add(0x1FF7, 0x03A9, 0x0342, 0x0399)
+    mu_add(0x1FFC, 0x03A9, 0x0399, 0x0000)
+    mu_add(0xFB00, 0x0046, 0x0046, 0x0000)
+    mu_add(0xFB01, 0x0046, 0x0049, 0x0000)
+    mu_add(0xFB02, 0x0046, 0x004C, 0x0000)
+    mu_add(0xFB03, 0x0046, 0x0046, 0x0049)
+    mu_add(0xFB04, 0x0046, 0x0046, 0x004C)
+    mu_add(0xFB05, 0x0053, 0x0054, 0x0000)
+    mu_add(0xFB06, 0x0053, 0x0054, 0x0000)
+    mu_add(0xFB13, 0x0544, 0x0546, 0x0000)
+    mu_add(0xFB14, 0x0544, 0x0535, 0x0000)
+    mu_add(0xFB15, 0x0544, 0x053B, 0x0000)
+    mu_add(0xFB16, 0x054E, 0x0546, 0x0000)
+    mu_add(0xFB17, 0x0544, 0x053D, 0x0000)
+
+    ml_add(0x0130, 0x0069, 0x0307, 0x0000)
