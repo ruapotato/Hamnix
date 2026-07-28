@@ -197,10 +197,47 @@ def _pl_bytes(p: Ptr[uint8], n: uint64):
         i = i + 1
 
 
+# MEASURED AGAIN (2026-07-28, second OVMF boot): fd 1 does not work
+# either. The panel's `[panel] appmenu entries: …` marker reaches serial
+# because it is printed BEFORE the panel creates its window; every write
+# after that vanishes. Console I/O in this tree is routed by the caller's
+# window binding (see hamUI.ad: "/dev/cons reads pop from
+# /dev/wsys/<wid>/cmd FIRST — same routing key"), so once the panel owns
+# a wid its console writes go to its own window, not to the serial log.
+# Both console channels are therefore unusable for panel telemetry, and
+# that is exactly why this defect went unobserved for so long: the panel
+# has had no way to tell anyone anything since the moment it maps.
+#
+# The channel that DOES cross the boundary is a file. The panel rewrites
+# its current health line into tmpfs; the gate `cat`s it over the serial
+# shell whenever it wants a sample. One open/write/close every ~10 s.
+PANEL_HEALTH_PATH: Ptr[uint8] = "/tmp/hamnix-panel.health"
+# Faults get their OWN file so a beacon written a millisecond later cannot
+# overwrite the evidence before anyone reads it.
+PANEL_FAULT_PATH:  Ptr[uint8] = "/tmp/hamnix-panel.fault"
+
+
+def _pl_flush_fault():
+    cf: int32 = _pcons_fd()
+    if cf >= 0 and _plpos > 0:
+        sys_write(cf, &_plbuf[0], _plpos)
+    if _plpos > 0:
+        ff: int32 = sys_open_write(cast[Ptr[char]](PANEL_FAULT_PATH))
+        if ff >= 0:
+            sys_write(ff, &_plbuf[0], _plpos)
+            sys_close(ff)
+    _plpos = 0
+
+
 def _pl_flush():
     cf: int32 = _pcons_fd()
     if cf >= 0 and _plpos > 0:
         sys_write(cf, &_plbuf[0], _plpos)
+    if _plpos > 0:
+        hf: int32 = sys_open_write(cast[Ptr[char]](PANEL_HEALTH_PATH))
+        if hf >= 0:
+            sys_write(hf, &_plbuf[0], _plpos)
+            sys_close(hf)
     _plpos = 0
 
 
@@ -893,7 +930,7 @@ def _refresh_windows():
             _pl_s(cast[Ptr[uint8]](" keeping stale taskbar tasks="))
             _pl_d(n_tasks)
             _pl_s(cast[Ptr[uint8]]("\n"))
-            _pl_flush()
+            _pl_flush_fault()
         return
     if win_open_fails != 0:
         _pl_s(cast[Ptr[uint8]]("[panel] RECOVERED /dev/wsys/windows after "))
@@ -928,7 +965,7 @@ def _refresh_windows():
         _pl_s(cast[Ptr[uint8]](" bytes; keeping stale taskbar tasks="))
         _pl_d(n_tasks)
         _pl_s(cast[Ptr[uint8]]("\n"))
-        _pl_flush()
+        _pl_flush_fault()
         return
     n_tasks = 0
     # FNV-1a over the raw snapshot so any change to the window SET (a new

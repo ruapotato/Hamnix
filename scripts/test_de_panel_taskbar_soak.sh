@@ -151,6 +151,20 @@ printf 'echo MARK_SOAK_READY\n' >&3
 sleep 1
 wait_for MARK_SOAK_READY 12 || { printf 'echo MARK_SOAK_READY\n' >&3; sleep 2; }
 
+# The panel's telemetry reaches us through a tmpfs FILE, not the console:
+# once the panel owns a window its console writes are routed into that
+# window (hamUI.ad's wid routing key), so neither fd 1 nor /dev/cons is
+# visible on serial. The gate `cat`s the health file over the serial shell
+# whenever it wants a sample; each sample lands in the log as a
+# "[panelbeacon] …" line and everything below parses those.
+health_sample() {
+    printf 'cat /tmp/hamnix-panel.health; cat /tmp/hamnix-panel.fault\n' >&3
+    sleep 2
+}
+health_sample
+sleep 2
+health_sample
+
 # The panel beacon must be flowing before the clock starts, else we are
 # soaking blind.
 if ! wait_for '\[panelbeacon\]' 60; then
@@ -212,6 +226,7 @@ while [ "$SECONDS" -lt "$SOAK_END" ]; do
         [ -n "$pid" ] && printf '/bin/kill %s\n' "$pid" >&3
         sleep 2
     done
+    health_sample                       # one time-series point per cycle
     if [ $(( cyc % 10 )) -eq 0 ]; then
         m="MARK_ALIVE_$cyc"
         printf 'echo %s\n' "$m" >&3
@@ -251,11 +266,13 @@ for app in hammonscene hamnotesscene hamcalcscene; do
 done
 # Give the panel several beacon periods (10s each) to observe + render them.
 sleep 35
+health_sample
 printf 'echo MARK_WINTABLE_BEGIN; cat /dev/wsys/windows; echo MARK_WINTABLE_END\n' >&3
 sleep 5
 wait_for MARK_WINTABLE_END 20 || say_fail "the shell never answered the final window-table read"
 dump_panel_fds final
 sleep 12          # one more beacon after the table snapshot
+health_sample
 snapshot 999_final
 
 exec 3>&-
@@ -285,19 +302,31 @@ field() { sed -n "s/.*[^a-z]$1=\([^ ]*\).*/\1/p"; }
 LAST_UP=$(tail -1 "$OUT_DIR/beacons.txt" | sed -n 's/.*up_s=\([0-9]*\).*/\1/p')
 : "${LAST_UP:=0}"
 MIN_UP=$(( SOAK_MIN * 60 ))
-if [ "$LAST_UP" -lt "$MIN_UP" ]; then
-    echo "$TAG RESULT: INCONCLUSIVE — the panel's last beacon is at up_s=${LAST_UP}," >&2
-    echo "$TAG   short of the ${MIN_UP}s this gate must observe past. Nothing about" >&2
-    echo "$TAG   the ~18-minute defect was exercised." >&2
+# Distinct up_s values = how many times the panel actually REFRESHED its
+# health file. The gate re-reads that file every cycle, so a frozen panel
+# would otherwise hand back the same stale line forever and look alive.
+DISTINCT=$(sed -n 's/.*up_s=\([0-9]*\).*/\1/p' "$OUT_DIR/beacons.txt" | sort -un | wc -l)
+echo "$TAG distinct beacon timestamps: $DISTINCT"
+
+# Did OUR clock get far enough to demand the panel's clock did too?
+if [ "$ELAPSED" -lt "$(( MIN_UP + 30 ))" ]; then
+    echo "$TAG RESULT: INCONCLUSIVE — the soak loop only ran ${ELAPSED}s of the" >&2
+    echo "$TAG   ${MIN_UP}s it must; nothing about the ~18-minute defect was" >&2
+    echo "$TAG   exercised. Host loadavg: $(cut -d' ' -f1-3 /proc/loadavg)" >&2
     exit 125
 fi
 
-# (1) LIVENESS: a beacon inside the last 60s of panel uptime.
-LAST_TWO_GAP=$(tail -2 "$OUT_DIR/beacons.txt" | sed -n 's/.*up_s=\([0-9]*\).*/\1/p' \
-               | tr '\n' ' ' | awk '{print $2-$1}')
-: "${LAST_TWO_GAP:=999}"
-if [ "$LAST_TWO_GAP" -gt 60 ]; then
-    say_fail "PANEL STALLED: ${LAST_TWO_GAP}s between the last two beacons (expected ~10s)"
+# (1) LIVENESS OVER TIME. The session demonstrably ran past the soak
+# window, so a panel whose last self-report is far short of that has
+# STOPPED — that is a FAIL, not an inconclusive run.
+if [ "$LAST_UP" -lt "$MIN_UP" ]; then
+    say_fail "PANEL STOPPED REPORTING: the session ran ${ELAPSED}s but the panel's" \
+             "last beacon is at up_s=${LAST_UP}s. It stopped refreshing its health" \
+             "file — the loop is wedged or the panel is gone."
+fi
+if [ "$DISTINCT" -lt 10 ]; then
+    say_fail "PANEL BARELY TICKED: only $DISTINCT distinct beacon timestamps over" \
+             "${ELAPSED}s; the panel is not looping at anything like its 16ms park."
 fi
 
 # (2) DESCRIPTOR LEAK over the whole session.
