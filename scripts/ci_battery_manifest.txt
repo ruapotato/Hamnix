@@ -281,6 +281,21 @@ bash scripts/test_hamsh_nosilentwrong_host.sh
 # the REPL/stdin seam, including both mixing directions and a clean
 # line-numbered error when a block has neither opener.
 bash scripts/test_hamsh_dualsyntax_host.sh
+# QEMU-free SUSTAINED-USE gate (~18 s, mostly the two compiles) for hamsh's
+# session arenas — the class this whole battery structurally missed. Every
+# other gate asserts correctness AT AN INSTANT; this one runs ONE shell for
+# 7236 commands with functions and variables live throughout and asserts
+# occupancy is BOUNDED rather than monotonic. The 2026-07-28 4-hour DE soak
+# found the desktop completely unusable after ~83 minutes — every command
+# "hamsh: parse error [line 1]: node arena full" — because the old reclaimer
+# refused to recycle while any def or variable was live, which /etc/rc.de-user
+# guarantees forever. Asserts: no arena exhausted; node occupancy DROPS (a
+# raised cap would still be monotonic and would still die later); >= 2
+# collections; recursion / if-else / try-except / ternary / slice /
+# expression-for / kwarg-call / list / dict / alias all evaluate byte-
+# identically on both sides of every collection; and a structural ratchet on
+# the nd_c child-vs-flag table the collector depends on.
+bash scripts/test_hamsh_arena_soak_host.sh
 # QEMU-free host gate for the hamML colour parser's 8-digit "#rrggbbaa" alpha
 # path (user/hamUId.ad parse_color). Regression guard for the user-reported
 # "screenshot with a selected area turns the whole screen black" bug: the

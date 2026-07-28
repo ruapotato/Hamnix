@@ -89,12 +89,21 @@ o.append('def f2(k) { return "big" if k > 1 else "small" }')
 o.append('def f3(xs) { return xs[1:3] }')
 o.append('def f4() { out = "" ; for i in [1, 2, 3] { out = out + i } ; return out }')
 o.append('def f5(xs) { return sorted(xs, reverse=True) }')
+# f6's `else` arm lives in nd_c. Without it the ND_IF entry of
+# _gc_c_is_node is untested (f0's `if` has no else, so its nd_c is 0) —
+# verified by mutation: deleting `if k == ND_IF` from _gc_c_is_node passed
+# this gate until f6 existed.
+o.append('def f6(k) { if k > 3 { return "hi" } else { return "lo" } }')
+# f7 uses nd_c the OTHER way: the ND_ASSIGN export FLAG. Forwarding that as
+# if it were a node id is the mirror-image bug.
+o.append('def f7() { export EV=7 ; return "ok" }')
 o.append('keep = [1, 2, 3, 4, 5]')
 o.append("dd = {'a': 11, 'b': 22}")
 o.append('name = "hamnix"')
 o.append("alias ll='ls -l'")
 PROBE = ('echo PROBE ${ f0(7) } ${ f1(0) } ${ f2(5) } ${ f3([9, 8, 7, 6]) } '
-         '${ f4() } ${ f5([3, 1, 2]) } ${ keep[1:3] } ${ len(dd) } $name')
+         '${ f4() } ${ f5([3, 1, 2]) } ${ f6(9) } ${ f6(1) } ${ f7() } '
+         '${ keep[1:3] } ${ len(dd) } $name')
 o.append(PROBE)
 o.append('arenas')
 for i in range(1, n + 1):
@@ -124,12 +133,15 @@ if [ "$NCMD" -lt 700 ]; then
     exit 1
 fi
 
-timeout 300 "$BIN" --no-echo <"$SCRIPT" >"$DUMP" 2>&1
+timeout 180 "$BIN" --no-echo <"$SCRIPT" >"$DUMP" 2>&1
 rc=$?
 if [ "$rc" -ne 0 ]; then
-    echo "[arena-soak] FAIL: shell exited rc=$rc (124 = hung)"
-    tail -n 20 "$DUMP"
-    exit 1
+    # Don't bail — the checks below name the actual cause. (A shell whose
+    # node arena has filled never reaches `exit`, so it also times out:
+    # rc=124 and "node arena full" are the SAME failure, and the second is
+    # the readable one.)
+    echo "[arena-soak] FAIL: shell exited rc=$rc (124 = never reached 'exit')"
+    fail=1
 fi
 
 # ---------------------------------------------------------------- check 1
@@ -203,7 +215,7 @@ if [ "${#PROBES[@]}" -lt 3 ]; then
 else
     # Guard the oracle itself: a PROBE of empty/failed evaluations would make
     # "all identical" vacuously true.
-    EXPECT='PROBE 13 caught:e big 8 7 123 3 2 1 2 3 2 hamnix'
+    EXPECT='PROBE 13 caught:e big 8 7 123 3 2 1 hi lo ok 2 3 2 hamnix'
     if [ "${PROBES[0]}" != "$EXPECT" ]; then
         echo "[arena-soak] FAIL: baseline PROBE is not the expected evaluation"
         echo "             want: $EXPECT"
@@ -233,6 +245,39 @@ else
     echo "[arena-soak] FAIL: alias lost/garbled after compaction"
     grep -n "^hamsh\$ ll" "$DUMP" | head -n 3
     fail=1
+fi
+
+# ---------------------------------------------------------------- check 6
+# STRUCTURAL RATCHET on the one hand-maintained table in the collector.
+#
+# nd_c is a CHILD NODE for five kinds and a SCALAR FLAG for the rest, and
+# _gc_c_is_node is the only place that knows which. Get it wrong and a live
+# function body is silently corrupted THOUSANDS of commands later — the
+# worst-shaped bug this file can have. Checks 1-5 catch the child-side
+# mistakes (mutation-verified: dropping ND_IF makes f6 return ""), but a
+# scrambled scalar flag can hide, so pin the population of nd_c WRITERS: a
+# new one means somebody taught a node kind to use nd_c, and _gc_c_is_node
+# must be revisited in the same commit.
+#
+# The 15 parser writers, by kind:
+#   CHILD  ND_TERNARY(else) ND_SLICE(step) ND_IF(else x2) ND_TRY(except)
+#          ND_WITH(body)
+#   FLAG   ND_CALL/ND_CALLV(kwarg count) ND_CMD(redirect bits x4)
+#          ND_FOR(expression-mode x2) ND_ASSIGN(export flag x2)
+EXPECT_NDC=15
+GOT_NDC=$(grep -cE 'nd_c\[.*\] *= ' user/hamsh.ad)
+# minus nd_new's zero-init and the collector's own two lines
+GOT_NDC=$((GOT_NDC - 3))
+if [ "$GOT_NDC" -ne "$EXPECT_NDC" ]; then
+    echo "[arena-soak] FAIL: user/hamsh.ad now has $GOT_NDC nd_c writers, expected $EXPECT_NDC."
+    echo "             A node kind started (or stopped) using nd_c. Re-derive"
+    echo "             _gc_c_is_node — a CHILD it does not list gets freed under a"
+    echo "             live function; a FLAG it does list gets rewritten to garbage."
+    echo "             Then update EXPECT_NDC here."
+    grep -nE 'nd_c\[.*\] *= ' user/hamsh.ad
+    fail=1
+else
+    echo "[arena-soak] OK: nd_c writer population unchanged ($GOT_NDC) — _gc_c_is_node still derived from the current parser"
 fi
 
 if [ "$fail" -ne 0 ]; then
