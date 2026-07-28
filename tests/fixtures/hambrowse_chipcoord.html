@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- COORDINATE fixture for inline-block chip GEOMETRY (nav pills / tags / badges).
+
+     hambrowse_hitpill.html proves a chip's padding is LIVE. This one proves the
+     chip is in the RIGHT PLACE, which no id-driven gate can see:
+
+       * chip 1 must start at the body's left inset, not at inset + padding-left
+         (the box model folds margin-left and padding-left into one column, and
+         the chip path applied its padding a second time on top of that);
+       * source-ADJACENT chips must not be separated by a gutter the author
+         never wrote (padding-right used to leak into it);
+       * every chip's LABEL INK must land inside that chip's own painted box —
+         the pixel renderer flows same-row prose from its own pen, so a chip
+         whose start-x is not re-synced paints its text inside its neighbour.
+
+     Each chip gets a unique flat background so the gate can recover its PAINTED
+     rect from the PPM, and a distinct ink colour so its label run can be told
+     apart from its neighbours'. Row 2 repeats the pattern with asymmetric
+     padding, where a left/right mix-up is unambiguous. -->
+<html>
+<head>
+<style>
+  body { margin: 0 0 0 40px; }
+  nav { margin: 0; padding: 0; }
+  a.c1 { display: inline-block; padding: 6px 24px; background: #c8dcf0; color: #d00000; }
+  a.c2 { display: inline-block; padding: 6px 24px; background: #f0d2c8; color: #00a000; }
+  a.c3 { display: inline-block; padding: 6px 8px 6px 36px; background: #d2f0c8; color: #0000d0; }
+</style>
+</head>
+<body>
+<nav><a class="c1" href="/chip-one">CHIPONE</a><a class="c2" href="/chip-two">CHIPTWO</a></nav>
+<p><a class="c3" href="/chip-three">CHIPTHREE</a></p>
+</body>
+</html>

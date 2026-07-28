@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Inline on<evt>="" handlers reached by a POINTER, with no <script> anywhere.
+
+     DOM records are minted lazily — an element gets one the first time script
+     code looks it up. A page whose only interactivity is an inline handler
+     never looks anything up, so `<div onclick>` had NO record at all: the
+     rewrite could not see a handler on it, never wrapped it in the synthetic
+     "#__evt_N" link the pointer hit-test resolves, and a click on its pixels
+     hit nothing (HITLINK -1). An `<a href onclick>` was worse than useless —
+     the click resolved the href and the handler never ran.
+
+     Each target gets a unique flat background so the gate can aim its clicks at
+     the PAINTED box. The last row is a plain <a href> with NO handler: it must
+     stay an ordinary navigable link (no synthetic wrap), or every link on every
+     page would stop navigating. -->
+<html>
+<head>
+<style>
+  body { margin: 0; }
+  a, div { display: block; width: 320px; padding: 8px; }
+  #a1 { background: #c8dcf0; }
+  #d2 { background: #f0d2c8; }
+  #p4 { background: #f0f0c8; }
+</style>
+</head>
+<body>
+<a id="a1" href="/real-target" onclick="document.title='A-RAN'">ANCHOR WITH ONCLICK</a>
+<div id="d2" onclick="document.title='D-RAN'">DIV WITH ONCLICK</div>
+<a id="p4" href="/plain-target">PLAIN ANCHOR NO HANDLER</a>
+</body>
+</html>

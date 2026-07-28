@@ -5386,13 +5386,16 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
     # `width`) honours its real CSS padding so a styled search box gets its declared
     # breathing room.
     pad_sum: int32 = 2 * INLB_PADX
+    pad_l: int32 = INLB_PADX                             # the LEFT side of that sum
     contentw: int32 = tw
     if eff_w >= 0:
         contentw = eff_w
         if m_padx > 0:
             pad_sum = m_padx
+            pad_l = m_padl
         if d_padx > 0:
             pad_sum = d_padx
+            pad_l = d_padl
     elif he_meas_set != 0:
         # Text-sized chip in the PIXEL renderer: the content width is now a real
         # proportional measure (no longer the monospace overshoot), so honour the
@@ -5403,9 +5406,15 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
         # inlbmargin gates — stay byte-identical.
         if m_padx > 0:
             pad_sum = m_padx
+            pad_l = m_padl
         if d_padx > 0:
             pad_sum = d_padx
-    eff_padx: int32 = pad_sum / 2                        # left inset (pen) per side
+            pad_l = d_padl
+    # LEFT inset for the pen. Halving the sum put an ASYMMETRICALLY padded chip's
+    # label in the wrong place: `padding:6px 8px 6px 36px` on a chip at x=40 put
+    # its text at 40+22 where Chrome puts it at 40+36. The sum still sizes the
+    # box; only the pen needs the real left side.
+    eff_padx: int32 = pad_l
     boxw: int32 = contentw + pad_sum
     # Inline horizontal margins: margin-left shifts the chip right here; margin-right
     # becomes the gutter to the next inline box (applied at close).
