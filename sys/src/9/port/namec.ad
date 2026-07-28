@@ -2340,10 +2340,10 @@ def _devtab_write(dev_type: int32, wid: int32, layer: int32,
     if dev_type == DEV_SNARF:
         # DE primitive: /dev/snarf clipboard. Write REPLACES the buffer
         # wholesale (capped at SNARF_MAX); a 0-byte write clears it.
-        return devsnarf_write(buf, count)
+        return devsnarf_write(off, buf, count)
     if dev_type == DEV_SNARF_PRIMARY:
         # task #315: X11 PRIMARY selection write (REPLACE, same as clipboard).
-        return devsnarf_primary_write(buf, count)
+        return devsnarf_primary_write(off, buf, count)
     if dev_type == DEV_KEYMAP:
         # task #178: writing a layout name ("us"/"de"/"fr") switches the
         # live keyboard layout.

@@ -59,20 +59,47 @@ def devsnarf_read(off: uint64, buf: Ptr[uint8],
     return cast[int64](take)
 
 
-def devsnarf_write(buf: Ptr[uint8], count: uint64) -> int64:
-    # Replace the clipboard with the caller's bytes. A 0-byte write
-    # CLEARS the clipboard — symmetric with Plan 9 semantics (writing
-    # nothing means "the clipboard is now empty"). Writes longer than
-    # SNARF_MAX are truncated at the cap; we still report `count`
-    # consumed so userland's write loop terminates.
+def _sn_store(dst: Ptr[uint8], cur_len: uint64, off: uint64,
+              buf: Ptr[uint8], count: uint64) -> uint64:
+    # Shared body for both buffers. OFFSET-ADDRESSED, which is what makes a
+    # CHUNKED writer work:
+    #
+    #   off == 0  -> REPLACE (Plan 9 snarf semantics; a 0-byte write CLEARS)
+    #   off  > 0  -> write at that offset and extend the length
+    #
+    # Ignoring `off` was a real, user-visible bug: `echo text > /dev/snarf`
+    # goes through the shell's echo, which emits the payload and its trailing
+    # newline as SEPARATE write() calls at offsets 0 and len. With a
+    # replace-always device the second write clobbered the first, so the
+    # clipboard ended up holding exactly "\n" — one byte — and a paste
+    # produced nothing visible. Any writer that chunks (a large selection
+    # split across write() calls, a pipe copy) hit the same truncation.
+    # Returns the new buffer length.
+    start: uint64 = off
+    if start > SNARF_MAX:
+        return cur_len                       # write starts past the cap
     take: uint64 = count
-    if take > SNARF_MAX:
-        take = SNARF_MAX
+    if start + take > SNARF_MAX:
+        take = SNARF_MAX - start             # truncate at the cap
     i: uint64 = 0
     while i < take:
-        snarf_buf[i] = buf[i]
+        dst[start + i] = buf[i]
         i = i + 1
-    snarf_len = take
+    if start == 0:
+        return take                          # REPLACE
+    if start + take > cur_len:
+        return start + take                  # extended
+    return cur_len
+
+
+def devsnarf_write(off: uint64, buf: Ptr[uint8], count: uint64) -> int64:
+    # Write the clipboard. A write at offset 0 REPLACES the buffer (so a
+    # 0-byte write CLEARS it, matching Plan 9); a write at a non-zero offset
+    # lands there and extends the length, so a chunked writer accumulates
+    # instead of each chunk clobbering the last. Writes past SNARF_MAX are
+    # truncated at the cap; we still report `count` consumed so userland's
+    # write loop terminates.
+    snarf_len = _sn_store(&snarf_buf[0], snarf_len, off, buf, count)
     return cast[int64](count)
 
 
@@ -94,13 +121,7 @@ def devsnarf_primary_read(off: uint64, buf: Ptr[uint8],
     return cast[int64](take)
 
 
-def devsnarf_primary_write(buf: Ptr[uint8], count: uint64) -> int64:
-    take: uint64 = count
-    if take > SNARF_MAX:
-        take = SNARF_MAX
-    i: uint64 = 0
-    while i < take:
-        primary_buf[i] = buf[i]
-        i = i + 1
-    primary_len = take
+def devsnarf_primary_write(off: uint64, buf: Ptr[uint8],
+                           count: uint64) -> int64:
+    primary_len = _sn_store(&primary_buf[0], primary_len, off, buf, count)
     return cast[int64](count)

@@ -204,12 +204,16 @@ try:
     # hamsh echoes every typed character back, so the raw capture is full of
     # cursor-motion escapes; take only what lies between the two markers on
     # their OWN output lines and strip the escape noise.
-    pm = re.search(r"PRIMBEG(.*?)PRIMEND", prim, re.S)
-    prim_body = pm.group(1) if pm else ""
+    # hamsh echoes the command back one character at a time, so the capture
+    # contains the MARKERS THEMSELVES many times over inside the echo. Take the
+    # LAST match — the one bracketing the real output.
+    pms = list(re.finditer(r"PRIMBEG(.*?)PRIMEND", prim, re.S))
+    prim_body = pms[-1].group(1) if pms else ""
     prim_body = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", prim_body)
     prim_body = prim_body.replace("\r", "")
     prim_body = "\n".join(l for l in prim_body.split("\n")
-                          if "hamsh$" not in l and "echo PRIM" not in l)
+                          if "hamsh$" not in l and "echo PRIM" not in l
+                          and "[runtime:" not in l and "task: pid" not in l)
     prim_body = prim_body.strip()
     if not prim_body:
         fails.append("a left drag over terminal text left /dev/snarf.primary "
@@ -217,6 +221,21 @@ try:
                      % ("yes" if "SEL copied PRIMARY" in sel_tail else "no"))
     else:
         print("[mid-paste] PASS drag published PRIMARY: %r" % prim_body[:60])
+
+    # ---- chunked write: `echo text > /dev/snarf` must keep the TEXT -----
+    # The shell writes the payload and its trailing newline as SEPARATE
+    # write() calls; a replace-always clipboard keeps only the last chunk and
+    # the buffer ends up holding one "\n" byte.
+    send("echo CHUNKMARK > /dev/snarf"); time.sleep(3)
+    ck = cap("echo CKBEG; cat /dev/snarf; echo; echo CKEND", 7)
+    cks = list(re.finditer(r"CKBEG(.*?)CKEND", ck, re.S))
+    ck_body = cks[-1].group(1) if cks else ""
+    if "CHUNKMARK" not in ck_body:
+        fails.append("`echo CHUNKMARK > /dev/snarf` did not store the text "
+                     "(a chunked write clobbers earlier chunks): %r"
+                     % ck_body[:80])
+    else:
+        print("[mid-paste] PASS a chunked shell write lands whole")
 
     # ---- PASTE half: plant an executable line, middle-click ------------
     send("echo -n '' > /dev/snarf"); time.sleep(3)

@@ -109,7 +109,7 @@ def _check_boxtext(h: int32, want: Ptr[uint8], name: Ptr[uint8]):
 # --- faithful PRIMARY buffer routing (mirrors namec exact-match dispatch) ----
 # Only /dev/snarf.primary is needed here; write REPLACES, read is offset-to-EOF.
 def _prim_put(buf: Ptr[uint8], n: uint64):
-    devsnarf_primary_write(buf, n)
+    devsnarf_primary_write(0, buf, n)
 
 
 def _prim_get(out: Ptr[uint8], cap: uint64) -> uint64:

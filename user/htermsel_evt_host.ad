@@ -206,7 +206,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # --- 2. press / drag / release publishes PRIMARY --------------------
     htsel_reset()
     prev_btn = 0
-    devsnarf_primary_write(cast[Ptr[uint8]](""), 0)
+    devsnarf_primary_write(0, cast[Ptr[uint8]](""), 0)
     a0: int32 = _feed(_cx(0), _cy(1), 0, 1)     # move in, no button
     a1: int32 = _feed(_cx(0), _cy(1), 1, 1)     # PRESS  -> anchor (1,0)
     _check(cast[int32](a1 == 0), cast[Ptr[uint8]]("press_publishes_nothing"))
@@ -229,7 +229,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _check(cast[int32](sn > 0), cast[Ptr[uint8]]("extract_is_not_empty"))
     _check(cast[int32](htsel_caret_col() == 30),
            cast[Ptr[uint8]]("release_extends_the_span_to_the_release_cell"))
-    devsnarf_primary_write(&selbuf[0], sn)
+    devsnarf_primary_write(0, &selbuf[0], sn)
     rn: uint64 = 0
     while rn < 256:
         r: int64 = devsnarf_primary_read(rn, &outbuf[rn], 256 - rn)
@@ -313,6 +313,33 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             cc = cc + 1
         rr = rr + 1
     _check(rt, cast[Ptr[uint8]]("cell_centre_pixels_map_back_to_their_cell"))
+
+    # --- 8. a CHUNKED write accumulates (offset-addressed) -------------
+    # `echo text > /dev/snarf.primary` reaches the device as TWO writes — the
+    # payload at offset 0 and the trailing newline at offset len. A device that
+    # replaced on every write kept only the newline, so the clipboard held one
+    # byte and the paste produced nothing. Drive that exact two-chunk shape.
+    devsnarf_primary_write(0, cast[Ptr[uint8]]("echo MARK"), 9)
+    devsnarf_primary_write(9, cast[Ptr[uint8]]("\n"), 1)
+    rn = 0
+    while rn < 256:
+        r3: int64 = devsnarf_primary_read(rn, &outbuf[rn], 256 - rn)
+        if r3 <= 0:
+            break
+        rn = rn + cast[uint64](r3)
+    _check_text(&outbuf[0], rn, cast[Ptr[uint8]]("echo MARK\n"),
+                cast[Ptr[uint8]]("chunked_write_accumulates"))
+    # …and a fresh write at offset 0 still REPLACES (it must not append to the
+    # longer previous content).
+    devsnarf_primary_write(0, cast[Ptr[uint8]]("hi"), 2)
+    rn = 0
+    while rn < 256:
+        r4: int64 = devsnarf_primary_read(rn, &outbuf[rn], 256 - rn)
+        if r4 <= 0:
+            break
+        rn = rn + cast[uint64](r4)
+    _check_text(&outbuf[0], rn, cast[Ptr[uint8]]("hi"),
+                cast[Ptr[uint8]]("offset_zero_write_still_replaces"))
 
     _puts(cast[Ptr[uint8]]("[htsel-evt] done\n"))
     if _fails != 0:
