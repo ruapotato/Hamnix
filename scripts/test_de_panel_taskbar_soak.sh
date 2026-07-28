@@ -181,7 +181,11 @@ mapped_count() { grep -ac "\[devwsys\] window .* mapped" "$LOG"; }
 # INDEPENDENT INSTRUMENT. The beacon is the panel talking about itself; this
 # reads the same per-task fd table from OUTSIDE the panel, through the shell,
 # so the two cannot agree by sharing a bug.
-printf 'echo MARK_PANELPID_BEGIN; pgrep hampanelscene; echo MARK_PANELPID_END\n' >&3
+# NOTE: task names are packed into 8 bytes (devproc _emit_status /
+# task_name0_at), so the panel appears as "hampanel", NOT "hampanelscene" —
+# `pgrep hampanelscene` matches nothing and silently costs you the whole
+# cross-check.
+printf 'echo MARK_PANELPID_BEGIN; pgrep hampanel; echo MARK_PANELPID_END\n' >&3
 sleep 3
 wait_for MARK_PANELPID_END 20 || true
 PANEL_PID=$(sed -n '/MARK_PANELPID_BEGIN/,/MARK_PANELPID_END/p' "$LOG" \
@@ -189,8 +193,10 @@ PANEL_PID=$(sed -n '/MARK_PANELPID_BEGIN/,/MARK_PANELPID_END/p' "$LOG" \
 echo "$TAG panel pid: ${PANEL_PID:-<not found>}"
 dump_panel_fds() {
     [ -n "${PANEL_PID:-}" ] || return 0
-    printf 'echo MARK_PFD_%s_BEGIN; cat /proc/%s/fd; echo MARK_PFD_%s_END\n' \
-        "$1" "$PANEL_PID" "$1" >&3
+    # fd table AND task state. The state letter is what separates "the panel
+    # is spinning" from "the panel is asleep and nothing will ever wake it".
+    printf 'echo MARK_PFD_%s_BEGIN; cat /proc/%s/fd; cat /proc/%s/status; cat /proc/%s/stat; echo MARK_PFD_%s_END\n' \
+        "$1" "$PANEL_PID" "$PANEL_PID" "$PANEL_PID" "$1" >&3
     sleep 3
 }
 dump_panel_fds start
@@ -227,7 +233,7 @@ while [ "$SECONDS" -lt "$SOAK_END" ]; do
         sleep 2
     done
     health_sample                       # one time-series point per cycle
-    if [ $(( cyc % 10 )) -eq 0 ]; then
+    if [ $(( cyc % 5 )) -eq 0 ]; then
         m="MARK_ALIVE_$cyc"
         printf 'echo %s\n' "$m" >&3
         if ! wait_for "$m" 25; then
@@ -379,6 +385,10 @@ for tagn in $(grep -aoE 'MARK_PFD_[A-Za-z0-9]+_BEGIN' "$LOG" | sed 's/MARK_PFD_/
           | tr -d '\r' | grep -acE '^[0-9]+[[:space:]]')
     echo "$TAG   $tagn: $nfd descriptors"
 done
+
+echo "$TAG --- panel task state at each checkpoint ---"
+sed -n '/MARK_PFD_/,/MARK_PFD_.*_END/p' "$LOG" | tr -d '\r' \
+    | grep -aE '^[0-9]+ [A-Za-z]+ [A-Za-z] ' | tail -20 | sed "s/^/$TAG   /"
 
 echo "$TAG artifacts: $OUT_DIR"
 if [ "$fail" -ne 0 ]; then
