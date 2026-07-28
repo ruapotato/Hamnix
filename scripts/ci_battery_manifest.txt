@@ -3902,6 +3902,26 @@ bash scripts/test_jsengine_unwind_host.sh
 # trim of the full Unicode WhiteSpace+LineTerminator set but NOT U+200B; and
 # parseFloat/parseInt keeping their prefix behavior. REGISTERED 2026-07-28.
 bash scripts/test_jsengine_tonumber_host.sh
+# scripts/test_jsengine_toprimitive_host.sh: QEMU-free gate for ToPrimitive
+# (ES2023 7.1.1) and everything that routes through it. ToPrimitive was ABSENT
+# for objects: to_string_val handed every object to display_val — the CONSOLE
+# INSPECT renderer — and to_number returned NaN outright, so `""+[3]` was "[3]",
+# `[1,2].toString()` was "[object Array]", `Number([5])` was NaN, `[5]==5` was
+# false, `String({})` was "{  }", and valueOf/toString/@@toPrimitive overrides
+# were ignored. String concatenation with an array or object is everywhere in
+# ordinary JS. 82 assertions, each one node v20's own stdout under TZ=UTC (node
+# prints Date.prototype.toString in LOCAL time; this engine has no timezone
+# database and is always UTC, and under TZ=UTC the two agree exactly): the
+# ToPrimitive structure itself (@@toPrimitive beating valueOf/toString, the
+# hint-ordered pair, only CALLABLE properties called, both-return-objects being
+# a TypeError); ToString/ToNumber/+/==/relational/templates/computed keys going
+# through it; Array.prototype.toString delegating to join (user override
+# included) and join using ToString not the inspect renderer; Object.prototype
+# .toString tags incl. @@toStringTag and wrappers; Date defaulting to the STRING
+# hint (date+1 concatenates, date-1 is numeric); cyclic arrays rendering "" not
+# recursing; a self-referential valueOf raising RangeError not segfaulting; and
+# Number/String/Boolean wrapper [[PrimitiveValue]]. REGISTERED 2026-07-28.
+bash scripts/test_jsengine_toprimitive_host.sh
 # scripts/test_jsengine_throwguard_host.sh: QEMU-free gate that the FIRST
 # engine-raised exception WINS. The evaluator has one global completion state,
 # and throw_error() opens with `if ctl == CTL_THROW ...: return`. An audit

@@ -79,8 +79,16 @@ assert comp_ovf       'console.log(new Date(2020,13,1).toISOString())'         '
 # ---- copy constructor ----
 assert copy_ctor      'var a=new Date(1234567);console.log(new Date(a).getTime())' '1234567'
 
-# ---- toString + implicit string coercion (any reasonable UTC form) ----
-assert tostring       'console.log(new Date(0).toString())'                    '1970-01-01 00:00:00 UTC'
+# ---- toString: ES 21.4.4.41 ToDateString, verbatim ----
+# This used to pin "1970-01-01 00:00:00 UTC" — a spelling NO engine produces.
+# It only survived because nothing depended on it: `String(date)` went through
+# the console inspect renderer (ISO), not through Date.prototype.toString. Once
+# ToPrimitive routed string coercion through toString the invented format became
+# user-visible, so it now matches node v20 under TZ=UTC character for character.
+# (This engine has no timezone database; its local time IS UTC, hence +0000.)
+assert tostring       'console.log(new Date(0).toString())'                    'Thu Jan 01 1970 00:00:00 GMT+0000 (Coordinated Universal Time)'
+assert tostring_coerce 'console.log(""+new Date(0) === new Date(0).toString())' 'true'
+assert tostring_invalid 'console.log(new Date(NaN).toString())'                'Invalid Date'
 assert display        'console.log(new Date(1609459200000))'                   '2021-01-01T00:00:00.000Z'
 
 # ---- Date.now(): a plausible, strictly increasing number (NOT wall-clock) ----
