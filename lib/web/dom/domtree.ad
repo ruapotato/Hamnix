@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _bytes_eq, _find_close, _hx_lower, _rawtext_skip, _scan_start_tag, _sel_isname, _sel_match_at
+from lib.htmlengine import _alnum_at, _bytes_eq, _find_close, _hx_lower, _rawtext_skip, _scan_start_tag, _sel_isname, _sel_match_at, _hx_tag_end_p
 
 # ====================================================================
 # DOM tree index build + true selector combinators (task #324).
@@ -24,8 +24,7 @@ def _dom_build_tree_index():
            src_ptr[i + 1] != 63:
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < src_len and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, src_len, je)
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1
@@ -722,8 +721,7 @@ def _dom_find_selector_scoped(sel: Ptr[uint8], seln: int32, lo: uint64, \
            src_ptr[i + 1] != 63:
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < src_len and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, src_len, je)
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1
@@ -762,8 +760,7 @@ def _dom_collect_selector(sel: Ptr[uint8], seln: int32, lo: uint64, \
            src_ptr[i + 1] != 63:
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < src_len and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, src_len, je)
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1

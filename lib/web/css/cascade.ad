@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _bg_pop, _bg_push, _color_pop, _color_push, _content_right, _css_ws, _hx_lower, _left_margin, _recompute_style
+from lib.htmlengine import _bg_pop, _bg_push, _color_pop, _color_push, _content_right, _css_ws, _hx_lower, _left_margin, _recompute_style, _hx_tag_end_p
 # Live block-box stack (owned by lib/web/layout/box.ad): the open box's content
 # left/right edges. A horizontal CSS percentage resolves against THIS, not the
 # page column — see _pct_cb_w.
@@ -6826,8 +6826,7 @@ def he_css_scan_links():
             k: uint64 = i + 1
             if _tagname_is(k, cast[Ptr[uint8]]("link")) != 0:
                 te: uint64 = k
-                while te < src_len and src_ptr[te] != 62:
-                    te = te + 1
+                te = _hx_tag_end_p(src_ptr, src_len, te)
                 is_ss: int32 = 0
                 if _hx_find_attr(k, te, cast[Ptr[uint8]]("rel")) != 0:
                     is_ss = _rel_is_stylesheet(g_attr_start, g_attr_end)
@@ -6863,8 +6862,7 @@ def _collect_cvars():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60 and _tagname_is(i + 1, cast[Ptr[uint8]]("style")) != 0:
-            while i < src_len and src_ptr[i] != 62:
-                i = i + 1
+            i = _hx_tag_end_p(src_ptr, src_len, i)
             if i < src_len:
                 i = i + 1
             body: uint64 = i
@@ -6909,8 +6907,7 @@ def _collect_css():
             k: uint64 = i + 1
             if _tagname_is(k, cast[Ptr[uint8]]("style")) != 0:
                 # advance to end of the opening tag
-                while i < src_len and src_ptr[i] != 62:
-                    i = i + 1
+                i = _hx_tag_end_p(src_ptr, src_len, i)
                 tag_end: uint64 = i                       # position of '>'
                 if i < src_len:
                     i = i + 1

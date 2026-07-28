@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _close_seg, _collect_css, _content_right, _float_flush, _gc_collect_css, _handle_tag, _hx_name_eq, _hx_tag_end, _left_margin, _newline, _page_has_main, _page_has_maxwidth, _page_uses_layout, _pending_indjump, _pending_marker, _word_flush, _word_push
+from lib.htmlengine import _close_seg, _collect_css, _content_right, _float_flush, _gc_collect_css, _handle_tag, _hx_name_eq, _hx_tag_end, _left_margin, _newline, _page_has_main, _page_has_maxwidth, _page_uses_layout, _pending_indjump, _pending_marker, _word_flush, _word_push, _hx_tag_end_p
 
 # ====================================================================
 # LAYOUT — parse src_ptr/src_len into segments.
@@ -583,16 +583,14 @@ def _layout():
                     # trailing '/' before '>'.
                     if _hx_name_eq(i + 1, skip_nlen, &skip_name[0]) != 0:
                         te2: uint64 = i + 1
-                        while te2 < src_len and src_ptr[te2] != 62:
-                            te2 = te2 + 1
+                        te2 = _hx_tag_end_p(src_ptr, src_len, te2)
                         selfclose: int32 = 0
                         if te2 > i + 1 and src_ptr[te2 - 1] == 47:   # '/>'
                             selfclose = 1
                         if selfclose == 0:
                             skip_depth = skip_depth + 1
                 # advance past '>'
-                while i < src_len and src_ptr[i] != 62:
-                    i = i + 1
+                i = _hx_tag_end_p(src_ptr, src_len, i)
                 if i < src_len:
                     i = i + 1
                 continue

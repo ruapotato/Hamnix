@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _attr_int, _attr_width_val, _bg_pop, _bg_push, _blk_indent_pop, _blk_indent_push, _block_box_close, _block_box_open, _bump_row, _emit_vgap, _capture_href, _cascade_match_current, _cell_close, _close_seg, _close_style, _collect_css, _color_pop, _color_push, _compute_cols, _content_right, _deco_pop, _deco_push, _el_pop, _el_pop_lit, _el_push, _enter_skip, _flex_container_close, _flex_container_open, _flex_item_close, _flex_item_col, _float_box_close, _float_box_open, _fontpx_pop, _fontpx_push, _gencontent_close, _gencontent_open, _generic_block_wanted, g_li_pending, g_cell_pending, _grid_find_colmajor, _grid_find_dense, _grid_occupy_rect, _grid_rect_free, _grid_row_h_rows, _grid_row_top_rows, _grid_wrap_row, _handle_img, _handle_inline_svg, _img_cascade, _hx_find_attr, _hx_lower, _hx_name_eq, _inlb_close, _inlb_open, _inlb_tag, _is_display_none, _is_visually_hidden, _left_margin, _li_close_lvl, _mark_button_seg, _mark_button_seg_geo, _mark_button_seg_full, _mark_check_seg, _mark_field_seg, _mark_field_seg_geo, _mark_select_seg, _measure_table, _newline, _open_style, _own_color, _para_break, _parse_inline_wa, _pending_indjump, _pending_marker, _pending_marker_num, _pending_marker_shape, _pending_marker_x, _recompute_indent, _recompute_style, _seg_putc, _seg_putc_dec, _soft_newline, _style_break, _table_natural_width, _table_pop, _table_push, _table_region_end, _tag_align_attr, _tbl_apply_cellpad, _tagname_is, _word_flush, _word_push
+from lib.htmlengine import _alnum_at, _attr_int, _attr_width_val, _bg_pop, _bg_push, _blk_indent_pop, _blk_indent_push, _block_box_close, _block_box_open, _bump_row, _emit_vgap, _capture_href, _cascade_match_current, _cell_close, _close_seg, _close_style, _collect_css, _color_pop, _color_push, _compute_cols, _content_right, _deco_pop, _deco_push, _el_pop, _el_pop_lit, _el_push, _enter_skip, _flex_container_close, _flex_container_open, _flex_item_close, _flex_item_col, _float_box_close, _float_box_open, _fontpx_pop, _fontpx_push, _gencontent_close, _gencontent_open, _generic_block_wanted, g_li_pending, g_cell_pending, _grid_find_colmajor, _grid_find_dense, _grid_occupy_rect, _grid_rect_free, _grid_row_h_rows, _grid_row_top_rows, _grid_wrap_row, _handle_img, _handle_inline_svg, _img_cascade, _hx_find_attr, _hx_lower, _hx_name_eq, _inlb_close, _inlb_open, _inlb_tag, _is_display_none, _is_visually_hidden, _left_margin, _li_close_lvl, _mark_button_seg, _mark_button_seg_geo, _mark_button_seg_full, _mark_check_seg, _mark_field_seg, _mark_field_seg_geo, _mark_select_seg, _measure_table, _newline, _open_style, _own_color, _para_break, _parse_inline_wa, _pending_indjump, _pending_marker, _pending_marker_num, _pending_marker_shape, _pending_marker_x, _recompute_indent, _recompute_style, _seg_putc, _seg_putc_dec, _soft_newline, _style_break, _table_natural_width, _table_pop, _table_push, _table_region_end, _tag_align_attr, _tbl_apply_cellpad, _tagname_is, _word_flush, _word_push, _hx_tag_end_p
 
 # ====================================================================
 # FORM CONTROLS — monospace-grid rendering of <input>/<textarea>/<button>/
@@ -574,8 +574,7 @@ def _select_text(body0: uint64) -> int32:
                 break
             if _tagname_is(i + 1, cast[Ptr[uint8]]("option")) != 0:
                 je: uint64 = i + 1
-                while je < src_len and src_ptr[je] != 62:
-                    je = je + 1
+                je = _hx_tag_end_p(src_ptr, src_len, je)
                 ne: uint64 = i + 1
                 while ne < je and _alnum_at(ne) != 0:
                     ne = ne + 1
@@ -623,8 +622,7 @@ def _select_index(body0: uint64) -> int32:
             if _tagname_is(i + 1, cast[Ptr[uint8]]("option")) != 0:
                 idx = idx + 1
                 je: uint64 = i + 1
-                while je < src_len and src_ptr[je] != 62:
-                    je = je + 1
+                je = _hx_tag_end_p(src_ptr, src_len, je)
                 if _has_word(i + 1, je, cast[Ptr[uint8]]("selected")) != 0 and \
                    sel < 0:
                     sel = idx
@@ -649,8 +647,7 @@ def _select_optext_at(body0: uint64, want: int32) -> int32:
             if _tagname_is(i + 1, cast[Ptr[uint8]]("option")) != 0:
                 idx = idx + 1
                 je: uint64 = i + 1
-                while je < src_len and src_ptr[je] != 62:
-                    je = je + 1
+                je = _hx_tag_end_p(src_ptr, src_len, je)
                 cs: uint64 = je + 1
                 ce: uint64 = cs
                 while ce < src_len and src_ptr[ce] != 60:
@@ -833,8 +830,7 @@ def _skip_raw_child(open_at: uint64, limit: uint64) -> uint64:
             if hit != 0:
                 break
         q = q + 1
-    while q < limit and src_ptr[q] != 62:           # past the close tag's '>'
-        q = q + 1
+    q = _hx_tag_end_p(src_ptr, limit, q)           # past the close tag's '>'
     if q < limit:
         q = q + 1
     return q

@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _close_style, _flow_right, _hx_lower, _style_break, _word_flush, g_cell_pending
+from lib.htmlengine import _close_style, _flow_right, _hx_lower, _style_break, _word_flush, g_cell_pending, _hx_tag_end_p
 
 # ====================================================================
 # TABLE two-pass column layout.
@@ -180,8 +180,7 @@ def _table_region_end(body0: uint64) -> uint64:
                         return i
                 else:
                     depth = depth + 1
-            while i < src_len and src_ptr[i] != 62:  # to '>'
-                i = i + 1
+            i = _hx_tag_end_p(src_ptr, src_len, i)  # to '>'
             if i < src_len:
                 i = i + 1
             continue
@@ -210,8 +209,7 @@ def _table_char_width(rgn_start: uint64, rgn_end: uint64) -> int32:
                 close = 1
                 k = k + 1
             tend: uint64 = k
-            while tend < rgn_end and src_ptr[tend] != 62:
-                tend = tend + 1
+            tend = _hx_tag_end_p(src_ptr, rgn_end, tend)
             if close == 0 and _tagname_is(k, cast[Ptr[uint8]]("table")) != 0:
                 sub0: uint64 = tend
                 if sub0 < rgn_end:
@@ -314,8 +312,7 @@ def _measure_table(rgn_start: uint64, rgn_end: uint64):
             is_tr: int32 = _tagname_is(k, cast[Ptr[uint8]]("tr"))
             # end of this tag's body ('>')
             tend: uint64 = k
-            while tend < rgn_end and src_ptr[tend] != 62:
-                tend = tend + 1
+            tend = _hx_tag_end_p(src_ptr, rgn_end, tend)
             if close == 0 and _tagname_is(k, cast[Ptr[uint8]]("table")) != 0:
                 # nested table: skip its region, but grow the enclosing cell so
                 # the outer column is wide enough to contain the inner grid.

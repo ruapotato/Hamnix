@@ -4,7 +4,7 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.web.dom.forms import _has_word
-from lib.htmlengine import he_media_match
+from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
 from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
@@ -310,8 +310,7 @@ def _canvas_get_for_el(el: int32) -> int32:
     if canv_n >= CANV_MAX:
         return -1
     te: uint64 = cast[uint64](dom_ns[el])
-    while te < src_len and src_ptr[te] != 62:
-        te = te + 1
+    te = _hx_tag_end_p(src_ptr, src_len, te)
     aw: int32 = _attr_int(cast[uint64](dom_ns[el]), te, \
                           cast[Ptr[uint8]]("width"), 300)
     ah: int32 = _attr_int(cast[uint64](dom_ns[el]), te, \
@@ -3536,8 +3535,7 @@ def _js_host_dispatch(id: int32) -> int32:
                     dish = canv_h[disreg]
             elif disel >= 0 and _dom_tag_is(disel, cast[Ptr[uint8]]("img")) != 0:
                 dite: uint64 = cast[uint64](dom_ns[disel])
-                while dite < src_len and src_ptr[dite] != 62:
-                    dite = dite + 1
+                dite = _hx_tag_end_p(src_ptr, src_len, dite)
                 if _hx_find_attr(cast[uint64](dom_ns[disel]), dite,
                                  cast[Ptr[uint8]]("src")) != 0 and \
                    g_attr_end > g_attr_start:
@@ -3781,8 +3779,7 @@ def _scan_title() -> int32:
         if src_ptr[i] == 60 and i + 1 < src_len and \
            _tagname_is(i + 1, cast[Ptr[uint8]]("title")) != 0:
             j: uint64 = i + 1
-            while j < src_len and src_ptr[j] != 62:
-                j = j + 1
+            j = _hx_tag_end_p(src_ptr, src_len, j)
             if j < src_len:
                 j = j + 1
             n: int32 = 0
@@ -4046,8 +4043,7 @@ def _build_stylesheets(doc: int32):
            _tagname_is(i + 1, cast[Ptr[uint8]]("style")) != 0:
             anchor: uint64 = i
             j: uint64 = i
-            while j < src_len and src_ptr[j] != 62:       # end of opening tag
-                j = j + 1
+            j = _hx_tag_end_p(src_ptr, src_len, j)       # end of opening tag
             if j < src_len:
                 j = j + 1
             body: uint64 = j
@@ -4276,8 +4272,15 @@ def _build_forms(doc: int32):
 def _tag_has_inline_handler(lt: uint64) -> int32:
     q: uint64 = lt + 1
     prev_ws: int32 = 0
-    while q < src_len and src_ptr[q] != 62:                  # up to '>'
+    qe: uint64 = _hx_tag_end_p(src_ptr, src_len, lt + 1)      # quote-aware '>'
+    while q < qe:
         c: uint8 = src_ptr[q]
+        # A quoted attribute VALUE is not attribute-name text: skip it whole, so
+        # `title="tap onx=1"` cannot be mistaken for an on<evt>= handler.
+        if c == 61:                                          # '='
+            q = _hx_attr_val_skip(q)
+            prev_ws = 0
+            continue
         if prev_ws != 0 and (c == 111 or c == 79) and \
            q + 2 < src_len and (src_ptr[q + 1] == 110 or src_ptr[q + 1] == 78):
             r: uint64 = q + 2
@@ -4611,8 +4614,15 @@ def _page_has_js() -> int32:
         # scan this tag's attributes for an on<letters>= handler name
         q: uint64 = p + 1
         prev_ws: int32 = 0
-        while q < src_len and src_ptr[q] != 62:              # up to '>'
+        qe: uint64 = _hx_tag_end_p(src_ptr, src_len, p + 1)   # quote-aware '>'
+        while q < qe:
             c: uint8 = src_ptr[q]
+            # quoted attribute VALUE is not name text — skip it whole (see
+            # _tag_has_inline_handler).
+            if c == 61:                                      # '='
+                q = _hx_attr_val_skip(q)
+                prev_ws = 0
+                continue
             if prev_ws != 0 and (c == 111 or c == 79) and \
                q + 2 < src_len and (src_ptr[q + 1] == 110 or src_ptr[q + 1] == 78):
                 # "on" at a name boundary: require >=1 more letter then '='
@@ -4837,8 +4847,7 @@ def _run_scripts() -> int32:
            _tagname_is(i + 1, cast[Ptr[uint8]]("script")) != 0:
             # body starts after this start tag's '>'
             j: uint64 = i + 1
-            while j < src_len and src_ptr[j] != 62:
-                j = j + 1
+            j = _hx_tag_end_p(src_ptr, src_len, j)
             tagclose: uint64 = j                 # position of the start tag's '>'
             if j < src_len:
                 j = j + 1
@@ -4867,8 +4876,7 @@ def _run_scripts() -> int32:
                     js_had_error = 1
             # continue past </script>
             i = be
-            while i < src_len and src_ptr[i] != 62:
-                i = i + 1
+            i = _hx_tag_end_p(src_ptr, src_len, i)
             if i < src_len:
                 i = i + 1
             continue
@@ -5309,8 +5317,7 @@ def _rw_select_options(cs: uint64, ce: uint64, voff: int32, vlen: int32):
     while i < ce:
         if src_ptr[i] == 60 and _tagname_is(i + 1, cast[Ptr[uint8]]("option")) != 0:
             je: uint64 = i + 1
-            while je < ce and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, ce, je)
             ne: uint64 = i + 1
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1
@@ -5366,8 +5373,7 @@ def _rewrite_range(lo: uint64, hi: uint64):
                     _rw_cstr(cast[Ptr[uint8]]("\">"))
                 ts: uint64 = i + 1
                 je: uint64 = ts
-                while je < src_len and src_ptr[je] != 62:
-                    je = je + 1
+                je = _hx_tag_end_p(src_ptr, src_len, je)
                 ne: uint64 = ts
                 while ne < je and _alnum_at(ne) != 0:
                     ne = ne + 1
@@ -6258,8 +6264,7 @@ def _dom_find_by_name(idp: Ptr[uint8], idn: int32) -> int32:
            src_ptr[i + 1] != 63:
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < src_len and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, src_len, je)
             # only match form controls (input/textarea/select/button/form) so a
             # `<meta name=…>` or `<a name=…>` can't shadow the field.
             if _tagname_is(ts, cast[Ptr[uint8]]("input")) != 0 or \

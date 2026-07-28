@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _handle_tag, _hx_find_attr, _hx_lower, _hx_name_eq
+from lib.htmlengine import _alnum_at, _handle_tag, _hx_find_attr, _hx_lower, _hx_name_eq, _hx_tag_end_p
 from lib.htmlengine import _cssom_reset
 
 # ====================================================================
@@ -842,8 +842,7 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
                     if depth == 0:
                         g_close_lt = i
                         j: uint64 = i
-                        while j < src_len and src_ptr[j] != 62:
-                            j = j + 1
+                        j = _hx_tag_end_p(src_ptr, src_len, j)
                         if j < src_len:
                             j = j + 1
                         g_close_end = j
@@ -861,8 +860,7 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
             elif src_ptr[i + 1] != 33 and src_ptr[i + 1] != 63:
                 ts: uint64 = i + 1
                 je: uint64 = ts
-                while je < src_len and src_ptr[je] != 62:
-                    je = je + 1
+                je = _hx_tag_end_p(src_ptr, src_len, je)
                 ne: uint64 = ts
                 while ne < je and _alnum_at(ne) != 0:
                     ne = ne + 1
@@ -912,8 +910,7 @@ def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
         if c == 60:                                       # '<' — skip a tag
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < ce and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, ce, je)
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1
@@ -1008,8 +1005,7 @@ def _extract_html(cs: uint64, ce: uint64, oo: int32) -> int32:
 def _scan_start_tag(i: uint64) -> int32:
     ts: uint64 = i + 1
     je: uint64 = ts
-    while je < src_len and src_ptr[je] != 62:
-        je = je + 1
+    je = _hx_tag_end_p(src_ptr, src_len, je)
     ne: uint64 = ts
     while ne < je and _alnum_at(ne) != 0:
         ne = ne + 1
@@ -1047,8 +1043,7 @@ def _rawtext_skip(ts: uint64, ne: uint64, je: uint64) -> uint64:
         if src_ptr[i] == 60 and i + 1 < src_len and src_ptr[i + 1] == 47:
             if _srcname_eq(i + 2, ts, nl) != 0:           # matched </script>|</style>
                 j: uint64 = i + 2
-                while j < src_len and src_ptr[j] != 62:
-                    j = j + 1
+                j = _hx_tag_end_p(src_ptr, src_len, j)
                 if j < src_len:
                     j = j + 1
                 return j
@@ -1066,8 +1061,7 @@ def _dom_find_by_id(idp: Ptr[uint8], idn: int32) -> int32:
            src_ptr[i + 1] != 63:
             ts: uint64 = i + 1
             je: uint64 = ts
-            while je < src_len and src_ptr[je] != 62:
-                je = je + 1
+            je = _hx_tag_end_p(src_ptr, src_len, je)
             ne: uint64 = ts
             while ne < je and _alnum_at(ne) != 0:
                 ne = ne + 1

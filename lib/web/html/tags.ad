@@ -23,27 +23,48 @@ from lib.htmlengine import _hx_lower
 # e.g. <a href=x'y>, still ends at the first bare '>'.
 def _hx_tag_end_p(sp: Ptr[uint8], sl: uint64, frm: uint64) -> uint64:
     j: uint64 = frm
-    quote: uint8 = 0
     while j < sl:
         c: uint8 = sp[j]
-        if quote != 0:                                   # inside a quoted value
-            if c == quote:
-                quote = 0
-            j = j + 1
-            continue
         if c == 62:                                      # '>' — tag boundary
             return j
         if c == 61:                                      # '=' — a value follows
-            j = j + 1
-            while j < sl and (sp[j] == 32 or sp[j] == 9 or sp[j] == 10 \
-                              or sp[j] == 13):
-                j = j + 1
-            if j < sl and (sp[j] == 34 or sp[j] == 39):  # '"' or '\''
-                quote = sp[j]                            # enter quoted value
-                j = j + 1
+            j = _hx_attr_val_skip_p(sp, sl, j)
             continue
         j = j + 1
     return sl
+
+
+# Given `eq` = the index of an attribute's '=', return the index just PAST that
+# attribute's value. This is THE single definition of "how far does a value
+# reach", shared by every tag scanner so they cannot drift apart:
+#   * a quoted value (the '=' is followed, modulo whitespace, by '"' or '\'')
+#     runs to the matching close quote — every byte in between, INCLUDING '>'
+#     and '<', is ordinary value text (HTML "attribute value (quoted)" states);
+#   * an unquoted value ends at the first whitespace or '>', so a stray quote in
+#     e.g. <a href=x'y> does NOT open a quoted run.
+# An unterminated quoted value swallows the rest of the buffer, matching the
+# tokenizer's EOF-in-attribute-value behaviour.
+def _hx_attr_val_skip_p(sp: Ptr[uint8], sl: uint64, eq: uint64) -> uint64:
+    j: uint64 = eq + 1
+    while j < sl and (sp[j] == 32 or sp[j] == 9 or sp[j] == 10 or sp[j] == 13):
+        j = j + 1
+    if j < sl and (sp[j] == 34 or sp[j] == 39):          # '"' or '\'' — quoted
+        quote: uint8 = sp[j]
+        j = j + 1
+        while j < sl and sp[j] != quote:
+            j = j + 1
+        if j < sl:
+            j = j + 1                                    # past the close quote
+        return j
+    while j < sl and sp[j] != 32 and sp[j] != 9 and sp[j] != 10 and \
+          sp[j] != 13 and sp[j] != 62:                   # unquoted value
+        j = j + 1
+    return j
+
+
+# _hx_attr_val_skip_p over the global source buffer.
+def _hx_attr_val_skip(eq: uint64) -> uint64:
+    return _hx_attr_val_skip_p(src_ptr, src_len, eq)
 
 
 # Quote-aware tag-end scan over the global source buffer (src_ptr/src_len).

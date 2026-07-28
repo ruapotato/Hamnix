@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr, m_padl, d_padl
+from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr, m_padl, d_padl, _hx_tag_end_p
 
 # ====================================================================
 # LAYOUT MODEL — the parsed page becomes a flat list of styled SEGMENTS.
@@ -3543,8 +3543,7 @@ def _flex_count_children(after: uint64) -> int32:
         blk: int32 = _is_flexblk(ns, j)
         # advance to this tag's '>'
         k: uint64 = j
-        while k < src_len and src_ptr[k] != 62:
-            k = k + 1
+        k = _hx_tag_end_p(src_ptr, src_len, k)
         selfclose: int32 = 0
         if k > 0 and src_ptr[k - 1] == 47:
             selfclose = 1
@@ -3637,8 +3636,7 @@ def _flex_measure_children(after: uint64, nc: int32) -> int32:
                 j = j + 1
             blk: int32 = _is_flexblk(ns, j)
             k: uint64 = j
-            while k < src_len and src_ptr[k] != 62:  # '>'
-                k = k + 1
+            k = _hx_tag_end_p(src_ptr, src_len, k)  # '>'
             selfclose: int32 = 0
             if k > 0 and src_ptr[k - 1] == 47:
                 selfclose = 1
@@ -3945,8 +3943,7 @@ def _flex_grow_scan(after: uint64, nc: int32) -> int32:
             j = j + 1
         blk: int32 = _is_flexblk(ns, j)
         k: uint64 = j
-        while k < src_len and src_ptr[k] != 62:              # '>'
-            k = k + 1
+        k = _hx_tag_end_p(src_ptr, src_len, k)              # '>'
         selfclose: int32 = 0
         if k > 0 and src_ptr[k - 1] == 47:
             selfclose = 1
@@ -5319,8 +5316,7 @@ def _inlb_text_w(after: uint64, px: int32) -> int32:
             while j < src_len and _alnum_at(j) != 0:
                 j = j + 1
             k: uint64 = j
-            while k < src_len and src_ptr[k] != 62:  # '>'
-                k = k + 1
+            k = _hx_tag_end_p(src_ptr, src_len, k)  # '>'
             selfclose: int32 = 0
             if k > 0 and src_ptr[k - 1] == 47:
                 selfclose = 1
@@ -6086,8 +6082,7 @@ def _gc_collect_css():
     while i < src_len:
         if src_ptr[i] == 60 and _gc_srctag_is(i + 1, cast[Ptr[uint8]]("style")) != 0:
             j: uint64 = i + 1
-            while j < src_len and src_ptr[j] != 62:      # end of opening tag
-                j = j + 1
+            j = _hx_tag_end_p(src_ptr, src_len, j)      # end of opening tag
             if j < src_len:
                 j = j + 1
             body: uint64 = j
