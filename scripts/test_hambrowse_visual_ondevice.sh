@@ -97,7 +97,18 @@ else
         fi
     fi
 fi
-[ -f "$INSTALLER_IMG" ] || { echo "[hbvis] SKIP: image unavailable" >&2; exit 0; }
+# Reaching here means a build was ATTEMPTED above and did not produce an
+# image — i.e. the tree does not build. That is INCONCLUSIVE (exit 2), never
+# a clean skip: exiting 0 here reported PASS while the x86_64 kernel link was
+# failing outright (`undefined reference to arm64_a10_blob_base`, see
+# scripts/test_napi.sh), which is exactly the "hole shaped like coverage"
+# that this session's gate audit exists to close. A missing image by REQUEST
+# (HAMNIX_SKIP_BUILD=1, handled above) stays exit 0; a missing image after a
+# FAILED build does not.
+[ -f "$INSTALLER_IMG" ] || {
+    echo "[hbvis] RESULT: INCONCLUSIVE (installer image build FAILED — nothing to boot)" >&2
+    exit 2
+}
 
 mkdir -p "$OUT_DIR"
 echo "[hbvis] output dir: $OUT_DIR"
