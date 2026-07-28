@@ -1,0 +1,37 @@
+# scripts/ci_kvmdark_baseline.txt — the frozen KVM-DARK population.
+#
+# Gates that are REGISTERED in CI and that exit 0 without asserting anything
+# when /dev/kvm is absent. Every .github/workflows runner is ubuntu-latest,
+# which has no /dev/kvm, so on GitHub these have never asserted anything.
+#
+# Owned by scripts/test_gate_kvmdark.sh. This is a RATCHET, not an amnesty:
+#   * it may only SHRINK (PART 3 diffs it against HEAD),
+#   * a NEW dark gate FAILS the meta-gate — fix the gate, do not append here,
+#   * an entry that is no longer dark must be REMOVED (that is a FAIL too).
+#
+# To close an entry: report INCONCLUSIVE (exit 125) instead of exit 0, or fall
+# back to TCG, or annotate the guard `# kvm-dark-ok: <reason>` in the source.
+#
+# To RUN this set on a KVM host:  bash scripts/ci_run_kvm_battery.sh
+#
+# Frozen 2026-07-28 at 20 entries.
+scripts/test_de_desktop_icon_source.sh
+scripts/test_de_office_suite.sh
+scripts/test_de_resolution_edge_to_edge.sh
+scripts/test_de_rl5_deterministic.sh
+scripts/test_de_stress_soak.sh
+scripts/test_de_term_child_reap.sh
+scripts/test_de_visual_gate.sh
+scripts/test_de_wallpaper_fullscreen.sh
+scripts/test_de_wallpaper_themes.sh
+scripts/test_hambrowse_fetch_ondevice.sh
+scripts/test_hambrowse_fetch.sh
+scripts/test_hambrowse_http_features.sh
+scripts/test_hambrowse_navigation_ondevice.sh
+scripts/test_hambrowse_post_ondevice.sh
+scripts/test_hambrowse_realpage_ondevice.sh
+scripts/test_hambrowse_visual_ondevice.sh
+scripts/test_hamview_png_jpeg.sh
+scripts/test_installer_nvme_inram.sh
+scripts/test_middle_paste_ondevice.sh
+scripts/test_webkit.sh

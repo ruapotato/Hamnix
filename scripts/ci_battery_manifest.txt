@@ -38,6 +38,22 @@ bash scripts/test_gate_registration.sh
 # down the pre-existing sites (scripts/ci_softgreen_baseline.txt), and forbids
 # a manifest line from discarding its gate's exit status with `|| true`.
 bash scripts/test_gate_softgreen.sh
+# FOURTH, and ~1 s: the CAPABILITY-VACUOUS canary, the third hole in the set.
+# test_gate_registration.sh: nothing RUNS this gate. test_gate_softgreen.sh:
+# this gate claims PASS for an assertion it could not observe. This one: this
+# gate CANNOT observe its assertion on the machine CI runs it on, and nothing
+# said so. Every runner in .github/workflows is `runs-on: ubuntu-latest`, which
+# has no /dev/kvm; 20 gates registered right here open with
+# `[ -e /dev/kvm ] || exit 0` and so have never asserted anything on GitHub —
+# the DE visual/wallpaper/icon surface, the on-device hambrowse family, the
+# installer NVMe end-to-end and webkit among them. Those gates are HONEST (a
+# pure-TCG OVMF boot cannot finish in budget); the defect was that the hole was
+# invisible. This gate PRINTS the count and the names on every run — including
+# a ::warning:: annotation on a KVM-less runner, so a green build states what
+# it did not cover — and ratchets the population down-only
+# (scripts/ci_kvmdark_baseline.txt). Run the set for real on a KVM host with
+# `bash scripts/ci_run_kvm_battery.sh`.
+bash scripts/test_gate_kvmdark.sh
 # THIRD/FOURTH, and <0.1 s each: the two DE capability-boundary structural
 # gates. Both were red and unregistered in the 2026-07-28 sweep and both turned
 # out to be GATE ROT (line-distance greps and a renamed callee), not privilege
