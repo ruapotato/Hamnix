@@ -5447,6 +5447,16 @@ def _inlb_open(ne: uint64, te: uint64, np: uint64, nlen: uint64):
     if eff_mr < 0:
         eff_mr = 0
     right: int32 = _flow_right()
+    # SOURCE WHITESPACE is the inter-chip gutter (see _inlb_close). Collapsed
+    # whitespace before this chip leaves need_space armed with no word to attach
+    # it to; consume it here exactly as _word_flush does, so a whitespace-
+    # separated chip starts one space advance further right and a source-adjacent
+    # one starts flush against its neighbour's box, as chromium has both.
+    if need_space != 0 and pen_x > indent_x:
+        inlb_spx: int32 = _space_px()
+        pen_x = pen_x + inlb_spx
+        g_pending_lmarg = g_pending_lmarg + inlb_spx
+        need_space = 0
     # Wrap the whole chip to the next line if it does not fit after current flow.
     if pen_x > indent_x and pen_x + eff_ml + boxw > right:
         _bump_row()
@@ -5654,8 +5664,23 @@ def _inlb_close(np: uint64, nlen: uint64):
     _close_seg()
     if inlb_sp > 0:
         inlb_sp = inlb_sp - 1
-        # Snap past the box + the inter-chip gutter + the element's CSS margin-right.
-        pen_x = inlb_startx[inlb_sp] + inlb_boxw[inlb_sp] + INLB_GAP + inlb_mr[inlb_sp]
+        # Snap past the box + the element's CSS margin-right.
+        #
+        # There is NO constant inter-chip gutter. An inline-block is an INLINE-level
+        # box, so the only thing between two of them is whatever the SOURCE puts
+        # there: nothing at all, or collapsed whitespace worth exactly one space.
+        # MEASURED in chromium --headless on three `display:inline-block` chips,
+        # the first two source-adjacent and the rest separated by whitespace
+        # (`<span>AAA</span><span>BBB</span> <span>CCC</span>\n<span>DDD</span>`,
+        # 16px sans):
+        #     a:0-32.02  b:32.02-64.03  c:68.03-102.70  d:106.70-141.38
+        # i.e. a|b TOUCH (gap 0) and b|c, c|d are 4.0px apart — one space advance,
+        # not a constant. We added INLB_GAP unconditionally, so source-adjacent
+        # chips were pushed apart by 6px they should not have and whitespace-
+        # separated ones got 6px where chromium gives ~4. _inlb_open now consumes
+        # the pending inter-word space (need_space) the same way _word_flush does,
+        # which is where the whitespace-separated gutter comes from.
+        pen_x = inlb_startx[inlb_sp] + inlb_boxw[inlb_sp] + inlb_mr[inlb_sp]
         # PIXEL flow: thread margin-right in (mirrors the inline <span> close) so the
         # content AFTER a margined inline-block chip clears the gap in the pixel
         # render instead of gluing. A following adjacent chip's margin-left then adds

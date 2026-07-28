@@ -3976,3 +3976,12 @@ bash scripts/test_hambrowse_urlreflect_host.sh
 # now match chromium exactly. Covers a nested <noscript> and a literal
 # "</noscript>" inside a JS string. REGISTERED 2026-07-28.
 bash scripts/test_hambrowse_noscriptdom_host.sh
+# test_hambrowse_inlbgap_host: the inter-chip gutter is SOURCE WHITESPACE, not a
+# constant. An inline-block is an inline-level box, so two of them are separated
+# by nothing at all or by one collapsed space; the engine added a constant
+# INLB_GAP (6px, down from 32 after an earlier fix) at every chip close, so
+# source-adjacent chips were pushed apart where chrome's boxes TOUCH. MEASURED vs
+# chromium: adjacent 0, whitespace-separated 4 (one space advance), adjacent with
+# margin:0 5px exactly 10. Gaps come off the rasterizer's fill rects with each
+# chip's colour confirmed in the rendered PPM. REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_inlbgap_host.sh

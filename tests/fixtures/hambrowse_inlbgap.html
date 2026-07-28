@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- tests/fixtures/hambrowse_inlbgap.html — the inter-chip gutter comes from
+     SOURCE WHITESPACE, not from a constant.
+
+     An inline-block is an INLINE-level box, so the only thing between two of
+     them is whatever the source puts there: nothing at all, or collapsed
+     whitespace worth exactly one space. MEASURED in chromium --headless on
+     these very rows (16px sans, body margin 0):
+
+       row A  <span>AAA</span><span>BBB</span> <span>CCC</span>\n<span>DDD</span>
+              a:0-32.02  b:32.02-64.03  c:68.03-102.70  d:106.70-141.38
+              -> a|b TOUCH (0), b|c and c|d are 4.0px apart
+
+       row B  two source-adjacent chips carrying margin:0 5px
+              -> their boxes are 10px apart: 5 + 5, the two margins and
+                 nothing else
+
+     Each chip has a unique flat background so a gate can read its painted rect
+     straight out of the rendered PPM and measure the real gutters. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .c { display: inline-block; padding: 0; }
+  #a { background: #c8dcf0; }
+  #b { background: #f0d2c8; }
+  #c { background: #d2f0c8; }
+  #d { background: #f0e6c8; }
+  .m { display: inline-block; padding: 0; margin: 0 5px; }
+  #m1 { background: #c8c8f0; }
+  #m2 { background: #f0c8f0; }
+</style></head><body>
+<div id="rowA"><span class="c" id="a">AAA</span><span class="c" id="b">BBB</span> <span class="c" id="c">CCC</span>
+<span class="c" id="d">DDD</span></div>
+<div id="rowB"><span class="m" id="m1">MMM</span><span class="m" id="m2">NNN</span></div>
+</body></html>
