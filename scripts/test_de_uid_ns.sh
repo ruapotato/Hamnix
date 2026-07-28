@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
 #
-# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
-# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s).
+# REGISTERED in scripts/ci_battery_manifest.txt (2026-07-28, <0.1 s, no QEMU).
 #
-# THE FAILURE LOOKS LIKE A REAL PERMISSION REGRESSION, and it is the most
-# alarming thing this sweep turned up:
-#     FAIL: namec: DEV_WSYS_NS  no longer routed to devwsys_readonly_write
-#           (writes to /ns now accepted!)
-#     FAIL: namec: DEV_WSYS_UID no longer routed to devwsys_readonly_write
-#           (writes to /uid now accepted!)
-# /dev/wsys/<N>/uid and /dev/wsys/<N>/ns are SNAPSHOT surfaces — a window's
-# effective uid and its namespace listing. They were deliberately wired to
-# devwsys_readonly_write so a write is rejected at the file-server boundary
-# (the Plan 9 "perms live in the file server, not in mode bits" invariant).
-# Something in namec's dev-ID routing stopped sending those two IDs there, so
-# the kernel now ACCEPTS writes to a read-only capability surface. Triage
-# this against namec/dev-ID changes before deciding the gate is stale — a
-# renamed handler would be gate rot, a lost route is a privilege bug.
+# This gate was unregistered and red in the 2026-07-28 sweep, with an alarming
+# failure text ("writes to /uid now accepted!"). Triage verdict: GATE ROT, not a
+# privilege bug. The route to devwsys_readonly_write was never removed or
+# renamed; the two assertions were `grep -A 10` windows anchored on a
+# continuation line of a multi-line `if`, so they tracked LINE DISTANCE and fell
+# off the window as the read-only OR-chain grew. Full evidence is in the block
+# above those assertions, further down this file. Registered now precisely
+# because it rotted while dark.
 # scripts/test_de_uid_ns.sh — structural guard for the TODO DE close-out:
 # per-window uid + ns visibility on the rio `#w/` per-process namespace.
 #

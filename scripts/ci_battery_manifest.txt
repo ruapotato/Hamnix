@@ -27,6 +27,21 @@ bash scripts/test_artifact_freshness.sh
 # pre-existing dark gates are frozen in scripts/ci_ondemand_baseline.txt,
 # which the same gate ratchets DOWN-only.
 bash scripts/test_gate_registration.sh
+# THIRD/FOURTH, and <0.1 s each: the two DE capability-boundary structural
+# gates. Both were red and unregistered in the 2026-07-28 sweep and both turned
+# out to be GATE ROT (line-distance greps and a renamed callee), not privilege
+# bugs — see the commit that repaired them. Registered now precisely BECAUSE
+# they rotted while dark: a structural gate that nothing runs drifts out of
+# sync with the source it guards and its next red is unreadable.
+#   test_de_uid_ns: /dev/wsys/<N>/uid and /ns are read-only snapshot capability
+#   surfaces; namec's _devtab_write must keep routing DEV_WSYS_UID/_NS to
+#   devwsys_readonly_write so a write is rejected at the file-server boundary.
+bash scripts/test_de_uid_ns.sh
+#   test_de_terminal_namespace: the regular-user DE namespace profile must plant
+#   the user capability surface AMBIENTLY and must never bind '#distro' outside
+#   a captured `ns clean { … }` template (docs/rootfs_partition.md,
+#   etc/rc.boot.full hermetic-ns invariant).
+bash scripts/test_de_terminal_namespace.sh
 bash scripts/test_hamsh.sh
 bash scripts/ci_run_gate.sh scripts/test_hamsh_heartbeat.sh
 # QEMU-free host gate for the 2048 scene app: renders the board, drives scripted
@@ -3665,3 +3680,13 @@ bash scripts/test_hambrowse_twofloat_host.sh
 # (lib/web/layout/box.ad). The m_tindent cascade winner was parsed by round-2
 # but  [54.4s measured on 55c842b9]
 bash scripts/test_hambrowse_textindent_host.sh
+# test_napi: NAPI budgeted-receive gate. PART 1 is the ONLY check in CI that
+# asserts the x86_64 kernel LINK is clean (no undefined references beyond the
+# build-supplied initramfs pair); PART 2 is a host-run NAPI state-machine gate.
+# ~90 s, no QEMU. REGISTERED 2026-07-28 after it caught two aarch64-only
+# undefined refs (arm64_a10_blob_base/_size) that an `extern def` in the SHARED
+# init/main.ad had been injecting into the x86_64 link since 613b886d. That
+# regression was reviewed on the strength of kobjdiff, which compares
+# native-vs-seed CODEGEN and structurally cannot see link resolution — this gate
+# is the complement kobjdiff needs, so it must not go dark again.
+bash scripts/test_napi.sh

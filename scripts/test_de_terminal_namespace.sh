@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
-# ON-DEMAND *AND CURRENTLY RED*: not in ci_battery_manifest.txt because it
-# FAILS on 55c842b9 (2026-07-28 unregistered-gate sweep, <0.1 s). Everything
-# passes except one assertion:
-#     FAIL: etc/rc.de-user must NOT bind '#distro' (hostowner-only surface)
-# i.e. the REGULAR-USER DE namespace profile currently binds the hostowner-only
-# #distro file server, handing every DE terminal a capability it should not
-# have. This is the privilege model, not cosmetics — triage against
-# etc/rc.de-user and the hostowner/regular-user split before touching the gate.
+# REGISTERED in scripts/ci_battery_manifest.txt (2026-07-28, <0.1 s, no QEMU).
+#
+# This gate was unregistered and red in the 2026-07-28 sweep, failing with
+# "etc/rc.de-user must NOT bind '#distro' (hostowner-only surface)". Triage
+# verdict: STALE EXPECTATION, not a privilege leak. rc.de-user never binds
+# #distro ambiently — only inside captured `ns clean { … }` templates, which is
+# exactly what the documented invariant permits, and what this gate REQUIRES of
+# rc.de-hostowner two sections down. The full disproof (including that the
+# kernel applies no principal check on #distro at all, so there is no hostowner
+# boundary to leak) is in the AMBIENT vs CAPTURED block below.
 # scripts/test_de_terminal_namespace.sh — STRUCTURAL guard for the
 # DE-terminal namespace plumbing.
 #
@@ -20,8 +22,9 @@
 # surface is bound before the real DE program runs.
 #
 # This is a STRUCTURAL test, not an end-to-end QEMU test. It asserts:
-#   1. etc/rc.de-user exists with the expected user-surface binds AND
-#      does NOT include the hostowner-only distrofs / linux-ns bindings.
+#   1. etc/rc.de-user exists with the expected user-surface binds in its
+#      AMBIENT namespace, and no rc.de profile binds '#distro' ambiently
+#      (it may only appear inside a captured `ns clean { … }` template).
 #   2. etc/rc.de-hostowner exists with the hostowner-surface binds
 #      AND DOES include the captured linux / debian ns templates.
 #   3. user/hamUId.ad's daemon_spawn_window_prog routes through
