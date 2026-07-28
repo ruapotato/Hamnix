@@ -540,6 +540,21 @@ g_promise_proto: int32 = 0         # Promise.prototype (holds then/catch/finally
 g_promise_job: int32 = 0           # shared native fn value for a reaction microtask
 g_sym_iterator: int32 = 0          # the well-known Symbol.iterator VALUE handle (for the iteration protocol)
 g_sym_async: int32 = 0             # the well-known Symbol.asyncIterator VALUE handle (for-await-of protocol)
+g_prim_key: int32 = -1             # interned "@@prim" key: a wrapper's [[PrimitiveValue]] slot
+g_sym_toprim: int32 = 0            # the well-known Symbol.toPrimitive VALUE handle (ToPrimitive override)
+g_sym_tostringtag: int32 = 0       # the well-known Symbol.toStringTag VALUE handle (Object.prototype.toString)
+# ToPrimitive re-entrancy guard. The engine has no JS call-depth limit, so a
+# self-referential conversion (`{valueOf(){ return ""+this }}`) would ride the
+# HOST C stack into a segfault. Cap the nesting and throw the same RangeError a
+# real engine would.
+toprim_depth: int32 = 0
+TOPRIM_MAX_DEPTH: int32 = 64
+# Array.prototype.join cycle guard: object ids whose join is in progress. A
+# self-containing array (`a=[1]; a.push(a)`) must render the cyclic element as
+# the empty string (what every engine does), not recurse forever.
+JOIN_STACK_CAP: int32 = 64
+join_stack: Array[64, int32]
+join_depth: int32 = 0
 g_gen_proto: int32 = 0             # shared prototype object for generator instances (next/return/throw/@@iterator)
 # Real builtin prototype OBJECTS. Their methods are genuine native-function VALUES
 # (not just name-dispatch), so the transpiled idioms `Array.prototype.slice.call`,

@@ -27,9 +27,16 @@
 def call_native_proto(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
     name: int32 = obj_p_a[native_self]
     if id == NAT_SP_METHOD:
+        # same unwrap-or-bail rule as number_proto_method (see there): ToString
+        # of a String-wrapper OBJECT would route back through this method.
+        sthis: int32 = thisv
+        if tag_of(thisv) == TAG_OBJ and is_symbol(thisv) == 0:
+            sthis = unbox_prim(thisv)
+            if sthis < 0:
+                sthis = v_string_cstr(cast[Ptr[uint8]](""))
         if str_eq_cstr(name, cast[Ptr[uint8]]("valueOf")) != 0:
-            return to_string_val(thisv)
-        return string_method(to_string_val(thisv), name, base, argc)
+            return to_string_val(sthis)
+        return string_method(to_string_val(sthis), name, base, argc)
     if id == NAT_OP_METHOD:
         return object_proto_method(thisv, name, base, argc)
     if id == NAT_FP_METHOD:
@@ -45,6 +52,17 @@ def call_native_proto(id: int32, thisv: int32, base: int32, argc: int32) -> int3
 
 # ---- Object.prototype -------------------------------------------------------
 def object_tag_string(thisv: int32) -> int32:
+    # Resolve @@toStringTag and the wrapper slot BEFORE bld_begin: both interned
+    # key lookups can append to the string pool, and a pool append in the middle
+    # of a build splices itself into the string being built.
+    tagv: int32 = -1
+    ub: int32 = -1
+    if tag_of(thisv) == TAG_OBJ:
+        ub = unbox_prim(thisv)
+        if g_sym_tostringtag != 0:
+            tp: int32 = obj_find_prop(objid_of(thisv), symbol_key(g_sym_tostringtag))
+            if tp >= 0 and tag_of(p_val[tp]) == TAG_STR:
+                tagv = p_val[tp]
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
@@ -62,7 +80,12 @@ def object_tag_string(thisv: int32) -> int32:
         emit_cstr(cast[Ptr[uint8]]("Boolean"))
     elif t == TAG_OBJ:
         o: int32 = objid_of(thisv)
-        if cast[int32](obj_kind[o]) == OK_ARRAY:
+        # ES 20.1.3.6 step 15: a string-valued @@toStringTag wins over the
+        # builtin tag — this is how `Object.prototype.toString.call(promise)`
+        # says "[object Promise]" and how libraries brand their own types.
+        if tagv >= 0:
+            emit_strid(strid_of(tagv))
+        elif cast[int32](obj_kind[o]) == OK_ARRAY:
             emit_cstr(cast[Ptr[uint8]]("Array"))
         elif cast[int32](obj_kind[o]) == OK_FUNC:
             emit_cstr(cast[Ptr[uint8]]("Function"))
@@ -70,6 +93,12 @@ def object_tag_string(thisv: int32) -> int32:
             emit_cstr(cast[Ptr[uint8]]("Date"))
         elif obj_re_prog[o] >= 0:
             emit_cstr(cast[Ptr[uint8]]("RegExp"))
+        elif ub >= 0 and tag_of(ub) == TAG_NUM:
+            emit_cstr(cast[Ptr[uint8]]("Number"))
+        elif ub >= 0 and tag_of(ub) == TAG_STR:
+            emit_cstr(cast[Ptr[uint8]]("String"))
+        elif ub >= 0 and tag_of(ub) == TAG_BOOL:
+            emit_cstr(cast[Ptr[uint8]]("Boolean"))
         else:
             emit_cstr(cast[Ptr[uint8]]("Object"))
     else:
@@ -283,6 +312,22 @@ def array_proto_method(thisv: int32, name: int32, base: int32, argc: int32) -> i
                 arr_set(fo, fst, fval)
             fst = fst + 1
         return thisv
+    # ES 23.1.3.34 Array.prototype.toString DELEGATES to `join` whenever `join`
+    # is callable (own or inherited, so a user override is honored) and only
+    # falls back to Object.prototype.toString otherwise. Without it an array
+    # inherited Object.prototype.toString and `[1,2].toString()` was the useless
+    # "[object Array]". toLocaleString has the same shape here.
+    if str_eq_cstr(name, cast[Ptr[uint8]]("toString")) != 0 or \
+       str_eq_cstr(name, cast[Ptr[uint8]]("toLocaleString")) != 0:
+        jf: int32 = member_get(thisv, str_from_cstr(cast[Ptr[uint8]]("join")))
+        if err_flag != 0 or ctl == CTL_THROW:
+            return v_undef()
+        if is_callable(jf) != 0:
+            jbase: int32 = call_top
+            jr: int32 = invoke(jf, thisv, jbase, 0)
+            call_top = jbase
+            return jr
+        return object_tag_string(thisv)
     # ---- read-only methods work over an array (copy of an array-like) ----
     srcv: int32 = arraylike_of(thisv)
     if srcv < 0:
@@ -440,7 +485,15 @@ def array_proto_method(thisv: int32, name: int32, base: int32, argc: int32) -> i
 
 # ---- Number.prototype / Boolean.prototype -----------------------------------
 def number_proto_method(nv: int32, name: int32, base: int32, argc: int32) -> int32:
-    x: float64 = to_number(nv)
+    # An OBJECT receiver is either a Number wrapper (unwrap it) or a foreign
+    # object. NEVER ToNumber the object itself: ToNumber(object) is ToPrimitive,
+    # which comes straight back here.
+    nvp: int32 = nv
+    if tag_of(nv) == TAG_OBJ:
+        nvp = unbox_prim(nv)
+        if nvp < 0:
+            nvp = v_number(0.0 / 0.0)
+    x: float64 = to_number(nvp)
     if str_eq_cstr(name, cast[Ptr[uint8]]("toFixed")) != 0:
         d: int32 = 0
         if argc > 0:
@@ -459,12 +512,18 @@ def number_proto_method(nv: int32, name: int32, base: int32, argc: int32) -> int
 
 
 def boolean_proto_method(bv: int32, name: int32, base: int32, argc: int32) -> int32:
+    # same unwrap-or-bail rule as number_proto_method (see there)
+    bvp: int32 = bv
+    if tag_of(bv) == TAG_OBJ:
+        bvp = unbox_prim(bv)
+        if bvp < 0:
+            bvp = v_boolv(1)                 # objects are truthy
     if str_eq_cstr(name, cast[Ptr[uint8]]("valueOf")) != 0:
-        return bv
+        return bvp
     if str_eq_cstr(name, cast[Ptr[uint8]]("toString")) != 0:
-        return to_string_val(bv)
+        return to_string_val(bvp)
     if str_eq_cstr(name, cast[Ptr[uint8]]("toLocaleString")) != 0:
-        return to_string_val(bv)
+        return to_string_val(bvp)
     return v_undef()
 
 
@@ -546,6 +605,8 @@ def install_prototypes(string_ctor: int32, boolean_ctor: int32):
     proto_add_method(g_array_proto, cast[Ptr[uint8]]("find"), NAT_AP_METHOD)
     proto_add_method(g_array_proto, cast[Ptr[uint8]]("findIndex"), NAT_AP_METHOD)
     proto_add_method(g_array_proto, cast[Ptr[uint8]]("reduce"), NAT_AP_METHOD)
+    proto_add_method(g_array_proto, cast[Ptr[uint8]]("toString"), NAT_AP_METHOD)
+    proto_add_method(g_array_proto, cast[Ptr[uint8]]("toLocaleString"), NAT_AP_METHOD)
     proto_link_ctor(g_array, g_array_proto)
 
     # String.prototype — delegates to the shared string_method dispatcher.

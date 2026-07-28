@@ -1771,22 +1771,56 @@ def array_splice(av: int32, argnode: int32, env: int32) -> int32:
 
 
 def array_join(o: int32, sepid: int32) -> int32:
+    # Elements are converted with ToString, NOT display_val: `[[1],[2]].join()`
+    # is "1,2" and `[{}].join()` is "[object Object]" — the inspect renderer
+    # would have produced "[1][2]" and "{  }".
+    #
+    # Cycle guard (what every real engine does): an array reachable from itself
+    # renders the self-reference as the EMPTY string rather than recursing.
+    # `a=[1]; a.push(a); String(a)` is "1," in node.
+    ji: int32 = 0
+    while ji < join_depth:
+        if join_stack[ji] == o:
+            return v_string_cstr(cast[Ptr[uint8]](""))
+        ji = ji + 1
+    if join_depth >= JOIN_STACK_CAP:
+        return v_string_cstr(cast[Ptr[uint8]](""))
+    join_stack[join_depth] = o
+    join_depth = join_depth + 1
+    # TWO PASSES. Element ToString can run USER code (a `toString`/`valueOf`
+    # override, or a nested array's own join) which allocates into the string
+    # pool — so it must not happen inside this build. Stringify every element
+    # first onto the (rooted) call_args stack, then emit contiguously; the same
+    # discipline eval_tmpl uses for template substitutions.
+    base: int32 = call_top
+    # Snapshot the length: a user toString may mutate the array mid-conversion,
+    # and the emit pass must walk exactly the entries the first pass pushed.
+    n: int32 = arr_len[o]
+    i: int32 = 0
+    while i < n:
+        el: int32 = arr_get(o, i)
+        sv: int32 = v_string_cstr(cast[Ptr[uint8]](""))   # null/undefined -> ""
+        if tag_of(el) != TAG_UNDEF and tag_of(el) != TAG_NULL:
+            sv = to_string_val(el)
+        call_args[call_top] = sv
+        call_top = call_top + 1
+        i = i + 1
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
-    i: int32 = 0
-    while i < arr_len[o]:
+    i = 0
+    while i < n:
         if i > 0:
             if sepid >= 0:
                 emit_strid(sepid)
             else:
                 emit_c(44)             # default ','
-        el: int32 = arr_get(o, i)
-        if tag_of(el) != TAG_UNDEF and tag_of(el) != TAG_NULL:
-            display_val(el)
+        emit_strid(strid_of(call_args[base + i]))
         i = i + 1
     id: int32 = bld_end()
     emit_tgt = save
+    call_top = base
+    join_depth = join_depth - 1
     return v_string_id(id)
 
 

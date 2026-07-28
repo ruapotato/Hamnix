@@ -1509,6 +1509,40 @@ def is_hidden_key(sid: int32) -> int32:
     return 0
 
 
+# ---- [[PrimitiveValue]] of a Number/String/Boolean WRAPPER object ------------
+# `new Number(5)` is an OBJECT; its valueOf must yield 5. Without a slot for the
+# wrapped primitive, Number.prototype.valueOf fell back to ToNumber(this) — and
+# once ToNumber routed objects through ToPrimitive that became infinite mutual
+# recursion. The value lives in a hidden "@@prim" own property, so it is
+# invisible to Object.keys / for-in / JSON.stringify and is traced by the GC
+# exactly like any other property.
+# Interned ONCE at setup: str_from_cstr appends to the string pool, and this key
+# is looked up from inside string BUILDS (object_tag_string), where any pool
+# append would corrupt the partially built string.
+def prim_slot_key() -> int32:
+    if g_prim_key < 0:
+        g_prim_key = str_from_cstr(cast[Ptr[uint8]]("@@prim"))
+    return g_prim_key
+
+
+def box_prim(thisv: int32, prim: int32) -> int32:
+    if tag_of(thisv) != TAG_OBJ:
+        return prim
+    obj_set(objid_of(thisv), prim_slot_key(), prim)
+    return thisv
+
+
+# The wrapped primitive, or -1 when `h` is not a wrapper. Callers MUST handle
+# -1 without falling back to a conversion of `h` itself: that is the recursion.
+def unbox_prim(h: int32) -> int32:
+    if tag_of(h) != TAG_OBJ:
+        return -1
+    p: int32 = obj_find_prop(objid_of(h), prim_slot_key())
+    if p >= 0:
+        return p_val[p]
+    return -1
+
+
 # ---- named property get/set (string-keyed) on an object id ----
 def obj_find_prop(o: int32, key: int32) -> int32:
     p: int32 = obj_head[o]

@@ -271,14 +271,23 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return uri_escape(arg_or(base, argc, 0))
     if id == NAT_URI_UNESCAPE:
         return uri_unescape(arg_or(base, argc, 0))
+    # String/Number/Boolean are BOTH a conversion function and a constructor.
+    # Called with `new` (pending_newtarget armed, `this` = the fresh instance)
+    # they must WRAP the primitive so the instance's valueOf/toString can find it.
     if id == NAT_STRING:
-        if argc == 0:
-            return v_string_cstr(cast[Ptr[uint8]](""))
-        return to_string_val(call_args[base])
+        sprim: int32 = v_string_cstr(cast[Ptr[uint8]](""))
+        if argc > 0:
+            sprim = to_string_val(call_args[base])
+        if pending_newtarget != 0 and tag_of(thisv) == TAG_OBJ:
+            return box_prim(thisv, sprim)
+        return sprim
     if id == NAT_NUMBER:
-        if argc == 0:
-            return v_number(0.0)
-        return v_number(to_number(call_args[base]))
+        nprim: int32 = v_number(0.0)
+        if argc > 0:
+            nprim = v_number(to_number(call_args[base]))
+        if pending_newtarget != 0 and tag_of(thisv) == TAG_OBJ:
+            return box_prim(thisv, nprim)
+        return nprim
     if id == NAT_BIGINT:
         if argc == 0:
             return v_bigint(bi_zero())
@@ -290,7 +299,10 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         bits_u: int32 = cast[int32](to_number(arg_or(base, argc, 0)))
         return v_bigint(bi_as_uintn(bits_u, bi_from_value(arg_or(base, argc, 1))))
     if id == NAT_BOOLEAN:
-        return v_boolv(to_bool(arg_or(base, argc, 0)))
+        bprim: int32 = v_boolv(to_bool(arg_or(base, argc, 0)))
+        if pending_newtarget != 0 and tag_of(thisv) == TAG_OBJ:
+            return box_prim(thisv, bprim)
+        return bprim
     if id == NAT_EVAL:
         return native_eval(arg_or(base, argc, 0))
     if id == NAT_MATH_FLOOR:

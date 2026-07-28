@@ -1997,8 +1997,13 @@ def install_builtins():
     g_sym_async = v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.asyncIterator")))
     obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("asyncIterator")), g_sym_async)
     obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("hasInstance")), v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.hasInstance"))))
-    obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("toPrimitive")), v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.toPrimitive"))))
-    obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("toStringTag")), v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.toStringTag"))))
+    # ToPrimitive consults @@toPrimitive by KEY, so the well-known symbol VALUE
+    # has to be reachable from the conversion path — hence a global, not just a
+    # property of the Symbol object.
+    g_sym_toprim = v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.toPrimitive")))
+    obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("toPrimitive")), g_sym_toprim)
+    g_sym_tostringtag = v_new_symbol(v_string_cstr(cast[Ptr[uint8]]("Symbol.toStringTag")))
+    obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("toStringTag")), g_sym_tostringtag)
     obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("for")), v_new_native(NAT_SYMBOL_FOR))
     obj_set(so_sym, str_from_cstr(cast[Ptr[uint8]]("keyFor")), v_new_native(NAT_SYMBOL_KEYFOR))
     env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("Symbol")), g_symbol, 0)

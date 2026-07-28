@@ -53,6 +53,14 @@ def to_number(h: int32) -> float64:
         # implicit ToNumber(BigInt) is a TypeError in spec, but arithmetic guards
         # against mixing before reaching here; explicit Number(1n) wants the value.
         return bi_to_float(bigid_of(h))
+    if needs_to_primitive(h) != 0:
+        # ES 7.1.4 ToNumber(object) = ToNumber(ToPrimitive(object, number)).
+        # `Number([5])` is 5 and `new Date(0) - 0` is 0 BECAUSE of this step; it
+        # used to return NaN for every object.
+        p: int32 = to_primitive(h, HINT_NUMBER)
+        if needs_to_primitive(p) != 0:
+            return 0.0 / 0.0                 # conversion threw
+        return to_number(p)
     return 0.0 / 0.0
 
 
@@ -168,14 +176,140 @@ def display_val_quoted(h: int32):
         display_val(h)
 
 
+# ====================================================================
+# ToPrimitive (ES2023 7.1.1) — the object -> primitive conversion that sits
+# under ToString, ToNumber, `+`, `==`, relational compare and template literals.
+#
+# WHY THIS EXISTS AS ITS OWN LAYER
+# to_string_val used to hand every object to display_val — the CONSOLE INSPECT
+# renderer — so `""+[3]` produced "[3]" instead of "3", `String({})` produced
+# "{  }" instead of "[object Object]", and a user `valueOf`/`toString` override
+# was ignored outright. Those two renderers are legitimately different
+# (`console.log([5])` is "[ 5 ]", `String([5])` is "5") and must stay separate:
+# display_val/display_obj remain the inspect path and are reached ONLY from
+# console.log and from ToString of a value that is ALREADY primitive.
+# ====================================================================
+HINT_DEFAULT: int32 = 0
+HINT_NUMBER:  int32 = 1
+HINT_STRING:  int32 = 2
+
+
+# The hint's spec spelling, passed to a @@toPrimitive method.
+def hint_string(hint: int32) -> int32:
+    if hint == HINT_STRING:
+        return v_string_cstr(cast[Ptr[uint8]]("string"))
+    if hint == HINT_NUMBER:
+        return v_string_cstr(cast[Ptr[uint8]]("number"))
+    return v_string_cstr(cast[Ptr[uint8]]("default"))
+
+
+# Does this value need a ToPrimitive step at all? Symbols are stored as TAG_OBJ
+# in this engine but ARE primitives — converting one would loop forever.
+def needs_to_primitive(h: int32) -> int32:
+    if tag_of(h) != TAG_OBJ:
+        return 0
+    if is_symbol(h) != 0:
+        return 0
+    return 1
+
+
+# ES 7.1.1 OrdinaryToPrimitive: try the hint-ordered method pair, calling only
+# CALLABLE ones, accepting the first primitive result, and throwing a TypeError
+# when neither yields a primitive.
+def ordinary_to_primitive(h: int32, hint: int32) -> int32:
+    i: int32 = 0
+    while i < 2:
+        key: int32 = -1
+        if hint == HINT_STRING:
+            if i == 0:
+                key = str_from_cstr(cast[Ptr[uint8]]("toString"))
+            else:
+                key = str_from_cstr(cast[Ptr[uint8]]("valueOf"))
+        else:
+            if i == 0:
+                key = str_from_cstr(cast[Ptr[uint8]]("valueOf"))
+            else:
+                key = str_from_cstr(cast[Ptr[uint8]]("toString"))
+        m: int32 = member_get(h, key)
+        if err_flag != 0 or ctl == CTL_THROW:
+            return h
+        if is_callable(m) != 0:
+            gm: int32 = gc_top
+            gc_push(h)
+            gc_push(m)
+            mbase: int32 = call_top
+            r: int32 = invoke(m, h, mbase, 0)
+            call_top = mbase
+            gc_popto(gm)
+            if err_flag != 0 or ctl == CTL_THROW:
+                return h
+            if needs_to_primitive(r) == 0:
+                return r
+        i = i + 1
+    throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("Cannot convert object to primitive value"))
+    return h
+
+
+# ES 7.1.1 ToPrimitive. Returns a PRIMITIVE value, or `h` unchanged when the
+# conversion threw (callers check err_flag/ctl, or simply notice the result is
+# still an object).
+def to_primitive(h: int32, hint: int32) -> int32:
+    if needs_to_primitive(h) == 0:
+        return h
+    if toprim_depth >= TOPRIM_MAX_DEPTH:
+        throw_error(cast[Ptr[uint8]]("RangeError"), cast[Ptr[uint8]]("Maximum call stack size exceeded"))
+        return h
+    toprim_depth = toprim_depth + 1
+    r: int32 = to_primitive_inner(h, hint)
+    toprim_depth = toprim_depth - 1
+    return r
+
+
+def to_primitive_inner(h: int32, hint: int32) -> int32:
+    # (1) a @@toPrimitive method wins over valueOf/toString entirely.
+    if g_sym_toprim != 0:
+        f: int32 = member_get(h, symbol_key(g_sym_toprim))
+        if err_flag != 0 or ctl == CTL_THROW:
+            return h
+        if is_callable(f) != 0:
+            gf: int32 = gc_top
+            gc_push(h)
+            gc_push(f)
+            fbase: int32 = call_top
+            call_args[call_top] = hint_string(hint)
+            call_top = call_top + 1
+            fr: int32 = invoke(f, h, fbase, 1)
+            call_top = fbase
+            gc_popto(gf)
+            if err_flag != 0 or ctl == CTL_THROW:
+                return h
+            if needs_to_primitive(fr) == 0:
+                return fr
+            throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("Cannot convert object to primitive value"))
+            return h
+    # (2) a Date's DEFAULT hint is STRING (`date + 1` concatenates while
+    #     `date - 1` is numeric) — the one exotic [[DefaultValue]] in the spec.
+    use_hint: int32 = hint
+    if use_hint == HINT_DEFAULT and obj_is_date[objid_of(h)] != cast[uint8](0):
+        use_hint = HINT_STRING
+    return ordinary_to_primitive(h, use_hint)
+
+
 # to a fresh string value (for String(), concat, JSON)
 def to_string_val(h: int32) -> int32:
     if tag_of(h) == TAG_STR:
         return h
+    p: int32 = h
+    if needs_to_primitive(h) != 0:
+        p = to_primitive(h, HINT_STRING)
+        if tag_of(p) == TAG_STR:
+            return p
+        if needs_to_primitive(p) != 0:
+            return v_string_cstr(cast[Ptr[uint8]](""))   # conversion threw
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
-    display_val(h)
+    display_val(p)
     id: int32 = bld_end()
     emit_tgt = save
     return v_string_id(id)
@@ -235,12 +369,34 @@ def loose_eq(a: int32, b: int32) -> int32:
         return bigint_num_eq(bigid_of(a), b)
     if tb == TAG_BIGINT and ta != TAG_OBJ:
         return bigint_num_eq(bigid_of(b), a)
-    # number/string/bool coercions -> number compare
+    # ES 7.2.15 step 10/11: object vs primitive -> ToPrimitive(DEFAULT) the
+    # object side, then re-run the whole comparison. (This replaced a
+    # compare-both-sides-as-strings approximation under which `[1] == true` and
+    # `0 == {}` were both wrong.)
     if ta == TAG_OBJ or tb == TAG_OBJ:
-        # compare via string for one object side (arrays/objs) — approx
-        sa: int32 = to_string_val(a)
-        sb: int32 = to_string_val(b)
-        return str_eq(strid_of(sa), strid_of(sb))
+        if needs_to_primitive(a) != 0:
+            gl: int32 = gc_top
+            gc_push(b)
+            pa: int32 = to_primitive(a, HINT_DEFAULT)
+            gc_push(pa)
+            if err_flag != 0 or ctl == CTL_THROW:
+                gc_popto(gl)
+                return 0
+            rl: int32 = loose_eq(pa, b)
+            gc_popto(gl)
+            return rl
+        if needs_to_primitive(b) != 0:
+            gr: int32 = gc_top
+            gc_push(a)
+            pb: int32 = to_primitive(b, HINT_DEFAULT)
+            gc_push(pb)
+            if err_flag != 0 or ctl == CTL_THROW:
+                gc_popto(gr)
+                return 0
+            rr: int32 = loose_eq(a, pb)
+            gc_popto(gr)
+            return rr
+        return 0                       # a Symbol is never loosely equal to a non-Symbol
     xa: float64 = to_number(a)
     xb: float64 = to_number(b)
     if xa == xb:
@@ -468,6 +624,23 @@ def eval_binop(op: int32, a: int32, b: int32) -> int32:
         if rbi != -1:
             return rbi
     if op == OP_ADD:
+        # ES 13.15.3: `+` runs ToPrimitive(DEFAULT hint) on BOTH operands FIRST,
+        # and only then decides concat-vs-add from the PRIMITIVE tags. Doing it
+        # in the other order is why `1+[2]` used to be "1[2]" instead of 12.
+        if needs_to_primitive(a) != 0 or needs_to_primitive(b) != 0:
+            gp: int32 = gc_top
+            gc_push(a)
+            gc_push(b)
+            pa: int32 = to_primitive(a, HINT_DEFAULT)
+            gc_push(pa)
+            pb: int32 = to_primitive(b, HINT_DEFAULT)
+            gc_push(pb)
+            if err_flag != 0 or ctl == CTL_THROW:
+                gc_popto(gp)
+                return v_undef()
+            radd: int32 = eval_binop(OP_ADD, pa, pb)
+            gc_popto(gp)
+            return radd
         # if either is a string -> string concat
         if tag_of(a) == TAG_STR or tag_of(b) == TAG_STR:
             gsa: int32 = gc_top
@@ -714,6 +887,23 @@ def bigint_cmp_op(a: int32, b: int32, kind: int32) -> int32:
 
 
 def cmp_op(a: int32, b: int32, kind: int32) -> int32:
+    # ES 7.2.13 IsLessThan: both operands go through ToPrimitive(NUMBER hint)
+    # before the string-vs-numeric decision, so `[5] < 6` is true and
+    # `["b"] > ["a"]` is a STRING compare.
+    if needs_to_primitive(a) != 0 or needs_to_primitive(b) != 0:
+        gc0: int32 = gc_top
+        gc_push(a)
+        gc_push(b)
+        ca: int32 = to_primitive(a, HINT_NUMBER)
+        gc_push(ca)
+        cb: int32 = to_primitive(b, HINT_NUMBER)
+        gc_push(cb)
+        if err_flag != 0 or ctl == CTL_THROW:
+            gc_popto(gc0)
+            return v_boolv(0)
+        rcmp: int32 = cmp_op(ca, cb, kind)
+        gc_popto(gc0)
+        return rcmp
     if tag_of(a) == TAG_BIGINT or tag_of(b) == TAG_BIGINT:
         return bigint_cmp_op(a, b, kind)
     # string vs string -> lexicographic; else numeric

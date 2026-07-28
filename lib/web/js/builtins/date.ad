@@ -179,21 +179,76 @@ def date_iso_strid(msf: float64) -> int32:
     return id
 
 
-# emit the toString / display form: "YYYY-MM-DD HH:MM:SS UTC"
+# the three-letter English day/month abbreviations used by ES ToDateString
+def date_emit_dow(w: int32):
+    if w == 0:
+        emit_cstr(cast[Ptr[uint8]]("Sun"))
+    elif w == 1:
+        emit_cstr(cast[Ptr[uint8]]("Mon"))
+    elif w == 2:
+        emit_cstr(cast[Ptr[uint8]]("Tue"))
+    elif w == 3:
+        emit_cstr(cast[Ptr[uint8]]("Wed"))
+    elif w == 4:
+        emit_cstr(cast[Ptr[uint8]]("Thu"))
+    elif w == 5:
+        emit_cstr(cast[Ptr[uint8]]("Fri"))
+    else:
+        emit_cstr(cast[Ptr[uint8]]("Sat"))
+
+
+def date_emit_mon(m: int32):
+    if m == 1:
+        emit_cstr(cast[Ptr[uint8]]("Jan"))
+    elif m == 2:
+        emit_cstr(cast[Ptr[uint8]]("Feb"))
+    elif m == 3:
+        emit_cstr(cast[Ptr[uint8]]("Mar"))
+    elif m == 4:
+        emit_cstr(cast[Ptr[uint8]]("Apr"))
+    elif m == 5:
+        emit_cstr(cast[Ptr[uint8]]("May"))
+    elif m == 6:
+        emit_cstr(cast[Ptr[uint8]]("Jun"))
+    elif m == 7:
+        emit_cstr(cast[Ptr[uint8]]("Jul"))
+    elif m == 8:
+        emit_cstr(cast[Ptr[uint8]]("Aug"))
+    elif m == 9:
+        emit_cstr(cast[Ptr[uint8]]("Sep"))
+    elif m == 10:
+        emit_cstr(cast[Ptr[uint8]]("Oct"))
+    elif m == 11:
+        emit_cstr(cast[Ptr[uint8]]("Nov"))
+    else:
+        emit_cstr(cast[Ptr[uint8]]("Dec"))
+
+
+# emit ES 21.4.4.41 ToDateString: "Www Mmm DD YYYY HH:MM:SS GMT+0000 (...)".
+# This engine has no local-timezone database, so its local time IS UTC and the
+# offset is always +0000 — which is exactly what node prints under TZ=UTC. The
+# old "YYYY-MM-DD HH:MM:SS UTC" spelling was not a format any engine produces,
+# and it became load-bearing once ToPrimitive started routing `date + ""` and
+# `String(date)` through Date.prototype.toString instead of the ISO inspector.
 def date_emit_string(msf: float64):
+    if is_nan(msf) != 0:
+        emit_cstr(cast[Ptr[uint8]]("Invalid Date"))
+        return
     date_decompose(msf)
-    date_emit_pad(dt_year, 4)
-    emit_c(cast[uint8](45))
-    date_emit_pad(dt_month, 2)
-    emit_c(cast[uint8](45))
-    date_emit_pad(dt_day, 2)
+    date_emit_dow(dt_dow)
     emit_c(cast[uint8](32))              # ' '
+    date_emit_mon(dt_month)
+    emit_c(cast[uint8](32))
+    date_emit_pad(dt_day, 2)
+    emit_c(cast[uint8](32))
+    date_emit_pad(dt_year, 4)
+    emit_c(cast[uint8](32))
     date_emit_pad(dt_hour, 2)
-    emit_c(cast[uint8](58))
+    emit_c(cast[uint8](58))              # ':'
     date_emit_pad(dt_min, 2)
     emit_c(cast[uint8](58))
     date_emit_pad(dt_sec, 2)
-    emit_cstr(cast[Ptr[uint8]](" UTC"))
+    emit_cstr(cast[Ptr[uint8]](" GMT+0000 (Coordinated Universal Time)"))
 
 
 def date_string_strid(msf: float64) -> int32:
