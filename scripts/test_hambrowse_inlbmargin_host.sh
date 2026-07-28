@@ -60,13 +60,23 @@ assert_grep() {   # pattern message
 
 # --- FIX 1: the styled inline-block .sbox paints a real box ---
 # FILL line: "FILL top bot lx rx #hex rad z padt padb b#hex".
-# width:200 + padding:6px 14px -> box lx=14 rx=242 (228px wide), radius 16, white
-# fill, 6px top/bottom pad, and a #dfe1e5 border stroke (b#dfe1e5, NOT b-).
-assert_grep '^FILL 0 1 14 242 #ffffff 16 0 6 6 b#dfe1e5' \
-    "styled inline-block paints a rounded (r16) bordered (#dfe1e5) filled box, width 228"
-# The box text flows INSIDE the box (inset by the 14px left padding), on the box row.
-assert_grep '^SEG 0 28 #202124 .*\|query text\|' \
-    "the inline-block box text renders inside the box (x=28 = lx14 + pad14)"
+# width:200 + padding:6px 14px -> a 228px-wide box, radius 16, white fill, 6px
+# top/bottom pad, and a #dfe1e5 border stroke (b#dfe1e5, NOT b-).
+#
+# lx is 0, NOT 14. This gate used to pin lx=14 / text x=28 — the chip shifted
+# right by its own padding-left, because the box model folds margin-left and
+# padding-left into one inset column and the inline-block path (which models its
+# padding separately) counted it twice. `chromium --headless`
+# getBoundingClientRect on THIS fixture's .sbox:
+#     box 0.0..230.0  w=230.0  text 15.0
+# i.e. the border box starts at the body's left edge and the text is inset by
+# the padding alone (15 = the 1px border + 14px padding; this engine does not
+# reserve the border column, so it reads 14). The old expectation was the bug.
+assert_grep '^FILL 0 1 0 228 #ffffff 16 0 6 6 b#dfe1e5' \
+    "styled inline-block paints a rounded (r16) bordered (#dfe1e5) filled box at lx=0, width 228"
+# The box text flows INSIDE the box, inset by the 14px left padding (chromium: 15).
+assert_grep '^SEG 0 14 #202124 .*\|query text\|' \
+    "the inline-block box text renders inside the box (x=14 = lx0 + pad14)"
 
 # --- FIX 2: inline horizontal margins space the tabs ---
 # .tabs span { margin-right:20px }. "All"(x=0), then each following tab is pushed
