@@ -77,6 +77,27 @@ echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile s
 "$CLANG" -O0 -c -ffreestanding -fno-pic --target=aarch64-none-elf -mcmodel=small \
     "$ARM/stubs.c" -o "$WORK/stubs.o" || { echo "[kllvm-arm64] ERROR: clang stubs.c" >&2; exit 1; }
 
+# stubs.c is a hand-maintained snapshot of the symbols the whole-kernel .ll left
+# undefined. As main evolves (notably api_autostubs regeneration), the kernel
+# closure can START defining a symbol that stubs.c also defines -> `multiple
+# definition` at link. The kernel's REAL definition must always win, so localize
+# any stub symbol that kernel_arm64.o already defines globally. Self-healing:
+# no hand-editing of stubs.c is needed when the closure grows a definition.
+"${CROSS}nm" --defined-only -g "$WORK/kernel_arm64.o" 2>/dev/null \
+    | awk '{print $NF}' | sort -u >"$WORK/kernel_defined.txt"
+"${CROSS}nm" --defined-only -g "$WORK/stubs.o" 2>/dev/null \
+    | awk '{print $NF}' | sort -u >"$WORK/stubs_defined.txt"
+comm -12 "$WORK/kernel_defined.txt" "$WORK/stubs_defined.txt" >"$WORK/stubs_shadowed.txt"
+SHADOWED=$(wc -l <"$WORK/stubs_shadowed.txt")
+if [ "$SHADOWED" -gt 0 ]; then
+    echo "[kllvm-arm64]    $SHADOWED stub(s) now defined by the kernel closure; localizing in stubs.o:"
+    sed 's/^/[kllvm-arm64]      - /' "$WORK/stubs_shadowed.txt"
+    LOCALIZE_ARGS=()
+    while read -r s; do [ -n "$s" ] && LOCALIZE_ARGS+=(-L "$s"); done <"$WORK/stubs_shadowed.txt"
+    "${CROSS}objcopy" "${LOCALIZE_ARGS[@]}" "$WORK/stubs.o" \
+        || { echo "[kllvm-arm64] ERROR: objcopy localize stubs" >&2; exit 1; }
+fi
+
 echo "[kllvm-arm64] 4) link bootable aarch64 kernel ELF (kernel.lds, -nostdlib -static)"
 "$LD_CMD" -nostdlib -static -z noexecstack -z max-page-size=4096 \
     -T "$ARM/kernel.lds" -o "$OUT_ELF" \
