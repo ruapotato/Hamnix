@@ -349,7 +349,7 @@ bash scripts/test_htermsel_evt_host.sh
 # whole, then middle-clicks and asserts the paste BY EFFECT (the terminal runs
 # the pasted line). Caught two defects nine green host gates could not see:
 # DEV_MAX excluding DEV_SNARF_PRIMARY, and offset-blind devsnarf writes.
-bash scripts/test_middle_paste_ondevice.sh
+bash scripts/ci_run_gate.sh scripts/test_middle_paste_ondevice.sh
 # QEMU-free host gate for the user-reported "clicking the default theme drops my
 # desktop icons" bug: applying a theme/wallpaper bumps the kernel wallpaper gen,
 # the desktop wakes and on the SAME wake runs its periodic refresh, and the old
@@ -2176,7 +2176,7 @@ bash scripts/ci_run_gate.sh scripts/test_usbms.sh
 # fast SKIP on a battery shard that has no prebuilt installer image (the
 # full image build + OVMF live boot runs in the installer CI job / locally);
 # it exercises fully whenever build/hamnix-installer.img is already present.
-HAMNIX_SKIP_BUILD=1 bash scripts/test_live_writable.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_live_writable.sh
 
 # test_installer_madt_enum (#105): the SHIPPED installer image, booted under
 # UEFI/OVMF, must enumerate CPUs + IOAPIC(s) from the ACPI MADT — NOT the
@@ -2209,7 +2209,7 @@ SKIP_BUILD=1 bash scripts/test_installer_madt_enum.sh
 # is INCONCLUSIVE (rc 2), not a false-red. HAMNIX_SKIP_BUILD=1 keeps it a fast
 # SKIP on a shard with no prebuilt image; the full build (~15-20 min) + OVMF
 # boot runs in the installer CI job / locally (build the image first there).
-HAMNIX_SKIP_BUILD=1 bash scripts/test_kpti_uefi.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_kpti_uefi.sh
 
 # test_installer_ram_full (EFI RAM discovery): the SHIPPED installer image,
 # booted under UEFI/OVMF at -m 2G, must register the FULL installed RAM from
@@ -2228,7 +2228,7 @@ HAMNIX_SKIP_BUILD=1 bash scripts/test_kpti_uefi.sh
 # print pre-userspace so it resolves in seconds and never needs the DE.
 # HAMNIX_SKIP_BUILD=1 keeps it a fast SKIP on a shard with no prebuilt image;
 # the full build + OVMF boot runs in the installer CI job / locally.
-HAMNIX_SKIP_BUILD=1 bash scripts/test_installer_ram_full.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_installer_ram_full.sh
 
 # test_installer_nvme_inram (THE END-TO-END INSTALL GATE): boot the SHIPPED
 # installer image under UEFI/OVMF against a blank NVMe target and run the
@@ -2566,7 +2566,7 @@ bash scripts/ci_run_gate.sh scripts/test_curl_https_redirect.sh
 # cleanly without KVM/OVMF/socat/converter; HAMNIX_SKIP_BUILD=1 makes it a
 # fast SKIP on a battery shard with no prebuilt installer image (the full
 # build + OVMF boot runs in the installer CI job / locally).
-HAMNIX_SKIP_BUILD=1 bash scripts/test_de_visual_gate.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_de_visual_gate.sh
 
 # OFFICE SUITE host gates: HamWrite (word processor), HamSheet (spreadsheet)
 # and HamSlides (presentation) are PRE-INSTALLED first-class DE apps. These
@@ -2584,7 +2584,7 @@ bash scripts/test_filepick_host.sh
 # category, and each app launched through /dev/wsys/run/launch maps a window,
 # paints it, and reacts to real PS/2 keystrokes. HOST-GUARDED: SKIPs cleanly
 # without KVM/OVMF/socat or a prebuilt build/hamnix-installer.img.
-bash scripts/test_de_office_suite.sh
+bash scripts/ci_run_gate.sh scripts/test_de_office_suite.sh
 
 # test_de_desktop_icon_source: the desktop icon grid is built from the USER'S
 # ~/Desktop, NEVER the filesystem root (USER report: "the desktop is showing
@@ -2594,7 +2594,7 @@ bash scripts/test_de_office_suite.sh
 # asserts src is a Desktop dir with >= 4 icons + that the guest shell lists the
 # same launchers. HOST-GUARDED: SKIPs cleanly without KVM/OVMF/socat or a
 # prebuilt build/hamnix-installer.img.
-bash scripts/test_de_desktop_icon_source.sh
+bash scripts/ci_run_gate.sh scripts/test_de_desktop_icon_source.sh
 
 # test_spawn_detached_page: a LIVE PARENT must never lose the contents of one
 # of its own user pages across a `spawn detached`. The parent seeds a page
@@ -2626,7 +2626,7 @@ bash scripts/test_de_wallpaper_coverage_host.sh
 # the capplet's own sink via the DE launch queue, and asserts on the real
 # framebuffer that the bottom band is neither black nor darker than the rest,
 # and that each image actually repainted the desktop.
-bash scripts/test_de_wallpaper_fullscreen.sh
+bash scripts/ci_run_gate.sh scripts/test_de_wallpaper_fullscreen.sh
 
 # test_de_resolution_edge_to_edge: THE RESOLUTION GATE — the whole DE suite
 # booted at the OVMF default (1280x800 = 1,024,000 px) and was therefore blind
@@ -2640,7 +2640,7 @@ bash scripts/test_de_wallpaper_fullscreen.sh
 # desktop is painted edge to edge (root colour < 2% of the frame), that no
 # window cache was clamped below its geometry ([wsys] cache-clamp), and that
 # the panels land at the TRUE screen height.
-bash scripts/test_de_resolution_edge_to_edge.sh
+bash scripts/ci_run_gate.sh scripts/test_de_resolution_edge_to_edge.sh
 # test_arm64_llvm_kernel: the ARM64 LLVM lane (A9 preemptive EL0 multitasking +
 # the A10 real Adder-compiled EL0 user program, checksum cross-checked against a
 # native x86-64 run of the same source). 101s, aarch64 TCG -- it does NOT contend
@@ -2659,7 +2659,7 @@ bash scripts/test_arm64_llvm_kernel.sh
 # Default AND from the other two, plus that /dev/wsys/wallpaper's generation
 # actually advanced (it read 0 forever while the ctl verb sat behind the
 # hostowner gate and hamctl reported success anyway).
-bash scripts/test_de_wallpaper_themes.sh
+bash scripts/ci_run_gate.sh scripts/test_de_wallpaper_themes.sh
 
 # test_de_panel_config: THE PANEL YOU CONFIGURED IS THE PANEL YOU GET.
 # This gate has existed since 2026-06-20 and has never been in the battery, so
@@ -2673,7 +2673,7 @@ bash scripts/test_de_wallpaper_themes.sh
 # each panel by a COLOUR unique on the desktop, so "the panel is at this edge"
 # and "the edge it left is bare" are both asserted positively — a delta could
 # not tell the configured panel from a ghost squatting in its place.
-bash scripts/test_de_panel_config.sh
+bash scripts/ci_run_gate.sh scripts/test_de_panel_config.sh
 
 # test_de_rl5_deterministic (#120): the DETERMINISTIC-BRINGUP gate. Boots the
 # live image to runlevel 5 several times and asserts EVERY boot hands off +
@@ -2685,7 +2685,7 @@ bash scripts/test_de_panel_config.sh
 # HOST-GUARDED: SKIPs cleanly without KVM/OVMF/socat; HAMNIX_SKIP_BUILD=1 =
 # fast SKIP on a shard with no prebuilt image (the full OVMF boot runs in the
 # installer CI job). Before the fix: 5/8 bare; after: 8/8 full.
-HAMNIX_SKIP_BUILD=1 RL5_BOOTS=3 bash scripts/test_de_rl5_deterministic.sh
+HAMNIX_SKIP_BUILD=1 RL5_BOOTS=3 bash scripts/ci_run_gate.sh scripts/test_de_rl5_deterministic.sh
 
 # test_installer_oom_reclaim (#106): the native app-spawn memory-reclaim +
 # graceful-OOM gate. Boots the installer under memory pressure (-m 768M, the
@@ -2849,7 +2849,7 @@ bash scripts/ci_run_gate.sh scripts/test_cp_r.sh
 # WebKit-staged full-mirror image (the image is built + booted locally / in the
 # installer job with stage_weston_term.sh + stage_webkit.sh staged). Bring-up
 # probe: PARTIAL is exit 0; hard-fails only on a boot break or a fault-storm.
-HAMNIX_SKIP_BUILD=1 bash scripts/test_webkit.sh
+HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_webkit.sh
 
 # Native Intel HDA audio playback, proven two ways with a HOST WAV capture
 # (hearing-free ground truth). test_hda_audio: the KERNEL boot self-test streams
@@ -3224,7 +3224,7 @@ bash scripts/test_hambrowse_bindata_host.sh
 # terminal open/close cycles, with TasksLive / VmaNodesLive / the live hamsh
 # census required to come back to baseline. Unlike the soak it fits the
 # per-shard budget, so it runs unconditionally.
-bash scripts/test_de_term_child_reap.sh
+bash scripts/ci_run_gate.sh scripts/test_de_term_child_reap.sh
 # test_hambrowse_realwebjs: QEMU-free gate for the engine gaps that broke REAL
 # google.com in a user's hands ("Ti is not a function", "_DumpException is not a
 # function", "I can't select the search bar"). Each was a CASCADE — an earlier

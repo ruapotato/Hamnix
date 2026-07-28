@@ -225,6 +225,50 @@ else
     echo "$TAG   ok  every manifest line lets its gate's exit status through"
 fi
 
+# --- PART 5: the capability-vacuous ceiling ---------------------------------
+# Every CI runner in .github/workflows is `runs-on: ubuntu-latest`, which has
+# NO /dev/kvm — scripts/ci_run_gate.sh's own header says so. A manifest gate
+# that opens with `[ -e /dev/kvm ] || exit 0` therefore exits 0 on EVERY CI
+# run, forever, having observed nothing. That is not a lying verdict (the gate
+# is honest about skipping and it does assert when run on a KVM host, which is
+# how the orchestrator runs it), so it is not a FAIL here — but the population
+# must not grow unnoticed while everyone reads the battery as coverage.
+#
+# The ceiling is a RATCHET. Lower it by moving a gate to a KVM-capable runner,
+# or by giving it a structural half that asserts before the capability check.
+# Do NOT raise it.
+CAP_CEILING=21
+echo "$TAG PART 5: manifest gates that exit 0 at a capability check (ceiling $CAP_CEILING)"
+CAPVAC=$(python3 - "$MANIFEST" <<'PY'
+import re, sys
+man = open(sys.argv[1], errors='replace').read()
+live = '\n'.join(l for l in man.split('\n') if not l.lstrip().startswith('#'))
+out = []
+for g in sorted(set(re.findall(r'scripts/test_[A-Za-z0-9_.-]+\.sh', live))):
+    try:
+        src = open(g, errors='replace').read().split('\n')
+    except OSError:
+        continue
+    for i, l in enumerate(src):
+        if l.lstrip().startswith('#'):
+            continue
+        if '/dev/kvm' in l and re.search(r'exit\s+0', '\n'.join(src[i:i + 3])):
+            out.append(g)
+            break
+print('\n'.join(out))
+PY
+)
+N_CAP=$(printf '%s\n' "$CAPVAC" | grep -c . || true)
+if [ "$N_CAP" -gt "$CAP_CEILING" ]; then
+    echo "$TAG FAIL: $N_CAP registered gate(s) exit 0 when /dev/kvm is absent," >&2
+    echo "$TAG   which is EVERY ubuntu-latest CI run. Ceiling is $CAP_CEILING:" >&2
+    printf '%s\n' "$CAPVAC" | sed "s|^|$TAG   |" >&2
+    echo "$TAG   These manifest lines report green without observing anything." >&2
+    FAILED=1
+else
+    echo "$TAG   ok  $N_CAP of $CAP_CEILING (these assert only on a KVM host)"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
     echo "$TAG FAIL"
     exit 1
