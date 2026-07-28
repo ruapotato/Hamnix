@@ -1421,17 +1421,20 @@ def str_regex_matchall(sid: int32, rev: int32) -> int32:
 
 # str.split(re[, limit]): split on regex separators; captured groups from the
 # separator are spliced into the result (per spec).
-def str_regex_split(sid: int32, rev: int32) -> int32:
+def str_regex_split(sid: int32, rev: int32, lim: int32) -> int32:
+    res: int32 = v_new_array()
+    if lim <= 0:
+        return res                           # split(re, 0) -> [] (node)
     o: int32 = objid_of(rev)
     ic: int32 = (obj_re_flags[o] >> 1) & 1
     ml: int32 = (obj_re_flags[o] >> 2) & 1
     da: int32 = (obj_re_flags[o] >> 3) & 1
     ncap: int32 = obj_re_ncap[o]
-    res: int32 = v_new_array()
     ao: int32 = objid_of(res)
     n: int32 = str_len(sid)
     if n == 0:
         return res                           # "".split(re) -> [] (unless re matches "")
+    cnt: int32 = 0
     last: int32 = 0
     pos: int32 = 0
     while pos < n:
@@ -1446,6 +1449,9 @@ def str_regex_split(sid: int32, rev: int32) -> int32:
             pos = start + 1
             continue
         arr_push(ao, v_string_bytes(&sp_buf[st_off[sid] + last], start - last))
+        cnt = cnt + 1
+        if cnt >= lim:
+            return res
         g: int32 = 1
         while g <= ncap:
             s0: int32 = re_cap[2 * g]
@@ -1454,6 +1460,9 @@ def str_regex_split(sid: int32, rev: int32) -> int32:
                 arr_push(ao, v_undef())
             else:
                 arr_push(ao, v_string_bytes(&sp_buf[st_off[sid] + s0], e0 - s0))
+            cnt = cnt + 1
+            if cnt >= lim:
+                return res
             g = g + 1
         last = mend
         pos = mend

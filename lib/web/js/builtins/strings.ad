@@ -23,6 +23,61 @@ def arg_or(base: int32, argc: int32, i: int32) -> int32:
     return v_undef()
 
 
+# String.prototype.split's `limit`: ToUint32, so `undefined` and any NEGATIVE
+# value mean "no limit" (2^32-1, which no array here can reach) while 0 means an
+# EMPTY result. node: "a,b,c".split(",",-1) is ["a","b","c"], split(",",0) is [].
+SPLIT_NOLIMIT: int32 = 2147483647
+
+
+def split_limit(v: int32) -> int32:
+    if tag_of(v) == TAG_UNDEF:
+        return SPLIT_NOLIMIT
+    u: uint32 = to_uint32(v)
+    if u > cast[uint32](SPLIT_NOLIMIT):
+        return SPLIT_NOLIMIT
+    return cast[int32](u)
+
+
+# ---- position-argument conversions (UTF-16 code units) ----
+#
+# ECMAScript position arguments are ToIntegerOrInfinity — TRUNCATE toward zero
+# FIRST, then clamp. Doing it the other way round is observably different:
+# `"hello".slice(-2.5)` is "lo" (trunc -2.5 -> -2, then 5 + -2 = 3), not "o"
+# (5 + -2.5 = 2.5 -> 2). Every caller below went through `cast[int32](
+# to_number(...))`, which silently produced garbage for NaN/Infinity and never
+# clamped at all.
+
+# ToIntegerOrInfinity, clamped into [0, len]. NaN / undefined / -Infinity -> 0,
+# +Infinity -> len. This is the `substring` / `startsWith` / `endsWith` /
+# `includes` shape: a NEGATIVE argument clamps to 0, it does NOT wrap.
+def clamp_pos(v: int32, len: int32) -> int32:
+    x: float64 = to_number(v)
+    if is_nan(x) != 0:
+        return 0
+    x = f_trunc(x)
+    if x <= 0.0:
+        return 0
+    if x >= cast[float64](len):
+        return len
+    return cast[int32](x)
+
+
+# ToIntegerOrInfinity with RELATIVE (negative-wraps) semantics, clamped into
+# [0, len]. This is the `slice` / `at` / `substr` shape.
+def rel_pos(v: int32, len: int32) -> int32:
+    x: float64 = to_number(v)
+    if is_nan(x) != 0:
+        return 0
+    x = f_trunc(x)
+    if x < 0.0:
+        x = cast[float64](len) + x
+        if x < 0.0:
+            return 0
+    if x >= cast[float64](len):
+        return len
+    return cast[int32](x)
+
+
 def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
     sid: int32 = strid_of(sv)
     # `slen` is the ECMAScript length: UTF-16 CODE UNITS, not stored bytes.
@@ -59,29 +114,36 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
         return str_map_case(sid, 1)
     if str_eq_cstr(name, cast[Ptr[uint8]]("toLowerCase")) != 0:
         return str_map_case(sid, 0)
-    if str_eq_cstr(name, cast[Ptr[uint8]]("slice")) != 0 or str_eq_cstr(name, cast[Ptr[uint8]]("substring")) != 0:
-        st: int32 = 0
+    if str_eq_cstr(name, cast[Ptr[uint8]]("slice")) != 0:
+        # slice: RELATIVE indices (negative counts back from the end); an empty
+        # or inverted range yields "".
+        st: int32 = rel_pos(arg_or(base, argc, 0), slen)
         en: int32 = slen
-        if argc > 0:
-            st = cast[int32](to_number(call_args[base]))
-        if argc > 1:
-            en = cast[int32](to_number(call_args[base + 1]))
-        if st < 0:
-            st = slen + st
-            if st < 0:
-                st = 0
-        if en < 0:
-            en = slen + en
-        if en > slen:
-            en = slen
+        if argc > 1 and tag_of(call_args[base + 1]) != TAG_UNDEF:
+            en = rel_pos(call_args[base + 1], slen)
         if st > en:
             st = en
         return v_string_id(str_sub_u16(sid, st, en))
+    if str_eq_cstr(name, cast[Ptr[uint8]]("substring")) != 0:
+        # substring is NOT slice: both arguments clamp into [0, length] (a
+        # negative one becomes 0, it does NOT count from the end) and are then
+        # SWAPPED when start > end. node: "hello".substring(3,1) === "el",
+        # "hello".substring(-2) === "hello".
+        ss: int32 = clamp_pos(arg_or(base, argc, 0), slen)
+        se: int32 = slen
+        if argc > 1 and tag_of(call_args[base + 1]) != TAG_UNDEF:
+            se = clamp_pos(call_args[base + 1], slen)
+        if ss > se:
+            sw: int32 = ss
+            ss = se
+            se = sw
+        return v_string_id(str_sub_u16(sid, ss, se))
     if str_eq_cstr(name, cast[Ptr[uint8]]("split")) != 0:
         sep0: int32 = arg_or(base, argc, 0)
+        spl: int32 = split_limit(arg_or(base, argc, 1))
         if is_regex(sep0) != 0:
-            return str_regex_split(sid, sep0)
-        return str_split(sid, sep0)
+            return str_regex_split(sid, sep0, spl)
+        return str_split(sid, sep0, spl)
     if str_eq_cstr(name, cast[Ptr[uint8]]("match")) != 0:
         return str_regex_match(sid, to_regex(arg_or(base, argc, 0)))
     if str_eq_cstr(name, cast[Ptr[uint8]]("matchAll")) != 0:
@@ -134,11 +196,30 @@ def string_method(sv: int32, name: int32, base: int32, argc: int32) -> int32:
             return v_number(-1.0)
         return v_number(cast[float64](str_byte_to_u16(sid, lbyte)))
     if str_eq_cstr(name, cast[Ptr[uint8]]("includes")) != 0:
-        return v_boolv(bool_of(str_indexof(sid, strid_of(to_string_val(arg_or(base, argc, 0)))) >= 0))
+        # arg1 = START position (code units), clamped into [0, length].
+        incp: int32 = clamp_pos(arg_or(base, argc, 1), slen)
+        return v_boolv(bool_of(str_indexof_fromb(sid, \
+                    strid_of(to_string_val(arg_or(base, argc, 0))), \
+                    str_u16_to_byte(sid, incp)) >= 0))
     if str_eq_cstr(name, cast[Ptr[uint8]]("startsWith")) != 0:
-        return v_boolv(str_startswith(sid, strid_of(to_string_val(arg_or(base, argc, 0)))))
+        # arg1 = START position: the search string must sit AT that offset.
+        swp: int32 = clamp_pos(arg_or(base, argc, 1), slen)
+        return v_boolv(str_matches_at(sid, \
+                    strid_of(to_string_val(arg_or(base, argc, 0))), \
+                    str_u16_to_byte(sid, swp)))
     if str_eq_cstr(name, cast[Ptr[uint8]]("endsWith")) != 0:
-        return v_boolv(str_endswith(sid, strid_of(to_string_val(arg_or(base, argc, 0)))))
+        # arg1 is an END position, NOT a start: `"hello".endsWith("hell",4)` is
+        # true (node) because the comparison is against the first 4 code units.
+        # Default is the whole length.
+        ewe: int32 = slen
+        if argc > 1 and tag_of(call_args[base + 1]) != TAG_UNDEF:
+            ewe = clamp_pos(call_args[base + 1], slen)
+        eid: int32 = strid_of(to_string_val(arg_or(base, argc, 0)))
+        ebe: int32 = str_u16_to_byte(sid, ewe)
+        ebs: int32 = ebe - str_len(eid)
+        if ebs < 0:
+            return v_boolv(0)
+        return v_boolv(str_matches_at(sid, eid, ebs))
     if str_eq_cstr(name, cast[Ptr[uint8]]("at")) != 0:
         ai: int32 = 0
         if argc > 0:
@@ -275,31 +356,28 @@ def str_lastindexof(hay: int32, needle: int32) -> int32:
     return -1
 
 
-def str_startswith(hay: int32, pre: int32) -> int32:
+# Does `needle` occur in `hay` starting at BYTE offset `off`? Backs both
+# startsWith(s,pos) and endsWith(s,endPos) — the only difference between them is
+# which byte offset the caller computes.
+def str_matches_at(hay: int32, needle: int32, off: int32) -> int32:
     hn: int32 = str_len(hay)
-    pn: int32 = str_len(pre)
-    if pn > hn:
+    nn: int32 = str_len(needle)
+    if off < 0 or off + nn > hn:
         return 0
     i: int32 = 0
-    while i < pn:
-        if str_char(hay, i) != str_char(pre, i):
+    while i < nn:
+        if str_char(hay, off + i) != str_char(needle, i):
             return 0
         i = i + 1
     return 1
+
+
+def str_startswith(hay: int32, pre: int32) -> int32:
+    return str_matches_at(hay, pre, 0)
 
 
 def str_endswith(hay: int32, suf: int32) -> int32:
-    hn: int32 = str_len(hay)
-    sn: int32 = str_len(suf)
-    if sn > hn:
-        return 0
-    off: int32 = hn - sn
-    i: int32 = 0
-    while i < sn:
-        if str_char(hay, off + i) != str_char(suf, i):
-            return 0
-        i = i + 1
-    return 1
+    return str_matches_at(hay, suf, str_len(hay) - str_len(suf))
 
 
 # padStart (at_start=1) / padEnd (at_start=0). arg0 = target length,
@@ -452,10 +530,15 @@ def str_replace_all_string(sid: int32, patv: int32, replv: int32) -> int32:
     return str_replace_plain(sid, patv, replv, 1)
 
 
-def str_split(sid: int32, sepv: int32) -> int32:
+# `lim` is the already-ToUint32'd second argument (SPLIT_NOLIMIT when absent).
+# A limit of 0 yields [] for EVERY separator, including an absent one:
+# node `"abc".split(undefined, 0)` is [], not ["abc"].
+def str_split(sid: int32, sepv: int32, lim: int32) -> int32:
     v: int32 = v_new_array()
     o: int32 = objid_of(v)
     n: int32 = str_len(sid)
+    if lim <= 0:
+        return v
     if tag_of(sepv) == TAG_UNDEF:
         arr_push(o, v_string_id(sid))
         return v
@@ -466,10 +549,13 @@ def str_split(sid: int32, sepv: int32) -> int32:
         # iterator — not code points: `"\u{1d11e}".split("")` is 2 elements).
         i: int32 = 0
         nu: int32 = str_u16_len(sid)
+        if nu > lim:
+            nu = lim
         while i < nu:
             arr_push(o, v_string_id(str_sub_u16(sid, i, i + 1)))
             i = i + 1
         return v
+    cnt: int32 = 0
     start: int32 = 0
     i2: int32 = 0
     while i2 + sl <= n:
@@ -478,6 +564,9 @@ def str_split(sid: int32, sepv: int32) -> int32:
             j = j + 1
         if j == sl:
             arr_push(o, v_string_bytes(&sp_buf[st_off[sid] + start], i2 - start))
+            cnt = cnt + 1
+            if cnt >= lim:
+                return v
             i2 = i2 + sl
             start = i2
         else:
