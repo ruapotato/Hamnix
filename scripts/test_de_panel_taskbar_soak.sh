@@ -67,7 +67,11 @@ OUT_DIR="${OUT_DIR:-build/de_panel_soak/$TS}"
 HANDOFF_MARKER="handing off to interactive shell"
 TAG="[panelsoak]"
 
-[ -e /dev/kvm ] || { echo "$TAG SKIP-RUNTIME: /dev/kvm absent" >&2; exit 0; }
+# A missing capability is INCONCLUSIVE (125), never 0: this gate asserts by
+# BOOTING, so with no KVM / OVMF / socat it observes nothing, and reporting
+# green for an unobserved assertion is the soft-green class
+# scripts/test_gate_softgreen.sh exists to forbid.
+[ -e /dev/kvm ] || { echo "$TAG INCONCLUSIVE: /dev/kvm absent — nothing booted" >&2; exit 125; }
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then
     for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd \
@@ -75,8 +79,8 @@ if [ -z "$OVMF_FD" ]; then
         [ -f "$c" ] && OVMF_FD="$c" && break
     done
 fi
-[ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "$TAG SKIP-RUNTIME: no OVMF" >&2; exit 0; }
-command -v socat >/dev/null 2>&1 || { echo "$TAG SKIP-RUNTIME: no socat" >&2; exit 0; }
+[ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "$TAG INCONCLUSIVE: no OVMF firmware — nothing booted" >&2; exit 125; }
+command -v socat >/dev/null 2>&1 || { echo "$TAG INCONCLUSIVE: no socat (QEMU monitor) — nothing booted" >&2; exit 125; }
 
 # STALE-IMAGE GUARD: a stale image false-GREENs the very regression this
 # gate exists to catch. ensure_installer_img REBUILDS when the image is

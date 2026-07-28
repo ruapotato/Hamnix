@@ -3985,3 +3985,30 @@ bash scripts/test_hambrowse_noscriptdom_host.sh
 # margin:0 5px exactly 10. Gaps come off the rasterizer's fill rects with each
 # chip's colour confirmed in the rendered PPM. REGISTERED 2026-07-28.
 bash scripts/test_hambrowse_inlbgap_host.sh
+
+# test_de_panel_taskbar_soak: THE TASKBAR MUST STILL BE THE TASKBAR TWENTY
+# MINUTES IN. From ~18 minutes into a desktop session the DE panel's taskbar
+# stops tracking reality — frozen on a stale app set in one run, EMPTY with
+# four windows plainly mapped in another — while `cat /dev/wsys/windows` keeps
+# enumerating correctly. The file was fine; the PANEL had gone blind, and the
+# panel swallowed the failure: a failed open of the window list blanked the
+# task array and repainted an empty bar, telling nobody.
+#
+# Why nothing caught it: every taskbar gate asserts at an INSTANT.
+# test_de_multiwin_taskbar proves three windows enumerate, test_de_panel_config
+# proves the configured panel is the panel you get; both are true at second 5
+# and both stay green while the panel blinds itself at minute 18. Even the
+# 30-minute test_de_stress_soak above missed it — it measures MemFree and wid
+# slots, not what the panel is DRAWING. This gate soaks a real session for
+# SOAK_MIN (default 22) minutes and asserts on the TREND: the panel's own
+# open-descriptor count (read from the real per-task fd table via
+# /proc/self/fd) must not climb, no window-list read may have been swallowed,
+# the health beacon must still be arriving in the final minute, and the wids in
+# the taskbar it is RENDERING must equal the wids in /dev/wsys/windows after
+# 20+ minutes.
+#
+# NOT FOR THE PER-SHARD BUDGET, for the same reason as test_de_stress_soak:
+# ~22 min of soak plus boot/teardown against a 50-min shard cap. Opt-in via
+# HAMNIX_SOAK=1, written as an `if` so the real verdict passes through when the
+# switch is on (never `&& ... || true`, which would discard it).
+if [ "${HAMNIX_SOAK:-0}" = "1" ]; then bash scripts/ci_run_gate.sh scripts/test_de_panel_taskbar_soak.sh; fi
