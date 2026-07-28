@@ -83,12 +83,11 @@ cp "$OVMF_FD" "$TMPD/ovmf.fd"
 cp "$INSTALLER_IMG" "$TMPD/img.raw"
 
 python3 - "$TMPD" "$OUTDIR" "$BOOT_WAIT" <<'PYDRV'
-import os, subprocess, sys, threading, time
+import os, re, subprocess, sys, threading, time
 
 tmpd, outdir, boot_wait = sys.argv[1], sys.argv[2], int(sys.argv[3])
 mon = os.path.join(tmpd, "mon.sock")
 SW, SH = 1280, 800
-SEL_MARK = "selectme"
 PASTE_MARK = "HAMPASTEOK"
 
 qemu = subprocess.Popen([
@@ -144,45 +143,77 @@ try:
     time.sleep(25)
 
     send("echo /bin/hamtermscene > /dev/wsys/run/launch")
-    if not wait_for("[term] scene window ready", 90):
+    if not wait_for("[hamterm] scene window ready", 90):
         print("[mid-paste] FAIL: DE terminal never came up", file=sys.stderr)
         sys.exit(1)
     time.sleep(10)
 
-    # Type a marker into the freshly focused terminal.
-    for ch in SEL_MARK:
-        mon_cmd("sendkey %s" % ch)
-        time.sleep(0.12)
-    time.sleep(3)
-    mon_cmd("screendump %s" % os.path.join(outdir, "typed.ppm"))
-    time.sleep(1)
+    # ---- Locate the terminal window DETERMINISTICALLY ------------------
+    # Blind screen coordinates are what made the earlier arm of this probe
+    # unfalsifiable: a click that misses the window proves nothing. Take the
+    # wid the kernel just mapped off the serial log, then read the window's
+    # real rect from its own wctl file ("<x> <y> <w> <h> <focus>") and derive
+    # every click from the terminal's OWN cell geometry (lib/htermsel.ad:
+    # x0=6, cell_w=8, y0=6, line_h=20 in window-content-local pixels).
+    with lock: pre = bytes(buf).decode("utf-8", "replace")
+    wids = re.findall(r"\[devwsys\] window (\d+) mapped", pre)
+    if not wids:
+        print("[mid-paste] FAIL: no window ever mapped", file=sys.stderr)
+        sys.exit(1)
+    wid = wids[-1]
+    geo = cap("cat /dev/wsys/%s/wctl" % wid, 5)
+    gm = re.search(r"(-?\d+) (-?\d+) (\d+) (\d+) ", geo)
+    if not gm:
+        print("[mid-paste] FAIL: could not read window %s geometry: %r"
+              % (wid, geo), file=sys.stderr)
+        sys.exit(1)
+    wx, wy, ww, wh = (int(g) for g in gm.groups())
+    print("[mid-paste] terminal wid=%s rect=%d,%d %dx%d" % (wid, wx, wy, ww, wh))
 
-    # ---- SELECT half: drag across the terminal's text ------------------
+    def cell(row, col):
+        """Screen pixel at the CENTRE of grid cell (row,col) of this window."""
+        return (wx + 6 + col * 8 + 4, wy + 6 + row * 20 + 10)
+
+    # ---- SELECT half: drag across the terminal's own output -------------
+    # The grid already holds the startup `echo NS_OK; ls /` output, so no
+    # keystroke injection is needed on the critical path. Drag from the first
+    # cell to a cell several rows down: whatever the layout, the span covers
+    # non-empty text, so a working selection MUST publish a non-empty PRIMARY.
+    send("echo -n '' > /dev/snarf.primary"); time.sleep(3)
     with lock: sel_since = len(buf)
-    got_primary = ""
-    for ty in (240, 260, 280, 300, 420):
-        mouse(300, ty, 0)
-        mouse(300, ty, 1)
-        mouse(420, ty, 1)
-        mouse(560, ty, 1)
-        mouse(560, ty, 0)
-        out = cap("cat /dev/snarf.primary", 5)
-        if len(out.strip()) and "cannot open" not in out:
-            got_primary = out
+    x0, y0 = cell(0, 0)
+    x1, y1 = cell(2, 12)
+    x2, y2 = cell(4, 24)
+    mouse(x0, y0, 0)            # move in, no button
+    mouse(x0, y0, 1)            # LEFT press  -> anchor
+    mouse(x1, y1, 1)            # drag        -> extend
+    mouse(x2, y2, 1)            # drag        -> extend
+    mouse(x2, y2, 0)            # release     -> copy to PRIMARY
+    time.sleep(2)
+    prim = cap("cat /dev/snarf.primary", 6)
     with lock: sel_tail = bytes(buf[sel_since:]).decode("utf-8", "replace")
-    if "[hamterm] SEL copied PRIMARY" not in sel_tail:
-        fails.append("a left drag over terminal text never published a "
-                     "PRIMARY selection (no '[hamterm] SEL copied PRIMARY')")
+    mon_cmd("screendump %s" % os.path.join(outdir, "afterdrag.ppm"))
+
+    # PRIMARY CONTENT is the assertion — the marker alone is only corroborating
+    # (a marker can be lost to the console gate; a file read cannot).
+    prim_body = prim.split("cat /dev/snarf.primary", 1)[-1]
+    prim_body = "".join(c for c in prim_body if c.isprintable())
+    prim_body = prim_body.replace("hamsh$", "").strip()
+    if not prim_body:
+        fails.append("a left drag over terminal text left /dev/snarf.primary "
+                     "EMPTY (selection never published; marker seen: %s)"
+                     % ("yes" if "SEL copied PRIMARY" in sel_tail else "no"))
     else:
-        print("[mid-paste] PASS drag published a PRIMARY selection")
+        print("[mid-paste] PASS drag published PRIMARY: %r" % prim_body[:60])
 
     # ---- PASTE half: plant an executable line, middle-click ------------
     send("echo -n '' > /dev/snarf"); time.sleep(3)
     send("echo 'echo %s > /dev/snarf' > /dev/snarf.primary" % PASTE_MARK)
     time.sleep(3)
-    mouse(500, 300, 0)
-    mouse(500, 300, 4)          # middle down (bit2)
-    mouse(500, 300, 0)          # middle up
+    px, py = cell(1, 4)
+    mouse(px, py, 0)
+    mouse(px, py, 4)            # middle down (bit2)
+    mouse(px, py, 0)            # middle up
     time.sleep(6)
     mon_cmd("screendump %s" % os.path.join(outdir, "afterpaste.ppm"))
     time.sleep(1)

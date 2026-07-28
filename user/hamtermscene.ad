@@ -2276,7 +2276,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     sys_bind(cast[Ptr[char]]("/dev"), cast[Ptr[char]]("#c"), 0)
     wid: int32 = _newwindow()
     if wid < 0:
-        _writeall(1, cast[Ptr[uint8]]("[term] FAIL newwindow\n"))
+        _cons_say(cast[Ptr[uint8]]("[hamterm] FAIL newwindow\n"))
         return 1
 
     ctlp: Array[64, uint8]
@@ -2355,9 +2355,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # Start the ONE persistent interactive hamsh.
     if _start_shell() != 0:
         _term_set_row(2, cast[Ptr[uint8]]("(shell failed to start)"))
-        _writeall(1, cast[Ptr[uint8]]("[term] shell spawn FAILED\n"))
+        _cons_say(cast[Ptr[uint8]]("[hamterm] shell spawn FAILED\n"))
     else:
-        _writeall(1, cast[Ptr[uint8]]("[term] hamsh spawned\n"))
+        _cons_say(cast[Ptr[uint8]]("[hamterm] hamsh spawned\n"))
 
     _emit_scene(cast[Ptr[char]](&scenep[0]))
     cfd4: int32 = sys_open_write(cast[Ptr[char]](&ctlp[0]))
@@ -2365,7 +2365,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         _writeall(cfd4, cast[Ptr[uint8]]("commit\n"))
         sys_close(cfd4)
 
-    _writeall(1, cast[Ptr[uint8]]("[term] scene window ready\n"))
+    _cons_say(cast[Ptr[uint8]]("[hamterm] scene window ready\n"))
 
     # Open the per-window KEY stream (focused-window keys, ASCII bytes).
     kfd: int32 = sys_open(cast[Ptr[char]](&keysp[0]))
