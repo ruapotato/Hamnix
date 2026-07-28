@@ -3850,3 +3850,20 @@ bash scripts/ci_run_gate.sh scripts/test_hamsh_arena_soak_ondevice.sh
 # PASS, if the create loop did not finish over the serial seam). Host-gate
 # companion: scripts/test_hamsh_argvcap_host.sh.
 bash scripts/ci_run_gate.sh scripts/test_hamsh_rmglob_ondevice.sh
+# scripts/test_jsengine_unwind_host.sh: QEMU-free gate for CONTROL-FLOW
+# UNWINDING in the JS evaluator (lib/web/js/interp.ad). The engine carries one
+# global completion state (ctl = NONE/RETURN/BREAK/CONTINUE/THROW), so every
+# "evaluate a sub-expression, then set the completion state" site can CLOBBER a
+# completion the sub-expression already raised, or keep running side effects
+# while one unwinds — a class of SILENT WRONG ANSWERS (wrong branch, wrong
+# mutation, exception swallowed whole) rather than a loud failure. ~95
+# assertions, every expectation taken from node v20's own stdout: return/throw
+# of a throwing call; if/else arms reached because to_bool(undefined) is false;
+# for-update and do-while-condition after an abrupt body; switch discriminants
+# and case tests; for-in/for-of iterables; throwing arguments reaching mutating
+# built-ins (push/splice/fill/sort/Map.set); stores whose value never
+# materialized; assignment targets evaluating exactly once and before the RHS
+# (a[i++] += 10); and the cases where `finally` CORRECTLY overrides a pending
+# completion, so that stays un-"fixed". REGISTERED 2026-07-28 with the audit
+# that found seven live instances of the class.
+bash scripts/test_jsengine_unwind_host.sh

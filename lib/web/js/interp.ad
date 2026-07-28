@@ -1222,27 +1222,32 @@ ref_keyv: int32 = 0
 # resolved in ref_base/ref_keyv; 0 for identifiers and destructuring patterns,
 # which have no side-effecting parts and are stored via assign_to.
 def ref_resolve(tgt: int32, env: int32) -> int32:
+    # NOTE both handles are left ROOTED on the gc stack: every caller takes a
+    # gc_top snapshot BEFORE calling here and gc_popto()s it on the way out. The
+    # base must already be rooted when the key handle is built, because
+    # v_string_id -> mk_val can trigger a collection.
     k: int32 = cast[int32](n_kind[tgt])
     if k == ND_MEMBER:
-        ref_base = eval_expr(n_a[tgt], env)
-        ref_keyv = v_string_id(n_str[tgt])
+        bmv: int32 = eval_expr(n_a[tgt], env)
         if ctl == CTL_THROW or err_flag != 0:
             return 0
+        gc_push(bmv)                       # pin base across the key handle alloc
+        ref_base = bmv
+        ref_keyv = v_string_id(n_str[tgt])
+        gc_push(ref_keyv)
         return 1
     if k == ND_INDEX:
-        gsr: int32 = gc_top
         bv: int32 = eval_expr(n_a[tgt], env)
         if ctl == CTL_THROW or err_flag != 0:
             return 0
         gc_push(bv)                        # pin base across the key expression
         idxv: int32 = eval_expr(n_b[tgt], env)
         if ctl == CTL_THROW or err_flag != 0:
-            gc_popto(gsr)
             return 0
-        kv: int32 = v_string_id(prop_key_of(idxv))
-        gc_popto(gsr)
+        gc_push(idxv)
         ref_base = bv
-        ref_keyv = kv
+        ref_keyv = v_string_id(prop_key_of(idxv))
+        gc_push(ref_keyv)
         return 1
     return 0
 
@@ -1270,11 +1275,9 @@ def eval_update(node: int32, env: int32) -> int32:
     rb: int32 = ref_base
     rk: int32 = ref_keyv
     if ctl == CTL_THROW or err_flag != 0:
+        gc_popto(gsu)
         return v_undef()
-    if isref != 0:
-        gc_push(rb)                        # pin base + key across load/store
-        gc_push(rk)
-    old: int32 = ref_load(isref, rb, rk, tgt, env)
+    old: int32 = ref_load(isref, rb, rk, tgt, env)   # rb/rk stay rooted via gsu
     if ctl == CTL_THROW or err_flag != 0:
         gc_popto(gsu)
         return v_undef()
@@ -1457,10 +1460,9 @@ def eval_assign(node: int32, env: int32) -> int32:
     rb: int32 = ref_base
     rk: int32 = ref_keyv
     if ctl == CTL_THROW or err_flag != 0:
+        gc_popto(gsas)
         return v_undef()
-    if isref != 0:
-        gc_push(rb)                        # pin base + key across the RHS
-        gc_push(rk)
+    # rb/rk stay rooted on the gc stack until the gc_popto(gsas) on every exit.
     # short-circuiting logical assignments: the RHS is evaluated (and the store
     # performed) only when the operator would proceed.
     if op == ALOG_OR:
