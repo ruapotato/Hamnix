@@ -48,17 +48,6 @@ from mm.vma import (
 from kernel.sched.core import (
     tasks_spawned_total, tasks_reaped_total, tasks_live_count,
 )
-# INSTRUMENTATION (temporary, cycle-42 plateau hunt).
-from mm.page_alloc import pa_dbg_o10_allocs, pa_dbg_o10_frees
-from sys.src.port9.port.devwsys import (
-    wsys_dbg_lfb_allocs, wsys_dbg_lfb_frees, wsys_dbg_lfb_grows,
-    wsys_dbg_lfb_regions, wsys_dbg_lfb_live_pages, wsys_dbg_lfb_widmask,
-    wsys_dbg_lfb_deads, wsys_dbg_lfb_deadsites, wsys_dbg_lfb_deadsl,
-    wsys_dbg_fw_calls, wsys_dbg_fw_notinuse, wsys_dbg_fw_nofb,
-    wsys_dbg_fw_rels,
-    wsys_dbg_bb_allocs, wsys_dbg_bb_frees, wsys_dbg_bb_widmask,
-    wsys_dbg_img_allocs, wsys_dbg_img_frees,
-)
 
 
 # Kernel pages are 4 KiB; one kB column equals (bytes >> 10).
@@ -245,29 +234,6 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     # Hamnix demand-allocates huge frames from the buddy allocator (no
     # pre-reserved pool), so these counters observe real usage rather than
     # a fixed nr_hugepages reservation; Hugepagesize is the fixed 2 MiB.
-    # INSTRUMENTATION (temporary, cycle-42 plateau hunt). All O(1) reads of
-    # counters maintained at the alloc/free boundaries — no scans here.
-    pos = _emit_count_line(out, pos, "DbgO10Alloc:", pa_dbg_o10_allocs())
-    pos = _emit_count_line(out, pos, "DbgO10Free:", pa_dbg_o10_frees())
-    pos = _emit_count_line(out, pos, "DbgLfbAlloc:", wsys_dbg_lfb_allocs())
-    pos = _emit_count_line(out, pos, "DbgLfbFree:", wsys_dbg_lfb_frees())
-    pos = _emit_count_line(out, pos, "DbgLfbGrow:", wsys_dbg_lfb_grows())
-    pos = _emit_count_line(out, pos, "DbgLfbRegion:", wsys_dbg_lfb_regions())
-    pos = _emit_count_line(out, pos, "DbgLfbPages:", wsys_dbg_lfb_live_pages())
-    pos = _emit_count_line(out, pos, "DbgLfbMask:", wsys_dbg_lfb_widmask())
-    pos = _emit_count_line(out, pos, "DbgLfbDead:", wsys_dbg_lfb_deads())
-    pos = _emit_count_line(out, pos, "DbgLfbDeadSite:", wsys_dbg_lfb_deadsites())
-    pos = _emit_count_line(out, pos, "DbgLfbDeadSL:", wsys_dbg_lfb_deadsl())
-    pos = _emit_count_line(out, pos, "DbgFwCall:", wsys_dbg_fw_calls())
-    pos = _emit_count_line(out, pos, "DbgFwNotInUse:", wsys_dbg_fw_notinuse())
-    pos = _emit_count_line(out, pos, "DbgFwNoFb:", wsys_dbg_fw_nofb())
-    pos = _emit_count_line(out, pos, "DbgFwRel:", wsys_dbg_fw_rels())
-    pos = _emit_count_line(out, pos, "DbgBbAlloc:", wsys_dbg_bb_allocs())
-    pos = _emit_count_line(out, pos, "DbgBbFree:", wsys_dbg_bb_frees())
-    pos = _emit_count_line(out, pos, "DbgBbMask:", wsys_dbg_bb_widmask())
-    pos = _emit_count_line(out, pos, "DbgImgAlloc:", wsys_dbg_img_allocs())
-    pos = _emit_count_line(out, pos, "DbgImgFree:", wsys_dbg_img_frees())
-
     pos = _emit_count_line(out, pos, "HugePages_Total:", vma_hugepages_total())
     pos = _emit_count_line(out, pos, "HugePages_Live: ", vma_hugepages_live())
     pos = _emit_kb_line(out, pos, "Hugepagesize:    ", 0x200000)
@@ -307,8 +273,8 @@ def devmeminfo_read_at(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
     # and it is exactly what the single-read path already did.
     if count == 0:
         return 0
-    scratch: Array[3072, uint8]
-    n: uint64 = _build_meminfo(&scratch[0], 3072)
+    scratch: Array[1024, uint8]
+    n: uint64 = _build_meminfo(&scratch[0], 1024)
     if off >= n:
         return 0
     remain: uint64 = n - off

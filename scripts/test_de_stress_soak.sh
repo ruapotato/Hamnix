@@ -555,14 +555,7 @@ text = open(log, 'rb').read().decode('utf-8', 'replace').replace('\r', '\n')
 # sample. Anchoring to ^...$ skips the echo and finds the real output.
 FIELDS = ["MemTotal", "MemFree", "MemAvailable", "MemUsed", "PagesInUse",
           "PagesFreedTotal", "VmaNodesLive", "KmallocLive", "TasksLive",
-          "TasksSpawned", "TasksReaped",
-          # INSTRUMENTATION (temporary, cycle-42 plateau hunt).
-          "DbgO10Alloc", "DbgO10Free", "DbgLfbAlloc", "DbgLfbFree",
-          "DbgLfbGrow", "DbgLfbRegion", "DbgLfbPages", "DbgLfbMask",
-          "DbgLfbDead", "DbgLfbDeadSite", "DbgLfbDeadSL",
-          "DbgFwCall", "DbgFwNotInUse", "DbgFwNoFb", "DbgFwRel",
-          "DbgBbAlloc", "DbgBbFree", "DbgBbMask",
-          "DbgImgAlloc", "DbgImgFree"]
+          "TasksSpawned", "TasksReaped"]
 samples = []                       # (label, {field: int}, live_wids)
 for m in re.finditer(r'^SOAKSMP_(\w+)_B\s*$(.*?)^SOAKSMP_\1_E\s*$',
                      text, re.S | re.M):
