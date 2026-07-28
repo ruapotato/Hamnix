@@ -187,6 +187,15 @@ at_el1:
      * (arm64_a10_verify_arm64). A fault dumps ESR/ELR via vectors.S. */
     ldr     x0, =msg_a10
     bl      uart_puts
+    /* The blob bounds are AARCH64-ONLY symbols (user_blob.S). They are passed
+     * in as ordinary AAPCS64 arguments rather than declared `extern def` in the
+     * SHARED init/main.ad: an extern in shared Adder source becomes an
+     * undefined reference in the x86_64 link too, which is exactly the
+     * arch-foreign-undef regression scripts/test_napi.sh caught. Arch symbols
+     * are resolved HERE, in the arch layer. */
+    ldr     x0, =arm64_a10_blob_start   /* x0 = blob base */
+    ldr     x1, =arm64_a10_blob_end
+    sub     x1, x1, x0                  /* x1 = blob size */
     bl      arm64_a10_load_arm64
     cbz     x0, park                    /* image missing/oversized -> no eret */
     bl      arm64_a10_launch

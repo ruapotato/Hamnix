@@ -4745,26 +4745,41 @@ def arm64_sched_prepare_arm64():
 # executed it, or a miscompile anywhere in the recursion / memory / syscall path,
 # cannot produce the right status.
 #
-# ADDITIVE + aarch64-only: called ONLY from arch/arm64/llvm/head.S; x86's
-# start_kernel() never references these, so the x86 kernel stays byte-identical.
+# aarch64-only in the sense that only arch/arm64/llvm/head.S CALLS these; x86's
+# start_kernel() never reaches them. That is NOT the same as "the x86 kernel is
+# unaffected", and an earlier revision of this block claimed it was. init/main.ad
+# is the SHARED kernel root: its top-level defs are emitted for BOTH targets, and
+# any `extern def` here becomes an undefined reference in BOTH links. Declaring
+# the aarch64-only blob-bound symbols here therefore broke the x86_64 kernel
+# LINK while leaving its semantics untouched — invisible to kobjdiff (which
+# compares native-vs-seed codegen, not link resolution) and caught only by
+# scripts/test_napi.sh's undefined-reference check. Hence: no extern here.
 # ---------------------------------------------------------------------------
 ARM64_A10_LOAD_VA: uint64 = 0x48010000     # must equal arch/arm64/llvm/user.lds
 ARM64_A10_WINDOW_END: uint64 = 0x48100000  # image budget ceiling (below the stacks)
 ARM64_A10_EXPECT_CHECKSUM: int64 = 965649  # x86-64 oracle: a10_checksum()
 ARM64_A10_EXPECT_STATUS: int64 = 17        # 965649 % 256
 
-# Bounds of the .incbin'd user image (arch/arm64/llvm/user_blob.S). Exposed as
-# accessor functions because Adder declares foreign symbols with `extern def`.
-extern def arm64_a10_blob_base() -> uint64
-extern def arm64_a10_blob_size() -> uint64
+# The bounds of the .incbin'd user image live in arch/arm64/llvm/user_blob.S and
+# are therefore AARCH64-ONLY symbols. They are NOT declared here with `extern
+# def`: init/main.ad is the SHARED kernel root compiled for BOTH x86_64 and
+# aarch64, and every `extern def` in it becomes an undefined reference in BOTH
+# links. An earlier revision did declare them here, which silently gave the
+# x86_64 kernel two arch-foreign undefined references (`arm64_a10_blob_base` /
+# `arm64_a10_blob_size`) that only scripts/test_napi.sh's link check could see.
+#
+# INVARIANT: arch-specific foreign symbols are resolved in the ARCH LAYER, never
+# declared in shared Adder source. head.S loads the blob bounds (which it can
+# name directly, being aarch64 assembly linked against user_blob.S) into x0/x1
+# and passes them in as ordinary AAPCS64 arguments.
 
 
-def arm64_a10_load_arm64() -> uint64:
+def arm64_a10_load_arm64(blob_base: uint64, blob_size: uint64) -> uint64:
     # exec()-shaped image load: copy the embedded flat user image from the
     # kernel's .rodata into its link VA inside the fine EL0-RW/EL0-X window. The
     # crt0 zeroes .bss itself, so only the file-backed bytes are copied here.
-    src: Ptr[uint8] = cast[Ptr[uint8]](arm64_a10_blob_base())
-    n: uint64 = arm64_a10_blob_size()
+    src: Ptr[uint8] = cast[Ptr[uint8]](blob_base)
+    n: uint64 = blob_size
     if n == cast[uint64](0):
         printk0("A10: FAIL embedded user image is EMPTY (blob not linked in)\n")
         return cast[uint64](0)

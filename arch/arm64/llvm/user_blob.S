@@ -16,33 +16,26 @@
  * the freshly built artifact — the blob can never be stale relative to the .ad
  * source, because the build script regenerates it on every kernel build.
  *
- * The bounds are exposed to Adder as two accessor FUNCTIONS rather than as data
- * symbols, because init/main.ad declares foreign symbols with `extern def`.
- * init/main.ad's arm64_a10_load_arm64() calls them to copy the image to its link
- * VA before the kernel erets to it.
+ * The bounds are plain GLOBAL DATA SYMBOLS consumed by head.S, which computes
+ * base/size and passes them to init/main.ad's arm64_a10_load_arm64() as ordinary
+ * AAPCS64 arguments.
+ *
+ * They are deliberately NOT surfaced to Adder as `extern def` accessor functions.
+ * init/main.ad is the SHARED kernel root, compiled for BOTH x86_64 and aarch64;
+ * an `extern def` there emits an undefined reference in the x86_64 link as well,
+ * where nothing defines these aarch64-only symbols. That is precisely the
+ * arch-foreign-undef regression scripts/test_napi.sh's link check found
+ * (`undefined reference to arm64_a10_blob_base/_size`). Arch-specific foreign
+ * symbols get resolved in the ARCH LAYER (head.S), never declared in shared
+ * Adder source.
  */
 
     .section .rodata
     .balign 16
+    .globl arm64_a10_blob_start
 arm64_a10_blob_start:
     .incbin "a10_user.bin"
+    .globl arm64_a10_blob_end
 arm64_a10_blob_end:
-
-    .section .text
-    .globl arm64_a10_blob_base
-    .type arm64_a10_blob_base, %function
-arm64_a10_blob_base:
-    ldr     x0, =arm64_a10_blob_start
-    ret
-    .size arm64_a10_blob_base, .-arm64_a10_blob_base
-
-    .globl arm64_a10_blob_size
-    .type arm64_a10_blob_size, %function
-arm64_a10_blob_size:
-    ldr     x0, =arm64_a10_blob_end
-    ldr     x1, =arm64_a10_blob_start
-    sub     x0, x0, x1
-    ret
-    .size arm64_a10_blob_size, .-arm64_a10_blob_size
 
     .section .note.GNU-stack,"",%progbits
