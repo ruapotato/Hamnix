@@ -129,9 +129,56 @@ fi
 #   - SPARED: build/*.img disk images (some tests persist + reuse them)
 #             and build/.build_lock (a dotfile; * doesn't match it, and
 #             fd 200 stays valid regardless).
-rm -rf "$_HAMNIX_BUILD_LOCK_DIR"/user "$_HAMNIX_BUILD_LOCK_DIR"/mod \
-       "$_HAMNIX_BUILD_LOCK_DIR"/iso "$_HAMNIX_BUILD_LOCK_DIR"/*.elf \
-       "$_HAMNIX_BUILD_LOCK_DIR"/*.iso 2>/dev/null || true
+#
+# 2026-07-28 — VERIFY INSTEAD OF ASSUME, for build/user only.
+#
+# This wipe is the single largest cost in the CI battery. 177 of the 621
+# gates in scripts/ci_battery_manifest.txt source this file, so 177 times per
+# battery run the whole userland is deleted and rebuilt from scratch
+# (scripts/build_user.sh: 89 s wall / 7m43 s CPU on this 12-core host,
+# measured 2026-07-28) — and it is deleted whether or not anything is
+# actually poisoned. That is what made every shard of the 2026-07-27 run hit
+# the 50-minute cap, and it is why the build_user.sh / _adder_bin.sh /
+# _kernel_image.sh caches could never hit.
+#
+# The property the wipe defends is real: a hard-killed compile leaves a
+# TRUNCATED .elf that an incremental rebuild will not regenerate. But
+# truncation is DETECTABLE. build/user/.stamp records a SHA-256 of every
+# file build_user.sh produced, keyed by a fingerprint of the whole source
+# tree (scripts/_tree_fingerprint.sh). If every recorded output still hashes
+# to its recorded value AND the tree is unchanged, the outputs are provably
+# intact and current — there is nothing to un-poison, and re-deriving them
+# would produce the same bytes. A truncated, missing, or stale file fails the
+# check and we wipe exactly as before. This is the same guarantee, verified
+# rather than assumed.
+#
+# Everything else (build/mod, build/iso, build/*.elf, build/*.iso, the
+# initramfs blob) is still wiped unconditionally: those are cheap to
+# regenerate, or content-addressed elsewhere, so there is no reason to
+# take the risk for them.
+_hamnix_build_user_intact() {
+    local stampd="$_HAMNIX_BUILD_LOCK_DIR/user/.stamp" root fp
+    [ -f "$stampd" ] || return 1
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # shellcheck source=_tree_fingerprint.sh
+    . "$root/scripts/_tree_fingerprint.sh" || return 1
+    fp="$(hamnix_tree_fingerprint)|$(hamnix_build_env_fingerprint)"
+    [ -n "$fp" ] || return 1
+    [ "$(head -n1 "$stampd")" = "$fp" ] || return 1
+    ( cd "$root" && tail -n +2 "$stampd" | sha256sum --quiet --check - ) >/dev/null 2>&1
+}
+
+if [ "${HAMNIX_BUILD_LOCK_ALWAYS_WIPE:-0}" != "1" ] && _hamnix_build_user_intact; then
+    echo "[build_lock] build/user verified intact against its content stamp —" \
+         "keeping it (a truncated or stale output would have failed the check)" >&2
+    rm -rf "$_HAMNIX_BUILD_LOCK_DIR"/mod \
+           "$_HAMNIX_BUILD_LOCK_DIR"/iso "$_HAMNIX_BUILD_LOCK_DIR"/*.elf \
+           "$_HAMNIX_BUILD_LOCK_DIR"/*.iso 2>/dev/null || true
+else
+    rm -rf "$_HAMNIX_BUILD_LOCK_DIR"/user "$_HAMNIX_BUILD_LOCK_DIR"/mod \
+           "$_HAMNIX_BUILD_LOCK_DIR"/iso "$_HAMNIX_BUILD_LOCK_DIR"/*.elf \
+           "$_HAMNIX_BUILD_LOCK_DIR"/*.iso 2>/dev/null || true
+fi
 # The in-source blob (default builds) AND an isolated build-dir blob
 # (HAMNIX_BUILD_DIR builds) are both poison surfaces — wipe whichever
 # applies. For the default case _HAMNIX_BUILD_LOCK_DIR is ../build so the

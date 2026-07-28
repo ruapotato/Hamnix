@@ -208,14 +208,28 @@ else:
 # each was looking at a different artifact and none matched what booted. This
 # one line makes that mistake impossible to make silently.
 #
-# fs/initramfs_blob.S is .gitignore'd, so a per-build timestamp costs no git
-# churn. HAMNIX_BUILD_STAMP overrides it (reproducible-build experiments).
+# fs/initramfs_blob.S is .gitignore'd, so the stamp costs no git churn.
+# HAMNIX_BUILD_STAMP overrides it entirely.
+#
+# REPRODUCIBILITY (2026-07-28). This used to embed datetime.now(), which made
+# the cpio — and therefore the kernel ELF that .incbin-s it — differ on every
+# single run from identical sources. That one byte-per-second of drift was
+# enough to defeat every content-addressed build cache in the tree
+# (scripts/_kernel_image.sh saw a new key each time), and 178 CI gates each
+# paid a full 101 s kernel compile as a result. The stamp is now a pure
+# function of the tree:
+#   * clean tree  -> "<sha12> <commit time UTC>"
+#   * dirty tree  -> "<sha12>-dirty.<8 hex of the working diff> <commit time>"
+# It still names exactly which build booted — better, in fact, because two
+# different dirty states now get different stamps instead of merely different
+# clocks. SOURCE_DATE_EPOCH is honoured for the timestamp when set.
 def _provenance_stamp() -> bytes:
     override = os.environ.get("HAMNIX_BUILD_STAMP")
     if override:
         return override.encode()[:95] + b"\x00"
     import subprocess as _sp
     import datetime as _dt
+    import hashlib as _hl
     root = Path(__file__).resolve().parent.parent
     def _git(*a):
         try:
@@ -225,9 +239,21 @@ def _provenance_stamp() -> bytes:
             return ""
     sha = _git("rev-parse", "--short=12", "HEAD") or "nogit"
     if _git("status", "--porcelain", "--untracked-files=no"):
-        sha += "-dirty"
-    when = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return (sha + " " + when).encode()[:95] + b"\x00"
+        # Identify WHICH dirty state, deterministically, instead of stamping
+        # the wall clock.
+        diff = _git("diff", "HEAD") + "\n" + _git("status", "--porcelain",
+                                                  "--untracked-files=no")
+        sha += "-dirty." + _hl.sha256(diff.encode()).hexdigest()[:8]
+    sde = os.environ.get("SOURCE_DATE_EPOCH")
+    if sde and sde.isdigit():
+        when = _dt.datetime.fromtimestamp(int(sde), _dt.timezone.utc)
+    else:
+        iso = _git("log", "-1", "--format=%cI")
+        try:
+            when = _dt.datetime.fromisoformat(iso).astimezone(_dt.timezone.utc)
+        except Exception:
+            when = _dt.datetime.fromtimestamp(0, _dt.timezone.utc)
+    return (sha + " " + when.strftime("%Y-%m-%dT%H:%M:%SZ")).encode()[:95] + b"\x00"
 
 
 FILES.append(("/etc/hamnix-build", _provenance_stamp()))

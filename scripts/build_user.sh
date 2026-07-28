@@ -63,8 +63,19 @@ _bu_key="$(hamnix_tree_fingerprint)|$(hamnix_build_env_fingerprint)"
 if [ "${HAMNIX_BUILD_USER_FORCE:-0}" != "1" ] && [ -f "$_bu_stamp" ] \
    && [ "$(head -n1 "$_bu_stamp")" = "$_bu_key" ] \
    && tail -n +2 "$_bu_stamp" | sha256sum --quiet --check - >/dev/null 2>&1; then
-    echo "[build_user] up to date (tree + recorded outputs unchanged) - nothing to do"
+    echo "[build_user] up to date (tree + recorded outputs unchanged) - nothing to do" >&2
     exit 0
+fi
+# Say WHY we are about to spend 90 s, so a cache that silently never hits is
+# visible in the log instead of being mistaken for an unavoidable cost.
+if [ "${HAMNIX_BUILD_USER_FORCE:-0}" = "1" ]; then
+    echo "[build_user] rebuilding: HAMNIX_BUILD_USER_FORCE=1" >&2
+elif [ ! -f "$_bu_stamp" ]; then
+    echo "[build_user] rebuilding: no build/user/.stamp" >&2
+elif [ "$(head -n1 "$_bu_stamp")" != "$_bu_key" ]; then
+    echo "[build_user] rebuilding: source tree or ADDER_* env changed since the stamp" >&2
+else
+    echo "[build_user] rebuilding: a recorded build/user output changed on disk" >&2
 fi
 rm -f "$_bu_stamp"
 _bu_write_stamp() {

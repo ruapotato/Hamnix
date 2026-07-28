@@ -35,13 +35,24 @@ hamnix_tree_fingerprint() {
     )
 }
 
-# hamnix_build_env_fingerprint — the build-affecting environment.
+# hamnix_build_env_fingerprint — the COMPILER-affecting environment.
 #
-# The Adder compiler reads ADDER_* (ADDER_CC picks seed-vs-native, ADDER_OPT/
-# ADDER_OPT2 pick an optimizer, ADDER_CHECK_BOUNDS instruments) and the build
-# scripts read HAMNIX_*. Two gates with identical sources but a different
-# ADDER_OPT must NOT share a cache entry, so every such variable is folded
-# into the key by name and value.
+# ADDER_* is the Adder compiler's knob namespace: ADDER_CC picks
+# seed-vs-native, ADDER_OPT/ADDER_OPT2 pick an optimizer, ADDER_CHECK_BOUNDS
+# instruments, ADDER_ELF64_APPS changes an output format. Two builds with
+# identical sources but a different ADDER_OPT must NOT share a cache entry,
+# so every such variable is folded in by name and value.
+#
+# HAMNIX_* is deliberately EXCLUDED. It is the test/runtime knob namespace —
+# HAMNIX_TEST_SMP, HAMNIX_VM_MEM, HAMNIX_DE_SELFTEST, KEEP_LOGS-adjacent
+# flags — none of which change a single emitted byte, and gates export them
+# around their build steps. Folding them in made every key differ between a
+# bare build and the same build run from inside a gate, so nothing ever hit
+# (observed 2026-07-28: build_user.sh rebuilt on every gate despite an
+# unchanged tree). HAMNIX_INITRAMFS_BLOB is the one HAMNIX_ variable that
+# does select a build input, so it is named explicitly.
 hamnix_build_env_fingerprint() {
-    { env | grep -E '^(ADDER|HAMNIX)_' || true; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+    { env | grep -E '^ADDER_' || true
+      printf 'HAMNIX_INITRAMFS_BLOB=%s\n' "${HAMNIX_INITRAMFS_BLOB:-}"
+    } | LC_ALL=C sort | sha256sum | cut -d' ' -f1
 }
