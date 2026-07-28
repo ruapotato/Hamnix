@@ -12,6 +12,8 @@
 def call_string_method(sv: int32, name: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     r: int32 = string_method(sv, name, base, argc)
     call_top = base
     return r
@@ -1010,6 +1012,8 @@ def try_number_method(nv: int32, name: int32, argnode: int32, env: int32) -> int
     if str_eq_cstr(name, cast[Ptr[uint8]]("toFixed")) != 0:
         base: int32 = call_top
         argc: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         d: int32 = 0
         if argc > 0:
             d = cast[int32](to_number(call_args[base]))
@@ -1018,6 +1022,8 @@ def try_number_method(nv: int32, name: int32, argnode: int32, env: int32) -> int
     if str_eq_cstr(name, cast[Ptr[uint8]]("toString")) != 0:
         base2: int32 = call_top
         argc2: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         radix: int32 = 10
         if argc2 > 0:
             radix = cast[int32](to_number(call_args[base2]))
@@ -1025,6 +1031,8 @@ def try_number_method(nv: int32, name: int32, argnode: int32, env: int32) -> int
         return num_tostring_radix(x, radix)
     if str_eq_cstr(name, cast[Ptr[uint8]]("valueOf")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         return nv
     return -2
 
@@ -1034,6 +1042,8 @@ def try_bigint_method(bv: int32, name: int32, argnode: int32, env: int32) -> int
     if str_eq_cstr(name, cast[Ptr[uint8]]("toString")) != 0:
         base: int32 = call_top
         argc: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         radix: int32 = 10
         if argc > 0:
             radix = cast[int32](to_number(call_args[base]))
@@ -1043,9 +1053,13 @@ def try_bigint_method(bv: int32, name: int32, argnode: int32, env: int32) -> int
         return v_string_id(bi_to_strid(bigid_of(bv), radix))
     if str_eq_cstr(name, cast[Ptr[uint8]]("toLocaleString")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         return v_string_id(bi_to_strid(bigid_of(bv), 10))
     if str_eq_cstr(name, cast[Ptr[uint8]]("valueOf")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         return bv
     return -2
 
@@ -1056,6 +1070,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("push")) != 0:
         base: int32 = call_top
         argc: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         i: int32 = 0
         while i < argc:
             arr_push(o, call_args[base + i])
@@ -1064,6 +1080,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return v_number(cast[float64](arr_len[o]))
     if str_eq_cstr(name, cast[Ptr[uint8]]("pop")) != 0:
         eval_args_into(argnode, env)     # no args, but keep cursor clean
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         call_top = call_top
         if arr_len[o] == 0:
             return v_undef()
@@ -1073,6 +1091,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("join")) != 0:
         base2: int32 = call_top
         argc2: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         sepid: int32 = -1
         if argc2 > 0:
             sepid = strid_of(to_string_val(call_args[base2]))
@@ -1081,6 +1101,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("indexOf")) != 0:
         base3: int32 = call_top
         argc3: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         target: int32 = arg_or(base3, argc3, 0)
         idx: int32 = -1
         i2: int32 = 0
@@ -1103,6 +1125,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return array_slice(o, argnode, env)
     if str_eq_cstr(name, cast[Ptr[uint8]]("shift")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         if arr_len[o] == 0:
             return v_undef()
         r2: int32 = arr_get(o, 0)
@@ -1114,6 +1138,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return r2
     if str_eq_cstr(name, cast[Ptr[uint8]]("reverse")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         lo: int32 = 0
         hi: int32 = arr_len[o] - 1
         while lo < hi:
@@ -1126,6 +1152,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("lastIndexOf")) != 0:
         baseL: int32 = call_top
         argcL: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         tgtL: int32 = arg_or(baseL, argcL, 0)
         idxL: int32 = -1
         iL: int32 = arr_len[o] - 1
@@ -1139,6 +1167,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("includes")) != 0:
         baseI: int32 = call_top
         argcI: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         tgtI: int32 = arg_or(baseI, argcI, 0)
         foundI: int32 = 0
         iI: int32 = 0
@@ -1166,6 +1196,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("toReversed")) != 0:
         # ES2023 change-array-by-copy: reversed copy, original untouched
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         rv: int32 = v_new_array()
         rvo: int32 = objid_of(rv)
         ir: int32 = arr_len[o] - 1
@@ -1184,6 +1216,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("with")) != 0:
         baseW: int32 = call_top
         argcW: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         idxW: int32 = cast[int32](to_number(arg_or(baseW, argcW, 0)))
         valW: int32 = arg_or(baseW, argcW, 1)
         if idxW < 0:
@@ -1208,6 +1242,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("unshift")) != 0:
         baseU: int32 = call_top
         argcU: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         # shift existing elements right by argcU, then place new ones at front
         old: int32 = arr_len[o]
         k: int32 = old - 1
@@ -1223,6 +1259,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return v_number(cast[float64](arr_len[o]))
     if str_eq_cstr(name, cast[Ptr[uint8]]("entries")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         res_e: int32 = v_new_array()
         reo: int32 = objid_of(res_e)
         ie: int32 = 0
@@ -1236,6 +1274,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return res_e
     if str_eq_cstr(name, cast[Ptr[uint8]]("keys")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         res_k: int32 = v_new_array()
         rko: int32 = objid_of(res_k)
         ik: int32 = 0
@@ -1245,6 +1285,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
         return res_k
     if str_eq_cstr(name, cast[Ptr[uint8]]("values")) != 0:
         eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         res_v: int32 = v_new_array()
         rvo: int32 = objid_of(res_v)
         iv: int32 = 0
@@ -1263,6 +1305,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
     if str_eq_cstr(name, cast[Ptr[uint8]]("at")) != 0:
         baseAt: int32 = call_top
         argcAt: int32 = eval_args_into(argnode, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return v_undef()          # an argument threw: do not run the method
         rel: int32 = 0
         if argcAt >= 1:
             rel = cast[int32](to_number(call_args[baseAt]))
@@ -1278,6 +1322,8 @@ def try_array_method(av: int32, name: int32, argnode: int32, env: int32) -> int3
 def array_find_last(o: int32, argnode: int32, env: int32, want_index: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     res: int32 = v_undef()
     if want_index != 0:
@@ -1311,6 +1357,8 @@ def array_find_last(o: int32, argnode: int32, env: int32, want_index: int32) -> 
 def array_flatmap(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     # Phase-2 GC: pin the result-array VALUE cell `res`. (It is also passed as the
     # 3rd callback arg, so it additionally sits under call_top during each invoke,
@@ -1350,6 +1398,8 @@ def array_copy_within(av: int32, argnode: int32, env: int32) -> int32:
     o: int32 = objid_of(av)
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     len: int32 = arr_len[o]
     target: int32 = rel_index(arg_or(base, argc, 0), len, 0)
     start: int32 = rel_index(arg_or(base, argc, 1), len, 0)
@@ -1400,6 +1450,8 @@ def arr_set_ext(o: int32, idx: int32, val: int32):
 def array_find(o: int32, argnode: int32, env: int32, want_index: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     res: int32 = v_undef()
     if want_index != 0:
@@ -1434,6 +1486,8 @@ def array_find(o: int32, argnode: int32, env: int32, want_index: int32) -> int32
 def array_some_every(o: int32, argnode: int32, env: int32, is_every: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     result: int32 = is_every            # every starts true(1), some starts false(0)
     # Phase-2 GC: `result` is an int flag, not a value; `fn` is rooted at
@@ -1463,6 +1517,8 @@ def array_some_every(o: int32, argnode: int32, env: int32, is_every: int32) -> i
 def array_concat(av: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     res: int32 = v_new_array()
     ro: int32 = objid_of(res)
     src: int32 = objid_of(av)
@@ -1489,6 +1545,8 @@ def array_concat(av: int32, argnode: int32, env: int32) -> int32:
 def array_reduce_right(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     acc: int32 = v_undef()
     i: int32 = arr_len[o] - 1
@@ -1544,6 +1602,8 @@ def cmp_str_vals(a: int32, b: int32) -> int32:
 def array_sort(av: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     has_fn: int32 = is_callable(fn)
     o: int32 = objid_of(av)
@@ -1598,6 +1658,8 @@ def array_sort(av: int32, argnode: int32, env: int32) -> int32:
 def array_flat(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     depth: int32 = 1
     if argc > 0:
         depth = cast[int32](to_number(call_args[base]))
@@ -1621,6 +1683,8 @@ def array_flat_into(o: int32, ro: int32, depth: int32):
 def array_fill(av: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     o: int32 = objid_of(av)
     val: int32 = arg_or(base, argc, 0)
     n: int32 = arr_len[o]
@@ -1651,6 +1715,8 @@ def array_fill(av: int32, argnode: int32, env: int32) -> int32:
 def array_splice(av: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     o: int32 = objid_of(av)
     n: int32 = arr_len[o]
     st: int32 = 0
@@ -1727,6 +1793,8 @@ def array_join(o: int32, sepid: int32) -> int32:
 def array_map(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     # Phase-2 GC: `fn`/`thisArg` sit at call_args[base..] (< call_top for the whole
     # loop → wholesale-rooted); `o`'s elements live in ax_val (rooted). The only
@@ -1756,6 +1824,8 @@ def array_map(o: int32, argnode: int32, env: int32) -> int32:
 def array_filter(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     # Phase-2 GC: pin the result-array VALUE cell (only unrooted local across the
     # callback); kept elements come from ax_val (rooted). Re-enable collection.
@@ -1784,6 +1854,8 @@ def array_filter(o: int32, argnode: int32, env: int32) -> int32:
 def array_reduce(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     acc: int32 = v_undef()
     i: int32 = 0
@@ -1818,6 +1890,8 @@ def array_reduce(o: int32, argnode: int32, env: int32) -> int32:
 def array_foreach(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     fn: int32 = arg_or(base, argc, 0)
     # Phase-2 GC: no accumulator — `fn` is rooted at call_args[base], elements live
     # in ax_val, and nothing else is carried across the callback. Re-enable GC.
@@ -1839,6 +1913,8 @@ def array_foreach(o: int32, argnode: int32, env: int32) -> int32:
 def array_slice(o: int32, argnode: int32, env: int32) -> int32:
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()          # an argument threw: do not run the method
     st: int32 = 0
     en: int32 = arr_len[o]
     if argc > 0:

@@ -1563,6 +1563,9 @@ def try_object_method(objv: int32, name: int32, argnode: int32, env: int32) -> i
         cur = obj_proto[cur]
     base: int32 = call_top
     argc: int32 = eval_args_into(argnode, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        call_top = base
+        return v_undef()          # an argument threw: do not run the method
     arg0: int32 = v_undef()
     if argc > 0:
         arg0 = call_args[base]

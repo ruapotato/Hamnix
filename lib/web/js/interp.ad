@@ -1197,11 +1197,87 @@ def typeof_str(v: int32) -> Ptr[uint8]:
     return cast[Ptr[uint8]]("object")
 
 
+# ---- single-evaluation assignment references --------------------------------
+# `o[k()] += 1`, `a[i++]++` and `o().x = v` name a target whose BASE and KEY
+# sub-expressions must be evaluated EXACTLY ONCE, and BEFORE the right-hand side
+# (spec: Evaluate(LHS) -> GetValue -> Evaluate(RHS) -> PutValue).
+#
+# The evaluator instead re-walked the target AST for every touch: eval_assign
+# evaluated the RHS first and then handed the target NODE to assign_to, and a
+# compound assignment walked it a SECOND time to read the old value. So
+# `a[i++] += 10` bumped `i` twice and wrote the wrong element (a === [1,11,3],
+# i === 2, where node gives [11,2,3] and i === 1), and `a[i++]++` was wrong the
+# same way. Any target whose base/key has a side effect — a call, an update, a
+# getter — silently ran it twice, in the wrong order.
+#
+# ref_resolve() evaluates the target once into the (ref_base, ref_keyv) pair;
+# callers COPY both out immediately, because a nested assignment in the RHS
+# reuses these two slots. ref_keyv is a string VALUE (not a bare pool id) so a
+# gc_push keeps the key alive across the RHS evaluation.
+ref_base: int32 = 0
+ref_keyv: int32 = 0
+
+
+# Returns 1 when `tgt` is a member/index reference whose base+key are now
+# resolved in ref_base/ref_keyv; 0 for identifiers and destructuring patterns,
+# which have no side-effecting parts and are stored via assign_to.
+def ref_resolve(tgt: int32, env: int32) -> int32:
+    k: int32 = cast[int32](n_kind[tgt])
+    if k == ND_MEMBER:
+        ref_base = eval_expr(n_a[tgt], env)
+        ref_keyv = v_string_id(n_str[tgt])
+        if ctl == CTL_THROW or err_flag != 0:
+            return 0
+        return 1
+    if k == ND_INDEX:
+        gsr: int32 = gc_top
+        bv: int32 = eval_expr(n_a[tgt], env)
+        if ctl == CTL_THROW or err_flag != 0:
+            return 0
+        gc_push(bv)                        # pin base across the key expression
+        idxv: int32 = eval_expr(n_b[tgt], env)
+        if ctl == CTL_THROW or err_flag != 0:
+            gc_popto(gsr)
+            return 0
+        kv: int32 = v_string_id(prop_key_of(idxv))
+        gc_popto(gsr)
+        ref_base = bv
+        ref_keyv = kv
+        return 1
+    return 0
+
+
+def ref_load(isref: int32, rb: int32, rk: int32, tgt: int32, env: int32) -> int32:
+    if isref != 0:
+        return member_get(rb, strid_of(rk))
+    return eval_expr(tgt, env)
+
+
+def ref_store(isref: int32, rb: int32, rk: int32, tgt: int32, val: int32, env: int32):
+    if ctl == CTL_THROW or err_flag != 0:
+        return                             # the value never materialized
+    if isref != 0:
+        member_set(rb, strid_of(rk), val)
+        return
+    assign_to(tgt, val, env)
+
+
 def eval_update(node: int32, env: int32) -> int32:
     delta: float64 = cast[float64](n_op[node])
     tgt: int32 = n_a[node]
     gsu: int32 = gc_top
-    old: int32 = eval_expr(tgt, env)
+    isref: int32 = ref_resolve(tgt, env)
+    rb: int32 = ref_base
+    rk: int32 = ref_keyv
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()
+    if isref != 0:
+        gc_push(rb)                        # pin base + key across load/store
+        gc_push(rk)
+    old: int32 = ref_load(isref, rb, rk, tgt, env)
+    if ctl == CTL_THROW or err_flag != 0:
+        gc_popto(gsu)
+        return v_undef()
     if is_bigint(old) != 0:            # ++ / -- on a BigInt stays a BigInt
         gc_push(old)                   # pin (postfix returns it) across store
         oid: int32 = bigid_of(old)
@@ -1211,7 +1287,7 @@ def eval_update(node: int32, env: int32) -> int32:
         else:
             nvb = v_bigint(bi_sub(oid, bi_one()))
         gc_push(nvb)
-        assign_to(tgt, nvb, env)
+        ref_store(isref, rb, rk, tgt, nvb, env)
         gc_popto(gsu)
         if n_b[node] == 1:             # prefix
             return nvb
@@ -1219,8 +1295,8 @@ def eval_update(node: int32, env: int32) -> int32:
     oldn: float64 = to_number(old)
     newn: float64 = oldn + delta
     nv: int32 = v_number(newn)
-    gc_push(nv)                        # pin the new value across the store's target eval
-    assign_to(tgt, nv, env)
+    gc_push(nv)                        # pin the new value across the store
+    ref_store(isref, rb, rk, tgt, nv, env)
     gc_popto(gsu)
     if n_b[node] == 1:                 # prefix
         return nv
@@ -1228,6 +1304,12 @@ def eval_update(node: int32, env: int32) -> int32:
 
 
 def assign_to(tgt: int32, val: int32, env: int32):
+    # A throw raised while producing `val` is still unwinding: the STORE must not
+    # happen. `s = s.concat(thrower())` used to write the `undefined` placeholder
+    # over `s` before the exception surfaced — the variable was corrupted even
+    # though the catch handler ran.
+    if ctl == CTL_THROW or err_flag != 0:
+        return
     k: int32 = cast[int32](n_kind[tgt])
     if k == ND_IDENT:
         b: int32 = env_lookup_bind(env, n_str[tgt])
@@ -1368,45 +1450,75 @@ def assign_object_pattern(tgt: int32, val: int32, env: int32):
 
 def eval_assign(node: int32, env: int32) -> int32:
     op: int32 = n_op[node]
+    tgt: int32 = n_a[node]
+    gsas: int32 = gc_top
+    # Resolve the target reference FIRST and exactly once (see ref_resolve).
+    isref: int32 = ref_resolve(tgt, env)
+    rb: int32 = ref_base
+    rk: int32 = ref_keyv
+    if ctl == CTL_THROW or err_flag != 0:
+        return v_undef()
+    if isref != 0:
+        gc_push(rb)                        # pin base + key across the RHS
+        gc_push(rk)
     # short-circuiting logical assignments: the RHS is evaluated (and the store
     # performed) only when the operator would proceed.
-    gsas: int32 = gc_top
     if op == ALOG_OR:
-        curo: int32 = eval_expr(n_a[node], env)
+        curo: int32 = ref_load(isref, rb, rk, tgt, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            gc_popto(gsas)
+            return v_undef()
         if to_bool(curo) != 0:
+            gc_popto(gsas)
             return curo
         rvo: int32 = eval_expr(n_b[node], env)
-        gc_push(rvo)                       # pin rhs across the store's target eval
-        assign_to(n_a[node], rvo, env)
+        gc_push(rvo)                       # pin rhs across the store
+        ref_store(isref, rb, rk, tgt, rvo, env)
         gc_popto(gsas)
         return rvo
     if op == ALOG_AND:
-        cura: int32 = eval_expr(n_a[node], env)
+        cura: int32 = ref_load(isref, rb, rk, tgt, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            gc_popto(gsas)
+            return v_undef()
         if to_bool(cura) == 0:
+            gc_popto(gsas)
             return cura
         rva: int32 = eval_expr(n_b[node], env)
         gc_push(rva)
-        assign_to(n_a[node], rva, env)
+        ref_store(isref, rb, rk, tgt, rva, env)
         gc_popto(gsas)
         return rva
     if op == ALOG_NULLISH:
-        curn: int32 = eval_expr(n_a[node], env)
+        curn: int32 = ref_load(isref, rb, rk, tgt, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            gc_popto(gsas)
+            return v_undef()
         if tag_of(curn) != TAG_UNDEF and tag_of(curn) != TAG_NULL:
+            gc_popto(gsas)
             return curn
         rvn: int32 = eval_expr(n_b[node], env)
         gc_push(rvn)
-        assign_to(n_a[node], rvn, env)
+        ref_store(isref, rb, rk, tgt, rvn, env)
         gc_popto(gsas)
         return rvn
-    rhs: int32 = eval_expr(n_b[node], env)
-    gc_push(rhs)                           # pin rhs across compound-target eval + store
     if op >= 0:
-        # compound assignment: target op= rhs
-        cur: int32 = eval_expr(n_a[node], env)
+        # compound assignment: GetValue(target) happens BEFORE the RHS.
+        cur: int32 = ref_load(isref, rb, rk, tgt, env)
+        if ctl == CTL_THROW or err_flag != 0:
+            gc_popto(gsas)
+            return v_undef()
         gc_push(cur)
-        rhs = eval_binop(op, cur, rhs)
-        gc_push(rhs)
-    assign_to(n_a[node], rhs, env)
+        rhsc: int32 = eval_expr(n_b[node], env)
+        gc_push(rhsc)
+        rhsc = eval_binop(op, cur, rhsc)
+        gc_push(rhsc)
+        ref_store(isref, rb, rk, tgt, rhsc, env)
+        gc_popto(gsas)
+        return rhsc
+    rhs: int32 = eval_expr(n_b[node], env)
+    gc_push(rhs)                           # pin rhs across the store
+    ref_store(isref, rb, rk, tgt, rhs, env)
     gc_popto(gsas)
     return rhs
 
@@ -1455,6 +1567,15 @@ def eval_args_into(argnode: int32, env: int32) -> int32:
             call_args[call_top] = eval_expr(a, env)
             call_top = call_top + 1
         a = n_next[a]
+    if ctl == CTL_THROW or err_flag != 0:
+        # An argument threw. Report ZERO arguments (and rewind the arg window) so
+        # no caller acts on the `undefined` placeholders left behind. The 40-odd
+        # BUILT-IN method dispatchers (array/string/number/bigint/object) evaluate
+        # their args inline and then MUTATE — `a.push(thrower())` used to append
+        # an `undefined` element before the exception surfaced. eval_call and the
+        # other interp.ad callers additionally test `ctl` and bail outright.
+        call_top = base
+        return 0
     return call_top - base
 
 
@@ -2273,6 +2394,17 @@ def exec_stmt(node: int32, env: int32):
         return
     if err_flag != 0:
         return
+    # An abrupt completion is IN FLIGHT (throw/return/break/continue): no
+    # statement may run until some construct consumes it. eval_expr has always
+    # had the CTL_THROW half of this guard; exec_stmt had none, so every
+    # statement reachable WITHOUT passing through a block's `ctl == CTL_NONE`
+    # loop ran anyway. The reachable path is a branch whose CONDITION threw:
+    # `if (thrower()) a; else break;` took the else arm (to_bool(undefined) is
+    # false) and `break` overwrote the pending CTL_THROW — the exception simply
+    # vanished. Same for `else return/continue/throw`, and `else try{}catch{}`
+    # CAUGHT the outer, unrelated exception. All silent wrong answers.
+    if ctl != CTL_NONE:
+        return
     k: int32 = cast[int32](n_kind[node])
     if k == ND_BLOCK:
         pending_label = -1             # a block does not carry a loop label inward
@@ -2337,6 +2469,11 @@ def exec_stmt(node: int32, env: int32):
                     ctl_label = -1
                 else:
                     break
+            # an unconsumed completion (`return`, or a throw) unwinds the loop;
+            # the CONDITION must not be evaluated. `do { return r } while (n++)`
+            # used to still run `n++`.
+            if ctl != CTL_NONE:
+                break
             if to_bool(eval_expr(n_a[node], env)) == 0:
                 break
         return
@@ -2387,6 +2524,12 @@ def exec_stmt(node: int32, env: int32):
     if k == ND_THROW:
         tv: int32 = eval_expr(n_a[node], env)
         if err_flag != 0:
+            return
+        if ctl == CTL_THROW:
+            # The THROWN EXPRESSION itself threw. Same shape as ND_RETURN below:
+            # overwriting throw_val here replaced the real exception with
+            # `undefined`, so `try { throw f() } catch(e) {...}` saw `undefined`
+            # instead of whatever f() raised.
             return
         throw_val = tv
         ctl = CTL_THROW
@@ -2470,6 +2613,12 @@ def exec_var(node: int32, env: int32):
         val: int32 = v_undef()
         if n_a[d] >= 0:
             val = eval_expr(n_a[d], env)
+            if ctl == CTL_THROW or err_flag != 0:
+                return                  # initializer threw: bind nothing, run no
+                                        # further declarator (a destructuring
+                                        # bind of the `undefined` placeholder can
+                                        # raise a SECOND error that replaces the
+                                        # real one)
         is_const: int32 = 0
         if kind == 2:
             is_const = 1
@@ -2646,6 +2795,14 @@ def exec_for(node: int32, env: int32):
                 ctl_label = -1
             else:
                 break
+        # A completion the loop did NOT consume above (a `return`, or a throw)
+        # is unwinding: the update expression must NOT run. It used to, so
+        # `function f(){ for (i=0; i<10; i++) { return i } }` left `i === 1`
+        # instead of 0 — the loop counter kept ticking after the return.
+        # (A throw reached it too, but eval_expr's own CTL_THROW guard made that
+        # one a no-op; CTL_RETURN had no such guard.)
+        if ctl != CTL_NONE:
+            break
         if n_c[node] >= 0:
             if is_let != 0:
                 # Per spec (ForBodyEvaluation / CreatePerIterationEnvironment):
