@@ -1,0 +1,28 @@
+<html><head><title>DOM text view</title>
+<style>.x { color: navy; }</style>
+</head>
+<body>
+<!-- a comment containing </body> and <html> to fool a naive close-tag scan -->
+<h1 id="h">a&nbsp;b &amp; c &#x27;d&#x27; &lt;e&gt; &copy;</h1>
+<div id="d" data-role="card" data-item-id="7" class="x">outer <b>bold</b> tail</div>
+<p id="p">tail-para</p>
+<script>
+  // These string literals contain markup that used to break _find_close:
+  var trap1 = "<body>"; var trap2 = "</body>"; var trap3 = "<html>";
+  var h = document.getElementById('h');
+  console.log('ent ' + h.textContent);
+  var d = document.getElementById('d');
+  console.log('dtext ' + d.textContent);
+  console.log('dhtml ' + d.innerHTML);
+  console.log('ds ' + d.dataset.role + ' ' + d.dataset.itemId);
+  console.log('cls ' + d.classList.contains('x') + ' ' + d.className);
+  d.style.color = 'red';
+  console.log('sty ' + d.style.color);
+  // body.textContent must contain every element's text AND the script source,
+  // exactly as chromium reports it.
+  var bt = document.body.textContent;
+  console.log('bodyhas ' + (bt.indexOf('tail-para') >= 0) + ' ' + (bt.indexOf('trap3') >= 0));
+  console.log('bodylen>500 ' + (bt.length > 500));
+  console.log('htmllen>600 ' + (document.documentElement.innerHTML.length > 600));
+</script>
+</body></html>

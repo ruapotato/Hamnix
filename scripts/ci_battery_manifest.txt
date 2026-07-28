@@ -3189,3 +3189,21 @@ bash scripts/test_hambrowse_realwebjs_host.sh
 # It BUILDS the image rather than warning about staleness: 30 minutes of soak
 # against a stale image is 30 minutes of confident nonsense.
 [ "${HAMNIX_SOAK:-0}" = "1" ] && bash scripts/test_de_stress_soak.sh || true
+
+# scripts/test_hambrowse_domtext_host.sh: QEMU-free gate for the DOM TEXT VIEW —
+# document.body.textContent / el.innerHTML completeness, decoded character
+# references, and the lazy style/classList/dataset accessors. All were measurably
+# broken on live sites (archlinux body.textContent "" vs chromium's 6797 chars)
+# because every element snapshotted its full text AND raw markup into one shared
+# 64 KiB arena, and because _find_close counted "<body"/"<html" appearing inside
+# <script> string literals and HTML comments as real markup. Every expectation in
+# the gate is a chromium --headless --dump-dom value, byte-for-byte, with the one
+# &nbsp;-decoding divergence documented in the script.
+bash scripts/test_hambrowse_domtext_host.sh
+# scripts/test_hambrowse_ceilings_host.sh: QEMU-free gate that the engine's
+# per-page ceilings REPORT THEMSELVES. DOM_MAX and EVL_MAX overflow used to be
+# silent — script got `undefined` elements and listeners that never fired, and
+# the resulting TypeError looked like a bug in the website. This overflows both
+# (9000 elements, 1200 listeners) and asserts each names itself, prints its size,
+# reports exactly ONCE per page, and does not abort the page.
+bash scripts/test_hambrowse_ceilings_host.sh
