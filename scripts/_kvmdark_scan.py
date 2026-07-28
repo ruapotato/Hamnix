@@ -70,6 +70,14 @@ EXIT0 = re.compile(r'(^|[;&|{(]|\bthen\b|\belse\b|\bdo\b)\s*exit\s+0\s*(;|\}|$)'
                    re.M)
 INCONCL = re.compile(r'verdict_inconclusive|exit\s+125', re.M)
 OPTOUT = re.compile(r'#\s*kvm-dark-ok:')
+# A gate that can FAIL before it reaches the /dev/kvm guard still asserts
+# SOMETHING on a KVM-less runner — test_de_office_suite.sh and
+# test_de_desktop_icon_source.sh both prove their launchers are shipped
+# before they try to boot. That is the shape the other 18 should grow, so the
+# census distinguishes "partly covered" from "wholly vacuous" rather than
+# lumping them together and overstating the hole.
+PRE_ASSERT = re.compile(r'(^|[;&|{(]|\bthen\b|\belse\b|\bdo\b)\s*exit\s+1\b'
+                        r'|\bverdict_fail\b', re.M)
 
 WINDOW = 6          # lines after the guard in which the reaction must appear
 
@@ -133,7 +141,15 @@ def classify(path):
                 yield ('OPTOUT', i + 1,
                        OPTOUT.split(optout[-1])[-1].strip() or '(no reason given)')
             else:
-                yield ('DARK', i + 1, line.strip())
+                # The shell prologue `cd "$(dirname "$0")/.." || exit 1` is
+                # not an assertion about the product; counting it would
+                # credit every gate in the tree with a structural half.
+                pre = '\n'.join(c for c in lines[:i]
+                                if not c.strip().startswith('#')
+                                and not re.match(r'\s*(cd|source|\.|pushd|exec)\b', c))
+                note = ' [structural half asserts first]' \
+                    if PRE_ASSERT.search(pre) else ''
+                yield ('DARK', i + 1, line.strip() + note)
             return
         yield ('TCG', i + 1, line.strip())
         return

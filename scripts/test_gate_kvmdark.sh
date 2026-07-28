@@ -101,9 +101,20 @@ else
     echo "::warning title=KVM-dark gates::$N_DARK registered gate(s) require /dev/kvm and exited 0 without asserting anything on this runner. Run 'bash $RUNNER' on a KVM host for real coverage."
 fi
 echo "$TAG ############################################################"
-printf '%s\n' "$DARK" | sed "s|^|$TAG   uncovered: |"
-echo "$TAG census: $N_DARK dark+registered, $N_UNREG dark+unregistered," \
+printf '%s\n' "$SITES" | awk -F'\t' -v t="$TAG" '$1=="DARK" {
+    partial = ($4 ~ /structural half asserts first/)
+    printf "%s   %s %s\n", t, (partial ? "partly covered:" : "UNCOVERED:    "), $2
+}'
+N_PARTIAL=$(printf '%s\n' "$SITES" \
+            | awk -F'\t' '$1=="DARK" && $4 ~ /structural half asserts first/' \
+            | grep -c . || true)
+echo "$TAG census: $N_DARK dark+registered (of which $N_PARTIAL still assert a" \
+     "structural half on a KVM-less runner), $N_UNREG dark+unregistered," \
      "$N_HONEST report INCONCLUSIVE, $N_TCG fall back to TCG"
+echo "$TAG   'partly covered' is the shape the other $((N_DARK - N_PARTIAL)) should grow:"
+echo "$TAG   assert what CAN be asserted (the launcher IS shipped, the asset IS"
+echo "$TAG   in the image) BEFORE the capability check, so the GitHub run is not"
+echo "$TAG   a complete blank."
 if [ -n "$OPTOUT" ]; then
     printf '%s\n' "$OPTOUT" | awk -F'\t' -v t="$TAG" \
         '{printf "%s   kvm-dark-ok %s — %s\n", t, $1, $2}'
