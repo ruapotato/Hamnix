@@ -3,6 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
+from lib.htmlengine import _attr_decode_at
 from lib.htmlengine import _ebox_find, _attr_op_match, _build_dataset, _bytes_eq, _content_right, _cstr_len, _dom_lookup_anchor, _extract_html, _extract_text, _find_cre_by_obj, _has_word, _hx_find_attr, _hx_lower, _idbytes_eq, _input_type_is, _is_undef_str, _left_margin, _match_chain, _nth_match, _palette_rgb, _parse_nth, _sel_attr_name_end, _sel_isname, _sel_parse, _sel_split, _select_index, _select_text, _tx_by_anchor, _tx_next_sibling, _tx_prev_sibling, _upper, css_color_rgb
 
 # ====================================================================
@@ -1223,13 +1224,8 @@ def _capture_inline(te: uint64, name: Ptr[uint8]):
     g_ih_len = 0
     if _hx_find_attr(g_el_ns, te, name) != 0:
         os: int32 = dom_txt_len
-        p: uint64 = g_attr_start
-        osl: int32 = 0
-        while p < g_attr_end and dom_txt_len < DOM_TXT_CAP:
-            dom_txtbuf[dom_txt_len] = src_ptr[p]
-            dom_txt_len = dom_txt_len + 1
-            osl = osl + 1
-            p = p + 1
+        osl: int32 = _attr_decode_at(&dom_txtbuf[0], dom_txt_len, DOM_TXT_CAP)
+        dom_txt_len = dom_txt_len + osl
         g_ih_off = os
         g_ih_len = osl
 
@@ -1361,12 +1357,8 @@ def _reflect_str_attr(o: int32, te: uint64, name: Ptr[uint8], nlen: uint64):
     ro: int32 = dom_txt_len
     rl: int32 = 0
     if _hx_find_attr(g_el_ns, te, name) != 0:
-        pr: uint64 = g_attr_start
-        while pr < g_attr_end and dom_txt_len < DOM_TXT_CAP:
-            dom_txtbuf[dom_txt_len] = src_ptr[pr]
-            dom_txt_len = dom_txt_len + 1
-            rl = rl + 1
-            pr = pr + 1
+        rl = _attr_decode_at(&dom_txtbuf[0], dom_txt_len, DOM_TXT_CAP)
+        dom_txt_len = dom_txt_len + rl
     js_set_prop(o, name, nlen, js_new_string(&dom_txtbuf[ro], cast[uint64](rl)))
 
 
@@ -1421,24 +1413,16 @@ def _dom_register_el() -> int32:
     ido: int32 = dom_idbuf_len
     idl: int32 = 0
     if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("id")) != 0:
-        p: uint64 = g_attr_start
-        while p < g_attr_end and dom_idbuf_len < DOM_ID_CAP:
-            dom_idbuf[dom_idbuf_len] = src_ptr[p]
-            dom_idbuf_len = dom_idbuf_len + 1
-            idl = idl + 1
-            p = p + 1
+        idl = _attr_decode_at(&dom_idbuf[0], dom_idbuf_len, DOM_ID_CAP)
+        dom_idbuf_len = dom_idbuf_len + idl
     dom_id_off[idx] = ido
     dom_id_len[idx] = idl
     # class attribute (original)
     oc: int32 = dom_txt_len
     ocl: int32 = 0
     if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("class")) != 0:
-        p2: uint64 = g_attr_start
-        while p2 < g_attr_end and dom_txt_len < DOM_TXT_CAP:
-            dom_txtbuf[dom_txt_len] = src_ptr[p2]
-            dom_txt_len = dom_txt_len + 1
-            ocl = ocl + 1
-            p2 = p2 + 1
+        ocl = _attr_decode_at(&dom_txtbuf[0], dom_txt_len, DOM_TXT_CAP)
+        dom_txt_len = dom_txt_len + ocl
     dom_origcls_off[idx] = oc
     dom_origcls_len[idx] = ocl
     # inline event-handler attributes (source stored; run on the event)
@@ -1481,12 +1465,8 @@ def _dom_register_el() -> int32:
             sk = sk + 1
     elif kind == 1:                                      # input: value attribute
         if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("value")) != 0:
-            pv: uint64 = g_attr_start
-            while pv < g_attr_end and dom_txt_len < DOM_TXT_CAP:
-                dom_txtbuf[dom_txt_len] = src_ptr[pv]
-                dom_txt_len = dom_txt_len + 1
-                ovl = ovl + 1
-                pv = pv + 1
+            ovl = _attr_decode_at(&dom_txtbuf[0], dom_txt_len, DOM_TXT_CAP)
+            dom_txt_len = dom_txt_len + ovl
         if _input_type_is(g_el_ns, te, cast[Ptr[uint8]]("checkbox")) != 0 or \
            _input_type_is(g_el_ns, te, cast[Ptr[uint8]]("radio")) != 0:
             if _has_word(g_el_ns, te, cast[Ptr[uint8]]("checked")) != 0:
@@ -1549,12 +1529,8 @@ def _dom_register_el() -> int32:
         nmo: int32 = dom_idbuf_len
         nml: int32 = 0
         if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("name")) != 0:
-            pn2: uint64 = g_attr_start
-            while pn2 < g_attr_end and dom_idbuf_len < DOM_ID_CAP:
-                dom_idbuf[dom_idbuf_len] = src_ptr[pn2]
-                dom_idbuf_len = dom_idbuf_len + 1
-                nml = nml + 1
-                pn2 = pn2 + 1
+            nml = _attr_decode_at(&dom_idbuf[0], dom_idbuf_len, DOM_ID_CAP)
+            dom_idbuf_len = dom_idbuf_len + nml
         js_set_prop(o, cast[Ptr[uint8]]("name"), 4, \
                     js_new_string(&dom_idbuf[nmo], cast[uint64](nml)))
         # type (input: attr or "text"; else the tag name)

@@ -1028,6 +1028,14 @@ def object_assign(base: int32, argc: int32) -> int32:
 
 def object_values(v: int32) -> int32:
     ro: int32 = v_new_array()
+    if tag_of(v) == TAG_STR:
+        svs: int32 = strid_of(v)
+        nvs: int32 = str_u16_len(svs)
+        iv: int32 = 0
+        while iv < nvs:
+            arr_push(objid_of(ro), v_string_id(str_sub_u16(svs, iv, iv + 1)))
+            iv = iv + 1
+        return ro
     if tag_of(v) != TAG_OBJ:
         return ro
     o: int32 = objid_of(v)
@@ -1060,6 +1068,17 @@ def object_values_rec(p: int32, ro: int32, ownerv: int32):
 def object_entries(v: int32) -> int32:
     res: int32 = v_new_array()
     ro: int32 = objid_of(res)
+    if tag_of(v) == TAG_STR:
+        ses: int32 = strid_of(v)
+        nes: int32 = str_u16_len(ses)
+        ie: int32 = 0
+        while ie < nes:
+            epair: int32 = v_new_array()
+            arr_push(objid_of(epair), v_string_id(num_to_strid(cast[float64](ie))))
+            arr_push(objid_of(epair), v_string_id(str_sub_u16(ses, ie, ie + 1)))
+            arr_push(ro, epair)
+            ie = ie + 1
+        return res
     if tag_of(v) != TAG_OBJ:
         return res
     o: int32 = objid_of(v)
@@ -1209,6 +1228,12 @@ def native_minmax(base: int32, argc: int32, ismax: int32) -> int32:
 def object_keys(v: int32) -> int32:
     res: int32 = v_new_array()
     ro: int32 = objid_of(res)
+    if tag_of(v) == TAG_STR:
+        # A primitive STRING is an ordinary "array-like" to Object.*: its own
+        # enumerable keys are the index strings over its UTF-16 CODE UNITS.
+        # node: Object.keys("ab\u00e9") is ["0","1","2"] — we answered [].
+        str_index_keys(strid_of(v), ro)
+        return res
     if tag_of(v) != TAG_OBJ:
         return res
     o: int32 = objid_of(v)
@@ -1230,6 +1255,15 @@ def object_keys(v: int32) -> int32:
     return res
 
 
+# Push "0".."n-1" for a string's UTF-16 code units into the array object `ro`.
+def str_index_keys(sid: int32, ro: int32):
+    n: int32 = str_u16_len(sid)
+    i: int32 = 0
+    while i < n:
+        arr_push(ro, v_string_id(num_to_strid(cast[float64](i))))
+        i = i + 1
+
+
 # `only_enum` = 1 for Object.keys/values/entries (own ENUMERABLE string keys);
 # 0 for Object.getOwnPropertyNames, which lists non-enumerable slots too.
 def object_keys_rec(p: int32, ro: int32, only_enum: int32):
@@ -1248,6 +1282,11 @@ def object_keys_rec(p: int32, ro: int32, only_enum: int32):
 # such as React's inputValueTracking rely on).
 def object_own_names(v: int32) -> int32:
     res: int32 = object_keys(v)
+    if tag_of(v) == TAG_STR:
+        # ... plus the non-enumerable `length` slot (node:
+        # Object.getOwnPropertyNames("ab") is ["0","1","length"]).
+        arr_push(objid_of(res), v_string_cstr(cast[Ptr[uint8]]("length")))
+        return res
     if tag_of(v) != TAG_OBJ:
         return res
     o: int32 = objid_of(v)
@@ -2046,6 +2085,29 @@ def json_emit_string(sid: int32):
             emit_c(48)
             emit_hex_nibble(cast[int32](c) / 16)
             emit_hex_nibble(cast[int32](c) & 15)
+        elif c >= 128:
+            # WELL-FORMED JSON.stringify (ES2019): a LONE surrogate is not
+            # valid UTF-8/UTF-16 output, so it must come out as a \uXXXX
+            # escape rather than the raw (illegal) WTF-8 bytes. Lone halves
+            # live in the string pool as 3-byte sequences in D800-DFFF;
+            # a real PAIR is one 4-byte sequence and passes through untouched.
+            # node: JSON.stringify("\uD800") === "\"\\ud800\"".
+            sl: int32 = str_seqlen_at(sid, i)
+            cp: int32 = u8_decode(st_off[sid] + i, sl)
+            if sl == 3 and cp >= 55296 and cp <= 57343:
+                emit_c(92)
+                emit_c(117)
+                emit_hex_nibble((cp >> 12) & 15)
+                emit_hex_nibble((cp >> 8) & 15)
+                emit_hex_nibble((cp >> 4) & 15)
+                emit_hex_nibble(cp & 15)
+            else:
+                k: int32 = 0
+                while k < sl:
+                    emit_c(str_char(sid, i + k))
+                    k = k + 1
+            i = i + sl
+            continue
         else:
             emit_c(c)
         i = i + 1

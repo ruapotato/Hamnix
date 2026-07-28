@@ -3,6 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
+from lib.htmlengine import _attr_decode_scratch, g_attrdec, g_attr_start, g_attr_end
 from lib.htmlengine import _alnum_at, _bytes_eq, _find_close, _hx_lower, _rawtext_skip, _scan_start_tag, _sel_isname, _sel_match_at, _hx_tag_end_p, _inert_skip
 
 # ====================================================================
@@ -874,8 +875,13 @@ def _build_dataset_obj(abody: uint64, je: uint64) -> int32:
                       q == 0 and src_ptr[vp] != 32 and src_ptr[vp] != 9 and \
                       src_ptr[vp] != 62):
                     vp = vp + 1
+                # dataset values are entity-decoded too — publish the span
+                # through the g_attr_* seam _attr_decode_at reads.
+                g_attr_start = vstart
+                g_attr_end = vp
+                dvl: int32 = _attr_decode_scratch()
                 js_set_prop(ds, &g_dskey[0], kw, \
-                            js_new_string(&src_ptr[vstart], vp - vstart))
+                            js_new_string(&g_attrdec[0], cast[uint64](dvl)))
                 i = vp
             else:
                 js_set_prop(ds, &g_dskey[0], kw, js_new_string(&dom_txtbuf[0], 0))

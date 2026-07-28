@@ -164,6 +164,58 @@ def _ent_num_remap(val: uint32) -> uint32:
 ent_dom_mode: int32 = 0
 
 
+# ATTRIBUTE VALUES are entity-decoded too — the HTML parser decodes them at
+# tokenize time, so `<input value="&eacute;t&eacute;">` reaches script as the
+# 3-character "été", not the 17 raw source bytes. Every DOM read of an attribute
+# copied the SOURCE SPAN verbatim, so `.value.length` was 17 (chromium: 3), and
+# `getAttribute("href")` on `?a=1&amp;b=2` handed back the literal `&amp;`.
+#
+# The decode runs in DOM mode (ent_dom_mode = 1) for the same reason the text
+# view does: chromium hands script back U+00A0 for `&nbsp;`, and pages branch on
+# it. The one table serves both; there is no second entity set.
+#
+# The semicolon-less legacy forms need no special casing here: _ent_try_legacy
+# already refuses to match when the name is followed by `=` or an alphanumeric,
+# which IS the attribute-value rule — so `?a=1&not=2` keeps its literal `&not=`
+# (measured against chromium) while `?a=1&amp;b=2` decodes.
+#
+# Appends the decoded bytes of the CURRENT _hx_find_attr span
+# [g_attr_start, g_attr_end) to dst starting at index `at`, never writing at or
+# past `cap`. Returns the number of bytes appended.
+def _attr_decode_at(dst: Ptr[uint8], at: int32, cap: int32) -> int32:
+    prev_mode: int32 = ent_dom_mode
+    ent_dom_mode = 1
+    n: int32 = 0
+    p: uint64 = g_attr_start
+    while p < g_attr_end and at + n < cap:
+        if src_ptr[p] == 38:                             # '&'
+            consumed: uint64 = _entity(p)
+            # An entity must not be allowed to eat past the value's closing
+            # quote; a well-formed one never does, but a truncated tag could.
+            if consumed > 0 and p + consumed <= g_attr_end:
+                k: int32 = 0
+                while k < g_ent_len and at + n < cap:
+                    dst[at + n] = g_ent_buf[k]
+                    n = n + 1
+                    k = k + 1
+                p = p + consumed
+                continue
+        dst[at + n] = src_ptr[p]
+        n = n + 1
+        p = p + 1
+    ent_dom_mode = prev_mode
+    return n
+
+
+# Scratch landing pad for callers that hand the decoded value straight to
+# js_new_string rather than parking it in dom_txtbuf/dom_idbuf.
+g_attrdec: Array[4096, uint8]
+
+
+def _attr_decode_scratch() -> int32:
+    return _attr_decode_at(&g_attrdec[0], 0, 4096)
+
+
 def _ent_nbsp_cp() -> uint32:
     if ent_dom_mode != 0:
         return 0xA0                                  # DOM view: real U+00A0
