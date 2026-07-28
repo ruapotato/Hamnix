@@ -1,0 +1,30 @@
+<html><body>
+<div id=d>a&nbsp;b &copy; &eacute; &mdash; &euro; &#8212; &#x1D11E;</div>
+<p id=p>caf&eacute; na&iuml;ve</p>
+<span id=s>&#x1D11E;&#x1D11E;</span>
+<script>
+function L(k, v){ console.log(k + ' ' + v); }
+var t = document.getElementById('d').textContent;
+L('d.len', t.length);
+L('d.iof', t.indexOf('©'));
+L('d.cca1', t.charCodeAt(1));
+L('d.slice', t.slice(2,3));
+L('d.split', t.split('').length);
+L('d.last', t.charCodeAt(t.length - 1));
+
+var p = document.getElementById('p').textContent;
+L('p.len', p.length);
+L('p.words', p.split(' ').map(function(w){ return w.length; }).join(','));
+L('p.upper', p.slice(0,3).toUpperCase());
+L('p.at', p.charAt(3) + p.at(-1));
+
+var s = document.getElementById('s').textContent;
+L('s.len', s.length);
+L('s.cp', s.codePointAt(0) + ',' + s.charCodeAt(0) + ',' + s.charCodeAt(1));
+L('s.spread', s.split('').length + ',' + Array.from(s).length);
+L('s.half', s.slice(0,1).length + ',' + (s.slice(0,2) + s.slice(2) === s));
+
+var m = 'xéy'.match(/./g);
+L('re.dot', m.length + ',' + m[1]);
+L('re.index', 'aéb'.search(/b/));
+</script></body></html>

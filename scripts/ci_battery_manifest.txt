@@ -3261,3 +3261,14 @@ bash scripts/test_hambrowse_iface_host.sh
 # whole sequence, plus an ASCII fast-path no-regression case. Every expectation
 # was taken from node value-by-value.
 bash scripts/test_jsengine_utf16_host.sh
+# scripts/test_hambrowse_utf16dom_host.sh: QEMU-free gate that DOM text
+# reaching JavaScript obeys UTF-16 CODE-UNIT semantics end to end. Character
+# entities (&nbsp; &copy; &eacute; &mdash; &euro; &#8212; &#x1D11E;) are how
+# real pages produce non-ASCII text, and textContent.length / indexOf /
+# charCodeAt / slice over it were reading stored UTF-8 BYTES — hackernews'
+# body textContent measured 3886 against chromium's 3839, and .slice returned
+# FRAGMENTS of a sequence, i.e. invalid strings that propagated silently.
+# Every expected line is a measured chromium --headless value for
+# tests/fixtures/hambrowse_utf16dom.html, including the deliberate split("")
+# (code UNITS) vs Array.from (code POINTS) disagreement on an astral character.
+bash scripts/test_hambrowse_utf16dom_host.sh
