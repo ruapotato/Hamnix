@@ -914,6 +914,16 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
 # JS string literal cannot end the skip early — the same trap that used to
 # break _find_close on books.toscrape ("<html" x5) and google ("<body" x3).
 def _tpl_skip(frm: uint64, ce: uint64) -> uint64:
+    return _inert_tag_skip(frm, ce, cast[Ptr[uint8]]("template"), 8)
+
+
+# Skip the whole (nesting-aware) subtree of an INERT element whose start tag has
+# already been consumed: scan from `frm` to the matching close tag of
+# nm[0..nmlen), counting nested opens of the same name and stepping over
+# <script>/<style> rawtext bodies (a "</template>" inside a JS string is not a
+# close tag). Returns the offset just past the matching close, or `ce` if the
+# element is never closed.
+def _inert_tag_skip(frm: uint64, ce: uint64, nm: Ptr[uint8], nmlen: uint64) -> uint64:
     depth: int32 = 1
     i: uint64 = frm
     while i < ce:
@@ -921,7 +931,7 @@ def _tpl_skip(frm: uint64, ce: uint64) -> uint64:
             i = i + 1
             continue
         if i + 1 < ce and src_ptr[i + 1] == 47:           # '</'
-            if _hx_name_eq(i + 2, 8, cast[Ptr[uint8]]("template")) != 0:
+            if _hx_name_eq(i + 2, nmlen, nm) != 0:
                 depth = depth - 1
                 i = _hx_tag_end_p(src_ptr, ce, i + 2)
                 if i < ce:
@@ -936,7 +946,7 @@ def _tpl_skip(frm: uint64, ce: uint64) -> uint64:
         ne: uint64 = ts
         while ne < je and _alnum_at(ne) != 0:
             ne = ne + 1
-        if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("template")) != 0:
+        if _hx_name_eq(ts, ne - ts, nm) != 0:
             if je == ts or src_ptr[je - 1] != 47:         # not self-closing
                 depth = depth + 1
         rt: uint64 = _rawtext_skip(ts, ne, je)            # <script>/<style> body
@@ -1131,6 +1141,22 @@ def _inert_skip(ts: uint64, ne: uint64, je: uint64) -> uint64:
         if je > ts and src_ptr[je - 1] == 47:             # <template/> self-close
             return 0
         return _tpl_skip(je + 1, src_len)
+    # <noscript> with SCRIPTING ENABLED — which hambrowse always is — is parsed
+    # as RAWTEXT: its content is character data, not elements, so nothing inside
+    # it enters the document tree. The RENDERER already knew this (see the
+    # noscript branch of _handle_tag in lib/web/dom/forms.ad, which is what stops
+    # the ubiquitous "Please enable JavaScript" block from painting), but the DOM
+    # TREE INDEXER did not, so the elements inside a <noscript> still got
+    # records and script counted them.
+    #
+    # MEASURED against chromium --dump-dom, document.getElementsByTagName("*"):
+    #   google_search  before 20 vs chromium 16 — the excess is EXACTLY that
+    #                  page's one <noscript>: A+1 DIV+1 META+1 STYLE+1
+    #   wikipedia_plan9 before 4576 vs 4575 — its one <noscript> holds one <img>
+    if _hx_name_eq(ts, ne - ts, cast[Ptr[uint8]]("noscript")) != 0:
+        if je > ts and src_ptr[je - 1] == 47:             # <noscript/> self-close
+            return 0
+        return _inert_tag_skip(je + 1, src_len, cast[Ptr[uint8]]("noscript"), 8)
     return 0
 
 

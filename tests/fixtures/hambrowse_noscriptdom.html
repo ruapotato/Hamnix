@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!-- tests/fixtures/hambrowse_noscriptdom.html — <noscript> is RAWTEXT when
+     scripting is enabled.
+
+     hambrowse always runs scripts, so per the HTML standard a <noscript>
+     element's content is character data, not markup: nothing inside it enters
+     the document tree, nothing inside it renders, and script must not be able
+     to find it. The renderer already skipped it; the DOM tree indexer did not,
+     so the elements inside a <noscript> still got records and every element
+     census over-counted (google_search: 20 vs chromium's 16, the excess being
+     exactly this page's A/DIV/META/STYLE inside one <noscript>).
+
+     The blocks below deliberately mix in the shapes that make a naive skip go
+     wrong: a nested <noscript>, a "</noscript>" sitting inside a <script>
+     string, and real elements AFTER the block that must still be found. -->
+<html><head>
+<noscript><style>.dead { color: #ff0000; }</style><meta name="dead" content="1"></noscript>
+</head><body>
+<div id="live1">LIVE-ONE</div>
+<noscript>
+  <div id="dead1">PLEASE ENABLE JAVASCRIPT</div>
+  <a id="dead2" href="/nope">dead link</a>
+  <img id="dead3" src="tracker.gif" alt="dead">
+  <noscript><span id="dead4">nested</span></noscript>
+</noscript>
+<div id="live2">LIVE-TWO</div>
+<script>
+  // A literal "</noscript>" inside a JS string must not end anything.
+  var trap = "x" + "</noscript" + ">y";
+  var all = document.getElementsByTagName('*').length;
+  var counts = {};
+  var els = document.getElementsByTagName('*');
+  for (var i = 0; i < els.length; i++) {
+    counts[els[i].tagName] = (counts[els[i].tagName] || 0) + 1;
+  }
+  var ks = [];
+  for (var k in counts) { ks.push(k + ':' + counts[k]); }
+  ks.sort();
+  console.log('NSDOM all=' + all);
+  console.log('NSDOM tags=' + ks.join(','));
+  console.log('NSDOM dead1=' + (document.getElementById('dead1') ? 'FOUND' : 'null'));
+  console.log('NSDOM dead4=' + (document.getElementById('dead4') ? 'FOUND' : 'null'));
+  console.log('NSDOM qsa-dead=' + document.querySelectorAll('#dead1,#dead2,#dead3,#dead4').length);
+  console.log('NSDOM live1=' + (document.getElementById('live1') ? 'FOUND' : 'null'));
+  console.log('NSDOM live2=' + (document.getElementById('live2') ? 'FOUND' : 'null'));
+  console.log('NSDOM trap=' + trap);
+</script>
+</body></html>

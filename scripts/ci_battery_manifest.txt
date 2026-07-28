@@ -3967,3 +3967,12 @@ bash scripts/test_hambrowse_ptrevents_host.sh
 # with no document URL supplied the engine still reflects the raw attribute.
 # REGISTERED 2026-07-28.
 bash scripts/test_hambrowse_urlreflect_host.sh
+# test_hambrowse_noscriptdom_host: <noscript> is RAWTEXT when scripting is on,
+# and that has to hold in the DOM as well as on screen. The renderer already
+# skipped it; the DOM tree indexer did not, so every element inside a <noscript>
+# got a record and script could count/query/getElementById it. MEASURED vs
+# chromium --dump-dom: google_search.html 20 elements vs 16, wikipedia_plan9
+# 4576 vs 4575 — the excess was exactly each page's <noscript> contents, and both
+# now match chromium exactly. Covers a nested <noscript> and a literal
+# "</noscript>" inside a JS string. REGISTERED 2026-07-28.
+bash scripts/test_hambrowse_noscriptdom_host.sh
