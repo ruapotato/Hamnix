@@ -2353,6 +2353,13 @@ def exec_stmt(node: int32, env: int32):
         rv: int32 = v_undef()
         if n_a[node] >= 0:
             rv = eval_expr(n_a[node], env)
+            if ctl == CTL_THROW:
+                # The RETURNED EXPRESSION threw. Overwriting ctl with CTL_RETURN
+                # here swallowed the exception whole: `try { return f(); }
+                # catch(e) {...}` never entered the catch and the function
+                # quietly returned undefined instead — the single most common
+                # shape of guarded call there is.
+                return
         ctl = CTL_RETURN
         ctl_val = rv
         return

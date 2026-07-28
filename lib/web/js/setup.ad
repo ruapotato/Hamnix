@@ -1666,6 +1666,14 @@ def def_global_native(name: Ptr[uint8], native_id: int32):
     env_define(g_env, str_from_cstr(name), v_new_native(native_id), 0)
 
 
+# A global native that carries a URI_SET_* selector in obj_p_a (recovered via
+# native_self), so encodeURI and encodeURIComponent can share one native id.
+def def_global_uri(name: Ptr[uint8], native_id: int32, set: int32):
+    f: int32 = v_new_native(native_id)
+    obj_p_a[objid_of(f)] = set
+    env_define(g_env, str_from_cstr(name), f, 0)
+
+
 # ES: every built-in method (on a prototype OR on a namespace like Math/JSON) is
 # { writable: true, enumerable: FALSE, configurable: true }. Enumerable builtins
 # leak into Object.keys(Array.prototype) / Object.assign(x, SomeProto).
@@ -1957,6 +1965,16 @@ def install_builtins():
     install_error(cast[Ptr[uint8]]("RangeError"), NAT_RANGEERROR, errbase)
     install_error(cast[Ptr[uint8]]("SyntaxError"), NAT_SYNTAXERROR, errbase)
     install_error(cast[Ptr[uint8]]("ReferenceError"), NAT_REFERENCEERROR, errbase)
+    install_error(cast[Ptr[uint8]]("URIError"), NAT_URIERROR, errbase)
+    # URI handling globals. encodeURI/encodeURIComponent (and the two decoders)
+    # differ ONLY in whether the reserved set ";/?:@&=+$,#" survives, so they
+    # share a native and carry the URI_SET_* selector in obj_p_a.
+    def_global_uri(cast[Ptr[uint8]]("encodeURI"), NAT_URI_ENCODE, URI_SET_FULL)
+    def_global_uri(cast[Ptr[uint8]]("encodeURIComponent"), NAT_URI_ENCODE, URI_SET_COMP)
+    def_global_uri(cast[Ptr[uint8]]("decodeURI"), NAT_URI_DECODE, URI_SET_FULL)
+    def_global_uri(cast[Ptr[uint8]]("decodeURIComponent"), NAT_URI_DECODE, URI_SET_COMP)
+    def_global_native(cast[Ptr[uint8]]("escape"), NAT_URI_ESCAPE)
+    def_global_native(cast[Ptr[uint8]]("unescape"), NAT_URI_UNESCAPE)
     # globals
     def_global_native(cast[Ptr[uint8]]("parseInt"), NAT_PARSEINT)
     def_global_native(cast[Ptr[uint8]]("parseFloat"), NAT_PARSEFLOAT)

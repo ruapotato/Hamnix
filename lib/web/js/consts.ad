@@ -349,6 +349,17 @@ NAT_DV_GET:           int32 = 327   # DataView.prototype.get<Type>(byteOffset[, 
 NAT_DV_SET:           int32 = 328   # DataView.prototype.set<Type>(byteOffset, value[, littleEndian])
 NAT_INTL_COLLATOR:    int32 = 330   # new Intl.Collator([locales[, options]])
 NAT_COLLATOR_COMPARE: int32 = 331   # Intl.Collator.prototype.compare(a, b)
+# URI handling globals. Four distinct escape SETS share two implementations;
+# the set is selected by the URI_SET_* code in obj_p_a of the function object.
+NAT_URI_ENCODE:       int32 = 332   # encodeURI / encodeURIComponent
+NAT_URI_DECODE:       int32 = 333   # decodeURI / decodeURIComponent
+NAT_URI_ESCAPE:       int32 = 334   # escape()   — legacy, UTF-16 code units
+NAT_URI_UNESCAPE:     int32 = 335   # unescape() — legacy
+NAT_URIERROR:         int32 = 336   # the URIError constructor
+
+# encode/decode SET selector (obj_p_a on the native function object).
+URI_SET_FULL: int32 = 0   # encodeURI / decodeURI  — the reserved set survives
+URI_SET_COMP: int32 = 1   # encodeURIComponent / decodeURIComponent
 
 # TypedArray array-method selector codes (obj_p_a of the method function).
 TAM_JOIN:      int32 = 1

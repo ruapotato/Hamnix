@@ -263,6 +263,14 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return v_number(parse_num_bytes(str_ptr(strid_of(s)), str_len(strid_of(s))))
     if id == NAT_ISNAN:
         return v_boolv(is_nan(to_number(arg_or(base, argc, 0))))
+    if id == NAT_URI_ENCODE:
+        return uri_encode(arg_or(base, argc, 0), obj_p_a[native_self])
+    if id == NAT_URI_DECODE:
+        return uri_decode(arg_or(base, argc, 0), obj_p_a[native_self])
+    if id == NAT_URI_ESCAPE:
+        return uri_escape(arg_or(base, argc, 0))
+    if id == NAT_URI_UNESCAPE:
+        return uri_unescape(arg_or(base, argc, 0))
     if id == NAT_STRING:
         if argc == 0:
             return v_string_cstr(cast[Ptr[uint8]](""))
@@ -749,7 +757,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return object_keys(arg_or(base, argc, 0))
     if id == NAT_ARRAY_ISARRAY:
         return v_boolv(is_array(arg_or(base, argc, 0)))
-    if id == NAT_ERROR or id == NAT_TYPEERROR or id == NAT_RANGEERROR or id == NAT_SYNTAXERROR or id == NAT_REFERENCEERROR:
+    if id == NAT_ERROR or id == NAT_TYPEERROR or id == NAT_RANGEERROR or id == NAT_SYNTAXERROR or id == NAT_REFERENCEERROR or id == NAT_URIERROR:
         return make_error(id, thisv, base, argc)
     if id == NAT_OBJECT_ASSIGN:
         return object_assign(base, argc)
@@ -978,6 +986,8 @@ def err_name_of(id: int32) -> Ptr[uint8]:
         return cast[Ptr[uint8]]("SyntaxError")
     if id == NAT_REFERENCEERROR:
         return cast[Ptr[uint8]]("ReferenceError")
+    if id == NAT_URIERROR:
+        return cast[Ptr[uint8]]("URIError")
     return cast[Ptr[uint8]]("Error")
 
 
