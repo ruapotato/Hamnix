@@ -28,6 +28,23 @@
 # broken. That gap is what this gate closes: it runs the SAME source through
 # BOTH lanes and byte-compares the output against the system gunzip.
 #
+# WHY test_tar_gzip.sh DOES NOT COVER THIS (measured, not assumed). That gate
+# DOES rebuild userland through the LLVM lane and DOES run the shipped ELF64
+# /bin/gunzip against a real dynamic-Huffman host .gz. It was re-run on
+# 2026-07-27 against a compiler with the ssa.ad fix REVERTED and still reported
+# PASS on all nine of its checks. The same defect, in the same function, in a
+# differently-linked binary, was benign: an undersized alloca is a FRAME-LAYOUT
+# hazard, so whether the 3-byte overrun lands on padding or on a live neighbour
+# depends on the surrounding allocation set and the optimiser. `hpm` lost that
+# coin flip; `gunzip` won it. A gate whose verdict depends on a coin flip is
+# not a guard.
+#
+# This gate is built to be layout-INDEPENDENT instead: it byte-compares the
+# FULL decompressed output (not a substring of a serial log) against the system
+# gunzip, over multi-file tarballs of mixed text+binary content that force the
+# full 19-symbol code-length alphabet incl. the 16/17/18 repeat codes, at BOTH
+# -O0 and -O2.
+#
 # Revert adder/compiler/ssa.ad's ssa_widen_mem_local and the LLVM lane goes red
 # here in about two seconds.
 #
