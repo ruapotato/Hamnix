@@ -30,50 +30,49 @@ from lib.htmlengine import _cssom_reset
 # `undefined` — so `document.getElementsByTagName("img")` reported length 7 while
 # EVERY entry was undefined, and the page's own `for(...) a[i].getAttribute(...)`
 # loop threw "cannot read property 'getAttribute' of null". Two of google's
-# scripts died on exactly that. The arrays are int-per-element, so 1024 costs
-# ~4 KB each and comfortably covers a real content page.
-DOM_MAX:     int32  = 4096
+# scripts died on exactly that.
+#
+# SIZED ON MEASUREMENT, and here is the measurement, plainly. Live snapshots,
+# element counts from `document.getElementsByTagName("*").length`, ours and
+# chromium's agreeing to within 4: wikipedia (Plan 9 article) 4576, hn 811,
+# books.toscrape 542, archlinux 375, google.com 299. At 4096, wikipedia handed
+# script 480 UNDEFINED elements. 8192 clears the largest page anyone here has
+# measured by ~1.8x. It is NOT "sized for the web": the three snapshots that
+# could not be measured at all (nytimes, stackoverflow, bbc — 2.9-4.5 MB, no
+# output in 600 s) are exactly the ones likely to exceed it. What HAS changed is
+# that crossing it is no longer silent — see the js_out_note at the cap check —
+# so the next page that needs more will say so instead of throwing inside the
+# page's own code. Cost is int-per-element: ~50 arrays x 32 KB.
+DOM_MAX:     int32  = 8192
 DOM_ID_CAP:  int32  = 131072
-# Shared buffer holding each registered element's baseline textContent +
-# innerHTML. DELIBERATELY LEFT AT 64 KB. It looks like it wants to grow — a real
-# page overflows it, which sets dom_orig_trunc and suppresses inner overrides,
-# and that is why document.body.textContent comes back "". But the suppression is
-# load-bearing: raising this to 1 MB was MEASURED to blank google.com entirely
-# (LAYOUT segs 29 -> 0), because the readback then trusts a full baseline,
-# concludes the whole <body> was mutated, and re-emits the page as escaped
-# textContent — exactly the failure the dom_orig_trunc comment below describes.
-# Growing this needs the readback fixed FIRST; until then it is a safety valve,
-# not a limit.
-DOM_TXT_CAP: int32  = 65536
+# Shared buffer for each registered element's GEOMETRY TEXT PREFIX (DOM_TXT_EL
+# bytes each — see _tw_put). It used to hold every element's full textContent
+# AND full raw innerHTML, which is why 64 KB was hopeless (the sum over all
+# elements is O(page x depth)) and why document.body.textContent came back "".
+# Those are lazy accessors now and do not touch this buffer at all, so 64 KB is
+# a genuine fit rather than a safety valve. 1 MiB / DOM_TXT_EL covers 512
+# elements at full prefix length and far more in practice (most elements hold a
+# few dozen bytes of text); overflow now costs only geometry precision on the
+# tail of a huge page, never a DOM read.
+DOM_TXT_CAP: int32  = 1048576
 DOM_OV_CAP:  int32  = 65536
 
 dom_idbuf:   Array[131072, uint8]      # concatenated element ids (case-sensitive)
 dom_idbuf_len: int32 = 0
-dom_id_off:  Array[4096, int32]
-dom_id_len:  Array[4096, int32]
-dom_obj:     Array[4096, int32]        # JS object value-handle per element
-dom_clsobj:  Array[4096, int32]        # the element's classList object handle (-1 none)
-dom_anchor:  Array[4096, int32]        # source offset of the element's '<' (-1 = none)
-dom_cstart:  Array[4096, int32]        # inner-content span in the source
-dom_cend:    Array[4096, int32]
-dom_ns:      Array[4096, int32]        # tag-name span in the source
-dom_nl:      Array[4096, int32]
-dom_orig_off: Array[4096, int32]       # original textContent (in dom_txtbuf)
-dom_orig_len: Array[4096, int32]
-dom_html_off: Array[4096, int32]       # original innerHTML (raw markup, in dom_txtbuf)
-dom_html_len: Array[4096, int32]
-# 1 when this element's textContent/innerHTML baseline was TRUNCATED because the
-# shared dom_txtbuf filled up (a big page: <html>/<body> each hold the whole
-# document's text, and a real article can exceed 64KB). A truncated baseline is
-# an unreliable oracle — the readback would compare it against the JS engine's
-# FULL recomputed textContent, wrongly conclude the container was mutated, and
-# the rewrite would then re-emit the ENTIRE page as escaped textContent (all tags
-# stripped -> links vanish, and <style>/<script> text leaks as prose: the MDN
-# doc page). So _dom_readback skips inner overrides for flagged elements.
-dom_orig_trunc: Array[4096, int32]
-dom_origcls_off: Array[4096, int32]    # original class attribute value
-dom_origcls_len: Array[4096, int32]
-dom_txtbuf:  Array[65536, uint8]
+dom_id_off:  Array[8192, int32]
+dom_id_len:  Array[8192, int32]
+dom_obj:     Array[8192, int32]        # JS object value-handle per element
+dom_clsobj:  Array[8192, int32]        # the element's classList object handle (-1 none)
+dom_anchor:  Array[8192, int32]        # source offset of the element's '<' (-1 = none)
+dom_cstart:  Array[8192, int32]        # inner-content span in the source
+dom_cend:    Array[8192, int32]
+dom_ns:      Array[8192, int32]        # tag-name span in the source
+dom_nl:      Array[8192, int32]
+dom_orig_off: Array[8192, int32]       # original textContent (in dom_txtbuf)
+dom_orig_len: Array[8192, int32]
+dom_origcls_off: Array[8192, int32]    # original class attribute value
+dom_origcls_len: Array[8192, int32]
+dom_txtbuf:  Array[1048576, uint8]
 dom_txt_len: int32 = 0
 dom_n:       int32 = 0
 
@@ -107,7 +106,7 @@ g_tw_cmp_p:  Ptr[uint8] = 0
 # <body> each snapshot the WHOLE document and the shared arena is gone before
 # the third element registers — which is precisely how every later element ended
 # up with a zero-length text baseline and no usable geometry.
-DOM_TXT_EL:  int32 = 4096
+DOM_TXT_EL:  int32 = 2048
 
 
 # One byte into the walker's current sink. Returns the updated count.
@@ -144,30 +143,33 @@ def _tw_put(oo: int32, n: int32, c: uint8) -> int32:
 # far more elements (TX_MAX) than the JS-object cap (DOM_MAX); JS element
 # objects are still registered lazily and their traversal properties are wired
 # from this index (see _dom_wire_tree). tx_parent[i] = -1 for a root.
-TX_MAX:     int32 = 8192
-tx_anchor:  Array[8192, int32]        # source offset of the element's '<'
-tx_cs:      Array[8192, int32]        # inner-content start (just past '>')
-tx_ce:      Array[8192, int32]        # inner-content end (the matching '</')
-tx_ns:      Array[8192, int32]        # tag-name span start
-tx_nl:      Array[8192, int32]        # tag-name span length
-tx_parent:  Array[8192, int32]        # parent tx index, or -1 for a root
-tx_stack:   Array[8192, int32]        # scratch: open-element stack while building
+# TX_MAX: ints only, so it is deliberately kept at 2x DOM_MAX — the tree index
+# must never be the binding constraint, because an element missing from it is
+# invisible to traversal and selectors, not merely un-scriptable.
+TX_MAX:     int32 = 16384
+tx_anchor:  Array[16384, int32]        # source offset of the element's '<'
+tx_cs:      Array[16384, int32]        # inner-content start (just past '>')
+tx_ce:      Array[16384, int32]        # inner-content end (the matching '</')
+tx_ns:      Array[16384, int32]        # tag-name span start
+tx_nl:      Array[16384, int32]        # tag-name span length
+tx_parent:  Array[16384, int32]        # parent tx index, or -1 for a root
+tx_stack:   Array[16384, int32]        # scratch: open-element stack while building
 tx_n:       int32 = 0
 tx_built:   int32 = 0
 
 # event handlers (parallel to 0..dom_n)
-dom_onclick_fn:  Array[4096, int32]    # stored JS function value, or -1
-dom_onclick_src: Array[4096, int32]    # inline onclick="..." source off, or -1
-dom_onclick_srclen: Array[4096, int32]
-dom_oninput_fn:  Array[4096, int32]    # oninput handler fn value, or -1
-dom_oninput_src: Array[4096, int32]
-dom_oninput_srclen: Array[4096, int32]
-dom_onchange_fn: Array[4096, int32]    # onchange handler fn value, or -1
-dom_onchange_src: Array[4096, int32]
-dom_onchange_srclen: Array[4096, int32]
-dom_onsubmit_fn: Array[4096, int32]    # onsubmit handler fn value, or -1 (forms)
-dom_onsubmit_src: Array[4096, int32]
-dom_onsubmit_srclen: Array[4096, int32]
+dom_onclick_fn:  Array[8192, int32]    # stored JS function value, or -1
+dom_onclick_src: Array[8192, int32]    # inline onclick="..." source off, or -1
+dom_onclick_srclen: Array[8192, int32]
+dom_oninput_fn:  Array[8192, int32]    # oninput handler fn value, or -1
+dom_oninput_src: Array[8192, int32]
+dom_oninput_srclen: Array[8192, int32]
+dom_onchange_fn: Array[8192, int32]    # onchange handler fn value, or -1
+dom_onchange_src: Array[8192, int32]
+dom_onchange_srclen: Array[8192, int32]
+dom_onsubmit_fn: Array[8192, int32]    # onsubmit handler fn value, or -1 (forms)
+dom_onsubmit_src: Array[8192, int32]
+dom_onsubmit_srclen: Array[8192, int32]
 
 # addEventListener registry — MULTIPLE listeners per (element,kind), fired in
 # registration order (round 8). The el.on<evt> property + inline on<evt>=""
@@ -175,13 +177,19 @@ dom_onsubmit_srclen: Array[4096, int32]
 # fire AFTER these, so `addEventListener('click',a); addEventListener('click',b);
 # el.onclick=c` fires a, b, c. Independent slots => onclick + addEventListener
 # both fire (real pages rely on this).
-EVL_MAX:  int32 = 256
-evl_el:   Array[256, int32]          # dom element index the listener is on
-evl_kind: Array[256, int32]          # 0 click 1 input 2 change 3 submit; GEN_KIND = string-typed
-evl_fn:   Array[256, int32]          # JS function value
-evl_dead: Array[256, int32]          # 1 = removed via removeEventListener
-evl_once: Array[256, int32]          # 1 = {once:true}: auto-remove after first fire
-evl_capture: Array[256, int32]       # 1 = {capture:true} (stored; bubble-only model)
+# EVL_MAX was 256 and silent. MEASURED: a page making 400 addEventListener
+# calls got 256 listeners; chromium fired all 400, and the 144 dropped ones were
+# indistinguishable from handlers the page never registered. 1024 is 2.5x the
+# only over-cap case anyone has measured — above 400 it is a GUESS, but a guess
+# that now reports when it is wrong (see the js_out_note at the cap check).
+# Cost: 8 int arrays x 4 KB.
+EVL_MAX:  int32 = 1024
+evl_el:   Array[1024, int32]          # dom element index the listener is on
+evl_kind: Array[1024, int32]          # 0 click 1 input 2 change 3 submit; GEN_KIND = string-typed
+evl_fn:   Array[1024, int32]          # JS function value
+evl_dead: Array[1024, int32]          # 1 = removed via removeEventListener
+evl_once: Array[1024, int32]          # 1 = {once:true}: auto-remove after first fire
+evl_capture: Array[1024, int32]       # 1 = {capture:true} (stored; bubble-only model)
 evl_n:    int32 = 0
 
 # Arbitrary event-type support (browser round 2). The 4 integer kinds above are
@@ -200,8 +208,8 @@ GEN_KIND:  int32 = 100               # evl_kind sentinel: a string-typed listene
 # load (fired once after all page <script>s run) and any other document type a
 # page dispatches. See _fire_document / _run_scripts.
 DOC_EL:    int32 = -2
-evl_type_off: Array[256, int32]      # type-string offset into evt_tybuf (GEN_KIND only)
-evl_type_len: Array[256, int32]
+evl_type_off: Array[1024, int32]      # type-string offset into evt_tybuf (GEN_KIND only)
+evl_type_len: Array[1024, int32]
 EVT_TYBUF_CAP: int32 = 4096
 evt_tybuf: Array[4096, uint8]        # interned event-type strings for GEN_KIND listeners
 evt_tybuf_len: int32 = 0
@@ -261,15 +269,15 @@ cv_sstk_n:     Array[8, int32]
 
 # form-control metadata (parallel to 0..dom_n). dom_kind: 0 generic, 1 input,
 # 2 textarea, 3 select, 4 button, 5 form.
-dom_kind:      Array[4096, int32]
-dom_origval_off: Array[4096, int32]    # original value (input/textarea/select)
-dom_origval_len: Array[4096, int32]
-dom_origchecked: Array[4096, int32]    # original checked state (0/1), else -1
+dom_kind:      Array[8192, int32]
+dom_origval_off: Array[8192, int32]    # original value (input/textarea/select)
+dom_origval_len: Array[8192, int32]
+dom_origchecked: Array[8192, int32]    # original checked state (0/1), else -1
 
 # resolved form overrides (parallel to 0..dom_n). off/len/flag == -1 = unset.
-dom_ov_val_off:  Array[4096, int32]    # replacement value string
-dom_ov_val_len:  Array[4096, int32]
-dom_ov_checked:  Array[4096, int32]    # 1 checked, 0 unchecked, -1 unchanged
+dom_ov_val_off:  Array[8192, int32]    # replacement value string
+dom_ov_val_len:  Array[8192, int32]
+dom_ov_checked:  Array[8192, int32]    # 1 checked, 0 unchecked, -1 unchanged
 
 # form submission serialization result ("?a=1&b=2"), + last-navigated URL.
 dom_nav_buf:  Array[2048, uint8]
@@ -285,8 +293,8 @@ dom_body_buf: Array[2048, uint8]
 dom_body_len: int32 = 0
 # setCustomValidity() message store (parallel to 0..dom_n). len == 0 means no
 # custom error; a non-empty message forces the control invalid (customError).
-dom_customval_off: Array[4096, int32]
-dom_customval_len: Array[4096, int32]
+dom_customval_off: Array[8192, int32]
+dom_customval_len: Array[8192, int32]
 dom_customval_buf: Array[2048, uint8]
 dom_customval_top: int32 = 0
 g_prevent_default: int32 = 0         # set by event.preventDefault() in a handler
@@ -344,22 +352,22 @@ iah_buf:  Array[16384, uint8]
 iah_html: Array[16384, uint8]        # the inserted-html arg, copied out of the shared js_str_ptr scratch
 
 # resolved overrides (parallel to 0..dom_n). off/len == -1 means "not set".
-dom_ov_inner_off: Array[4096, int32]   # replacement inner (text OR html)
-dom_ov_inner_len: Array[4096, int32]
-dom_ov_inner_html: Array[4096, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
-dom_ov_col_off:  Array[4096, int32]    # colour (raw CSS value)
-dom_ov_col_len:  Array[4096, int32]
-dom_ov_bg_off:   Array[4096, int32]    # background-color
-dom_ov_bg_len:   Array[4096, int32]
-dom_ov_wt_off:   Array[4096, int32]    # font-weight
-dom_ov_wt_len:   Array[4096, int32]
-dom_ov_al_off:   Array[4096, int32]    # text-align
-dom_ov_al_len:   Array[4096, int32]
-dom_ov_wd_off:   Array[4096, int32]    # width (CSS length string, e.g. "100px")
-dom_ov_wd_len:   Array[4096, int32]
-dom_ov_cls_off:  Array[4096, int32]    # className
-dom_ov_cls_len:  Array[4096, int32]
-dom_ov_hide:     Array[4096, int32]    # 1 = display:none (drop the element)
+dom_ov_inner_off: Array[8192, int32]   # replacement inner (text OR html)
+dom_ov_inner_len: Array[8192, int32]
+dom_ov_inner_html: Array[8192, int32]  # 1 = emit raw (innerHTML), 0 = escape (textContent)
+dom_ov_col_off:  Array[8192, int32]    # colour (raw CSS value)
+dom_ov_col_len:  Array[8192, int32]
+dom_ov_bg_off:   Array[8192, int32]    # background-color
+dom_ov_bg_len:   Array[8192, int32]
+dom_ov_wt_off:   Array[8192, int32]    # font-weight
+dom_ov_wt_len:   Array[8192, int32]
+dom_ov_al_off:   Array[8192, int32]    # text-align
+dom_ov_al_len:   Array[8192, int32]
+dom_ov_wd_off:   Array[8192, int32]    # width (CSS length string, e.g. "100px")
+dom_ov_wd_len:   Array[8192, int32]
+dom_ov_cls_off:  Array[8192, int32]    # className
+dom_ov_cls_len:  Array[8192, int32]
+dom_ov_hide:     Array[8192, int32]    # 1 = display:none (drop the element)
 dom_ovbuf:   Array[65536, uint8]
 dom_ov_len:  int32 = 0
 dom_n_overrides: int32 = 0           # count of elements with ANY override
