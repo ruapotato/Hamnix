@@ -23,6 +23,7 @@ from kernel.printk.printk import printk0, printk1, printk2
 from kernel.time.clocksource import (
     clocksource_read_ns, clocksource_is_selected, clocksource_current_name,
     clocksource_current_rating,
+    cyc_to_ns, clocksource_current_idx, clocksource_current_freq_hz,
 )
 from kernel.time.hrtimer import (
     hrtimer_create, hrtimer_start_rel, hrtimer_cancel, hrtimer_destroy,
@@ -253,5 +254,55 @@ def hrtimer_selftest():
             printk0("[hrtimer-test] FAIL\n")
             return
         printk0("[hrtimer-test] T6 PASS: jiffies tracks real time, not IRQ count\n")
+
+    # --- T7: the monotonic clock does not WRAP after ~18 minutes -------
+    # THE 2026-07-28 DEFECT. cyc_to_ns was `(cycles * mult) >> shift`, and
+    # on this tree's TSC (mult 4_184_308, shift 24) that product passes
+    # 2^64 at cycles = 2^64/mult, which at ~4.01 GHz is 1099 SECONDS after
+    # the clocksource is selected. Past that the kernel monotonic clock
+    # jumps BACKWARDS by 1099 s, every hrtimer deadline built on it is
+    # nonsense, and every bounded wait (wq_wait_commit_timeout, and so
+    # sys_waitfds) becomes UNBOUNDED. The DE panel — which parks on
+    # sys_waitfds every 16 ms — went to sleep at 1094-1104 s of session in
+    # two measured 22-minute soaks and never woke, freezing its taskbar.
+    #
+    # A pure-arithmetic check, so it costs microseconds and does NOT need
+    # the machine to actually be up for 18 minutes: feed cyc_to_ns cycle
+    # counts either side of the old overflow cliff and require the result
+    # to keep increasing. Under the old expression the 1200 s sample comes
+    # back SMALLER than the 600 s one.
+    cs_i: uint64 = clocksource_current_idx()
+    hz7:  uint64 = clocksource_current_freq_hz()
+    if hz7 == 0:
+        printk0("[hrtimer-test] T7 SKIP: no clocksource frequency\n")
+    else:
+        prev7: uint64 = 0
+        bad7:  uint64 = 0
+        secs7: uint64 = 60
+        # 60 s .. 7200 s in 60 s steps: crosses the ~1099 s cliff 100x over
+        # and keeps going, so a wrap ANYWHERE in a two-hour uptime is caught.
+        while secs7 <= 7200:
+            ns7: uint64 = cyc_to_ns(hz7 * secs7, cs_i)
+            if ns7 <= prev7:
+                printk2("[hrtimer-test] T7 FAIL: clock went BACKWARDS at %d s (ns=%d)\n",
+                        secs7, ns7)
+                bad7 = 1
+                secs7 = 7200
+            prev7 = ns7
+            secs7 = secs7 + 60
+        if bad7 != 0:
+            printk0("[hrtimer-test] FAIL\n")
+            return
+        # And the value must still be RIGHT, not merely increasing: one hour
+        # of cycles must convert to 3600 s of ns within a millisecond.
+        one_hr: uint64 = cyc_to_ns(hz7 * 3600, cs_i)
+        lo7: uint64 = 3599999000000
+        hi7: uint64 = 3600001000000
+        if one_hr < lo7 or one_hr > hi7:
+            printk2("[hrtimer-test] T7 FAIL: 3600s of cycles -> %d ns (want ~%d)\n",
+                    one_hr, 3600000000000)
+            printk0("[hrtimer-test] FAIL\n")
+            return
+        printk0("[hrtimer-test] T7 PASS: monotonic ns across 2 h (no 1099 s wrap)\n")
 
     printk0("[hrtimer-test] PASS\n")

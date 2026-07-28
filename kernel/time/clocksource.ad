@@ -36,8 +36,17 @@
 # mult/shift are derived from each source's frequency by
 # clocks_calc_mult_shift(): pick the largest shift that keeps
 # (freq_hz * mult) inside 64 bits while mult fits in 32 bits, so the
-# cyc->ns multiply is exact to ~1 ppm and never overflows for a
-# multi-hour delta.
+# cyc->ns multiply is exact to ~1 ppm.
+#
+# THAT BOUND IS ONLY GOOD FOR CS_MAXSEC (600) SECONDS OF CYCLES, and this
+# file used to claim it "never overflows for a multi-hour delta" — it did
+# not. clocksource_read_ns() measures delta from a base captured ONCE at
+# selection, so the delta grows for the whole uptime; with the TSC's
+# mult=4_184_308 the naive (cycles*mult) passed 2^64 at 1099 seconds and
+# the monotonic clock jumped backwards, taking every hrtimer deadline and
+# therefore every bounded wait in the kernel with it. cyc_to_ns() now
+# splits the shift so the conversion cannot overflow at any realistic
+# uptime; see the commentary there.
 
 from kernel.printk.printk import printk0, printk1, printk2
 
@@ -98,10 +107,12 @@ def _cs_name_str(id: uint64) -> uint64:
 # Derivation: we want mult/2^shift ≈ 1e9 / freq_hz. Start from a high
 # shift and reduce it until mult = (1e9 << shift) / freq_hz fits in 32
 # bits AND (freq_hz * mult) doesn't overflow 64 bits across `maxsec`
-# seconds of cycles. We bound the per-conversion delta to MAXSEC seconds
-# so callers must re-base before that (the registry re-bases on every
-# read by carrying cs_base, so a single delta is tiny — but we keep the
-# Linux-correct bound for safety).
+# seconds of cycles. NOTE the comment that used to sit here claimed "the
+# registry re-bases on every read by carrying cs_base, so a single delta is
+# tiny". It does NOT: cs_base_cycles is captured once, at SELECTION, and
+# never advanced afterwards, so the delta is the whole uptime. That false
+# premise is what let the overflow ship. cyc_to_ns() no longer depends on
+# the bound being respected.
 
 CS_NS_PER_SEC: uint64 = 1000000000
 # Bound a single (cycles*mult) product to <= ~600 s of cycles before
@@ -230,8 +241,56 @@ def clocksource_read_cycles() -> uint64:
 
 
 def cyc_to_ns(cycles: uint64, idx: uint64) -> uint64:
-    # (cycles * mult) >> shift, the canonical Linux conversion.
-    return (cycles * cs_mult[idx]) >> cs_shift[idx]
+    # (cycles * mult) >> shift, the canonical Linux conversion — computed
+    # so it CANNOT overflow 64 bits.
+    #
+    # THE BUG THIS FIXES (2026-07-28). The plain `(cycles * mult) >> shift`
+    # overflowed, and it did so on a schedule you could set your watch by.
+    # On this tree's TSC (freq 4_009_555_700 Hz -> mult 4_184_308,
+    # shift 24) the product passes 2^64 at
+    #
+    #     cycles = 2^64 / mult = 4.409e12  ->  4.409e12 / 4.0096e9 Hz
+    #                                      =  1099 SECONDS
+    #
+    # after the clocksource is selected. clocks_calc_mult_shift picks
+    # mult/shift under a CS_MAXSEC=600 second safety window, but
+    # clocksource_read_ns takes `delta = now - cs_base_cycles` against a
+    # base captured ONCE at selection, so delta grows without bound and
+    # sails past that window at ~18.3 minutes of uptime. From then on the
+    # kernel's monotonic clock WRAPS.
+    #
+    # What that broke, measured: every bounded wait in the kernel becomes
+    # UNBOUNDED. hrtimer_start_rel arms at clocksource_read_ns() +
+    # delta_ns; after the wrap that deadline is in the distant past or
+    # future, so wq_wait_commit_timeout's hrtimer never fires — and its
+    # "belt-and-braces jiffies fallback" is unreachable, because the task
+    # is already STATE_WAIT and has schedule()d away, so only a wake can
+    # re-run that loop and the wake is exactly what is missing. The DE
+    # panel parks on sys_waitfds every 16 ms, so it is the first visible
+    # casualty: at 1094-1104 s of session (measured twice, identically) it
+    # goes to sleep and never wakes, its main loop stops, and the taskbar
+    # freezes on whatever it last painted — the user-visible "the taskbar
+    # stops working ~18 minutes in" defect. Nothing about it was specific
+    # to the panel; the panel was just the process that slept most often.
+    #
+    # THE FIX: split the shift instead of doing the multiply first.
+    #
+    #   cycles = hi*2^s + lo   =>   (cycles*mult)>>s = hi*mult + (lo*mult)>>s
+    #
+    # which is EXACT for integers (no rounding difference from the old
+    # form), and never overflows in practice: hi = cycles>>24 would have to
+    # reach 2^64/mult for hi*mult to wrap, i.e. ~1800 years of TSC, and
+    # lo*mult < 2^24 * 2^32 = 2^56. It is also read-only — no mutation of
+    # the shared cs_base_* on a path that runs from IRQ context and from
+    # every CPU, which is what a Linux-style "fold the base forward
+    # periodically" fix would have needed.
+    sft: uint64 = cs_shift[idx]
+    mult: uint64 = cs_mult[idx]
+    if sft == 0:
+        return cycles * mult
+    hi: uint64 = cycles >> sft
+    lo: uint64 = cycles & ((cast[uint64](1) << sft) - 1)
+    return hi * mult + ((lo * mult) >> sft)
 
 
 def clocksource_read_ns() -> uint64:
@@ -255,6 +314,22 @@ def clocksource_current_name() -> uint64:
     if cs_current < 0:
         return cast[uint64]("none")
     return _cs_name_str(cs_name_id[cast[uint64](cs_current)])
+
+
+def clocksource_current_idx() -> uint64:
+    # Registry index of the selected source. Exposed so the timer selftest
+    # can drive cyc_to_ns directly against the LIVE mult/shift (a hard-coded
+    # pair would prove nothing about the source this machine actually runs).
+    if cs_current < 0:
+        return 0
+    return cast[uint64](cs_current)
+
+
+def clocksource_current_freq_hz() -> uint64:
+    # Frequency of the selected source, Hz. 0 when none is selected.
+    if cs_current < 0:
+        return 0
+    return cs_freq_hz[cast[uint64](cs_current)]
 
 
 def clocksource_current_rating() -> uint64:
