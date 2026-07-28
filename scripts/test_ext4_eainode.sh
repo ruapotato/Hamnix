@@ -182,10 +182,8 @@ echo "[test_ext4_eainode] (5/6) Build userland + arm xattr/ea-inode probe marker
 bash scripts/build_user.sh >/dev/null
 INIT_ELF="$HAMSH_ELF" ENABLE_EXT4XATTR_TEST=1 \
     python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_ext4_eainode] (6/6) Boot QEMU with the ea_inode image"
 set +e

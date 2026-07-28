@@ -52,10 +52,8 @@ echo "[test_proc_translation] (2/3) Swap /init = $HAMSH_ELF + embed u_proc_trans
 HAMNIX_EMBED_UBIN=1 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null
 
 echo "[test_proc_translation] (3/3) Rebuild kernel image + boot"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 LOG=$(mktemp)
 cleanup() {

@@ -142,8 +142,8 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[test_linux_namespace] (3/4) Build kernel"
-python3 -m compiler.adder compile --target=x86_64-bare-metal \
-    init/main.ad -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_linux_namespace] (4/4) Boot QEMU + drive test commands"
 hamsh_boot "$LOG" "$ELF"

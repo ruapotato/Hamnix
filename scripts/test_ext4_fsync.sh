@@ -43,10 +43,8 @@ bash scripts/build_modules.sh
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
 
 echo "[test_ext4_fsync] (3/5) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF"
 
 # Work on a private copy of ext4.img so a re-run starts clean and the
 # repo's build/ext4.img is left pristine.

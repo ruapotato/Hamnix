@@ -35,10 +35,8 @@ echo "[test_ext4] (3/5) Swap /init = $HAMSH_ELF"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
 
 echo "[test_ext4] (4/5) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF"
 
 echo "[test_ext4] (5/5) Boot QEMU with ext4 image as virtio-blk"
 LOG=$(mktemp)

@@ -44,10 +44,8 @@ echo "[test_audio_playback] (2/3) Build kernel with playtone as /init"
 # userland process. It plays a ~1 kHz square wave then waits out the tone.
 INIT_ELF=build/user/playtone.elf \
     python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_audio_playback] (3/3) Boot QEMU with intel-hda -> wav backend"
 set +e

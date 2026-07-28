@@ -51,10 +51,8 @@ bash scripts/build_user.sh >/dev/null
 echo "[test_blk_sched] (2/4) Build kernel with /etc/blk-sched-test marker"
 INIT_ELF=build/user/init.elf ENABLE_BLK_SCHED_TEST=1 \
     python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_blk_sched] (3/4) Mint a SATA scratch disk with a valid MBR sig"
 DISK=$(mktemp --suffix=.blk-sched-disk)

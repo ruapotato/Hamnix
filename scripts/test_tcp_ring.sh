@@ -56,10 +56,8 @@ INIT_ELF=build/user/init.elf ENABLE_TCP_RING_SMOKE=1 \
     python3 scripts/build_initramfs.py >/dev/null
 
 echo "[test_tcp_ring] (2/4) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_tcp_ring] (3/4) Spawn fixture Python TCP server on 127.0.0.1:9100"
 TMPDIR=$(mktemp -d -t hamnix-tcp-ring-XXXXXX)

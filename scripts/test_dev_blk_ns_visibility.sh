@@ -63,10 +63,8 @@ INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/tmp/${TAG}_cpio.log 2
 
 echo "[$TAG] (4/5) Rebuild kernel image (compiles the whole kernel)"
 mkdir -p build
-if ! python3 -m compiler.adder compile \
-        --target=x86_64-bare-metal \
-        init/main.ad \
-        -o "$ELF" >/tmp/${TAG}_kernel.log 2>&1; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+if ! kernel_image_compile "$ELF" >/tmp/${TAG}_kernel.log 2>&1; then
     tail -40 /tmp/${TAG}_kernel.log >&2
     verdict_inconclusive "$TAG" "kernel build failed — see /tmp/${TAG}_kernel.log."
 fi

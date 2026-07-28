@@ -65,10 +65,8 @@ if [ ! -f build/user/init.elf ]; then
     bash scripts/build_modules.sh >/dev/null
 fi
 python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o build/hamnix-kernel.elf >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile build/hamnix-kernel.elf >/dev/null
 # build_iso.sh is chatty but takes ~30s and we want a single
 # end-of-line confirmation in the test log. Capture its output to a
 # file and report just the success summary.

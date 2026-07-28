@@ -38,10 +38,8 @@ echo "[test_xargs] (2/4) Swap /init = $HAMSH_ELF"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
 
 echo "[test_xargs] (3/4) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF"
 
 echo "[test_xargs] (4/4) Boot QEMU"
 LOG=$(mktemp)

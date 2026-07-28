@@ -55,9 +55,8 @@ INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py >/dev/null \
     || verdict_inconclusive "$TAG" "build_initramfs failed"
 
 echo "[test_devdiskstats] (4/5) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal init/main.ad -o "$ELF" >/dev/null \
-    || verdict_inconclusive "$TAG" "kernel compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null || verdict_inconclusive "$TAG" "kernel compile failed"
 
 echo "[test_devdiskstats] (5/5) Boot QEMU per fixture + drive hamsh"
 LOG=$(mktemp)      # diskstats boot

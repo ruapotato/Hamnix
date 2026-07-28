@@ -61,9 +61,8 @@ echo "[test_cp_r] OK: cp.elf produced ($(stat -c%s build/user/cp.elf) bytes)"
 
 echo "[test_cp_r] (A2) build initramfs + kernel + rootfs.img"
 python3 scripts/build_initramfs.py > /tmp/test_cp_r.initramfs.log 2>&1
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal init/main.ad -o "$ELF" \
-    > /tmp/test_cp_r.kernel.log 2>&1 || {
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" > /tmp/test_cp_r.kernel.log 2>&1 || {
     echo "[test_cp_r] FAIL: kernel compile failed. Tail of log:"
     tail -30 /tmp/test_cp_r.kernel.log
     exit 1

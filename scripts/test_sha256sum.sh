@@ -60,8 +60,8 @@ restore_init() {
 }
 trap restore_init EXIT
 
-python3 -m compiler.adder compile --target=x86_64-bare-metal init/main.ad -o "$ELF" \
-    >/dev/null 2>&1 || verdict_inconclusive "$TAG" "kernel compile failed"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null 2>&1 || verdict_inconclusive "$TAG" "kernel compile failed"
 
 echo "[$TAG] (4/4) Boot and drive hamsh"
 FIFO=$(mktemp -u --tmpdir hamnix-sha-in.XXXXXX)

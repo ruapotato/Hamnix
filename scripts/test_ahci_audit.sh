@@ -38,10 +38,8 @@ fi
 INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null
 
 echo "[test_ahci_audit] (2/4) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_ahci_audit] (3/4) Mint two SATA disks (1 MiB each, MBR sig planted)"
 DISK0=$(mktemp --suffix=.audit-ahci-disk0)

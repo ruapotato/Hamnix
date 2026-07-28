@@ -42,8 +42,8 @@ echo "[test_cpu_mitigations] (1/3) Build userland + initramfs + kernel"
 bash scripts/build_user.sh >/dev/null
 bash scripts/build_modules.sh >/dev/null 2>&1 || true
 python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal init/main.ad -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 LOG=$(mktemp /tmp/test-cpu-mitig.XXXXXX.log)
 trap 'rm -f "$LOG"' EXIT

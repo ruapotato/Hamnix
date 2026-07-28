@@ -115,8 +115,8 @@ INIT_ELF="$HAMSH_ELF" TLS_CA_DER="$CA_DER" \
     python3 scripts/build_initramfs.py >/dev/null
 
 echo "[curl-https-redirect] (3/5) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal init/main.ad -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[curl-https-redirect] (4/5) Stand up TLS + redirect servers"
 cat > "$TLSPY" << 'PYEOF'

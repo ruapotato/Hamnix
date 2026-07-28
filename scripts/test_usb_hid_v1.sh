@@ -67,10 +67,8 @@ INIT_ELF=build/user/init.elf ENABLE_XHCI_SELFTEST=1 \
     python3 scripts/build_initramfs.py >/dev/null
 
 echo "[test_usb_hid_v1] (3/3) Rebuild kernel + boot QEMU with qemu-xhci + usb-kbd"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"; INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null' EXIT

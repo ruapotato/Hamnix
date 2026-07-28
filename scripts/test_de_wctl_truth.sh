@@ -47,10 +47,8 @@ bash scripts/build_user.sh >/dev/null
 echo "[test_de_wctl_truth] (2/3) Build kernel with the self-test battery armed"
 INIT_ELF=build/user/init.elf \
     python3 scripts/build_initramfs.py >/dev/null
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_de_wctl_truth] (3/3) Boot QEMU and run the wctl-truthfulness self-test"
 LOG=$(mktemp)

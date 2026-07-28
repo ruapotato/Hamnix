@@ -58,10 +58,8 @@ INIT_ELF="$HAMSH_ELF" ENABLE_EXT4_MKDIR_TEST=1 \
     python3 scripts/build_initramfs.py >/dev/null
 
 echo "[test_ext4_mkdir] (3/4) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 echo "[test_ext4_mkdir] (4/4) Boot QEMU with the ext4 scratch image"
 set +e

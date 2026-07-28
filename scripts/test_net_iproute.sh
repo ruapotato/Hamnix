@@ -71,10 +71,8 @@ dest = Path("fs") / "initramfs_blob.S"
 b.emit_asm(archive, dest)
 PYEOF
 
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF" >/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF" >/dev/null
 
 LOG=$(mktemp)
 # Always rebuild a clean (marker-free) initramfs on exit so other tests /

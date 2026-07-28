@@ -113,10 +113,8 @@ echo "[test_ext4_resize] (3/6) Swap /init = $HAMSH_ELF"
 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
 
 echo "[test_ext4_resize] (4/6) Rebuild kernel image"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+kernel_image_compile "$ELF"
 
 # Ensure the shared root image exists (other ext4 tests build it; mint a
 # minimal one here if absent so this test is self-contained).
