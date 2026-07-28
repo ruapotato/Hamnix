@@ -3752,3 +3752,16 @@ bash scripts/test_hambrowse_textindent_host.sh
 # native-vs-seed CODEGEN and structurally cannot see link resolution — this gate
 # is the complement kobjdiff needs, so it must not go dark again.
 bash scripts/test_napi.sh
+# test_hamsh_arena_soak_ondevice: ON-DEVICE acceptance for the hamsh arena
+# collector, on the SHIPPED installer image under UEFI/OVMF+KVM (the host gate
+# scripts/test_hamsh_arena_soak_host.sh is its fast twin; host-gate-green is
+# not device-working). Drives ~40 top-level lines of ~454 nodes each — the same
+# NODE_MAX crossing that ~700 desktop commands produce, in minutes instead of
+# hours — with a `def`'d function and variables live throughout, then asserts
+# no "node arena full", that `arenas` shows the node count DROP, and that the
+# function/slice/variable still evaluate byte-identically after collection.
+# Guards the 2026-07-28 fatality where the desktop became completely unusable
+# after ~83 minutes with a perfectly healthy kernel. HOST-GUARDED: SKIPs
+# (INCONCLUSIVE) without KVM/OVMF or an installer image; ~5 min with a
+# prebuilt image.
+bash scripts/ci_run_gate.sh scripts/test_hamsh_arena_soak_ondevice.sh

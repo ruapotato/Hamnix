@@ -8198,6 +8198,12 @@ def _argv_reset():
 
 
 def _argv_push_cstr(s: Ptr[uint8]):
+    # KNOWN SILENT CAP (2026-07-28 audit, unfixed, and the sharpest of the
+    # family): argument 64 onward is DROPPED with no error and no status —
+    # `rm *` in a 200-file directory silently removes the first 63 and
+    # reports success. Deserves the rt_raise treatment str_intern_n got,
+    # but that is a behaviour change for every glob-heavy script and wants
+    # its own commit + gate.
     if argv_n + 1 >= ARGV_MAX:
         return
     # intern so the pointer survives val_reset
@@ -8324,6 +8330,9 @@ def _alias_set(name: Ptr[uint8], val: Ptr[uint8]):
     if idx >= 0:
         alias_val[cast[uint64](idx)] = str_intern_cstr(val)
         return
+    # KNOWN SILENT CAP (2026-07-28 audit, unfixed): the 65th distinct alias
+    # is dropped and `alias x=y` still reports success — the alias simply
+    # never fires. Same shape as the FN_MAX drop in exec_def.
     if alias_n < ALIAS_MAX:
         alias_name[alias_n] = str_intern_cstr(name)
         alias_val[alias_n] = str_intern_cstr(val)
@@ -12220,14 +12229,16 @@ def exec_index_assign(node: int32) -> int32:
 
 
 def exec_def(node: int32) -> int32:
-    # Register the function. The ND_DEF node persists because defs are
-    # parsed at the top level and the node arena is not recycled until
-    # the next line — so we copy the name and stash the node index.
-    # NB: a `def` typed interactively is registered for THIS session;
-    # the node it points at survives because parser_reset only runs
-    # at the start of the next line and we re-register on redefinition.
+    # Register the function: copy the name, stash the ND_DEF node index.
+    # fn_node[] is a GC ROOT (see gc_collect), which is what keeps the body
+    # AST alive across collections — and, on redefinition, what lets the
+    # REPLACED body become garbage and actually be reclaimed.
     nu: uint64 = cast[uint64](node)
     if fn_count >= FN_MAX:
+        # KNOWN SILENT CAP (2026-07-28 audit, unfixed): the 33rd `def` is
+        # silently ignored — the session then reports "undefined name" at
+        # the CALL, miles from the cause. Sibling of the caps listed at
+        # _alias_set / _argv_push_cstr / the _argstk push.
         return EX_NORMAL
     np: Ptr[uint8] = str_ptr(nd_str[nu])
     # replace if already defined
