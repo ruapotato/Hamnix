@@ -1021,6 +1021,206 @@ def parse_num_bytes(p: Ptr[uint8], n: int32) -> float64:
 
 
 # ====================================================================
+# ToNumber(String) — the StringNumericLiteral grammar (ES2024 7.1.4.1).
+# ====================================================================
+# parse_num_bytes above is the LEXER's number scanner: it reads a numeric
+# PREFIX, ignores whatever follows, and accepts ES2021 numeric separators
+# because a source literal may contain them. ToNumber(String) is a different
+# grammar and using the lexer scanner for it made `+"1s"` === 1 where every
+# engine says NaN — a parseInt, not a ToNumber. The differences, each one
+# checked value-by-value against node v20 rather than read off the spec:
+#
+#   Number("1s")      NaN   (whole string must be consumed)
+#   Number("12abc")   NaN
+#   Number("1 2")     NaN
+#   Number("1e")      NaN   (an exponent marker needs digits)
+#   Number("")        0     and Number("   ") is 0 too, not NaN
+#   Number("Infinity")  Infinity   ("-Infinity"/"+Infinity" likewise; a
+#                                   throwaway patch got exactly this wrong)
+#   Number("infinity")  NaN  (case sensitive), Number("Infinity1") NaN
+#   Number("1_0")     NaN   (separators are SOURCE syntax, not string syntax)
+#   Number("-0x10")   NaN   (HexIntegerLiteral takes NO sign; "0x10" is 16)
+#   Number(" 12 ")    12    (leading AND trailing WhiteSpace/LineTerminator)
+#   Number("0755")    755   (no legacy octal in strings)
+#
+# WHITESPACE is the full Unicode WhiteSpace + LineTerminator set, not just
+# ASCII: node trims U+00A0, U+1680, U+2000-200A, U+2028, U+2029, U+202F,
+# U+205F, U+3000 and U+FEFF, but NOT U+200B (zero-width space -> NaN).
+# js_ws_len returns the BYTE length of the UTF-8 whitespace char at p[i], or 0.
+def js_ws_len(p: Ptr[uint8], i: int32, n: int32) -> int32:
+    c: uint8 = p[i]
+    if c == 32 or (c >= 9 and c <= 13):          # TAB LF VT FF CR SP
+        return 1
+    if c == 194 and i + 1 < n and p[i + 1] == 160:
+        return 2                                 # U+00A0 NBSP
+    if c == 225 and i + 2 < n and p[i + 1] == 154 and p[i + 2] == 128:
+        return 3                                 # U+1680 OGHAM SPACE MARK
+    if c == 226 and i + 2 < n and p[i + 1] == 128:
+        c3: uint8 = p[i + 2]
+        # U+2000..U+200A, U+2028 LS, U+2029 PS, U+202F NNBSP. U+200B (0x8B)
+        # is NOT whitespace to ToNumber and must fall through to NaN.
+        if c3 >= 128 and c3 <= 138:
+            return 3
+        if c3 == 168 or c3 == 169 or c3 == 175:
+            return 3
+        return 0
+    if c == 226 and i + 2 < n and p[i + 1] == 129 and p[i + 2] == 159:
+        return 3                                 # U+205F MEDIUM MATHEMATICAL SPACE
+    if c == 227 and i + 2 < n and p[i + 1] == 128 and p[i + 2] == 128:
+        return 3                                 # U+3000 IDEOGRAPHIC SPACE
+    if c == 239 and i + 2 < n and p[i + 1] == 187 and p[i + 2] == 191:
+        return 3                                 # U+FEFF ZWNBSP / BOM
+    return 0
+
+
+# "Infinity" at p[i..end)? (exact, case-sensitive, must reach end)
+def _is_infinity_word(p: Ptr[uint8], i: int32, end: int32) -> int32:
+    if end - i != 8:
+        return 0
+    w: Ptr[uint8] = cast[Ptr[uint8]]("Infinity")
+    k: int32 = 0
+    while k < 8:
+        if p[i + k] != w[k]:
+            return 0
+        k = k + 1
+    return 1
+
+
+# Strict StringNumericLiteral validation over p[i..end) (already whitespace
+# trimmed, non-empty, and not an Infinity word). 1 == parse_num_bytes may run.
+def _snl_valid(p: Ptr[uint8], i: int32, end: int32) -> int32:
+    # NonDecimalIntegerLiteral — no sign is permitted in front of these.
+    if i + 1 < end and p[i] == 48:
+        c1: uint8 = p[i + 1]
+        if c1 == 120 or c1 == 88 or c1 == 111 or c1 == 79 or c1 == 98 or c1 == 66:
+            lo: uint8 = 48
+            hi: uint8 = 57
+            ishex: int32 = 0
+            if c1 == 120 or c1 == 88:
+                ishex = 1
+            elif c1 == 111 or c1 == 79:
+                hi = 55
+            else:
+                hi = 49
+            k: int32 = i + 2
+            if k >= end:
+                return 0                         # "0x" with no digits
+            while k < end:
+                d: uint8 = p[k]
+                if ishex != 0:
+                    if is_hexdig(d) == 0:
+                        return 0
+                elif d < lo or d > hi:
+                    return 0
+                k = k + 1
+            return 1
+    j: int32 = i
+    if j < end and (p[j] == 43 or p[j] == 45):
+        j = j + 1
+    ndig: int32 = 0
+    while j < end and is_digit(p[j]) != 0:
+        j = j + 1
+        ndig = ndig + 1
+    if j < end and p[j] == 46:
+        j = j + 1
+        while j < end and is_digit(p[j]) != 0:
+            j = j + 1
+            ndig = ndig + 1
+    if ndig == 0:
+        return 0                                 # "." / "-" / "+" / "e5"
+    if j < end and (p[j] == 101 or p[j] == 69):  # e / E
+        j = j + 1
+        if j < end and (p[j] == 43 or p[j] == 45):
+            j = j + 1
+        edig: int32 = 0
+        while j < end and is_digit(p[j]) != 0:
+            j = j + 1
+            edig = edig + 1
+        if edig == 0:
+            return 0                             # "1e" / "1e+"
+    if j != end:
+        return 0                                 # trailing junk: "1s", "1 2"
+    return 1
+
+
+def str_to_number(p: Ptr[uint8], n: int32) -> float64:
+    # trim WhiteSpace/LineTerminator from both ends in ONE forward pass
+    i: int32 = 0
+    while i < n:
+        w: int32 = js_ws_len(p, i, n)
+        if w == 0:
+            break
+        i = i + w
+    end: int32 = i
+    k: int32 = i
+    while k < n:
+        w2: int32 = js_ws_len(p, k, n)
+        if w2 != 0:
+            k = k + w2
+        else:
+            k = k + 1
+            end = k
+    if i >= end:
+        return 0.0                               # "" and all-whitespace are +0
+    if _is_infinity_word(p, i, end) != 0:
+        return 1.0 / 0.0
+    if p[i] == 43 and _is_infinity_word(p, i + 1, end) != 0:
+        return 1.0 / 0.0
+    if p[i] == 45 and _is_infinity_word(p, i + 1, end) != 0:
+        return -1.0 / 0.0
+    if _snl_valid(p, i, end) == 0:
+        return 0.0 / 0.0
+    return parse_num_bytes(&p[i], end - i)
+
+
+# parseFloat: a StrDecimalLiteral PREFIX — the longest valid decimal prefix is
+# taken and the rest is ignored. It is NOT ToNumber: node gives
+# parseFloat("1s") 1, parseFloat("0x10") 0 (only the leading "0" parses),
+# parseFloat("1_0") 1, parseFloat("Infinity") Infinity, parseFloat("") NaN.
+def parse_float_str(p: Ptr[uint8], n: int32) -> float64:
+    i: int32 = 0
+    while i < n:
+        w: int32 = js_ws_len(p, i, n)
+        if w == 0:
+            break
+        i = i + w
+    start: int32 = i
+    neg: int32 = 0
+    if i < n and (p[i] == 43 or p[i] == 45):
+        if p[i] == 45:
+            neg = 1
+        i = i + 1
+    if i + 8 <= n and _is_infinity_word(p, i, i + 8) != 0:
+        if neg != 0:
+            return -1.0 / 0.0
+        return 1.0 / 0.0
+    ndig: int32 = 0
+    while i < n and is_digit(p[i]) != 0:
+        i = i + 1
+        ndig = ndig + 1
+    if i < n and p[i] == 46:
+        i = i + 1
+        while i < n and is_digit(p[i]) != 0:
+            i = i + 1
+            ndig = ndig + 1
+    if ndig == 0:
+        return 0.0 / 0.0
+    # an exponent only joins the prefix when it actually carries digits
+    save: int32 = i
+    if i < n and (p[i] == 101 or p[i] == 69):
+        i = i + 1
+        if i < n and (p[i] == 43 or p[i] == 45):
+            i = i + 1
+        edig: int32 = 0
+        while i < n and is_digit(p[i]) != 0:
+            i = i + 1
+            edig = edig + 1
+        if edig == 0:
+            i = save
+    return parse_num_bytes(&p[start], i - start)
+
+
+# ====================================================================
 # VALUE constructors / accessors.
 # ====================================================================
 def mk_val(tag: int32) -> int32:

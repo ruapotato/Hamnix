@@ -47,7 +47,8 @@ def to_number(h: int32) -> float64:
         sid: int32 = strid_of(h)
         if str_len(sid) == 0:
             return 0.0
-        return parse_num_bytes(str_ptr(sid), str_len(sid))
+        # StringNumericLiteral, NOT the lexer's prefix scanner: `+"1s"` is NaN.
+        return str_to_number(str_ptr(sid), str_len(sid))
     if t == TAG_BIGINT:
         # implicit ToNumber(BigInt) is a TypeError in spec, but arithmetic guards
         # against mixing before reaching here; explicit Number(1n) wants the value.
