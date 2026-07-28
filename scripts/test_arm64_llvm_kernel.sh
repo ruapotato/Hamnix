@@ -126,6 +126,21 @@ grep_a9 "preempt tick 2: timer-driven EL0<->EL0 switch" || { sed 's/^/[ARM64-LLV
 grep_a9 "A9: preemptive EL0 scheduling proven"        || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: scheduler did not reach the bounded switch quota"; }
 grep_a9 "A9: scheduler returned to kernel"            || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A9: scheduler did not cleanly return to the kernel"; }
 
+# A10 assertions: the FIRST REAL EL0 USER PROGRAM (docs/arm64_llvm_scoping.md
+# A10). A8/A9 ran hand-written assembly at EL0; A10 loads a COMPILED program
+# (user/arm64_a10_el0.ad, built by the SAME Adder LLVM backend as this kernel,
+# linked flat at 0x48010000 and embedded via user_blob.S) into the EL0-RW/EL0-X
+# window and erets to it. Its write/getpid/exit go through the SAME A8 sync
+# vector. These are smoke-level assertions only — the AUTHORITATIVE A10 gate is
+# scripts/test_arm64_a10_userland.sh, which recomputes the expected checksum from
+# a native x86-64 run of the same source instead of trusting a constant.
+grep_a10() { grep -qa "$1" "$SERIAL"; }
+grep_a10 "A10: loading a COMPILED Adder EL0 user program" || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A10: kernel never reached the user-program stage"; }
+grep_a10 "A10: loaded EL0 user image: 1752 bytes"          || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A10: EL0 user image was not loaded (empty/oversized blob?)"; }
+grep_a10 "^A10: C=965649"                                  || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A10: compiled EL0 program did not emit its checksum (never ran, or miscompiled)"; }
+grep_a10 "EL0 svc: exit(status=17) serviced"               || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A10: EL0 program did not exit with the computed status"; }
+grep_a10 "A10 PASS: real Adder-compiled EL0 program ran"   || { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A10: kernel-side exit-status cross-check failed"; }
+
 # No EL0 access or context switch should have faulted into the diagnostic vector.
 grep -qa "^EXC esr=" "$SERIAL" && { sed 's/^/[ARM64-LLVM]   | /' "$SERIAL"; fail "A8/A9: an exception hit the diagnostic vector (unexpected fault)"; }
 

@@ -1,6 +1,6 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch) + A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ)**
+Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch) + A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ) + A10 REAL COMPILED EL0 USER PROGRAM (loads and runs Adder-compiled userland, not hand-written asm)**
 (whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
@@ -11,6 +11,117 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-28) — A10 REAL COMPILED EL0 USER PROGRAM
+
+**A10 — the aarch64 LLVM kernel LOADS AND RUNS A COMPILED USERLAND PROGRAM.**
+
+Everything through A9 ran at EL0 as **hand-written AArch64 assembly** living in
+the kernel's own `.text` (`arch/arm64/llvm/el0.S`, `sched.S`) — enough to prove
+the exception-level plumbing, but a scheduler demo, not a userland. A10 closes
+that gap: the thing executing at EL0 is now **compiler output**.
+
+Pipeline (all of it rebuilt on every kernel build, so the blob can never go stale):
+
+```
+user/arm64_a10_el0.ad                       ordinary Adder program
+  --(host_ac --backend=llvm --target=aarch64)-->  a10_user.ll   (0 bails, 0 declares)
+  --(clang -c --target=aarch64-none-elf)------->  a10_user.o
+  --(ld -T arch/arm64/llvm/user.lds + user_rt.S crt0)-->  a10_user.elf @ 0x4801_0000
+  --(objcopy -O binary)------------------------>  a10_user.bin
+  --(.incbin via arch/arm64/llvm/user_blob.S)-->  embedded in the kernel image
+  --(arm64_a10_load_arm64(), exec()-shaped copy)-->  the EL0-RW/EL0-X window
+  --(arm64_a10_launch, arch/arm64/llvm/a10.S)---->  eret to EL0
+```
+
+The program's syscalls go through the **same A8 sync-vector path with no A10
+special-casing**: the compiler's `__syscallN` builtin lowers to `svc #0` with the
+number in x8, and `ssa_llvm.ad`'s `ll_aarch64_syscall_nr` remaps the x86-64
+numbers baked in the source to the asm-generic AArch64 ones (write 1→64,
+exit 60→93, getpid 39→172) — exactly the ABI `arm64_do_syscall_arm64` already
+services.
+
+Verified furthest-point PL011 serial (`qemu-system-aarch64 -M virt -cpu cortex-a72`):
+
+```
+A10: loading a COMPILED Adder EL0 user program into the user window
+[000138] A10: loaded EL0 user image: 1752 bytes -> 0x48010000 (byte-sum 167720)
+[000139] A10: running a REAL Adder-compiled EL0 program (not hand-written asm)
+[000140] [arm64-llvm] EL0 svc: getpid -> current_task_pid() = 0
+[000141] [arm64-llvm] EL0 svc: write(fd=1, buf, len) -> console
+A10: P=0
+[000144] [arm64-llvm] EL0 svc: write(fd=1, buf, len) -> console
+A10: C=965649
+[000147] [arm64-llvm] EL0 svc: exit(status=17) serviced
+A10: EL0 user program exited, returned to kernel
+[000139] A10 PASS: real Adder-compiled EL0 program ran; exit status 17 == expected 17
+```
+
+0 exceptions hit the diagnostic vector; A8/A9 still pass ahead of it.
+
+### Why the checksum, and why the gate does not trust it
+
+The program is deliberately non-trivial so "it ran" cannot be faked by the
+loader: a sieve over a global array (EL0 memory traffic), single recursion
+(Collatz), double recursion (Ackermann), all mixed into one checksum whose low
+byte becomes the exit status. Any miscompile along that path, or any break in the
+EL0 load/store or syscall path, moves the checksum.
+
+The kernel cross-checks the exit status against `ARM64_A10_EXPECT_STATUS` in
+`init/main.ad` — but **a constant in the kernel is a lying gate waiting to
+happen** (edit the program, the constant goes stale; get a red, "fix" the
+constant). So `scripts/test_arm64_a10_userland.sh` never trusts it. On every run
+it **recomputes the oracle**: compiles the SAME `.ad` for x86-64 with the same
+`host_ac`, runs it natively, and asserts
+
+1. the ARM64 serial shows THAT checksum (`965649`, byte-identical across arches),
+2. the ARM64 exit status matches `checksum % 256`,
+3. `init/main.ad`'s baked constants AGREE with the fresh oracle,
+4. the embedded blob is byte-identical to one rebuilt from the current source
+   (stale-blob guard),
+5. the loader's reported byte count equals the on-disk blob size,
+6. all three syscalls reached the real dispatcher, and 0 exceptions fired,
+7. A8 and A9 did not regress.
+
+Both failure modes were **negative-tested**: removing the `bl arm64_a10_launch`
+reds at assertion 1, and changing `A10_SIEVE_N` without updating the kernel
+constant reds at assertion 3.
+
+### Files
+
+`user/arm64_a10_el0.ad` (new, the program) · `arch/arm64/llvm/{user_rt.S,
+user.lds, user_blob.S, a10.S}` (new, crt0 + link + embed + launcher) ·
+`init/main.ad` (+2 aarch64-only functions, called ONLY from `head.S`) ·
+`scripts/build_kernel_llvm_arm64.sh` (step 3a) ·
+`scripts/test_arm64_a10_userland.sh` (new, authoritative gate) ·
+`scripts/test_arm64_llvm_kernel.sh` (A10 smoke assertions).
+
+x86 non-regression: `scripts/test_native_vs_seed_kobjdiff.sh` → **0 divergences
+across 11144 functions** (11142 + the 2 new aarch64-only functions). No compiler
+source (`codegen.ad`, `ssa.ad`, `ssa_llvm.ad`, Python seed) was touched.
+
+### Also fixed here: the lane did not build at all
+
+`arch/arm64/llvm/stubs.c` is a hand-maintained snapshot of the symbols the
+whole-kernel `.ll` leaves undefined. Main's `api_autostubs` regeneration had grown
+a REAL definition of `linux_abi_api_snd_pcm__snd_pcm_new` inside the closure, so
+the aarch64 link died with `multiple definition` — `test_arm64_llvm_kernel.sh`
+could not even build, let alone boot. `build_kernel_llvm_arm64.sh` now diffs the
+globally-defined symbols of `kernel_arm64.o` against `stubs.o` and `objcopy -L`
+localizes the intersection, so the kernel's real definition always wins and the
+stub snapshot self-heals against future autostubs churn.
+
+### Next step (A11) — recommended
+
+A10 proves the **toolchain** reaches EL0. The next unblocked rung is **more than
+one compiled program, loaded by name**: give the loader a tiny embedded archive
+of several `.ad`-built images instead of one `.incbin`, and give the EL0 side a
+real `read()` on the PL011 so a program can consume input. That is the last
+structural gap before a compiled `hamsh` can run — at which point the ARM64 LLVM
+lane has a shell, and the Phase-1..49 standalone ladder's userland features
+(fork/exec/wait, pipes, signals, FAT16) become ports rather than inventions.
 
 ---
 
