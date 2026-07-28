@@ -583,7 +583,9 @@ def wsys_free_wid(wid: int32) -> int32:
     u: uint64 = cast[uint64](wid)
     if u >= MAX_WINDOWS:
         return -1
+    wsys_dbg_fw_call_n = wsys_dbg_fw_call_n + 1
     if wsys_slot_in_use[u] == 0:
+        wsys_dbg_fw_notinuse_n = wsys_dbg_fw_notinuse_n + 1
         return -1
     # FLICKER FIX: with the once-only backdrop, a closed window must have
     # its on-screen footprint recomposed from the scene sources (backdrop
@@ -626,6 +628,10 @@ def wsys_free_wid(wid: int32) -> int32:
         local_irq_restore(fl_fw)
     # Release this wid's lazily-allocated 4 MiB framebuffer blocks back
     # to the buddy allocator so a closed window costs ~0 again.
+    if wsys_layer_fb_page[u] != 0:
+        wsys_dbg_fw_rel_n = wsys_dbg_fw_rel_n + 1
+    else:
+        wsys_dbg_fw_nofb_n = wsys_dbg_fw_nofb_n + 1
     _wsys_layer_fb_release(wid)
     _wsys_backbuffer_release(wid)
     _wsys_img_release_wid(wid)                          # #128 named images
@@ -1879,6 +1885,13 @@ _wsys_lfb_site:          int32  = 0
 wsys_dbg_lfb_dead_n:     uint64 = 0   # allocs for a NOT-in-use slot
 wsys_dbg_lfb_dead_site:  uint64 = 0   # bitmask of sites that did one
 wsys_dbg_lfb_dead_sl_n:  uint64 = 0   # of those, how many had scene_len>0
+# FREE-PATH counters (temporary). The alloc/free tallies alone cannot tell
+# "close released and something re-allocated" from "close never released at
+# all", so count what wsys_free_wid actually does.
+wsys_dbg_fw_call_n:      uint64 = 0   # wsys_free_wid entries, wid in 2..31
+wsys_dbg_fw_notinuse_n:  uint64 = 0   # ...that bailed: slot already free
+wsys_dbg_fw_nofb_n:      uint64 = 0   # ...that ran but had no fb to release
+wsys_dbg_fw_rel_n:       uint64 = 0   # ...that actually released an fb
 wsys_dbg_bb_alloc_n:  uint64 = 0    # cumulative backbuffer blocks claimed
 wsys_dbg_bb_free_n:   uint64 = 0    # cumulative backbuffer blocks returned
 wsys_dbg_bb_mask:     uint64 = 0    # bit w set = wid w has a live backbuffer
@@ -1920,6 +1933,22 @@ def wsys_dbg_lfb_deadsites() -> uint64:
 
 def wsys_dbg_lfb_deadsl() -> uint64:
     return wsys_dbg_lfb_dead_sl_n
+
+
+def wsys_dbg_fw_calls() -> uint64:
+    return wsys_dbg_fw_call_n
+
+
+def wsys_dbg_fw_notinuse() -> uint64:
+    return wsys_dbg_fw_notinuse_n
+
+
+def wsys_dbg_fw_nofb() -> uint64:
+    return wsys_dbg_fw_nofb_n
+
+
+def wsys_dbg_fw_rels() -> uint64:
+    return wsys_dbg_fw_rel_n
 
 
 def wsys_dbg_bb_allocs() -> uint64:

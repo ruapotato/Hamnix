@@ -54,6 +54,8 @@ from sys.src.port9.port.devwsys import (
     wsys_dbg_lfb_allocs, wsys_dbg_lfb_frees, wsys_dbg_lfb_grows,
     wsys_dbg_lfb_regions, wsys_dbg_lfb_live_pages, wsys_dbg_lfb_widmask,
     wsys_dbg_lfb_deads, wsys_dbg_lfb_deadsites, wsys_dbg_lfb_deadsl,
+    wsys_dbg_fw_calls, wsys_dbg_fw_notinuse, wsys_dbg_fw_nofb,
+    wsys_dbg_fw_rels,
     wsys_dbg_bb_allocs, wsys_dbg_bb_frees, wsys_dbg_bb_widmask,
     wsys_dbg_img_allocs, wsys_dbg_img_frees,
 )
@@ -256,6 +258,10 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     pos = _emit_count_line(out, pos, "DbgLfbDead:", wsys_dbg_lfb_deads())
     pos = _emit_count_line(out, pos, "DbgLfbDeadSite:", wsys_dbg_lfb_deadsites())
     pos = _emit_count_line(out, pos, "DbgLfbDeadSL:", wsys_dbg_lfb_deadsl())
+    pos = _emit_count_line(out, pos, "DbgFwCall:", wsys_dbg_fw_calls())
+    pos = _emit_count_line(out, pos, "DbgFwNotInUse:", wsys_dbg_fw_notinuse())
+    pos = _emit_count_line(out, pos, "DbgFwNoFb:", wsys_dbg_fw_nofb())
+    pos = _emit_count_line(out, pos, "DbgFwRel:", wsys_dbg_fw_rels())
     pos = _emit_count_line(out, pos, "DbgBbAlloc:", wsys_dbg_bb_allocs())
     pos = _emit_count_line(out, pos, "DbgBbFree:", wsys_dbg_bb_frees())
     pos = _emit_count_line(out, pos, "DbgBbMask:", wsys_dbg_bb_widmask())

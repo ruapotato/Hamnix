@@ -560,6 +560,7 @@ FIELDS = ["MemTotal", "MemFree", "MemAvailable", "MemUsed", "PagesInUse",
           "DbgO10Alloc", "DbgO10Free", "DbgLfbAlloc", "DbgLfbFree",
           "DbgLfbGrow", "DbgLfbRegion", "DbgLfbPages", "DbgLfbMask",
           "DbgLfbDead", "DbgLfbDeadSite", "DbgLfbDeadSL",
+          "DbgFwCall", "DbgFwNotInUse", "DbgFwNoFb", "DbgFwRel",
           "DbgBbAlloc", "DbgBbFree", "DbgBbMask",
           "DbgImgAlloc", "DbgImgFree"]
 samples = []                       # (label, {field: int}, live_wids)
