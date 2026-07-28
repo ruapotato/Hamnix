@@ -4210,6 +4210,11 @@ def _read_pkginfo_from_tar(tar_len: uint64) -> int32:
         if _tar_header_is_zero(hdr) != 0:
             break
         if _tar_chksum_ok(hdr) == 0:
+            write_str(2, "hpm: tar header checksum bad at offset ")
+            write_dec_u64(2, off)
+            write_str(2, " (tar_len=")
+            write_dec_u64(2, tar_len)
+            write_str(2, ")\n")
             return -1
         size: uint64 = _tar_parse_octal(&hdr[124], 12)
         body_blocks: uint64 = (size + 511) / 512
@@ -4289,7 +4294,15 @@ def _read_pkginfo_from_tar(tar_len: uint64) -> int32:
             return 0
 
         off = off + 512 + body_blocks * 512
-    write_str(2, "hpm: PKGINFO not found in tarball\n")
+    write_str(2, "hpm: PKGINFO not found in tarball (tar_len=")
+    write_dec_u64(2, tar_len)
+    write_str(2, " expected prefix=")
+    write_str(2, &pkg_prefix_buf[0])
+    write_str(2, " prefix_len=")
+    write_dec_u64(2, pkg_prefix_len)
+    write_str(2, " stopped_at=")
+    write_dec_u64(2, off)
+    write_str(2, ")\n")
     return -1
 
 

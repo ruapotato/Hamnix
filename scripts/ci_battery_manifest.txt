@@ -2111,6 +2111,30 @@ HAMNIX_SKIP_BUILD=1 bash scripts/test_kpti_uefi.sh
 # the full build + OVMF boot runs in the installer CI job / locally.
 HAMNIX_SKIP_BUILD=1 bash scripts/test_installer_ram_full.sh
 
+# test_installer_nvme_inram (THE END-TO-END INSTALL GATE): boot the SHIPPED
+# installer image under UEFI/OVMF against a blank NVMe target and run the
+# unattended install TO COMPLETION, then boot the INSTALLED root alone and
+# reach a shell. Everything else in the installer family asserts one property
+# of a boot (MADT enumeration, EFI RAM discovery, OOM reclaim); NOTHING ran an
+# install all the way through, which is exactly why the 2026-07-27
+# "[install] FAIL: hpm base package install non-zero" ship-blocker reached a
+# USER with a fully green battery. The installer is the project's PRIMARY ship
+# vehicle; it gets a gate that installs.
+#
+# Asserts, in order: the medium is ESP-ONLY (nothing on the media to read);
+# the Debian-style package path ran (`install --auto` -> hpm refresh -> hpm
+# install hamnix-base); NO package fetch/inflate/tar-walk failure signature
+# appears (the ship-blocker's fingerprint); a real GPT + ext4 superblock
+# landed on the NVMe qcow2, read back as RAW BYTES on the host; and the
+# installed root boots standalone to a shell with zero 'command not found'.
+#
+# Unlike the gates above, HAMNIX_SKIP_BUILD=1 here is NOT a licence to boot a
+# STALE image: the gate rebuilds anyway when build/hamnix-installer.img is
+# older than a tracked build input, because a stale image would green-light
+# the exact regression this gate exists to catch. It is therefore the heaviest
+# entry in the battery (~6 min build + two OVMF boots) — budget it a shard.
+HAMNIX_SKIP_BUILD=1 bash scripts/test_installer_nvme_inram.sh
+
 # test_hamview_png_jpeg: hamview image viewer decodes a real PNG (lib/png.ad)
 # and a baseline JPEG (lib/jpeg.ad) and blits them via the wsys fb draw-layer.
 # HAMNIX_SKIP_BUILD=1 keeps it a fast SKIP on a battery shard with no prebuilt
@@ -2169,6 +2193,23 @@ bash scripts/test_urlparse_host.sh
 # gzip/gunzip/tar still compile and that a repetitive fixture shrinks >10x (real
 # fixed-Huffman + LZ77, not a stored wrapper). No QEMU; runs anywhere.
 bash scripts/test_deflate_roundtrip_host.sh
+
+# test_inflate_llvm_host: FAST, QEMU-free companion to the encoder gate above,
+# for the DECODER (lib/zlib/inflate.ad) — and, critically, for BOTH compiler
+# lanes. Since scripts/build_user.sh defaults to ADDER_LLVM_DEFAULT=1 the
+# SHIPPED /bin/hpm, /bin/gunzip, /bin/tar and the HTTP gzip transfer decoder
+# are all built by the LLVM backend, while every pre-existing inflate gate
+# (test_inflate.sh, test_inflate_realgz.sh) compiles through the SEED. That
+# blind spot shipped a broken installer on 2026-07-27: the LLVM lane emitted a
+# 1-byte stack slot for a redeclared `sym` local in the dynamic-Huffman header
+# decoder, so inflate_feed returned SUCCESS with ZERO bytes decoded and
+# `hpm install hamnix-base` died with "PKGINFO not found in tarball". This gate
+# runs user/inflate_host.ad through the native SSA lane AND the LLVM lane (at
+# both -O0 and -O2, since an undersized slot can hide at one and corrupt at the
+# other) over REAL repo tarballs, byte-comparing every result against the
+# system gunzip. ~5 seconds, no QEMU, runs anywhere clang is present.
+bash scripts/test_inflate_llvm_host.sh
+
 # test_diff_host: FAST, QEMU-free cross-check of native `diff` (user/diff.ad)
 # against GNU diff. Builds user/diff.ad for x86_64-linux and byte-compares its
 # unified (-u) and normal output to GNU's on several fixture pairs (incl. a

@@ -87,16 +87,28 @@ fi
 
 # --- Stage A: build ESP-only install medium + blank NVMe target -------
 echo "[test_installer_nvme_inram] Stage A: build ESP-only install medium + blank NVMe target"
-if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ]; then
-    rm -f "$INSTALLER_IMG"
-    HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # E2E install regression needs the unattended auto-install path
-fi
 # Stale-image guard: NEVER boot an image older than the tree under test.
 # See scripts/_installer_img.sh (2026-07-24 false-negative).
 source "${PROJ_ROOT:-.}/scripts/_installer_img.sh"
-# A pre-existing image must never be validated silently — see
-# scripts/_installer_img.sh (2026-07-24 stale-image false negative).
-installer_img_warn_if_stale "$INSTALLER_IMG" "[installer_nvme_inram]"
+# MANDATORY REBUILD-WHEN-STALE (not warn-only). This gate is the project's
+# only end-to-end proof that an install COMPLETES, so a stale image here is
+# strictly worse than no gate: it green-lights the very regression the gate
+# exists to catch. That is not hypothetical — the 2026-07-27 ship-blocker
+# ("[install] FAIL: hpm base package install non-zero") reached a USER because
+# nothing ran an install to completion against a FRESH image.
+#
+# ensure_installer_img() cannot be used verbatim: this gate needs the
+# unattended auto-install path (HAMNIX_INSTALLER_AUTORUN=1), which that helper
+# does not set. So invoke build_installer_img.sh directly — rule (b) of
+# scripts/test_artifact_freshness.sh PART 2b — and, unlike the old warn-only
+# path, honour HAMNIX_SKIP_BUILD ONLY while the image is actually FRESH.
+if [ "${HAMNIX_SKIP_BUILD:-0}" != "1" ] || installer_img_is_stale "$INSTALLER_IMG"; then
+    if [ "${HAMNIX_SKIP_BUILD:-0}" = "1" ]; then
+        echo "[test_installer_nvme_inram]   $INSTALLER_IMG is STALE (older than a tracked build input) — rebuilding despite HAMNIX_SKIP_BUILD=1 (~6 min)"
+    fi
+    rm -f "$INSTALLER_IMG"
+    HAMNIX_INSTALLER_AUTORUN=1 bash "$PROJ_ROOT/scripts/build_installer_img.sh"  # E2E install regression needs the unattended auto-install path
+fi
 if [ ! -f "$INSTALLER_IMG" ]; then
     echo "[test_installer_nvme_inram] FAIL Stage A: $INSTALLER_IMG not built" >&2
     exit 1
@@ -244,6 +256,24 @@ check_b '\[install\] Installing Hamnix .Debian-style package install.' \
 check_b 'hpm.*refresh|\[install\] .4/5. hpm refresh' "hpm refreshed the in-RAM package index"
 check_b '\[install\] .5/5. hpm install hamnix-base' "installer installed hamnix-base as packages"
 check_b 'hpm: installed hamnix-base' "hpm reported hamnix-base installed onto the target"
+# NEGATIVE — the 2026-07-27 ship-blocker's signature. The LLVM-lane /bin/hpm
+# (ADDER_LLVM_DEFAULT=1 made that the lane that builds the SHIPPED binary)
+# inflated every package tarball to ZERO bytes while reporting success, so the
+# very first package of the closure died with "PKGINFO not found in tarball"
+# and the user saw only "[install] FAIL: hpm base package install non-zero".
+# Root cause was an undersized shared stack slot for a redeclared local in
+# lib/zlib/inflate.ad's dynamic-Huffman header decode (fixed in
+# adder/compiler/ssa.ad::ssa_widen_mem_local; guarded QEMU-free by
+# scripts/test_inflate_llvm_host.sh). Assert the ABSENCE of every
+# tarball-decode failure signature so a recurrence names itself here instead of
+# surfacing as a bare non-zero exit.
+if grep -aE -q 'PKGINFO not found in tarball|gzip inflate failed|gzip inflate did not reach EOS|tar header checksum bad|SHA-256 mismatch' "$STAGE_B_LOG"; then
+    echo "[test_installer_nvme_inram]   MISS (KEYSTONE): hpm hit a package-decode failure — the tarball fetch/inflate/tar-walk chain is broken:" >&2
+    grep -aE 'PKGINFO not found in tarball|gzip inflate failed|gzip inflate did not reach EOS|tar header checksum bad|SHA-256 mismatch' "$STAGE_B_LOG" >&2
+    stage_b_fail=1
+else
+    echo "[test_installer_nvme_inram]   OK (KEYSTONE): no package fetch/inflate/tar-walk failure in the install."
+fi
 # The native base install must source bytes ONLY from the local hpm repo —
 # NEVER the Debian distro tree (/n/distros). The legacy manifest path emitted
 # "skip missing source /n/distros/bin/*" when #distro was unbound; the
