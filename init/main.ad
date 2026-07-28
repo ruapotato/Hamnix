@@ -4724,6 +4724,94 @@ def arm64_sched_prepare_arm64():
     printk0("A9: prepared EL0 task A/B message buffers in the EL0-RW window\n")
 
 
+# ---------------------------------------------------------------------------
+# A10 (docs/arm64_llvm_scoping.md): the FIRST REAL EL0 USER PROGRAM.
+#
+# A8/A9's "user tasks" were hand-written AArch64 assembly inside the kernel's own
+# .text (arch/arm64/llvm/el0.S, sched.S) — enough to prove the exception-level
+# plumbing, but not a userland. A10 LOADS AND RUNS A COMPILED PROGRAM:
+# user/arm64_a10_el0.ad, built by the SAME Adder LLVM backend that builds this
+# kernel (`--backend=llvm --target=aarch64`), linked flat at 0x4801_0000 against
+# the user_rt.S crt0, embedded in the kernel image (user_blob.S) and copied into
+# the EL0-RW/EL0-X window here — an exec()-shaped image load.
+#
+# The program computes a checksum out of a sieve over a global array, a single
+# recursion (Collatz) and a double recursion (Ackermann), writes two lines via
+# real write(2) syscalls, and exit(2)s with the checksum's low byte. The kernel
+# cross-checks that status against ARM64_A10_EXPECT_STATUS below, which is
+# derived from the SAME source compiled for x86-64 and run natively
+# (scripts/test_arm64_a10_userland.sh recomputes the oracle on every run rather
+# than trusting this constant). A loader that copied the blob but never actually
+# executed it, or a miscompile anywhere in the recursion / memory / syscall path,
+# cannot produce the right status.
+#
+# ADDITIVE + aarch64-only: called ONLY from arch/arm64/llvm/head.S; x86's
+# start_kernel() never references these, so the x86 kernel stays byte-identical.
+# ---------------------------------------------------------------------------
+ARM64_A10_LOAD_VA: uint64 = 0x48010000     # must equal arch/arm64/llvm/user.lds
+ARM64_A10_WINDOW_END: uint64 = 0x48100000  # image budget ceiling (below the stacks)
+ARM64_A10_EXPECT_CHECKSUM: int64 = 965649  # x86-64 oracle: a10_checksum()
+ARM64_A10_EXPECT_STATUS: int64 = 17        # 965649 % 256
+
+# Bounds of the .incbin'd user image (arch/arm64/llvm/user_blob.S). Exposed as
+# accessor functions because Adder declares foreign symbols with `extern def`.
+extern def arm64_a10_blob_base() -> uint64
+extern def arm64_a10_blob_size() -> uint64
+
+
+def arm64_a10_load_arm64() -> uint64:
+    # exec()-shaped image load: copy the embedded flat user image from the
+    # kernel's .rodata into its link VA inside the fine EL0-RW/EL0-X window. The
+    # crt0 zeroes .bss itself, so only the file-backed bytes are copied here.
+    src: Ptr[uint8] = cast[Ptr[uint8]](arm64_a10_blob_base())
+    n: uint64 = arm64_a10_blob_size()
+    if n == cast[uint64](0):
+        printk0("A10: FAIL embedded user image is EMPTY (blob not linked in)\n")
+        return cast[uint64](0)
+    if ARM64_A10_LOAD_VA + n >= ARM64_A10_WINDOW_END:
+        printk1("A10: FAIL user image too large (%d bytes) for the EL0 window\n", n)
+        return cast[uint64](0)
+    dst: Ptr[uint8] = cast[Ptr[uint8]](ARM64_A10_LOAD_VA)
+    i: uint64 = cast[uint64](0)
+    while i < n:
+        dst[i] = src[i]
+        i = i + cast[uint64](1)
+    # Read the image back through the EL0-RW mapping and checksum it, so a
+    # silently-failed copy is caught BEFORE we eret into garbage.
+    sum: uint64 = cast[uint64](0)
+    j: uint64 = cast[uint64](0)
+    while j < n:
+        sum = sum + cast[uint64](dst[j])
+        j = j + cast[uint64](1)
+    printk2("A10: loaded EL0 user image: %d bytes -> 0x48010000 (byte-sum %d)\n",
+            n, sum)
+    # The A8 EL0 task already called exit(), latching the exit-pending flag; the
+    # A9 tasks cleared it the same way. Clear it again or the A10 program's very
+    # first write() would be mistaken for an exit.
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    printk0("A10: running a REAL Adder-compiled EL0 program (not hand-written asm)\n")
+    return n
+
+
+def arm64_a10_verify_arm64() -> int64:
+    # Cross-check the exit status the compiled EL0 program produced against the
+    # independently-known expected value. This is the assertion that cannot be
+    # satisfied without genuinely executing the program's compute at EL0.
+    if arm64_llvm_el0_exit_pending == 0:
+        printk0("A10: FAIL EL0 program never reached exit()\n")
+        return 0
+    if arm64_llvm_el0_exit_code != ARM64_A10_EXPECT_STATUS:
+        printk2("A10: FAIL exit status %d != expected %d\n",
+                arm64_llvm_el0_exit_code, ARM64_A10_EXPECT_STATUS)
+        return 0
+    printk2("A10 PASS: real Adder-compiled EL0 program ran; exit status %d == expected %d\n",
+            arm64_llvm_el0_exit_code, ARM64_A10_EXPECT_STATUS)
+    printk1("A10 PASS: checksum cross-checked (expected a10_checksum() = %d)\n",
+            ARM64_A10_EXPECT_CHECKSUM)
+    return 1
+
+
 def start_kernel():
     start_kernel_early()
 

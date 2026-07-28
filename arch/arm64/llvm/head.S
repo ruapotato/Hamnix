@@ -176,6 +176,24 @@ at_el1:
     ldr     x0, =msg_a9_ret
     bl      uart_puts
 
+    /* A10 (docs/arm64_llvm_scoping.md): the FIRST REAL EL0 USER PROGRAM. A8/A9
+     * ran hand-written assembly at EL0. A10 loads a COMPILED program — the Adder
+     * source user/arm64_a10_el0.ad, built by the same Adder LLVM backend that
+     * built this kernel, linked flat at 0x4801_0000 and embedded via user_blob.S
+     * — into the EL0-RW/EL0-X window (arm64_a10_load_arm64, an exec()-shaped
+     * image copy), erets to it (a10.S), lets it issue REAL write/getpid/exit
+     * syscalls through the SAME A8 sync-vector path, and then cross-checks the
+     * exit status it computed against the independently-known expected value
+     * (arm64_a10_verify_arm64). A fault dumps ESR/ELR via vectors.S. */
+    ldr     x0, =msg_a10
+    bl      uart_puts
+    bl      arm64_a10_load_arm64
+    cbz     x0, park                    /* image missing/oversized -> no eret */
+    bl      arm64_a10_launch
+    ldr     x0, =msg_a10_ret
+    bl      uart_puts
+    bl      arm64_a10_verify_arm64
+
 park:
     wfi
     b       park
@@ -377,6 +395,10 @@ msg_a9:
     .asciz  "A9: preemptive EL0 scheduling (2 tasks, timer-preempted EL0<->EL0)\n"
 msg_a9_ret:
     .asciz  "A9: scheduler returned to kernel (bounded preemption demo complete)\n"
+msg_a10:
+    .asciz  "A10: loading a COMPILED Adder EL0 user program into the user window\n"
+msg_a10_ret:
+    .asciz  "A10: EL0 user program exited, returned to kernel\n"
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

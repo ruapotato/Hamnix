@@ -191,8 +191,12 @@ arm64_el0_stack:
     .globl arm64_el0_stack_top
 arm64_el0_stack_top = arm64_el0_stack + 4096
     .balign 8
+    /* A10: also written by a10.S's launcher, so the real Adder EL0 program's
+     * exit() unwinds through the SAME sync-stub path back into head.S. */
+    .globl arm64_el0_saved_sp
 arm64_el0_saved_sp:
     .space  8
+    .globl arm64_el0_saved_lr
 arm64_el0_saved_lr:
     .space  8
 

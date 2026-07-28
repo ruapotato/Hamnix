@@ -36,9 +36,12 @@ command -v "$CLANG"   >/dev/null || { echo "[kllvm-arm64] ERROR: $CLANG not foun
 command -v "$AS_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $AS_CMD not found (apt install binutils-aarch64-linux-gnu)" >&2; exit 1; }
 command -v "$LD_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $LD_CMD not found" >&2; exit 1; }
 [ -x "$HOST_AC" ] || { echo "[kllvm-arm64] ERROR: no host_ac.elf at $HOST_AC (source scripts/_adder_cc.sh; adder_cc_bootstrap)" >&2; exit 1; }
-for f in head.S vectors.S gic.S el0.S sched.S intrinsics.S stubs.c kernel.lds; do
+for f in head.S vectors.S gic.S el0.S sched.S a10.S intrinsics.S stubs.c kernel.lds \
+         user_rt.S user.lds user_blob.S; do
     [ -f "$ARM/$f" ] || { echo "[kllvm-arm64] ERROR: missing $ARM/$f" >&2; exit 1; }
 done
+A10_SRC="${A10_SRC:-user/arm64_a10_el0.ad}"
+[ -f "$A10_SRC" ] || { echo "[kllvm-arm64] ERROR: missing $A10_SRC" >&2; exit 1; }
 
 echo "[kllvm-arm64] 1) emit whole-kernel aarch64 LLVM IR (init/main.ad closure)"
 "$HOST_AC" --backend=llvm --target=aarch64-bare-metal init/main.ad "$WORK/kernel_arm64.ll" \
@@ -67,12 +70,61 @@ echo "[kllvm-arm64] 2) clang -c (-O0, aarch64-none-elf, -mcmodel=small) -> ELF64
     || { echo "[kllvm-arm64] ERROR: clang compile failed" >&2; exit 1; }
 file "$WORK/kernel_arm64.o" | sed 's/^/[kllvm-arm64]    /'
 
+# --------------------------------------------------------------------------
+# 3a) A10: build the REAL EL0 USER PROGRAM (docs/arm64_llvm_scoping.md A10).
+#
+# user/arm64_a10_el0.ad is an ordinary Adder program compiled by the SAME
+# backend as the kernel, linked flat at 0x4801_0000 (user.lds) with the
+# user_rt.S crt0, and objcopy'd to a raw binary that user_blob.S .incbin's into
+# the kernel image. Rebuilt on EVERY kernel build, so the embedded blob can
+# never go stale relative to the .ad source.
+# --------------------------------------------------------------------------
+echo "[kllvm-arm64] 3a) build the A10 EL0 user program ($A10_SRC) via the SAME backend"
+"$HOST_AC" --backend=llvm --target=aarch64 "$A10_SRC" "$WORK/a10_user.ll" \
+    || { echo "[kllvm-arm64] ERROR: A10 user IR emit failed" >&2; exit 1; }
+# The EL0 program must be FULLY emitted: an external `declare` would mean a
+# function bailed the SSA subset and there is no runtime to supply it.
+if grep -q '^declare' "$WORK/a10_user.ll"; then
+    echo "[kllvm-arm64] ERROR: A10 user .ll has external declares (a function bailed):" >&2
+    grep '^declare' "$WORK/a10_user.ll" >&2
+    exit 1
+fi
+grep -q 'svc #0' "$WORK/a10_user.ll" \
+    || { echo "[kllvm-arm64] ERROR: A10 user .ll has no 'svc #0' (not the aarch64 syscall ABI)" >&2; exit 1; }
+"$CLANG" -O0 -c -ffreestanding -fno-pic -fno-unwind-tables -fno-stack-protector \
+    -fno-addrsig --target=aarch64-none-elf -mcmodel=small \
+    "$WORK/a10_user.ll" -o "$WORK/a10_user.o" 2>&1 | grep -v 'overriding the module target triple' | grep -v '^1 warning generated' || true
+[ -f "$WORK/a10_user.o" ] || { echo "[kllvm-arm64] ERROR: clang A10 user compile failed" >&2; exit 1; }
+"$AS_CMD" -o "$WORK/a10_user_rt.o" "$ARM/user_rt.S" \
+    || { echo "[kllvm-arm64] ERROR: as user_rt.S" >&2; exit 1; }
+"$LD_CMD" -nostdlib -static -T "$ARM/user.lds" -o "$WORK/a10_user.elf" \
+    "$WORK/a10_user_rt.o" "$WORK/a10_user.o" 2>&1 | grep -v 'LOAD segment with RWX' || true
+[ -f "$WORK/a10_user.elf" ] || { echo "[kllvm-arm64] ERROR: A10 user link failed" >&2; exit 1; }
+A10_UNDEF="$("${CROSS}nm" -u "$WORK/a10_user.elf" 2>/dev/null | grep -c ' U ')"
+[ "$A10_UNDEF" = "0" ] || { echo "[kllvm-arm64] ERROR: A10 user image has $A10_UNDEF undefined symbols" >&2; exit 1; }
+# _start MUST sit at the load VA: the kernel erets straight to 0x48010000.
+A10_ENTRY="$("${CROSS}nm" "$WORK/a10_user.elf" | awk '$3=="_start"{print $1}')"
+[ "$A10_ENTRY" = "0000000048010000" ] \
+    || { echo "[kllvm-arm64] ERROR: A10 _start at 0x$A10_ENTRY, expected 0x48010000 (user.lds drift)" >&2; exit 1; }
+"${CROSS}objcopy" -O binary "$WORK/a10_user.elf" "$WORK/a10_user.bin" \
+    || { echo "[kllvm-arm64] ERROR: objcopy A10 user image" >&2; exit 1; }
+A10_SZ="$(stat -c %s "$WORK/a10_user.bin")"
+[ "$A10_SZ" -gt 0 ] || { echo "[kllvm-arm64] ERROR: A10 user image is empty" >&2; exit 1; }
+# Budget: image must fit 0x48010000..0x48100000 (below the EL0 stacks).
+[ "$A10_SZ" -lt 983040 ] \
+    || { echo "[kllvm-arm64] ERROR: A10 user image $A10_SZ bytes exceeds the EL0 window budget" >&2; exit 1; }
+echo "[kllvm-arm64]    A10 user image: $A10_SZ bytes, entry 0x48010000, 0 undefined, 0 bails"
+
 echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile stubs.c"
 "$AS_CMD" -o "$WORK/head.o"       "$ARM/head.S"       || { echo "[kllvm-arm64] ERROR: as head.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/vectors.o"    "$ARM/vectors.S"    || { echo "[kllvm-arm64] ERROR: as vectors.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/gic.o"        "$ARM/gic.S"        || { echo "[kllvm-arm64] ERROR: as gic.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/el0.o"        "$ARM/el0.S"        || { echo "[kllvm-arm64] ERROR: as el0.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/sched.o"      "$ARM/sched.S"      || { echo "[kllvm-arm64] ERROR: as sched.S" >&2; exit 1; }
+"$AS_CMD" -o "$WORK/a10.o"        "$ARM/a10.S"        || { echo "[kllvm-arm64] ERROR: as a10.S" >&2; exit 1; }
+# -I "$WORK" so user_blob.S's `.incbin "a10_user.bin"` picks up the image just
+# built in 3a — never a checked-in or stale copy.
+"$AS_CMD" -I "$WORK" -o "$WORK/user_blob.o" "$ARM/user_blob.S" || { echo "[kllvm-arm64] ERROR: as user_blob.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/intrinsics.o" "$ARM/intrinsics.S" || { echo "[kllvm-arm64] ERROR: as intrinsics.S" >&2; exit 1; }
 "$CLANG" -O0 -c -ffreestanding -fno-pic --target=aarch64-none-elf -mcmodel=small \
     "$ARM/stubs.c" -o "$WORK/stubs.o" || { echo "[kllvm-arm64] ERROR: clang stubs.c" >&2; exit 1; }
@@ -101,7 +153,8 @@ fi
 echo "[kllvm-arm64] 4) link bootable aarch64 kernel ELF (kernel.lds, -nostdlib -static)"
 "$LD_CMD" -nostdlib -static -z noexecstack -z max-page-size=4096 \
     -T "$ARM/kernel.lds" -o "$OUT_ELF" \
-    "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/el0.o" "$WORK/sched.o" "$WORK/kernel_arm64.o" \
+    "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/el0.o" "$WORK/sched.o" \
+    "$WORK/a10.o" "$WORK/user_blob.o" "$WORK/kernel_arm64.o" \
     "$WORK/intrinsics.o" "$WORK/stubs.o" \
     || { echo "[kllvm-arm64] ERROR: ld link failed" >&2; exit 1; }
 

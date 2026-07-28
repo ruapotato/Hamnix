@@ -1,0 +1,159 @@
+# user/arm64_a10_el0.ad — the ARM64 LLVM lane's FIRST REAL EL0 USER PROGRAM
+# (docs/arm64_llvm_scoping.md A10).
+#
+# Everything above A9 ran at EL0 as HAND-WRITTEN AArch64 assembly in
+# arch/arm64/llvm/el0.S and sched.S: a few `mov`/`svc` instructions whose only
+# job was to prove the exception-level plumbing. That is a scheduler demo, not a
+# userland. This file is an ordinary Adder program, compiled by the SAME Adder
+# LLVM backend that builds the kernel (`--backend=llvm --target=aarch64`), linked
+# as a flat position-dependent image at the EL0-RW/EL0-X window VA, loaded by the
+# kernel out of the kernel image, and executed at EL0 against the kernel's real
+# `svc #0` syscall dispatcher.
+#
+# It is deliberately NOT trivial, so that "the EL0 program ran" cannot be faked
+# by the loader or by a stray kernel print:
+#   * real control flow (nested loops, `while`, early exit),
+#   * real recursion (`a10_collatz_len` recurses; `a10_ackermann` doubly recurses),
+#   * real memory traffic through a global array (sieve of Eratosthenes),
+#   * a checksum that mixes ALL of the above into one value the kernel knows
+#     independently and cross-checks against the program's exit status.
+# If any of that miscompiles, or if EL0 loads/stores or the syscall path are
+# broken, the checksum changes and the gate goes red.
+#
+# The program is 100% Adder — including the syscall wrappers, which go through
+# the compiler's `__syscallN` builtin. On `--target=aarch64` the LLVM backend
+# lowers those to `svc #0` with the number in x8 and remaps the x86-64 Linux
+# numbers baked in the source to the asm-generic AArch64 ones
+# (ssa_llvm.ad ll_aarch64_syscall_nr: write 1->64, exit 60->93, getpid 39->172),
+# which is exactly the ABI init/main.ad's arm64_do_syscall_arm64 services. Only
+# `_start` is assembly (arch/arm64/llvm/user_rt.S), as in any real userland.
+
+A10_SIEVE_N: int64 = 512
+
+a10_sieve: Array[512, uint8]
+a10_outbuf: Array[64, uint8]
+
+
+# --- syscall wrappers (x86-64 numbers; the aarch64 backend remaps them) ---
+def a10_write(fd: int64, buf: Ptr[uint8], len_: uint64) -> int64:
+    return cast[int64](__syscall3(cast[int64](1), fd, buf, len_))
+
+
+def a10_getpid() -> int64:
+    return cast[int64](__syscall1(cast[int64](39), cast[int64](0)))
+
+
+def a10_exit(status: int64) -> int64:
+    return cast[int64](__syscall1(cast[int64](60), status))
+
+
+# --- sieve of Eratosthenes over a global array (real EL0 memory traffic) ---
+def a10_sieve_count() -> int64:
+    i: int64 = 0
+    while i < A10_SIEVE_N:
+        a10_sieve[i] = cast[uint8](1)
+        i = i + 1
+    a10_sieve[0] = cast[uint8](0)
+    a10_sieve[1] = cast[uint8](0)
+    p: int64 = 2
+    while p * p < A10_SIEVE_N:
+        if a10_sieve[p] != cast[uint8](0):
+            m: int64 = p * p
+            while m < A10_SIEVE_N:
+                a10_sieve[m] = cast[uint8](0)
+                m = m + p
+        p = p + 1
+    n: int64 = 0
+    k: int64 = 0
+    while k < A10_SIEVE_N:
+        if a10_sieve[k] != cast[uint8](0):
+            n = n + 1
+        k = k + 1
+    return n
+
+
+# --- single recursion: Collatz stopping time ---
+def a10_collatz_len(n: int64) -> int64:
+    if n <= 1:
+        return 0
+    if n - (n / 2) * 2 == 0:
+        return 1 + a10_collatz_len(n / 2)
+    return 1 + a10_collatz_len(3 * n + 1)
+
+
+# --- double recursion: Ackermann (small, bounded) ---
+def a10_ackermann(m: int64, n: int64) -> int64:
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return a10_ackermann(m - 1, 1)
+    return a10_ackermann(m - 1, a10_ackermann(m, n - 1))
+
+
+# --- mix everything into one checksum the kernel independently knows ---
+def a10_checksum() -> int64:
+    acc: int64 = a10_sieve_count()              # 97 primes below 512
+    acc = acc * 31 + a10_collatz_len(27)        # 111 steps
+    acc = acc * 31 + a10_ackermann(2, 3)        # 9
+    i: int64 = 1
+    while i <= 16:
+        acc = acc * 7 + a10_collatz_len(i)
+        acc = acc % 1000003
+        i = i + 1
+    return acc
+
+
+# --- decimal rendering into a global buffer, then one real write(2) syscall ---
+def a10_emit(label_hi: int64, val: int64) -> int64:
+    # "A10:" prefix, then the decimal value, then '\n'. Built byte-by-byte with
+    # EL0 stores into a10_outbuf so the write() below can only succeed if the EL0
+    # data window is genuinely writable AND readable by the kernel.
+    a10_outbuf[0] = cast[uint8](65)             # 'A'
+    a10_outbuf[1] = cast[uint8](49)             # '1'
+    a10_outbuf[2] = cast[uint8](48)             # '0'
+    a10_outbuf[3] = cast[uint8](58)             # ':'
+    a10_outbuf[4] = cast[uint8](32)             # ' '
+    m: int64 = 5
+    if label_hi != 0:
+        a10_outbuf[m] = cast[uint8](80)         # 'P' (pid line)
+        m = m + 1
+    else:
+        a10_outbuf[m] = cast[uint8](67)         # 'C' (checksum line)
+        m = m + 1
+    a10_outbuf[m] = cast[uint8](61)             # '='
+    m = m + 1
+    # render the decimal digits (reverse then copy forward)
+    tmp: int64 = 0
+    nd: int64 = 0
+    v: int64 = val
+    if v == 0:
+        a10_outbuf[m] = cast[uint8](48)
+        m = m + 1
+    while v > 0:
+        tmp = v / 10
+        a10_sieve[nd] = cast[uint8](v - tmp * 10 + 48)   # reuse sieve as scratch
+        nd = nd + 1
+        v = tmp
+    k: int64 = nd - 1
+    while k >= 0:
+        a10_outbuf[m] = a10_sieve[k]
+        m = m + 1
+        k = k - 1
+    a10_outbuf[m] = cast[uint8](10)             # '\n'
+    m = m + 1
+    a10_write(1, &a10_outbuf[0], cast[uint64](m))
+    return m
+
+
+def main(argc: int64, argv: int64) -> int64:
+    # 1) A real getpid() through the kernel's syscall dispatcher.
+    pid: int64 = a10_getpid()
+    a10_emit(1, pid)
+    # 2) The compute checksum, emitted through a real write() syscall.
+    sum: int64 = a10_checksum()
+    a10_emit(0, sum)
+    # 3) Exit with the low byte of the checksum. The kernel cross-checks this
+    #    against its OWN independently-computed expected value, so a loader that
+    #    never actually ran this code cannot produce the right status.
+    a10_exit(sum - (sum / 256) * 256)
+    return 0
