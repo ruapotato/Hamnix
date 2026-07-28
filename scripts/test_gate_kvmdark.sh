@@ -188,7 +188,10 @@ echo "$TAG PART 4: the dark set is runnable on a KVM host"
 if ! bash -n "$RUNNER" 2>/dev/null; then
     echo "$TAG FAIL: $RUNNER does not parse" >&2
     FAILED=1
-elif ! RUN_LIST=$(bash "$RUNNER" -n 2>&1); then
+# HAMNIX_SOAK=1: the runner defers the 30-minute test_de_stress_soak behind
+# the same opt-in the manifest uses. It must still be REACHABLE — the check is
+# "can this set be run", not "does the default run take an hour".
+elif ! RUN_LIST=$(HAMNIX_SOAK=1 bash "$RUNNER" -n 2>&1); then
     echo "$TAG FAIL: $RUNNER -n failed" >&2
     printf '%s\n' "$RUN_LIST" | sed "s|^|$TAG   |" >&2
     FAILED=1
