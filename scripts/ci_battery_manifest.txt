@@ -1893,6 +1893,14 @@ bash scripts/ci_run_gate.sh scripts/test_wsys_anim_frames.sh
 # a fully-clipped-out fill costs O(1) rather than O(area) — as a pure
 # same-boot ratio, so it is immune to KVM-vs-TCG host speed.
 bash scripts/ci_run_gate.sh scripts/test_wsys_fill_throughput.sh
+# test_de_wctl_truth: /dev/wsys/<N>/wctl MUST NOT LIE. It used to render a
+# private request store the compositor never wrote, so every live window read
+# back "0 0 0 0 click" whatever its real rect, `wctl resize`/`move` parked
+# numbers there and changed nothing, and the session snapshot recorded 0 0 0 0
+# for every window. A surface that silently lies is worse than one that errors:
+# the read now reports the live composited rect and the verbs go through the
+# same geometry sink as ctl `geometry`. This boots the in-kernel assertion.
+bash scripts/ci_run_gate.sh scripts/test_de_wctl_truth.sh
 bash scripts/ci_run_gate.sh scripts/test_dup.sh
 bash scripts/ci_run_gate.sh scripts/test_srv_post.sh
 bash scripts/ci_run_gate.sh scripts/test_devdiskstats.sh

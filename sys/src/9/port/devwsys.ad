@@ -6136,24 +6136,29 @@ def _wsys_ctl_parse_i64(buf: Ptr[uint8], pos: uint64, count: uint64,
 # DE primitive: /dev/wsys/<N>/wctl — per-window control file (Plan 9
 # rio's wctl shape). Three verb lines accepted on write:
 #
-#   resize <w> <h>          request a new size for the window
-#   move   <x> <y>          request a new top-left position
+#   resize <w> <h>          set the window's content size
+#   move   <x> <y>          set the window's top-left position
 #   focus  click|sloppy     set focus policy (click-to-focus vs
 #                           focus-follows-pointer / "sloppy")
 #
-# Storage is per-wid. The compositor (user/hamUId.ad) polls a read of
-# /dev/wsys/<N>/wctl, which renders one ASCII status line:
+# A read renders one ASCII status line describing the window AS IT IS
+# COMPOSITED RIGHT NOW:
 #
 #   "<x> <y> <w> <h> <focus>\n"
 #
-# where <focus> is the literal "click" or "sloppy". The compositor
-# honours the requested rect on the next frame (updates window rect,
-# redraws). Focus is consulted by the pointer pump on motion events.
+# where <focus> is the literal "click" or "sloppy". Default focus mode
+# for a fresh wid is click (matches DE-wide default FOCUS_MODE = 0).
 #
-# Default focus mode for a fresh wid is click (matches DE-wide default
-# FOCUS_MODE = 0). Default rect is zeros until the compositor or a
-# wctl writer sets one — a zero-w/zero-h read just means "no request
-# yet", not "size==0".
+# A SURFACE THAT LIES IS WORSE THAN ONE THAT ERRORS. This file used to
+# keep a PRIVATE per-wid request store (wsys_wctl_x/y/w/h) that the
+# compositor never read and never wrote: `wctl resize` / `wctl move`
+# parked numbers there and changed nothing on screen, and a read
+# rendered that store back — so every live window reported
+# "0 0 0 0 click" whatever its real geometry, the session snapshot
+# recorded 0 0 0 0 for every window, and readers had to route around
+# wctl to the per-window /ctl. Both verbs now go through
+# _wsys_apply_geometry — the SAME sink the ctl `geometry` verb uses —
+# and the read reports the live rect (wsys_win_x/y + _wsys_win_def_w/h).
 #
 # Hostowner gate matches /dev/wsys/ctl (drift syscall retirement
 # already established the trusted-DE writer model). A non-uid-1 caller
@@ -6161,11 +6166,8 @@ def _wsys_ctl_parse_i64(buf: Ptr[uint8], pos: uint64, count: uint64,
 # poll a wctl status line regardless of which uid spawned the bound
 # client.
 
-# Per-window pending wctl request. -1 sentinel for "no request yet".
-wsys_wctl_x: Array[32, int64]
-wsys_wctl_y: Array[32, int64]
-wsys_wctl_w: Array[32, int64]
-wsys_wctl_h: Array[32, int64]
+# (The dead wsys_wctl_x/y/w/h request store is gone — the live geometry
+# in wsys_win_x/y/w/h is the one and only rect.)
 # 0 = click (default), 1 = sloppy (focus-follows-pointer).
 wsys_wctl_focus: Array[32, int32]
 # Monotonic per-wid counter — bumped on EVERY successful wctl write so
@@ -6323,14 +6325,21 @@ def devwsys_wctl_write(wid: int32, buf: Ptr[uint8],
         if arg1 < 0 or arg2 < 0:
             set_current_errstr("/dev/wsys/wctl: resize: negative dimension")
             return -1
-        wsys_wctl_w[u] = arg1
-        wsys_wctl_h[u] = arg2
+        # APPLIED, not parked. This used to write a private wsys_wctl_w/h
+        # store that no compositor ever read, so `wctl resize` changed
+        # nothing at all and the read below reported the request back as if
+        # it were the truth. It now goes through the SAME sink as the ctl
+        # `geometry` verb.
+        _wsys_apply_geometry(wid, wsys_win_x[u], wsys_win_y[u], arg1, arg2)
+        # A resize changes the cache stride, so the whole window must be
+        # re-rasterized rather than damage-patched.
+        _wsys_mark_dirty(wid, 0, 0, 65535, 65535)
         wsys_wctl_serial[u] = wsys_wctl_serial[u] + 1
         return cast[int64](count)
 
     if _wctl_word_eq(buf, vs, ve, "move") == 1:
-        wsys_wctl_x[u] = arg1
-        wsys_wctl_y[u] = arg2
+        # Applied through the same sink (0,0 size = keep the current size).
+        _wsys_apply_geometry(wid, arg1, arg2, 0, 0)
         wsys_wctl_serial[u] = wsys_wctl_serial[u] + 1
         return cast[int64](count)
 
@@ -6375,16 +6384,22 @@ def devwsys_wctl_read(wid: int32, off: uint64, buf: Ptr[uint8],
     u: uint64 = cast[uint64](wid)
     scratch: Array[96, uint8]
     n: uint64 = 0
-    n = _wctl_emit_i64(&scratch[0], n, wsys_wctl_x[u])
+    # THE LIVE RECT, not a request store. This used to render
+    # wsys_wctl_x/y/w/h — a private array the compositor never wrote — so
+    # every live window reported "0 0 0 0 click" no matter its real
+    # geometry, and a reader had to route around wctl and use the
+    # per-window /ctl instead. It now reports exactly what the compositor
+    # composites: the window origin and its content size.
+    n = _wctl_emit_i64(&scratch[0], n, wsys_win_x[u])
     scratch[n] = 32                                   # ' '
     n = n + 1
-    n = _wctl_emit_i64(&scratch[0], n, wsys_wctl_y[u])
+    n = _wctl_emit_i64(&scratch[0], n, wsys_win_y[u])
     scratch[n] = 32
     n = n + 1
-    n = _wctl_emit_i64(&scratch[0], n, wsys_wctl_w[u])
+    n = _wctl_emit_i64(&scratch[0], n, _wsys_win_def_w(u))
     scratch[n] = 32
     n = n + 1
-    n = _wctl_emit_i64(&scratch[0], n, wsys_wctl_h[u])
+    n = _wctl_emit_i64(&scratch[0], n, _wsys_win_def_h(u))
     scratch[n] = 32
     n = n + 1
     if wsys_wctl_focus[u] == 1:
@@ -6560,17 +6575,20 @@ def _wsys_session_render(out: Ptr[uint8], cap: uint64) -> uint64:
                     j = j + 1
             out[pos] = 32
             pos = pos + 1
-            # rect: x y w h (from the wctl request arrays).
-            pos = _wsys_session_emit_i64(out, pos, wsys_wctl_x[w])
+            # rect: x y w h — the LIVE geometry. This used to read the
+            # wsys_wctl_* request arrays, which nothing ever populated, so
+            # a saved session recorded "0 0 0 0" for every window and could
+            # not restore any of them.
+            pos = _wsys_session_emit_i64(out, pos, wsys_win_x[w])
             out[pos] = 32
             pos = pos + 1
-            pos = _wsys_session_emit_i64(out, pos, wsys_wctl_y[w])
+            pos = _wsys_session_emit_i64(out, pos, wsys_win_y[w])
             out[pos] = 32
             pos = pos + 1
-            pos = _wsys_session_emit_i64(out, pos, wsys_wctl_w[w])
+            pos = _wsys_session_emit_i64(out, pos, _wsys_win_def_w(w))
             out[pos] = 32
             pos = pos + 1
-            pos = _wsys_session_emit_i64(out, pos, wsys_wctl_h[w])
+            pos = _wsys_session_emit_i64(out, pos, _wsys_win_def_h(w))
             out[pos] = 10                             # '\n'
             pos = pos + 1
         w = w + 1
@@ -8429,63 +8447,76 @@ def devwsys_winctl_write(wid: int32, buf: Ptr[uint8],
             set_current_errstr("/dev/wsys/ctl: missing h")
             return -1
         if is_geo == 1:
-            # FLICKER FIX: once-only backdrop — a programmatic geometry
-            # move must recompose the OLD footprint so the window leaves no
-            # trail (the following commit re-blits it at the new position).
-            gvx: int64 = wsys_win_x[u]
-            gvy: int64 = wsys_win_y[u]
-            gvw: int64 = _wsys_win_def_w(u)
-            gvh: int64 = _wsys_win_def_h(u)
-            moved: int32 = 0
-            if gvx != gx or gvy != gy:
-                moved = 1
-            # BUG 2a FIX: a SHRINK (new w<old or new h<old) at the same
-            # origin (the Applications-menu CLOSE collapses the grown panel
-            # from PANEL_OPEN_H 74 back to PANEL_H 26) leaves the vacated
-            # strip — the menu pixels below the now-shorter panel — on the
-            # framebuffer as a GHOST. The compositor only ever clears the
-            # backdrop once, and the shrunk panel's own commit re-blits ONLY
-            # its remaining (26px) rows, so nothing repaints the freed band.
-            # Treat a shrink like a move: recompose the OLD footprint from
-            # the scene sources (backdrop + lower windows + this window's own
-            # now-smaller cache), damage-scoped, so the ghost is erased.
-            shrunk: int32 = 0
-            if (gw > 0 and gw < gvw) or (gh > 0 and gh < gvh):
-                shrunk = 1
-            # #330 SHEAR FIX: the per-window RGBA cache is a tightly-PACKED
-            # frame whose stride == the window's CURRENT width (_wsys_win_def_w).
-            # A present pass (holds wsys_present_lock) rasterizes the cache at
-            # stride w, then blits it at stride w; these MUST agree. If this
-            # geometry commit flips wsys_win_w[u] / wsys_win_geo_init[u] on
-            # another CPU BETWEEN a present's rasterize and its blit, the cache
-            # is written at the old (default 320) stride but read at the new
-            # (grown-wide menu) stride -> every row drifts right = the
-            # intermittent sheared, shifted-right Applications menu. Commit the
-            # geometry fields UNDER wsys_present_lock so a present pass only ever
-            # observes a fully-old or fully-new geometry, never a half-update.
-            fl_geo: uint64 = local_irq_save()
-            spinlock_lock(&wsys_present_lock)
-            wsys_win_x[u] = gx
-            wsys_win_y[u] = gy
-            if gw > 0:
-                wsys_win_w[u] = gw
-            if gh > 0:
-                wsys_win_h[u] = gh
-            wsys_win_geo_init[u] = 1
-            if (moved != 0 or shrunk != 0) and wsys_root_active != 0 \
-                    and fb_get_initialized() != 0:
-                _wsys_recompose_rect(gvx, gvy - WSYS_TITLEBAR_H,
-                                     gvw, gvh + WSYS_TITLEBAR_H)
-                _wsys_flush_rect(gvx, gvy - WSYS_TITLEBAR_H,
-                                 gvw, gvh + WSYS_TITLEBAR_H)
-            spinlock_unlock(&wsys_present_lock)
-            local_irq_restore(fl_geo)
+            _wsys_apply_geometry(wid, gx, gy, gw, gh)
         else:
             _wsys_mark_dirty(wid, gx, gy, gx + gw, gy + gh)
         return cast[int64](count)
 
     set_current_errstr("/dev/wsys/ctl: bad verb")
     return -1
+
+
+def _wsys_apply_geometry(wid: int32, gx: int64, gy: int64,
+                         gw: int64, gh: int64):
+    # THE single geometry sink. Both /dev/wsys/<n>/ctl `geometry`
+    # and /dev/wsys/<n>/wctl `move` / `resize` land here, so wctl is
+    # no longer a parallel set of numbers nobody applies. A w or h of
+    # 0 means "leave that dimension alone" (how a client moves a
+    # window without restating its size).
+    u: uint64 = cast[uint64](wid)
+    if u == 0 or u >= MAX_WINDOWS:
+        return
+    # FLICKER FIX: once-only backdrop — a programmatic geometry
+    # move must recompose the OLD footprint so the window leaves no
+    # trail (the following commit re-blits it at the new position).
+    gvx: int64 = wsys_win_x[u]
+    gvy: int64 = wsys_win_y[u]
+    gvw: int64 = _wsys_win_def_w(u)
+    gvh: int64 = _wsys_win_def_h(u)
+    moved: int32 = 0
+    if gvx != gx or gvy != gy:
+        moved = 1
+    # BUG 2a FIX: a SHRINK (new w<old or new h<old) at the same
+    # origin (the Applications-menu CLOSE collapses the grown panel
+    # from PANEL_OPEN_H 74 back to PANEL_H 26) leaves the vacated
+    # strip — the menu pixels below the now-shorter panel — on the
+    # framebuffer as a GHOST. The compositor only ever clears the
+    # backdrop once, and the shrunk panel's own commit re-blits ONLY
+    # its remaining (26px) rows, so nothing repaints the freed band.
+    # Treat a shrink like a move: recompose the OLD footprint from
+    # the scene sources (backdrop + lower windows + this window's own
+    # now-smaller cache), damage-scoped, so the ghost is erased.
+    shrunk: int32 = 0
+    if (gw > 0 and gw < gvw) or (gh > 0 and gh < gvh):
+        shrunk = 1
+    # #330 SHEAR FIX: the per-window RGBA cache is a tightly-PACKED
+    # frame whose stride == the window's CURRENT width (_wsys_win_def_w).
+    # A present pass (holds wsys_present_lock) rasterizes the cache at
+    # stride w, then blits it at stride w; these MUST agree. If this
+    # geometry commit flips wsys_win_w[u] / wsys_win_geo_init[u] on
+    # another CPU BETWEEN a present's rasterize and its blit, the cache
+    # is written at the old (default 320) stride but read at the new
+    # (grown-wide menu) stride -> every row drifts right = the
+    # intermittent sheared, shifted-right Applications menu. Commit the
+    # geometry fields UNDER wsys_present_lock so a present pass only ever
+    # observes a fully-old or fully-new geometry, never a half-update.
+    fl_geo: uint64 = local_irq_save()
+    spinlock_lock(&wsys_present_lock)
+    wsys_win_x[u] = gx
+    wsys_win_y[u] = gy
+    if gw > 0:
+        wsys_win_w[u] = gw
+    if gh > 0:
+        wsys_win_h[u] = gh
+    wsys_win_geo_init[u] = 1
+    if (moved != 0 or shrunk != 0) and wsys_root_active != 0 \
+            and fb_get_initialized() != 0:
+        _wsys_recompose_rect(gvx, gvy - WSYS_TITLEBAR_H,
+                             gvw, gvh + WSYS_TITLEBAR_H)
+        _wsys_flush_rect(gvx, gvy - WSYS_TITLEBAR_H,
+                         gvw, gvh + WSYS_TITLEBAR_H)
+    spinlock_unlock(&wsys_present_lock)
+    local_irq_restore(fl_geo)
 
 
 # --- window-list enumeration (wid-less /dev/wsys/windows) ------------
@@ -13562,7 +13593,105 @@ def wsys_close_box_selftest() -> int32:
     wsys_geom_reset_selftest()
     wsys_anim_frames_selftest()
     wsys_surplus_hide_selftest()
+    wsys_wctl_truth_selftest()
     wsys_fill_throughput_selftest()
+    return 1
+
+
+def _wsys_cstr_eq(a: Ptr[uint8], alen: uint64, b: Ptr[uint8]) -> int32:
+    # 1 iff the first `alen` bytes of a equal the NUL-terminated b exactly.
+    i: uint64 = 0
+    while i < alen:
+        if b[i] == 0:
+            return 0
+        if a[i] != b[i]:
+            return 0
+        i = i + 1
+    if b[i] != 0:
+        return 0
+    return 1
+
+
+def wsys_wctl_truth_selftest() -> int32:
+    # /dev/wsys/<N>/wctl MUST NOT LIE. It used to render a private request
+    # store (wsys_wctl_x/y/w/h) that the compositor never wrote, so every
+    # live window read back "0 0 0 0 click" whatever its real rect, and
+    # `wctl resize` / `wctl move` parked numbers there and changed nothing
+    # on screen. A surface that silently lies is worse than one that errors,
+    # so this pins BOTH halves:
+    #   (a) the status line reports the LIVE composited rect;
+    #   (b) resize/move either APPLY to that live rect, or are refused with
+    #       an error — never accepted-and-ignored.
+    # Claim the wid for THIS task's pid so the write path's owner check is
+    # satisfied and the APPLY half is really exercised (a fake pid would
+    # only ever reach the permission-denied branch).
+    wid: int32 = wsys_alloc_wid(current_task_pid())
+    if wid < 2:
+        printk0("[WCTL_TRUTH] PASS (skip: table full)\n")
+        return 1
+    u: uint64 = cast[uint64](wid)
+    _wsys_apply_geometry(wid, 37, 53, 421, 307)
+    rbuf: Array[96, uint8]
+    n: int64 = devwsys_wctl_read(wid, 0, &rbuf[0], 96)
+    if n <= 0 or _wsys_cstr_eq(&rbuf[0], cast[uint64](n),
+                               cast[Ptr[uint8]]("37 53 421 307 click\n")) == 0:
+        printk0("[WCTL_TRUTH] FAIL status line does not report the live rect\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    # (b) resize.
+    rc: int64 = devwsys_wctl_write(wid,
+                                   cast[Ptr[uint8]]("resize 640 480\n"), 15)
+    if rc < 0:
+        # Refused LOUDLY (the caller is neither hostowner nor the window's
+        # owner here). That is the other acceptable outcome — it is not a
+        # lie — so the truthfulness invariant still holds.
+        # Refused because the boot battery runs as pid 0, which owns no
+        # window and is not the hostowner — the permission model is doing
+        # its job. Then the refusal must be TOTAL: nothing may have been
+        # half-applied, and the status line must still describe the window
+        # as it really is.
+        if _wsys_win_def_w(u) != 421 or _wsys_win_def_h(u) != 307:
+            printk0("[WCTL_TRUTH] FAIL a REFUSED wctl resize still changed the window\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        n = devwsys_wctl_read(wid, 0, &rbuf[0], 96)
+        if n <= 0 or _wsys_cstr_eq(&rbuf[0], cast[uint64](n),
+                                   cast[Ptr[uint8]]("37 53 421 307 click\n")) == 0:
+            printk0("[WCTL_TRUTH] FAIL status line drifted after a refused write\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        printk0("[WCTL_TRUTH] PASS live rect reported; refused resize applied nothing\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 1
+    if _wsys_win_def_w(u) != 640 or _wsys_win_def_h(u) != 480:
+        printk0("[WCTL_TRUTH] FAIL wctl resize was accepted but changed nothing\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    if devwsys_wctl_write(wid, cast[Ptr[uint8]]("move 11 22\n"), 11) < 0:
+        printk0("[WCTL_TRUTH] FAIL wctl move rejected after resize was accepted\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    if wsys_win_x[u] != 11 or wsys_win_y[u] != 22:
+        printk0("[WCTL_TRUTH] FAIL wctl move was accepted but changed nothing\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    n = devwsys_wctl_read(wid, 0, &rbuf[0], 96)
+    if n <= 0 or _wsys_cstr_eq(&rbuf[0], cast[uint64](n),
+                               cast[Ptr[uint8]]("11 22 640 480 click\n")) == 0:
+        printk0("[WCTL_TRUTH] FAIL status line stale after resize/move\n")
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    printk0("[WCTL_TRUTH] PASS wctl reports the live rect and resize/move apply\n")
+    wsys_scene_len[u] = 0
+    wsys_free_wid(wid)
     return 1
 
 

@@ -96,12 +96,29 @@ fi
 if ! grep -q '"sloppy"' "$WSYS_SRC"; then
     fail_link "wctl: 'sloppy' focus mode literal gone"
 fi
-# Per-window storage backing the verbs.
-for arr in wsys_wctl_x wsys_wctl_y wsys_wctl_w wsys_wctl_h wsys_wctl_focus wsys_wctl_serial; do
+# Per-window storage backing the focus verb.
+for arr in wsys_wctl_focus wsys_wctl_serial; do
     if ! grep -Eq "${arr}:[[:space:]]*Array" "$WSYS_SRC"; then
         fail_link "wctl: per-window storage ${arr}[] gone"
     fi
 done
+# THE resize/move INVARIANT (not its spelling): both verbs must reach the
+# LIVE geometry sink, and the status line must render the LIVE rect. They
+# used to read and write a private wsys_wctl_x/y/w/h store that nothing
+# else in the system touched, so `wctl resize`/`move` silently did nothing
+# and every window read back as "0 0 0 0 click". A surface that lies is
+# worse than one that errors, so the store is gone and this guards the
+# wiring that replaced it.
+if ! grep -Eq "^def[[:space:]]+_wsys_apply_geometry" "$WSYS_SRC"; then
+    fail_link "wctl: _wsys_apply_geometry() sink gone — geometry has no single authority"
+fi
+if [ "$(awk '/^def devwsys_wctl_write/,/^def _wctl_emit_i64/' "$WSYS_SRC" \
+        | grep -c '_wsys_apply_geometry(')" -lt 2 ]; then
+    fail_link "wctl: resize/move no longer APPLY geometry (they must not park numbers nobody reads)"
+fi
+if ! grep -A 40 '^def devwsys_wctl_read' "$WSYS_SRC" | grep -q 'wsys_win_x\['; then
+    fail_link "wctl: the status line no longer reports the LIVE window rect"
+fi
 # Compositor-facing accessor: per-window focus mode.
 if ! grep -Eq "^def[[:space:]]+wsys_wctl_focus_mode" "$WSYS_SRC"; then
     fail_link "wctl: wsys_wctl_focus_mode() accessor gone — compositor can't read per-window focus policy"
