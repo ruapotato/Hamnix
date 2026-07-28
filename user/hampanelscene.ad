@@ -898,15 +898,35 @@ def _refresh_windows():
         _pl_flush()
         win_open_fails = 0
         _win_fail_reported = 0
-    n_tasks = 0
     buf: Array[1024, uint8]
     total: uint64 = 0
+    rerr: int32 = 0
     while total < 1023:
         r: int64 = sys_read(fd, &buf[total], 1023 - total)
-        if r <= 0:
+        if r < 0:
+            rerr = 1
             break
+        if r == 0:
+            break                                  # EOF: snapshot complete
         total = total + cast[uint64](r)
     sys_close(fd)
+    if rerr != 0:
+        # A read ERROR is the same swallowed-failure shape as a failed open,
+        # and it used to land in exactly the same place: total stays 0, the
+        # parse below produces nothing, and the taskbar repaints EMPTY as
+        # though the desktop had no windows. r==0 (a genuine EOF, i.e. an
+        # empty window set) is a different thing and still means "no
+        # windows" — only r<0 is treated as a fault.
+        win_open_fails = win_open_fails + 1
+        win_open_fails_total = win_open_fails_total + 1
+        _pl_s(cast[Ptr[uint8]]("[panel] ERROR read /dev/wsys/windows failed after "))
+        _pl_d(total)
+        _pl_s(cast[Ptr[uint8]](" bytes; keeping stale taskbar tasks="))
+        _pl_d(n_tasks)
+        _pl_s(cast[Ptr[uint8]]("\n"))
+        _pl_flush()
+        return
+    n_tasks = 0
     # FNV-1a over the raw snapshot so any change to the window SET (a new
     # window, a closed one, a title that landed after the window mapped, a
     # same-count swap) flips the hash and forces a taskbar re-render.
