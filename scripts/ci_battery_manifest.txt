@@ -3246,3 +3246,18 @@ bash scripts/test_hambrowse_ceilings_host.sh
 # wrong branch. Every asserted line is a measured chromium --headless value for
 # form/input/select/textarea/button/fieldset/output/canvas/div/img/a.
 bash scripts/test_hambrowse_iface_host.sh
+# scripts/test_jsengine_utf16_host.sh: QEMU-free gate for UTF-16 STRING
+# SEMANTICS. Strings are STORED as UTF-8 bytes, but ECMAScript defines length,
+# indexing, slicing and every position argument over UTF-16 CODE UNITS.
+# Indexing the bytes directly did not merely miscount ("©".length was 2, not 1)
+# — it SPLIT multi-byte sequences, so charAt/slice/split("") returned INVALID
+# strings that then propagated silently. Covers .length / charCodeAt /
+# codePointAt / charAt / at / [i] / ["i"], slice / substring / substr /
+# indexOf(+fromIndex) / lastIndexOf, split("") (code UNITS) vs spread and
+# Array.from (code POINTS), padStart/padEnd with a multi-byte filler, astral
+# characters as surrogate PAIRS incl. the half-slice round-trip,
+# String.fromCharCode / fromCodePoint encoding instead of truncating, regex
+# .index / .lastIndex / .indices in code units and `.`/classes consuming a
+# whole sequence, plus an ASCII fast-path no-regression case. Every expectation
+# was taken from node value-by-value.
+bash scripts/test_jsengine_utf16_host.sh
