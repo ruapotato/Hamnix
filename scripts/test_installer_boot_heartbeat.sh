@@ -44,7 +44,7 @@
 #   SKIP_BUILD=1 do NOT (re)build the image even if missing/stale; fail
 #                instead if IMG is absent. Lets the orchestrator gate a
 #                pre-built image without paying the ~14-min Stage-1 cost.
-#   BOOT_TIMEOUT deadline seconds for the heartbeat to appear (default 180).
+#   BOOT_TIMEOUT deadline seconds for the heartbeat to appear (default 600).
 #                The boot is slow under TCG; the script polls and exits as
 #                soon as the marker is seen, so this is only an upper bound.
 #                Under pure TCG (CI, no KVM) the live-distro squashfs stream
@@ -63,7 +63,15 @@
 #                (logic-only mode for CI/dev: feed a known-good or
 #                known-broken log and assert the PASS/FAIL verdict without
 #                spinning QEMU). When set, no QEMU is launched.
-#   KEEP_LOG=1   keep the temp serial log on exit (debugging).
+#   STALL_TIMEOUT seconds of ZERO serial growth that count as WEDGED
+#                (default 150, 0 disables). This is the honest liveness
+#                signal — see the "SLOW IS NOT WEDGED" note at boot_once.
+#   KEEP_LOG=1   keep the temp serial log of the LAST attempt on exit.
+#                A FAILING attempt's log is ALWAYS preserved regardless,
+#                under build/boot-heartbeat-fail-*.log, and its path is
+#                printed. Do NOT go hunting in /tmp for a serial log — the
+#                stale ones there are from previous days and reading one
+#                is exactly how the 2026-07-28 misdiagnosis happened.
 #
 # Pass marker:  [test_installer_boot_heartbeat] PASS
 # Fail marker:  [test_installer_boot_heartbeat] FAIL
@@ -73,7 +81,26 @@ PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ_ROOT"
 
 IMG="${IMG:-build/hamnix-installer.img}"
-BOOT_TIMEOUT="${BOOT_TIMEOUT:-180}"
+# DEFAULT RAISED 180 -> 600 (2026-07-28). 180s was not a boot budget, it was
+# a coin flip. Measured on the dev host at 53c58302, image built with
+# ENABLE_HAMSH_HEARTBEAT=1, ten consecutive boots: heartbeat at 38-39s on an
+# IDLE host, but 66s with one competing job and WELL OVER 240s while a second
+# agent's build/QEMU was running. This gate is routinely run on a box with two
+# other agents holding QEMU, so the tail matters more than the median. At 180s
+# a busy host produced "observed 0 heartbeat lines" on an image that boots
+# perfectly — reported up the chain as "the shipped image does not boot, 3 of
+# 3", and a day of bisecting was nearly spent on a regression that did not
+# exist. CI already used 1200 for exactly this reason (.github/workflows/ci.yml)
+# and never saw the failure; only local runs, on the default, did.
+#
+# Raising the ceiling costs NOTHING on a healthy boot — the poll loop exits the
+# instant the marker appears, so a 38s boot still takes 38s. What used to bound
+# a genuinely wedged boot is now STALL_TIMEOUT below, which is both faster and
+# actually correct.
+BOOT_TIMEOUT="${BOOT_TIMEOUT:-600}"
+# STALL_TIMEOUT: seconds of ZERO serial-log growth after which the attempt is
+# declared WEDGED. See the "SLOW IS NOT WEDGED" note in boot_once.
+STALL_TIMEOUT="${STALL_TIMEOUT:-150}"
 OVMF_FD="${OVMF_FD:-/usr/share/ovmf/OVMF.fd}"
 # CPU model. The kernel's syscall_entry uses SMAP (stac/clac, opcode
 # 0f 01 cb). QEMU's DEFAULT TCG cpu (qemu64) does NOT expose SMAP/SMEP,
@@ -234,6 +261,34 @@ fi
 LOG=$(mktemp --tmpdir hamnix-installer-heartbeat.XXXXXX.log)
 OVMF_RW=$(mktemp --tmpdir hamnix-installer-heartbeat.ovmf.XXXXXX.fd)
 QEMU_PID=""
+# Set by boot_once to describe HOW an attempt failed: stall | slow-host |
+# deadline | qemu-exit | fatal. Reported per attempt so the reader is never
+# left inferring a wedge from a timeout.
+BOOT_FAIL_KIND=""
+
+# preserve_fail_log <attempt> — copy a FAILED attempt's serial log somewhere
+# stable and say where. ALWAYS, not just under KEEP_LOG.
+#
+# WHY THIS IS NOT OPTIONAL (2026-07-28). The gate used to `rm -f "$LOG"` on
+# exit unless KEEP_LOG=1, so a failing run destroyed the only evidence it
+# produced. The investigator then went looking in /tmp, found a
+# hamnix-installer-heartbeat.*.log left there by some OTHER run, and
+# diagnosed the failure from it. The file they read was FOUR DAYS OLD; it
+# ended mid-`[smap-v3f]` page-table walk, and that stale stall became the
+# reported symptom of a boot that had in fact reached the desktop. Evidence
+# from a failing run must outlive the run, and it must be somewhere nobody
+# confuses with someone else's leftovers.
+preserve_fail_log() {
+    local attempt="$1" dest
+    [ -s "$LOG" ] || return 0
+    mkdir -p "$PROJ_ROOT/build" 2>/dev/null || return 0
+    dest="$PROJ_ROOT/build/boot-heartbeat-fail-$(date +%Y%m%d-%H%M%S)-attempt${attempt}.log"
+    cp "$LOG" "$dest" 2>/dev/null || return 0
+    say "serial log of this FAILED attempt preserved at: $dest"
+    say "  (read THAT file. Do not diagnose from /tmp/hamnix-installer-heartbeat.*"
+    say "   -- those are other runs' leftovers, possibly days old.)"
+}
+
 cleanup() {
     # Kill QEMU on every exit path (success, failure, signal).
     if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -272,11 +327,35 @@ boot_once() {
         >/dev/null 2>&1 &
     QEMU_PID=$!
 
-    # Poll the serial log until heartbeat, a fatal marker, QEMU exit, or
-    # the boot deadline. Exits early on the first marker.
-    local deadline rc
+    # Poll the serial log until heartbeat, a fatal marker, QEMU exit, a
+    # SERIAL STALL, or the boot deadline. Exits early on the first marker.
+    #
+    # SLOW IS NOT WEDGED (2026-07-28). The old loop had exactly one failure
+    # mode for "no heartbeat yet": the wall-clock deadline. That conflates two
+    # opposite situations —
+    #
+    #   * the guest is WEDGED (cli;hlt, triple fault, spin) — serial output
+    #     stopped dead and no amount of extra waiting will help; and
+    #   * the guest is ADVANCING but the HOST is loaded — serial output is
+    #     still streaming, the boot simply needs longer than the deadline.
+    #
+    # Reported identically ("no heartbeat within the boot window"), the second
+    # reads as the first. That is precisely what happened on 2026-07-28: three
+    # deadline expiries on a contended host were reported as "the shipped image
+    # does not boot, 3 of 3 attempts", and the image booted 10/10 the moment it
+    # was measured on an idle one.
+    #
+    # So track serial GROWTH. A boot still emitting bytes is making progress;
+    # a boot that has emitted nothing for STALL_TIMEOUT seconds is wedged, and
+    # THAT is the condition worth failing fast on. The distinction is carried
+    # all the way into the failure text below, so the next reader is told which
+    # of the two they are looking at instead of having to guess.
+    local deadline rc last_sz last_change now sz
     deadline=$(( $(date +%s) + BOOT_TIMEOUT ))
     rc=2
+    BOOT_FAIL_KIND="deadline"
+    last_sz=-1
+    last_change=$(date +%s)
     while :; do
         if [ -f "$LOG" ]; then
             if grep -aE -q "$HEARTBEAT_RE" "$LOG"; then rc=0; break; fi
@@ -285,9 +364,30 @@ boot_once() {
             # never come, so don't burn the rest of BOOT_TIMEOUT.
             if grep -aE -q "$FATAL_RE" "$LOG"; then rc=1; break; fi
         fi
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then QEMU_PID=""; rc=2; break; fi
-        if [ "$(date +%s)" -ge "$deadline" ]; then
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            QEMU_PID=""; rc=2; BOOT_FAIL_KIND="qemu-exit"; break
+        fi
+        now=$(date +%s)
+        sz=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+        if [ "$sz" != "$last_sz" ]; then
+            last_sz="$sz"
+            last_change="$now"
+        elif [ "$STALL_TIMEOUT" -gt 0 ] \
+                && [ $(( now - last_change )) -ge "$STALL_TIMEOUT" ]; then
+            say "SERIAL STALLED: no output for ${STALL_TIMEOUT}s (log stuck at ${sz} bytes)."
+            say "  The guest is WEDGED, not slow. This is a real boot failure."
+            rc=2; BOOT_FAIL_KIND="stall"; break
+        fi
+        if [ "$now" -ge "$deadline" ]; then
             say "deadline reached (${BOOT_TIMEOUT}s) without a heartbeat."
+            if [ $(( now - last_change )) -lt 30 ]; then
+                say "  NOTE: serial output was STILL ADVANCING when the deadline"
+                say "  expired (last growth $(( now - last_change ))s ago, ${sz} bytes)."
+                say "  That is a SLOW HOST, not a wedged guest. Re-run on an idle"
+                say "  box or raise BOOT_TIMEOUT before concluding the image is"
+                say "  broken -- see the BOOT_TIMEOUT note at the top of this file."
+                BOOT_FAIL_KIND="slow-host"
+            fi
             rc=2; break
         fi
         sleep 2
@@ -327,19 +427,23 @@ say "  firmware   = $OVMF_FD"
 say "  heartbeat  = '$HEARTBEAT_RE'   (must appear)"
 say "  fatal      = '$FATAL_RE'   (must NOT appear)"
 say "  deadline   = ${BOOT_TIMEOUT}s/attempt (polled; exits early on first marker)"
+say "  stall      = ${STALL_TIMEOUT}s of zero serial growth == WEDGED (0 disables)"
 say "  attempts   = up to $RETRIES (retry only the intermittent DE-bringup fault)"
 
 attempt=1
 last_rc=2
+kinds=""
 while [ "$attempt" -le "$RETRIES" ]; do
     say "--- boot attempt $attempt/$RETRIES ---"
     # `set -e` is active: a non-zero return from boot_once (rc 1/2 = a
     # failed attempt we WANT to retry) must not abort the script, so
     # capture it without letting -e fire.
     last_rc=0
+    t_start=$(date +%s)
     boot_once || last_rc=$?
+    t_elapsed=$(( $(date +%s) - t_start ))
     if [ "$last_rc" -eq 0 ]; then
-        say "boot attempt $attempt: heartbeat observed."
+        say "boot attempt $attempt: heartbeat observed after ${t_elapsed}s."
         if evaluate "$LOG"; then
             say "PASS"
             exit 0
@@ -347,16 +451,37 @@ while [ "$attempt" -le "$RETRIES" ]; do
         # evaluate() disagreeing with rc=0 would mean a fatal marker AND a
         # heartbeat in the same log — treat as a failed attempt and retry.
         say "boot attempt $attempt: heartbeat present but evaluate() rejected it; retrying."
+        kinds="$kinds evaluate-reject"
     elif [ "$last_rc" -eq 1 ]; then
-        say "boot attempt $attempt: FATAL marker (e.g. trap-diag halt) — intermittent DE-bringup fault; retrying."
+        say "boot attempt $attempt: FATAL marker (e.g. trap-diag halt) after ${t_elapsed}s — intermittent DE-bringup fault; retrying."
         grep -aEn "$FATAL_RE" "$LOG" | head -4 | sed 's/^/    /' >&2
+        kinds="$kinds fatal"
     else
-        say "boot attempt $attempt: no heartbeat within the deadline; retrying."
+        say "boot attempt $attempt: no heartbeat after ${t_elapsed}s (reason: ${BOOT_FAIL_KIND}); retrying."
+        kinds="$kinds ${BOOT_FAIL_KIND}"
     fi
+    preserve_fail_log "$attempt"
     attempt=$(( attempt + 1 ))
 done
 
 say "all $RETRIES boot attempt(s) failed to reach the heartbeat."
+say "per-attempt failure kinds:${kinds}"
+# THE ONE THING THE READER MUST NOT GET WRONG. If every attempt died on the
+# wall-clock deadline while serial output was still advancing, this gate has
+# NOT shown the image is broken — it has shown the host was too slow. Say so
+# in as many words, because the alternative reading ("the shipped image does
+# not boot") is expensive and was actually reached on 2026-07-28.
+case "$kinds" in
+    *stall*|*fatal*|*qemu-exit*) : ;;   # genuine guest-side failure evidence
+    *slow-host*|*deadline*)
+        say ""
+        say "INCONCLUSIVE-LEANING: no attempt produced guest-side failure"
+        say "evidence (no stall, no trap, no QEMU exit) -- every attempt simply"
+        say "ran out of wall clock. On a contended host this gate's own boots"
+        say "have measured 38s idle vs >240s under load. Before reporting a boot"
+        say "regression, re-run on an idle box and/or with a larger BOOT_TIMEOUT."
+        ;;
+esac
 # Surface the verdict over the LAST attempt's log for the post-mortem.
 evaluate "$LOG" || true
 say "FAIL"
