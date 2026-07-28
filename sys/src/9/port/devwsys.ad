@@ -1858,6 +1858,89 @@ wsys_layer_fb_page: Array[32, uint64]            # per-wid base addr, 0=none
 # the end of the real allocation even if a grow was refused for OOM.
 wsys_layer_fb_size: Array[32, uint64]
 
+# INSTRUMENTATION (temporary, cycle-42 plateau hunt). All O(1) RMW on the
+# alloc/free boundaries — nothing here scans an array, so _build_meminfo
+# (which re-renders per 128-byte read chunk) stays cheap.
+wsys_dbg_lfb_alloc_n: uint64 = 0    # cumulative layer-fb backings claimed
+wsys_dbg_lfb_free_n:  uint64 = 0    # cumulative layer-fb backings returned
+wsys_dbg_lfb_grow_n:  uint64 = 0    # of the allocs, how many were GROWs
+wsys_dbg_lfb_rgn_n:   uint64 = 0    # of the allocs, how many were region_alloc
+wsys_dbg_lfb_pages:   uint64 = 0    # pages currently backing layer fbs
+wsys_dbg_lfb_mask:    uint64 = 0    # bit w set = wid w has a live layer fb
+# CALLSITE ATTRIBUTION (temporary). Every caller that can reach
+# _wsys_layer_fb_ensure* stamps _wsys_lfb_site first; when the ensure
+# actually CLAIMS backing for a wid whose slot is NOT in use we tally it
+# and remember which site did it.
+#   1 devwsys_draw_fb_write      2 wsys_draw_fb_store
+#   3 fill-throughput selftest   4 raster <- _wsys_scene_present_locked
+#   5 raster <- _wsys_geo_post_change                6 raster <- wl test hook
+#   7 raster_clip <- _wsys_present_commit_impl       0 unattributed
+_wsys_lfb_site:          int32  = 0
+wsys_dbg_lfb_dead_n:     uint64 = 0   # allocs for a NOT-in-use slot
+wsys_dbg_lfb_dead_site:  uint64 = 0   # bitmask of sites that did one
+wsys_dbg_lfb_dead_sl_n:  uint64 = 0   # of those, how many had scene_len>0
+wsys_dbg_bb_alloc_n:  uint64 = 0    # cumulative backbuffer blocks claimed
+wsys_dbg_bb_free_n:   uint64 = 0    # cumulative backbuffer blocks returned
+wsys_dbg_bb_mask:     uint64 = 0    # bit w set = wid w has a live backbuffer
+wsys_dbg_img_alloc_n: uint64 = 0    # cumulative named-image 256 KiB blocks
+wsys_dbg_img_free_n:  uint64 = 0
+
+
+def wsys_dbg_lfb_allocs() -> uint64:
+    return wsys_dbg_lfb_alloc_n
+
+
+def wsys_dbg_lfb_frees() -> uint64:
+    return wsys_dbg_lfb_free_n
+
+
+def wsys_dbg_lfb_grows() -> uint64:
+    return wsys_dbg_lfb_grow_n
+
+
+def wsys_dbg_lfb_regions() -> uint64:
+    return wsys_dbg_lfb_rgn_n
+
+
+def wsys_dbg_lfb_live_pages() -> uint64:
+    return wsys_dbg_lfb_pages
+
+
+def wsys_dbg_lfb_widmask() -> uint64:
+    return wsys_dbg_lfb_mask
+
+
+def wsys_dbg_lfb_deads() -> uint64:
+    return wsys_dbg_lfb_dead_n
+
+
+def wsys_dbg_lfb_deadsites() -> uint64:
+    return wsys_dbg_lfb_dead_site
+
+
+def wsys_dbg_lfb_deadsl() -> uint64:
+    return wsys_dbg_lfb_dead_sl_n
+
+
+def wsys_dbg_bb_allocs() -> uint64:
+    return wsys_dbg_bb_alloc_n
+
+
+def wsys_dbg_bb_frees() -> uint64:
+    return wsys_dbg_bb_free_n
+
+
+def wsys_dbg_bb_widmask() -> uint64:
+    return wsys_dbg_bb_mask
+
+
+def wsys_dbg_img_allocs() -> uint64:
+    return wsys_dbg_img_alloc_n
+
+
+def wsys_dbg_img_frees() -> uint64:
+    return wsys_dbg_img_free_n
+
 
 def _wsys_draw_base(wid: int32, slot: uint64) -> uint64:
     # The (wid, slot) entry index into the per-slot scalar Arrays.
@@ -1939,12 +2022,24 @@ def _wsys_layer_fb_ensure_bytes(wid: int32, need: uint64) -> Ptr[uint8]:
         if wsys_layer_fb_page[u] != 0:
             return cast[Ptr[uint8]](wsys_layer_fb_page[u])
         return cast[Ptr[uint8]](0)
+    wsys_dbg_lfb_alloc_n = wsys_dbg_lfb_alloc_n + 1
+    wsys_dbg_lfb_pages = wsys_dbg_lfb_pages + (want >> 12)
+    if wsys_slot_in_use[u] == 0:
+        wsys_dbg_lfb_dead_n = wsys_dbg_lfb_dead_n + 1
+        wsys_dbg_lfb_dead_site = wsys_dbg_lfb_dead_site \
+            | (cast[uint64](1) << cast[uint64](_wsys_lfb_site))
+        if wsys_scene_len[u] > 0:
+            wsys_dbg_lfb_dead_sl_n = wsys_dbg_lfb_dead_sl_n + 1
+    if want > WSYS_LAYER_FB_BYTES_PER_WIN:
+        wsys_dbg_lfb_rgn_n = wsys_dbg_lfb_rgn_n + 1
     if wsys_layer_fb_page[u] != 0:
+        wsys_dbg_lfb_grow_n = wsys_dbg_lfb_grow_n + 1
         # GROW: carry the old contents over so a draw-layer fb (whose bytes
         # are client state, not re-derivable) survives a scene-driven grow.
         memcpy(cast[Ptr[uint8]](np), cast[Ptr[uint8]](wsys_layer_fb_page[u]),
                have)
         _wsys_layer_fb_free_block(wsys_layer_fb_page[u], have)
+    wsys_dbg_lfb_mask = wsys_dbg_lfb_mask | (cast[uint64](1) << u)
     wsys_layer_fb_page[u] = np
     wsys_layer_fb_size[u] = want
     return cast[Ptr[uint8]](np)
@@ -1954,6 +2049,11 @@ def _wsys_layer_fb_free_block(addr: uint64, size: uint64):
     # Return one layer-fb block to the allocator it came from.
     if addr == 0:
         return
+    wsys_dbg_lfb_free_n = wsys_dbg_lfb_free_n + 1
+    if wsys_dbg_lfb_pages >= (size >> 12):
+        wsys_dbg_lfb_pages = wsys_dbg_lfb_pages - (size >> 12)
+    else:
+        wsys_dbg_lfb_pages = 0
     if size > WSYS_LAYER_FB_BYTES_PER_WIN:
         region_free(addr, size)
     else:
@@ -1984,6 +2084,7 @@ def _wsys_layer_fb_release(wid: int32):
         _wsys_layer_fb_free_block(wsys_layer_fb_page[u], wsys_layer_fb_size[u])
         wsys_layer_fb_page[u] = 0
         wsys_layer_fb_size[u] = 0
+    wsys_dbg_lfb_mask = wsys_dbg_lfb_mask & ~(cast[uint64](1) << u)
 
 
 def _wsys_name_match(wid: int32, slot: uint64,
@@ -2700,6 +2801,7 @@ def devwsys_draw_fb_write(wid: int32, slot: int32, off: uint64,
     b: uint64 = _wsys_draw_base(wid, su)
     if off >= WSYS_DRAW_FB_CAP:
         return 0
+    _wsys_lfb_site = 1
     fbp: Ptr[uint8] = _wsys_layer_fb_ensure(wid)
     if cast[uint64](fbp) == 0:
         return -12                              # -ENOMEM: no backing block
@@ -2838,6 +2940,7 @@ def wsys_draw_fb_store(wid: int32, slot: int32,
         return -2
     su: uint64 = cast[uint64](slot)
     b: uint64 = _wsys_draw_base(wid, su)
+    _wsys_lfb_site = 2
     fbp: Ptr[uint8] = _wsys_layer_fb_ensure(wid)
     if cast[uint64](fbp) == 0:
         return -12                              # -ENOMEM: no backing block
@@ -6756,6 +6859,8 @@ def _wsys_backbuffer_ensure(wid: int32) -> Ptr[uint8]:
             return cast[Ptr[uint8]](0)
         memset(cast[Ptr[uint8]](p), 0, WSYS_BB_BYTES_PER_WIN)
         wsys_backbuffer_page[u] = p
+        wsys_dbg_bb_alloc_n = wsys_dbg_bb_alloc_n + 1
+        wsys_dbg_bb_mask = wsys_dbg_bb_mask | (cast[uint64](1) << u)
     return cast[Ptr[uint8]](wsys_backbuffer_page[u])
 
 
@@ -6770,6 +6875,8 @@ def _wsys_backbuffer_release(wid: int32):
     if wsys_backbuffer_page[u] != 0:
         free_pages(wsys_backbuffer_page[u], WSYS_BB_ORDER)
         wsys_backbuffer_page[u] = 0
+        wsys_dbg_bb_free_n = wsys_dbg_bb_free_n + 1
+    wsys_dbg_bb_mask = wsys_dbg_bb_mask & ~(cast[uint64](1) << u)
 
 
 def wsys_backbuffer_ptr(wid: int32) -> Ptr[uint8]:
@@ -6883,6 +6990,7 @@ def _wsys_img_release_wid(wid: int32):
             if wsys_img_page[s] != 0:
                 free_pages(wsys_img_page[s], WSYS_IMG_ORDER)
                 wsys_img_page[s] = 0
+                wsys_dbg_img_free_n = wsys_dbg_img_free_n + 1
             wsys_img_wid[s] = 0
             wsys_img_name[s * WSYS_IMG_NAME_CAP] = 0
             wsys_img_w[s] = 0
@@ -6922,6 +7030,7 @@ def _wsys_img_store(wid: int32, name: Ptr[uint8], nlen: uint64,
         if pg == 0:
             return 0
         wsys_img_page[u] = pg
+        wsys_dbg_img_alloc_n = wsys_dbg_img_alloc_n + 1
     dst: Ptr[uint8] = cast[Ptr[uint8]](wsys_img_page[u])
     # Copy the name (NUL-terminated).
     nb: uint64 = u * WSYS_IMG_NAME_CAP
@@ -10403,6 +10512,7 @@ def _wsys_scene_present_locked() -> int32:
     w: uint64 = 1
     while w < WSYS_SCENE_SLOTS:
         if wsys_slot_in_use[w] != 0 and wsys_scene_len[w] > 0:
+            _wsys_lfb_site = 4
             _wsys_rasterize_window(cast[int32](w))
         w = w + 1
     # Z-blit bottom-to-top. z range is small; do a simple ordered sweep
@@ -10877,10 +10987,12 @@ def _wsys_present_commit_impl(wid: int32, tight: int32, dx0: int64,
                         wid, cast[int32]((dx1 - dx0) * (dy1 - dy0)))
                 printk2(cast[Ptr[char]]("px full=%dpx\n"),
                         cast[int32](fw * fh), 0)
+            _wsys_lfb_site = 7
             _wsys_rasterize_window_clip(wid, dx0, dy0, dx1, dy1)
         else:
             if WSYS_DMG_DEBUG != 0:
                 printk2(cast[Ptr[char]]("[dmg] wid=%d FULL\n"), wid, 0)
+            _wsys_lfb_site = 8
             _wsys_rasterize_window(wid)
     # Recompose + flush either the tight damage box (mapped to screen coords)
     # or the whole window footprint. _wsys_recompose_rect / _wsys_flush_rect
@@ -12026,6 +12138,7 @@ def _wsys_geo_post_change(u: uint64, ow: int64, oh: int64):
         return                                     # no size change, only move
     wid: int32 = cast[int32](u)
     if wsys_scene_len[u] > 0:
+        _wsys_lfb_site = 5
         _wsys_rasterize_window(wid)
     _wsys_evt_emit_resize(wid, nw, nh)
     wq_wake_one(&wsys_ptr_wq[u])
@@ -13972,6 +14085,7 @@ def wsys_fill_throughput_selftest() -> int32:
     if wid < 2:
         printk0("[FILL_TPUT] PASS (skip: table full)\n")
         return 1
+    _wsys_lfb_site = 3
     cache: Ptr[uint8] = _wsys_layer_fb_ensure(wid)
     if cast[uint64](cache) == 0:
         wsys_free_wid(wid)
@@ -15306,6 +15420,7 @@ def wsys_wl_rasterize_test(wid: int32):
     # framebuffer, so wsys_wl_cache_pixel can assert the present-path wiring.
     if wsys_wid_in_use(wid) == 0:
         return
+    _wsys_lfb_site = 6
     _wsys_rasterize_window(wid)
 
 

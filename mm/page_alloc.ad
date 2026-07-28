@@ -154,6 +154,10 @@ nr_pages_freed_total: uint64 = 0
 # free pool (pages carved from memblock but not live) is exactly
 # (nr_pages_total - nr_pages_live).
 nr_pages_live: uint64 = 0
+# INSTRUMENTATION (temporary, cycle-42 plateau hunt): cumulative order-10
+# (4 MiB) buddy allocations and frees. Live = allocs - frees.
+pa_dbg_o10_alloc_n: uint64 = 0
+pa_dbg_o10_free_n:  uint64 = 0
 
 
 # --- free-list integrity guard (QA-N37) ----------------------------
@@ -362,6 +366,8 @@ def alloc_pages(order: int32) -> uint64:
     # buddy lock so the RMW is SMP-atomic with the raw body's own counters.
     if ret != 0 and order >= 0 and order <= MAX_ORDER:
         nr_pages_live = nr_pages_live + (cast[uint64](1) << cast[uint64](order))
+    if ret != 0 and order == 10:
+        pa_dbg_o10_alloc_n = pa_dbg_o10_alloc_n + 1
     spinlock_unlock(&_pa_buddy_lock)
     if _ap_sw != 0:
         load_cr3(_ap_live)
@@ -637,6 +643,8 @@ def free_pages(addr: uint64, order: int32):
             nr_pages_live = nr_pages_live - _fp_run
         else:
             nr_pages_live = 0
+    if addr != 0 and order == 10:
+        pa_dbg_o10_free_n = pa_dbg_o10_free_n + 1
     spinlock_unlock(&_pa_buddy_lock)
     if _fp_sw != 0:
         load_cr3(_fp_live)
@@ -1261,6 +1269,16 @@ def page_alloc_in_use() -> uint64:
     # nr_pages_freed_total) form, which drifted to 0 once physical pages
     # were reused (freed_total counts every free of a reused PFN).
     return nr_pages_live
+
+
+def pa_dbg_o10_allocs() -> uint64:
+    # INSTRUMENTATION: cumulative order-10 (4 MiB) buddy allocations.
+    return pa_dbg_o10_alloc_n
+
+
+def pa_dbg_o10_frees() -> uint64:
+    # INSTRUMENTATION: cumulative order-10 (4 MiB) buddy frees.
+    return pa_dbg_o10_free_n
 
 
 def region_pool_free_bytes() -> uint64:
