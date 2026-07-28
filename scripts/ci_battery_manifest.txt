@@ -3361,6 +3361,49 @@ bash scripts/test_jsengine_utf16_host.sh
 bash scripts/test_hambrowse_utf16dom_host.sh
 
 # ============================================================================
+# 2026-07-28 — STRING SEMANTICS ROUND 2 (URI globals, position arguments,
+# Unicode case mapping, attribute entity decoding)
+# ============================================================================
+# scripts/test_jsengine_uri_host.sh: QEMU-free gate for the URI-handling
+# globals. encodeURI / encodeURIComponent / decodeURI / decodeURIComponent /
+# escape / unescape were ENTIRELY ABSENT — every one threw a bare
+# ReferenceError, which is fatal on any page that builds a query string, posts
+# a form or fires an analytics beacon. Pins the exact unreserved sets, the
+# UPPERCASE %XX hex, UTF-8 for the encoders vs Latin-1/%uXXXX code units for
+# the legacy escape/unescape pair, decodeURI's refusal to decode a reserved
+# character, and URIError on malformed %-sequences, over-long UTF-8, lone
+# surrogates and out-of-range code points. Every expectation replayed through
+# node value-by-value.
+bash scripts/test_jsengine_uri_host.sh
+# scripts/test_jsengine_strpos_host.sh: QEMU-free gate for STRING POSITION
+# ARGUMENTS. substring behaved like slice (no clamp, no swap:
+# "hello".substring(3,1) was "" against node's "el"); startsWith/includes
+# ignored their START position and endsWith its END position; split ignored
+# `limit`. All went through cast[int32](to_number(...)), which produced
+# garbage for NaN/Infinity and never clamped. Also pins Object.keys/values/
+# entries/getOwnPropertyNames over a PRIMITIVE STRING (they returned []) and
+# JSON.stringify's well-formed \uXXXX escaping of a lone surrogate.
+bash scripts/test_jsengine_strpos_host.sh
+# scripts/test_jsengine_unicase_host.sh: QEMU-free gate for UNICODE CASE
+# MAPPING. toUpperCase/toLowerCase were ASCII-ONLY — "café".toUpperCase() was
+# "CAFé" and "ПРИВЕТ".toLowerCase() came back unchanged. Beyond the named
+# cases it runs an EXHAUSTIVE sweep of all 1114032 non-surrogate code points
+# through both methods and diffs against node, which is what caught the first
+# cut of the table stopping at the BMP (node lowercases U+10400 to U+10428).
+bash scripts/test_jsengine_unicase_host.sh
+# scripts/test_hambrowse_attrentity_host.sh: QEMU-free gate that ATTRIBUTE
+# VALUES reaching JavaScript are ENTITY-DECODED. The tokenizer decodes
+# character references in attribute values; every DOM read copied the RAW
+# SOURCE SPAN instead, so <input value="&eacute;t&eacute;"> reached script as
+# 17 bytes where chromium reports 3 characters, and getAttribute("href") on
+# ?a=1&amp;b=2 handed back a literal &amp;. Every expected line is a measured
+# chromium --headless --dump-dom value, including the two edges that matter:
+# the semicolon-less &not= survives undecoded (so query strings stay intact)
+# while &amp; decodes, and &nbsp; is a real U+00A0 in the DOM view even though
+# layout still folds it to a space.
+bash scripts/test_hambrowse_attrentity_host.sh
+
+# ============================================================================
 # 2026-07-28 — THE UNREGISTERED-GATE SWEEP
 # ============================================================================
 # Counted on 55c842b9: 1495 scripts/test_*.sh existed. 528 were named here and

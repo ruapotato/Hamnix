@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><title>attribute entity decoding</title></head>
+<body>
+<input id="i1" value="&eacute;t&eacute;">
+<input id="i2" value="a&amp;b&lt;c&gt;d&quot;e">
+<a id="a1" href="?a=1&not=2&amp;b=3">link</a>
+<div id="d1" title="1&nbsp;2" class="c&amp;d" data-x="p&amp;q">text</div>
+<input id="i3" name="n&amp;m" value="&#233;&#x41;&nbsp;">
+<img id="m1" src="/x?u=a&amp;v=b" alt="caf&eacute;">
+<textarea id="t1">&eacute;t&eacute;</textarea>
+<div id="e1" title="plain" class="one two">no entities here</div>
+<script>
+function g(i){ return document.getElementById(i); }
+console.log("i1.value", g("i1").value, g("i1").value.length);
+console.log("i2.value", g("i2").value);
+console.log("a1.href", g("a1").getAttribute("href"));
+console.log("d1.title", g("d1").title, g("d1").title.charCodeAt(1), g("d1").title.length);
+console.log("d1.class", g("d1").className);
+console.log("d1.data", g("d1").getAttribute("data-x"), g("d1").dataset.x);
+console.log("i3.name", g("i3").name);
+console.log("i3.value", g("i3").value, g("i3").value.length);
+console.log("m1", g("m1").getAttribute("src"), g("m1").alt, g("m1").alt.length);
+console.log("t1.value", g("t1").value, g("t1").value.length);
+console.log("e1", g("e1").title, g("e1").className, g("e1").getAttribute("class"));
+</script>
+</body></html>
