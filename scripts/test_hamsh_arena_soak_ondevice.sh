@@ -62,7 +62,7 @@ BATCH="${BATCH:-25}"
 # runaway logical line and the churn stops happening at all (observed: a
 # 0.4 s cadence produced "t = 1 + 1 t = 1 + 1 +t = 1 ..." on one line).
 # Gate the pace on the measured rate, with margin.
-LINE_PAUSE="${LINE_PAUSE:-1.5}"
+LINE_PAUSE="${LINE_PAUSE:-2}"
 
 command -v qemu-system-x86_64 >/dev/null 2>&1 \
     || verdict_inconclusive "$TAG" "qemu-system-x86_64 not installed."
@@ -169,15 +169,29 @@ sent=0
 while [ "$sent" -lt "$MAX_LINES" ]; do
     alive || break
     for _ in $(seq 1 "$BATCH"); do
-        send "$BIG" "$LINE_PAUSE"
+        # A LEADING newline as well as a trailing one: if the previous line's
+        # Enter was among the dropped bytes, this one closes it instead of
+        # fusing two churn lines into a runaway logical line.
+        printf '\n%s\n' "$BIG" >&3
+        sleep "$LINE_PAUSE"
     done
     sent=$((sent + BATCH))
+    # Confirm the batch landed by WAITING for the guest's own answer, with
+    # re-sends — a fixed sleep is a lie on a loaded host.
     before=$(grep -aco 'arenas nodes=' "$LOG")
-    send 'arenas' 3
-    after=$(grep -aco 'arenas nodes=' "$LOG")
-    if [ "$after" -le "$before" ]; then
+    got=0
+    for _ in 1 2 3 4 5 6; do
+        printf '\narenas\n' >&3
+        for _ in 1 2 3 4 5; do
+            sleep 2
+            [ "$(grep -aco 'arenas nodes=' "$LOG")" -gt "$before" ] && { got=1; break; }
+        done
+        [ "$got" = "1" ] && break
+        alive || break
+    done
+    if [ "$got" != "1" ]; then
         verdict_inconclusive "$TAG" \
-            "the guest stopped answering 'arenas' after ~$sent lines — serial input is being dropped, so nothing about reclamation was observed."
+            "the guest stopped answering 'arenas' after ~$sent lines even with re-sends over 60s — serial input is being dropped (busy host?), so nothing about reclamation was observed."
     fi
     # Stop as soon as the DEVICE reports a collection — that is the event
     # this gate exists to observe, and over-driving only wastes wall clock.
