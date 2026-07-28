@@ -103,7 +103,16 @@ if [ "$HAVE_WK" -eq 0 ]; then
     echo "$TAG       Run scripts/stage_weston_term.sh then scripts/stage_webkit.sh," >&2
     echo "$TAG       then rebuild: HAMNIX_LIVE_MINIMAL=0 HAMNIX_ROOTFS_SIZE_MB=2560 \\" >&2
     echo "$TAG                     bash scripts/build_installer_img.sh." >&2
-    exit 0
+    # INCONCLUSIVE (125), not PASS. This gate's entire subject is "can
+    # WebKitGTK map and paint as a native Wayland client"; with no MiniBrowser
+    # in the image nothing is launched and NOTHING IS ASSERTED. It used to
+    # exit 0, so on every run — GitHub (no /dev/kvm) and KVM host alike, since
+    # the default image is the minimal live build — it reported green having
+    # booted nothing. Found 2026-07-28 by running the KVM-dark set for the
+    # first time: PASS in 0 s. scripts/ci_run_gate.sh turns 125 into a
+    # ::warning::, not a build failure — the right weight for a dependency
+    # that was never staged.
+    exit 125
 fi
 
 OVMF_RW=$(mktemp --tmpdir hamnix-wlwk.ovmf.XXXXXX.fd)
