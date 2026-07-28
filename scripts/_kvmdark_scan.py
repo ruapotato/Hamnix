@@ -129,7 +129,12 @@ def classify(path):
         if not GUARD.search(line):
             continue
         win_all = lines[i:i + WINDOW + 1]
-        optout = [c for c in win_all if OPTOUT.search(c)]
+        # The opt-out marker may sit ON the guard, just below it, or in the
+        # three lines ABOVE — the same latitude scripts/_softgreen_scan.py
+        # gives `# soft-green-ok:`. Searching downward only made a marker
+        # written above the guard silently ineffective.
+        optout = [c for c in lines[max(0, i - 3):i + WINDOW + 1]
+                  if OPTOUT.search(c)]
         win = '\n'.join(c for c in win_all if not c.strip().startswith('#'))
         # An INCONCLUSIVE verdict in the window wins over a bare exit 0: the
         # honest gates print a message and then exit 125.
