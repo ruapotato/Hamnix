@@ -211,10 +211,12 @@ def _pl_bytes(p: Ptr[uint8], n: uint64):
 # The channel that DOES cross the boundary is a file. The panel rewrites
 # its current health line into tmpfs; the gate `cat`s it over the serial
 # shell whenever it wants a sample. One open/write/close every ~10 s.
-PANEL_HEALTH_PATH: Ptr[uint8] = "/tmp/hamnix-panel.health"
-# Faults get their OWN file so a beacon written a millisecond later cannot
-# overwrite the evidence before anyone reads it.
-PANEL_FAULT_PATH:  Ptr[uint8] = "/tmp/hamnix-panel.fault"
+# NOTE (compiler quirk, memory/feedback_compiler_quirks): a string literal
+# must be used at the CALL SITE, never stored in a module global — a global
+# initialised from a literal comes out NUL. The first version of this held
+# the two paths in `Ptr[uint8]` globals and sys_open_write was handed an
+# empty string, so no health file was ever created and the gate reported
+# "no telemetry" for a panel that was working fine. Paths are inline below.
 
 
 def _pl_flush_fault():
@@ -222,7 +224,7 @@ def _pl_flush_fault():
     if cf >= 0 and _plpos > 0:
         sys_write(cf, &_plbuf[0], _plpos)
     if _plpos > 0:
-        ff: int32 = sys_open_write(cast[Ptr[char]](PANEL_FAULT_PATH))
+        ff: int32 = sys_open_write(cast[Ptr[char]]("/tmp/hamnix-panel.fault"))
         if ff >= 0:
             sys_write(ff, &_plbuf[0], _plpos)
             sys_close(ff)
@@ -234,7 +236,7 @@ def _pl_flush():
     if cf >= 0 and _plpos > 0:
         sys_write(cf, &_plbuf[0], _plpos)
     if _plpos > 0:
-        hf: int32 = sys_open_write(cast[Ptr[char]](PANEL_HEALTH_PATH))
+        hf: int32 = sys_open_write(cast[Ptr[char]]("/tmp/hamnix-panel.health"))
         if hf >= 0:
             sys_write(hf, &_plbuf[0], _plpos)
             sys_close(hf)
