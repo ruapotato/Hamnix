@@ -928,6 +928,54 @@ def _node_identity(o: int32, proto: int32):
 # Node.prototype.appendChild), and `Object.keys(el)` does NOT list methods.
 # Own-property lookups still find them through the obj_proto chain, and an
 # element that needs to SHADOW one (createElementNS' namespaceURI) still can.
+# Does the source tag name span [ns, ns+nl) declare a reflected `src` / `href` /
+# `alt` IDL attribute? (Chromium-verified sets; see the call site.)
+def _tag_has_src(ns: uint64, nl: uint64) -> int32:
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("img")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("input")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("script")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("iframe")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("embed")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("source")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("track")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("video")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("audio")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("frame")) != 0:
+        return 1
+    return 0
+
+
+def _tag_has_href(ns: uint64, nl: uint64) -> int32:
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("a")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("area")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("link")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("base")) != 0:
+        return 1
+    return 0
+
+
+def _tag_has_alt(ns: uint64, nl: uint64) -> int32:
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("img")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("input")) != 0:
+        return 1
+    if _hx_name_eq(ns, nl, cast[Ptr[uint8]]("area")) != 0:
+        return 1
+    return 0
+
+
 def _attach_proto_methods(p: int32):
     # Element.namespaceURI. Every element the HTML parser produces is in the
     # XHTML namespace; createElementNS overwrites this per element afterwards.
@@ -1018,10 +1066,12 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_CLICK))
     js_set_prop(o, cast[Ptr[uint8]]("append"), 6, \
                 js_new_native_fn(js_hbase + NID_APPEND_M))
-    # canvas.getContext('2d') — meaningful only on a <canvas>; the dispatcher
-    # returns null for any other tag, so attaching it universally is harmless.
-    js_set_prop(o, cast[Ptr[uint8]]("getContext"), 10, \
-                js_new_native_fn(js_hbase + NID_GETCTX))
+    # canvas.getContext — an ACCESSOR, because attaching it universally was NOT
+    # harmless: `if (el.getContext)` is a real feature-detection idiom and it was
+    # truthy on every element. See NID_F_GETCTX.
+    js_define_accessor(o, cast[Ptr[uint8]]("getContext"), 10, \
+                       js_new_native_fn(js_hbase + NID_F_GETCTX), \
+                       js_new_native_fn(js_hbase + NID_F_GETCTX_S))
     # element-scoped queries + the rest of the element API surface real pages
     # call. querySelector*/getElementsBy* scope to this element's subtree.
     js_set_prop(o, cast[Ptr[uint8]]("querySelector"), 13, \
@@ -1059,17 +1109,23 @@ def _attach_el_natives(o: int32):
     # behaves like checkValidity() (there is no interactive error UI to surface
     # on the host/native paths). setCustomValidity(msg) marks the control invalid
     # with a custom error until cleared with an empty string.
-    js_set_prop(o, cast[Ptr[uint8]]("checkValidity"), 13, \
-                js_new_native_fn(js_hbase + NID_CHECKVALID))
-    js_set_prop(o, cast[Ptr[uint8]]("reportValidity"), 14, \
-                js_new_native_fn(js_hbase + NID_REPORTVALID))
-    js_set_prop(o, cast[Ptr[uint8]]("setCustomValidity"), 17, \
-                js_new_native_fn(js_hbase + NID_SETCUSTOMVAL))
+    # Accessors, not data properties: off-interface these must read `undefined`
+    # (chromium-verified per tag — see NID_F_CV).
+    js_define_accessor(o, cast[Ptr[uint8]]("checkValidity"), 13, \
+                       js_new_native_fn(js_hbase + NID_F_CV), \
+                       js_new_native_fn(js_hbase + NID_F_CV_S))
+    js_define_accessor(o, cast[Ptr[uint8]]("reportValidity"), 14, \
+                       js_new_native_fn(js_hbase + NID_F_RV), \
+                       js_new_native_fn(js_hbase + NID_F_RV_S))
+    js_define_accessor(o, cast[Ptr[uint8]]("setCustomValidity"), 17, \
+                       js_new_native_fn(js_hbase + NID_F_SCV), \
+                       js_new_native_fn(js_hbase + NID_F_SCV_S))
     # form.submit() — meaningful on a <form> (or a control inside one; the
     # dispatcher resolves the enclosing form). Attached universally like
     # getContext; harmless on a non-form (the dispatcher no-ops there).
-    js_set_prop(o, cast[Ptr[uint8]]("submit"), 6, \
-                js_new_native_fn(js_hbase + NID_SUBMIT))
+    js_define_accessor(o, cast[Ptr[uint8]]("submit"), 6, \
+                       js_new_native_fn(js_hbase + NID_F_SUBMIT), \
+                       js_new_native_fn(js_hbase + NID_F_SUBMIT_S))
     # Layout geometry: getBoundingClientRect() reads the element's laid-out box
     # live from the segment table (see _el_bbox). offset*/client* are set as
     # data properties from the same box (see _set_el_geom_props / _refresh_all_geom).
@@ -1472,9 +1528,18 @@ def _dom_register_el() -> int32:
     # spec's absolutised URL — the engine has no base URL on the host path) is
     # what `getAttribute` already returns, and the "" default is the part real
     # pages actually depend on.
-    _reflect_str_attr(o, te, cast[Ptr[uint8]]("src"), 3)
-    _reflect_str_attr(o, te, cast[Ptr[uint8]]("href"), 4)
-    _reflect_str_attr(o, te, cast[Ptr[uint8]]("alt"), 3)
+    # ...but only on the interfaces that DECLARE them. Reflecting src/href/alt
+    # onto every element made `el.src` a string on a <div>, where chromium says
+    # undefined — and pages branch on exactly that. Verified per tag against
+    # chromium --headless: src on img/input (and the other media hosts), href on
+    # a/area/link/base, alt on img/input/area. `title` IS a global HTMLElement
+    # attribute and DOES read "" on a <div> (measured), so it stays universal.
+    if _tag_has_src(g_el_ns, g_el_nl) != 0:
+        _reflect_str_attr(o, te, cast[Ptr[uint8]]("src"), 3)
+    if _tag_has_href(g_el_ns, g_el_nl) != 0:
+        _reflect_str_attr(o, te, cast[Ptr[uint8]]("href"), 4)
+    if _tag_has_alt(g_el_ns, g_el_nl) != 0:
+        _reflect_str_attr(o, te, cast[Ptr[uint8]]("alt"), 3)
     _reflect_str_attr(o, te, cast[Ptr[uint8]]("title"), 5)
     # form-control DOM properties: value / checked / type / name (+ selectedIndex).
     if kind == 1 or kind == 2 or kind == 3 or kind == 4:

@@ -644,6 +644,31 @@ NID_CLS_ACC:      int32 = 130        # get el.classList  (lazy DOMTokenList)
 NID_CLS_ACC_SET:  int32 = 131        # set el.classList
 NID_DS_ACC:       int32 = 132        # get el.dataset    (lazy, parsed from data-*)
 NID_DS_ACC_SET:   int32 = 133        # set el.dataset
+# --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
+# getContext / checkValidity / reportValidity / setCustomValidity / submit were
+# attached to HTMLElement.prototype and therefore resolved TRUTHY on every
+# element, including <div>. Real pages feature-detect with exactly these
+# (`if (el.getContext)`, `if (el.checkValidity)`) and silently took the wrong
+# branch. VERIFIED against chromium --headless on f/input/select/textarea/
+# button/fieldset/output/canvas/div/img/a:
+#   checkValidity, reportValidity -> form input select textarea button fieldset output
+#   setCustomValidity             -> the same MINUS form
+#   submit                        -> form only
+#   getContext                    -> canvas only
+# They stay ONE copy on the prototype (no per-tag prototypes, no extra objects
+# per element) by becoming accessors that return the native fn for a matching
+# tag and undefined otherwise. Each has a setter so a polyfill can still assign
+# over it, as it can in a browser.
+NID_F_GETCTX:     int32 = 134
+NID_F_CV:         int32 = 135
+NID_F_RV:         int32 = 136
+NID_F_SCV:        int32 = 137
+NID_F_SUBMIT:     int32 = 138
+NID_F_GETCTX_S:   int32 = 139
+NID_F_CV_S:       int32 = 140
+NID_F_RV_S:       int32 = 141
+NID_F_SCV_S:      int32 = 142
+NID_F_SUBMIT_S:   int32 = 143
 
 # The cookie jar. Document-lifetime only (there is no persistent cookie store on
 # the host/native render path); name/value bytes are bump-allocated into ck_buf,

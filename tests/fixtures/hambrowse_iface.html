@@ -1,0 +1,14 @@
+<html><body>
+<form id=f><input id=i><select id=s></select><textarea id=t></textarea><button id=b></button><fieldset id=fs></fieldset><output id=o></output></form>
+<canvas id=c></canvas><div id=d></div><img id=m><a id=a href=x></a>
+<script>
+function T(id){var e=document.getElementById(id);
+  console.log(id+' cv='+typeof e.checkValidity+' rv='+typeof e.reportValidity
+    +' scv='+typeof e.setCustomValidity+' sub='+typeof e.submit
+    +' gc='+typeof e.getContext+' src='+typeof e.src+' href='+typeof e.href
+    +' alt='+typeof e.alt+' title='+typeof e.title);}
+['f','i','s','t','b','fs','o','c','d','m','a'].forEach(T);
+// a polyfill must still be able to assign over an off-interface method
+var d=document.getElementById('d'); d.getContext=function(){return 1;};
+console.log('polyfill '+typeof d.getContext+' '+d.getContext());
+</script></body></html>

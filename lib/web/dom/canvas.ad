@@ -2180,6 +2180,78 @@ def _lazy_el_accessor(rel: int32) -> int32:
     return js_undefined()
 
 
+# OFF-INTERFACE FEATURE DETECTION (round 9). One shared accessor pair per
+# method on HTMLElement.prototype: return the native function when `this`'s tag
+# actually declares it, undefined otherwise. Keeping them on the prototype (one
+# copy) rather than splitting into per-tag prototypes preserves the per-element
+# object saving; the tag test reads the element's own `tagName` string, which
+# both registered and created elements carry.
+def _feat_tag_class(thisv: int32) -> int32:
+    # 0 = other, 1 = form, 2 = listed control (input/select/textarea/button/
+    # fieldset/output), 3 = canvas.
+    tn: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tn) != TAG_STR:
+        return 0
+    tp: Ptr[uint8] = js_str_ptr(tn)
+    tl: int32 = _cstr_len(tp)
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("FORM"), 4) != 0:
+        return 1
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("CANVAS"), 6) != 0:
+        return 3
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("INPUT"), 5) != 0:
+        return 2
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("SELECT"), 6) != 0:
+        return 2
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("TEXTAREA"), 8) != 0:
+        return 2
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("BUTTON"), 6) != 0:
+        return 2
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("FIELDSET"), 8) != 0:
+        return 2
+    if _bytes_eq(tp, tl, cast[Ptr[uint8]]("OUTPUT"), 6) != 0:
+        return 2
+    return 0
+
+
+def _feat_accessor(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    # Setters first: assigning over a method must work exactly as it does on a
+    # plain data property (polyfills do `if (!el.m) el.m = ...`).
+    if rel >= NID_F_GETCTX_S:
+        wv: int32 = js_undefined()
+        if js_arg_count() > 0:
+            wv = js_arg(0)
+        if rel == NID_F_GETCTX_S:
+            js_set_own(thisv, cast[Ptr[uint8]]("getContext"), 10, wv)
+        elif rel == NID_F_CV_S:
+            js_set_own(thisv, cast[Ptr[uint8]]("checkValidity"), 13, wv)
+        elif rel == NID_F_RV_S:
+            js_set_own(thisv, cast[Ptr[uint8]]("reportValidity"), 14, wv)
+        elif rel == NID_F_SCV_S:
+            js_set_own(thisv, cast[Ptr[uint8]]("setCustomValidity"), 17, wv)
+        else:
+            js_set_own(thisv, cast[Ptr[uint8]]("submit"), 6, wv)
+        return js_undefined()
+    kls: int32 = _feat_tag_class(thisv)
+    if rel == NID_F_GETCTX:
+        if kls != 3:
+            return js_undefined()
+        return js_new_native_fn(js_hbase + NID_GETCTX)
+    if rel == NID_F_SUBMIT:
+        if kls != 1:
+            return js_undefined()
+        return js_new_native_fn(js_hbase + NID_SUBMIT)
+    if rel == NID_F_SCV:
+        if kls != 2:                                      # form is EXCLUDED here
+            return js_undefined()
+        return js_new_native_fn(js_hbase + NID_SETCUSTOMVAL)
+    if kls != 1 and kls != 2:
+        return js_undefined()
+    if rel == NID_F_CV:
+        return js_new_native_fn(js_hbase + NID_CHECKVALID)
+    return js_new_native_fn(js_hbase + NID_REPORTVALID)
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
@@ -2194,6 +2266,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _inner_accessor(rel)
     if rel >= NID_STYLE_ACC and rel <= NID_DS_ACC_SET:
         return _lazy_el_accessor(rel)
+    if rel >= NID_F_GETCTX and rel <= NID_F_SUBMIT_S:
+        return _feat_accessor(rel)
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:

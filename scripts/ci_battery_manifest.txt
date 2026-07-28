@@ -3207,3 +3207,11 @@ bash scripts/test_hambrowse_domtext_host.sh
 # (9000 elements, 1200 listeners) and asserts each names itself, prints its size,
 # reports exactly ONCE per page, and does not abort the page.
 bash scripts/test_hambrowse_ceilings_host.sh
+# scripts/test_hambrowse_iface_host.sh: QEMU-free gate that DOM methods and
+# reflected IDL attributes are OFF-INTERFACE where a browser says they are.
+# getContext/checkValidity/reportValidity/setCustomValidity/submit used to
+# resolve TRUTHY on every element and src/href/alt reflected onto every element,
+# so real pages' feature detection (`if (el.getContext)`) silently took the
+# wrong branch. Every asserted line is a measured chromium --headless value for
+# form/input/select/textarea/button/fieldset/output/canvas/div/img/a.
+bash scripts/test_hambrowse_iface_host.sh
