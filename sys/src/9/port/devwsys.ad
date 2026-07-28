@@ -139,7 +139,7 @@ from mm.slab import kmalloc, kfree
 # buddy allocator (order 10 = 1024 pages = 4 MiB) rather than living in a
 # 32-slot static BSS array — see the OOM regression note at the
 # wsys_layer_fb_page / wsys_backbuffer_page declarations below.
-from mm.page_alloc import alloc_pages, free_pages
+from mm.page_alloc import alloc_pages, free_pages, region_alloc, region_free
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
 extern def memcpy(dst: Ptr[uint8], src: Ptr[uint8], n: uint64) -> Ptr[uint8]
 # F2 #447: /dev/wsys/ctl `frame <wid> <n>` calls the kernel software
@@ -1824,9 +1824,39 @@ wsys_layer_markup: Array[4194304, uint8]
 # resident the pages it actually draws into (w*h*4 for the scene path), not
 # the full 4 MiB, so a ~30-window DE session leaves real headroom on a 1 GB
 # guest instead of OOM-killing qemu.
-WSYS_LAYER_FB_BYTES_PER_WIN: uint64 = 4194304   # 16 * 262144 = 4 MiB
+#
+# 1080p FIX (the half-screen desktop). The block used to be a FIXED 4 MiB
+# buddy allocation, and the scene cache is a tightly-packed RGBA frame, so a
+# window could never be taller than 4 MiB / (w*4) rows: 1280x800 (4,096,000 B)
+# just fits — which is why every gate and every QA boot passed — but 1280x1024
+# lost 205 rows and 1920x1080 (8,294,400 B) lost 534 of 1080 rows, i.e. HALF
+# THE SCREEN on every real laptop panel. It cannot be fixed by asking the buddy
+# allocator for more: alloc_pages refuses order > MAX_ORDER (10) = 4 MiB, hard.
+#
+# The block is therefore now DYNAMICALLY SIZED per window (see
+# _wsys_layer_fb_ensure_bytes): it starts at the 4 MiB minimum the 16 draw-
+# layer slots need and GROWS, content-preserving, to whatever the window's
+# scene cache actually requires. Blocks up to 4 MiB still come from the buddy
+# allocator exactly as before (so every existing window is byte-for-byte
+# unchanged); a block LARGER than 4 MiB comes from the large-region allocator
+# (mm/page_alloc.ad region_alloc — the same contiguous, freeable supply the
+# ELF loader uses for its ~17 MiB images), which has no MAX_ORDER ceiling.
+#
+# Sizing is PER WINDOW, not per screen: only the handful of genuinely
+# full-screen windows (the hamdesktop backdrop, a maximized app) pay the
+# 8 MiB, while panels/menus/clocks keep their 4 MiB. A blanket screen-sized
+# block for all 32 wids would have cost ~250 MiB on a 1080p desktop.
+WSYS_LAYER_FB_BYTES_PER_WIN: uint64 = 4194304   # 16 * 262144 = 4 MiB (minimum)
 WSYS_LAYER_FB_ORDER:         int32  = 10         # 1024 pages = 4 MiB
+# Absolute per-window ceiling: WSYS_SCENE_CACHE_MAX^2 * 4 = 2048*2048*4.
+WSYS_LAYER_FB_MAX_BYTES:     uint64 = 16777216
 wsys_layer_fb_page: Array[32, uint64]            # per-wid base addr, 0=none
+# Bytes actually backing wsys_layer_fb_page[wid] (0 = unallocated). A size
+# <= WSYS_LAYER_FB_BYTES_PER_WIN is a buddy block (free_pages); anything
+# larger is a region_alloc chunk (region_free). This is ALSO the authority
+# the cache-dimension clamp uses, so no consumer can ever address a row past
+# the end of the real allocation even if a grow was refused for OOM.
+wsys_layer_fb_size: Array[32, uint64]
 
 
 def _wsys_draw_base(wid: int32, slot: uint64) -> uint64:
@@ -1869,17 +1899,65 @@ def _wsys_layer_fb_ensure(wid: int32) -> Ptr[uint8]:
     # (_wsys_rasterize_window), and the fb-layer write path gap-zeroes any hole
     # below the per-slot high-water mark (devwsys_draw_fb_write). Untouched
     # pages therefore stay non-resident on the host.
+    return _wsys_layer_fb_ensure_bytes(wid, WSYS_LAYER_FB_BYTES_PER_WIN)
+
+
+def _wsys_layer_fb_ensure_bytes(wid: int32, need: uint64) -> Ptr[uint8]:
+    # Return a pointer to wid's layer-fb block, allocating it — or GROWING
+    # it, content-preserving — so that it is at least `need` bytes. The
+    # floor is always WSYS_LAYER_FB_BYTES_PER_WIN (the 16 draw-layer slots
+    # address up to that offset unconditionally); the ceiling is
+    # WSYS_LAYER_FB_MAX_BYTES. Returns null only when NOTHING is backed;
+    # a REFUSED GROW returns the existing (smaller) block and leaves
+    # wsys_layer_fb_size[] telling the truth, so the dimension clamp keeps
+    # every consumer inside the real allocation.
     if wid <= 0:
         return cast[Ptr[uint8]](0)
     u: uint64 = cast[uint64](wid)
     if u >= MAX_WINDOWS:
         return cast[Ptr[uint8]](0)
-    if wsys_layer_fb_page[u] == 0:
-        p: uint64 = alloc_pages(WSYS_LAYER_FB_ORDER)
-        if p == 0:
-            return cast[Ptr[uint8]](0)
-        wsys_layer_fb_page[u] = p
-    return cast[Ptr[uint8]](wsys_layer_fb_page[u])
+    want: uint64 = need
+    if want < WSYS_LAYER_FB_BYTES_PER_WIN:
+        want = WSYS_LAYER_FB_BYTES_PER_WIN
+    if want > WSYS_LAYER_FB_MAX_BYTES:
+        want = WSYS_LAYER_FB_MAX_BYTES
+    have: uint64 = wsys_layer_fb_size[u]
+    if wsys_layer_fb_page[u] != 0 and have >= want:
+        return cast[Ptr[uint8]](wsys_layer_fb_page[u])
+    # Allocate the new backing. <= 4 MiB keeps the historical buddy path
+    # (byte-identical behaviour for every window that fits); larger uses
+    # the freeable large-region allocator, which has no MAX_ORDER cap.
+    np: uint64 = 0
+    if want <= WSYS_LAYER_FB_BYTES_PER_WIN:
+        want = WSYS_LAYER_FB_BYTES_PER_WIN
+        np = alloc_pages(WSYS_LAYER_FB_ORDER)
+    else:
+        want = (want + 4095) & ~cast[uint64](4095)
+        np = region_alloc(want)
+    if np == 0:
+        # OOM: keep whatever we already had (possibly nothing).
+        if wsys_layer_fb_page[u] != 0:
+            return cast[Ptr[uint8]](wsys_layer_fb_page[u])
+        return cast[Ptr[uint8]](0)
+    if wsys_layer_fb_page[u] != 0:
+        # GROW: carry the old contents over so a draw-layer fb (whose bytes
+        # are client state, not re-derivable) survives a scene-driven grow.
+        memcpy(cast[Ptr[uint8]](np), cast[Ptr[uint8]](wsys_layer_fb_page[u]),
+               have)
+        _wsys_layer_fb_free_block(wsys_layer_fb_page[u], have)
+    wsys_layer_fb_page[u] = np
+    wsys_layer_fb_size[u] = want
+    return cast[Ptr[uint8]](np)
+
+
+def _wsys_layer_fb_free_block(addr: uint64, size: uint64):
+    # Return one layer-fb block to the allocator it came from.
+    if addr == 0:
+        return
+    if size > WSYS_LAYER_FB_BYTES_PER_WIN:
+        region_free(addr, size)
+    else:
+        free_pages(addr, WSYS_LAYER_FB_ORDER)
 
 
 def _wsys_layer_fb_get(wid: int32) -> Ptr[uint8]:
@@ -1903,8 +1981,9 @@ def _wsys_layer_fb_release(wid: int32):
     if u >= MAX_WINDOWS:
         return
     if wsys_layer_fb_page[u] != 0:
-        free_pages(wsys_layer_fb_page[u], WSYS_LAYER_FB_ORDER)
+        _wsys_layer_fb_free_block(wsys_layer_fb_page[u], wsys_layer_fb_size[u])
         wsys_layer_fb_page[u] = 0
+        wsys_layer_fb_size[u] = 0
 
 
 def _wsys_name_match(wid: int32, slot: uint64,
@@ -8559,7 +8638,24 @@ WSYS_SCENE_CACHE_MAX: int64 = 2048
 # per-dim ceiling; height is then reduced if needed so w*h*4 fits the block
 # (full-width panels keep their span — only excess ROWS are dropped). Writes
 # the clamped values back through the pointers.
-def _wsys_clamp_cache_dims(w: Ptr[int64], h: Ptr[int64]):
+def _wsys_cache_budget_bytes() -> uint64:
+    # The largest cache the compositor will ever ASK for, in bytes. A window
+    # cache is only ever consumed one screenful at a time, so a full-screen
+    # RGBA frame is the honest ceiling — and it is what a full-screen window
+    # (the hamdesktop backdrop, a maximized app) legitimately needs. Never
+    # below the historical 4 MiB, never above the 2048^2 sanity ceiling.
+    b: uint64 = WSYS_LAYER_FB_BYTES_PER_WIN
+    if fb_get_initialized() != 0:
+        sb: uint64 = fb_get_width() * fb_get_height() * 4
+        if sb > b:
+            b = sb
+    if b > WSYS_LAYER_FB_MAX_BYTES:
+        b = WSYS_LAYER_FB_MAX_BYTES
+    return b
+
+
+def _wsys_clamp_cache_dims_budget(w: Ptr[int64], h: Ptr[int64],
+                                  budget: uint64):
     cw: int64 = w[0]
     ch: int64 = h[0]
     if cw < 0:
@@ -8570,14 +8666,32 @@ def _wsys_clamp_cache_dims(w: Ptr[int64], h: Ptr[int64]):
         cw = WSYS_SCENE_CACHE_MAX
     if ch > WSYS_SCENE_CACHE_MAX:
         ch = WSYS_SCENE_CACHE_MAX
-    # Byte budget: w*h*4 <= WSYS_LAYER_FB_BYTES_PER_WIN. Drop rows, not
-    # columns, so a wide panel never loses its width.
+    # Byte budget: w*h*4 <= budget. Drop rows, not columns, so a wide panel
+    # never loses its width.
     if cw > 0:
-        max_h: int64 = cast[int64](WSYS_LAYER_FB_BYTES_PER_WIN) / (cw * 4)
+        max_h: int64 = cast[int64](budget) / (cw * 4)
         if ch > max_h:
             ch = max_h
     w[0] = cw
     h[0] = ch
+
+
+def _wsys_clamp_cache_dims(w: Ptr[int64], h: Ptr[int64]):
+    # POLICY clamp: what the compositor is willing to cache for a window,
+    # independent of what is currently allocated for it. The rasterizer uses
+    # this to decide how big a block to ASK for.
+    _wsys_clamp_cache_dims_budget(w, h, _wsys_cache_budget_bytes())
+
+
+def _wsys_win_cache_dims(u: uint64, w: Ptr[int64], h: Ptr[int64]):
+    # THE dimensions of window u's live cache: the policy clamp, then a
+    # second clamp against the block that is ACTUALLY allocated for u.
+    # Every consumer (present, blit, damage extent, snapshot, test hooks)
+    # goes through this, so a grow that was refused for OOM degrades to a
+    # shorter cache rather than a read past the end of the allocation.
+    _wsys_clamp_cache_dims(w, h)
+    if u < MAX_WINDOWS and wsys_layer_fb_size[u] != 0:
+        _wsys_clamp_cache_dims_budget(w, h, wsys_layer_fb_size[u])
 
 # Active clip rect during a rasterize pass (module-scope scratch; the
 # rasterizer is not re-entrant — the compositor calls it serially).
@@ -9085,13 +9199,21 @@ def _wsys_rasterize_window_clip(wid: int32, bx0: int64, by0: int64,
     u: uint64 = cast[uint64](wid)
     if u >= WSYS_SCENE_SLOTS:
         return
-    cache: Ptr[uint8] = _wsys_layer_fb_ensure(wid)
-    if cast[uint64](cache) == 0:
-        return
-    _wsys_rast_wid = wid
+    # Size the backing block to THIS window's cache before touching it: the
+    # policy clamp says how many rows the window may keep, and the block is
+    # grown to hold exactly that (a full-screen 1920x1080 window needs
+    # 8.3 MiB — twice what the buddy allocator's MAX_ORDER can ever hand
+    # out). Then re-derive the dims against what was actually allocated, so
+    # a refused grow shortens the cache instead of scribbling past it.
     w: int64 = _wsys_win_def_w(u)
     h: int64 = _wsys_win_def_h(u)
     _wsys_clamp_cache_dims(&w, &h)
+    cache: Ptr[uint8] = _wsys_layer_fb_ensure_bytes(
+        wid, cast[uint64](w) * cast[uint64](h) * 4)
+    if cast[uint64](cache) == 0:
+        return
+    _wsys_rast_wid = wid
+    _wsys_win_cache_dims(u, &w, &h)
     _wsys_rast_w = w
     _wsys_rast_h = h
     # Clamp the damage box to the cache bounds.
@@ -9516,7 +9638,7 @@ def _wsys_present_window(wid: int32):
         return
     w: int64 = _wsys_win_def_w(u)
     h: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&w, &h)
+    _wsys_win_cache_dims(u, &w, &h)
     ox: int64 = wsys_win_x[u]
     oy: int64 = wsys_win_y[u]
     if ox < 0:
@@ -10266,7 +10388,7 @@ def _wsys_win_screen_extent(u: uint64, rx: Ptr[int64], ry: Ptr[int64],
     # single-window commit / drag only touches that window's footprint.
     w: int64 = _wsys_win_def_w(u)
     h: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&w, &h)
+    _wsys_win_cache_dims(u, &w, &h)
     ox: int64 = wsys_win_x[u]
     oy: int64 = wsys_win_y[u]
     if ox < 0:
@@ -10436,7 +10558,7 @@ def _wsys_scene_commit_damage(wid: int32, ox0: Ptr[int64], oy0: Ptr[int64],
         coy = 0
     cw: int64 = _wsys_win_def_w(u)
     ch: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&cw, &ch)
+    _wsys_win_cache_dims(u, &cw, &ch)
     if wsys_scene_pres_ox[u] != cox or wsys_scene_pres_oy[u] != coy:
         return 0
     if wsys_scene_pres_ow[u] != cw or wsys_scene_pres_oh[u] != ch:
@@ -10577,7 +10699,7 @@ def _wsys_record_present_snapshot(u: uint64):
         coy = 0
     cw: int64 = _wsys_win_def_w(u)
     ch: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&cw, &ch)
+    _wsys_win_cache_dims(u, &cw, &ch)
     wsys_scene_pres_ox[u] = cox
     wsys_scene_pres_oy[u] = coy
     wsys_scene_pres_ow[u] = cw
@@ -10662,7 +10784,7 @@ def _wsys_present_commit_impl(wid: int32, tight: int32, dx0: int64,
             if WSYS_DMG_DEBUG != 0:
                 fw: int64 = _wsys_win_def_w(u)
                 fh: int64 = _wsys_win_def_h(u)
-                _wsys_clamp_cache_dims(&fw, &fh)
+                _wsys_win_cache_dims(u, &fw, &fh)
                 printk2(cast[Ptr[char]]("[dmg] wid=%d TIGHT box=%d"),
                         wid, cast[int32]((dx1 - dx0) * (dy1 - dy0)))
                 printk2(cast[Ptr[char]]("px full=%dpx\n"),
@@ -10762,7 +10884,7 @@ def _wsys_rect_covered_by_bottom(rx: int64, ry: int64,
         return 0
     w: int64 = _wsys_win_def_w(bw)
     h: int64 = _wsys_win_def_h(bw)
-    _wsys_clamp_cache_dims(&w, &h)
+    _wsys_win_cache_dims(bw, &w, &h)
     ox: int64 = wsys_win_x[bw]
     oy: int64 = wsys_win_y[bw]
     if ox < 0:
@@ -10828,7 +10950,7 @@ def _wsys_present_shadow_rect(u: uint64, rx: int64, ry: int64,
         _wsys_shadow_lut_init()
     w: int64 = _wsys_win_def_w(u)
     h: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&w, &h)
+    _wsys_win_cache_dims(u, &w, &h)
     ox: int64 = wsys_win_x[u]
     oy: int64 = wsys_win_y[u]
     if ox < 0:
@@ -11037,7 +11159,7 @@ def _wsys_present_window_rect(wid: int32, rx: int64, ry: int64,
         return
     w: int64 = _wsys_win_def_w(u)
     h: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&w, &h)
+    _wsys_win_cache_dims(u, &w, &h)
     ox: int64 = wsys_win_x[u]
     oy: int64 = wsys_win_y[u]
     if ox < 0:
@@ -14959,7 +15081,7 @@ def wsys_wl_cache_pixel(wid: int32, x: int32, y: int32) -> uint32:
     u: uint64 = cast[uint64](wid)
     cw: int64 = _wsys_win_def_w(u)
     ch: int64 = _wsys_win_def_h(u)
-    _wsys_clamp_cache_dims(&cw, &ch)
+    _wsys_win_cache_dims(u, &cw, &ch)
     if cast[int64](x) < 0 or cast[int64](y) < 0:
         return 0
     if cast[int64](x) >= cw or cast[int64](y) >= ch:
