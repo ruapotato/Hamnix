@@ -3219,6 +3219,18 @@ bash scripts/test_hambrowse_domtext_host.sh
 # AND textContent/getAttribute match chromium --headless --dump-dom exactly,
 # including that an UNQUOTED value still ends at the first '>'.
 bash scripts/test_hambrowse_tagquote_host.sh
+# scripts/test_hambrowse_template_host.sh: QEMU-free gate that <template>
+# CONTENTS ARE INERT on BOTH surfaces. Template children are parsed into a
+# separate document fragment, so they never render and never appear in an
+# ancestor's textContent — only script reaching through .content sees them. We
+# treated them as ordinary markup: mdn_html (23 templates, ~59.7 KiB of
+# theme/language widgets) laid them out over the article text and reported
+# body.textContent of 79356 vs chromium's 27320. The gate plants the traps that
+# broke the first cut: NESTED templates, a '</template>' inside a <script>
+# string literal (which still leaked in the LAYOUT scanner after the DOM view
+# was correct), and a '>' inside a quoted attr on the <template> tag itself.
+# Every expectation is a chromium --headless --dump-dom value, byte-for-byte.
+bash scripts/test_hambrowse_template_host.sh
 # scripts/test_hambrowse_ceilings_host.sh: QEMU-free gate that the engine's
 # per-page ceilings REPORT THEMSELVES. DOM_MAX and EVL_MAX overflow used to be
 # silent — script got `undefined` elements and listeners that never fired, and

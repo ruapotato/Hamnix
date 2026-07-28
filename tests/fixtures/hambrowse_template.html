@@ -1,0 +1,30 @@
+<html><head><title>inert template contents</title></head><body>
+<!-- <template> children are parsed into a SEPARATE, inert document fragment
+     ("template contents"). They are not in the document tree: they never
+     render, and they never appear in an ancestor's textContent. Only script
+     reaching through .content sees them. -->
+
+<div id="t1">ALPHA<template><p>TPLHIDDEN</p></template>OMEGA</div>
+
+<!-- templates NEST: each opens its own fragment, all of it inert. -->
+<div id="t2">BETA<template>B1<template>B2NESTED</template>B3</template>GAMMA</div>
+
+<!-- RAW TEXT trap: a "</template>" inside a <script> string literal must not
+     end the skip early, or the rest of the page is swallowed. -->
+<div id="t3">DELTA<template><script>var s="</template> not a real close";</script>T3HIDDEN</template>EPSILON</div>
+
+<!-- a '>' inside a quoted attribute on the template start tag itself. -->
+<div id="t4">ZETA<template data-x="a>b">T4HIDDEN</template>ETA</div>
+
+<!-- content AFTER all the templates must still render and still be reachable. -->
+<p id="after">TAILVISIBLE</p>
+
+<script>
+var g = function (i) { return document.getElementById(i).textContent; };
+console.log('TPL t1=[' + g('t1') + ']');
+console.log('TPL t2=[' + g('t2') + ']');
+console.log('TPL t3=[' + g('t3') + ']');
+console.log('TPL t4=[' + g('t4') + ']');
+console.log('TPL after=[' + g('after') + ']');
+</script>
+</body></html>
