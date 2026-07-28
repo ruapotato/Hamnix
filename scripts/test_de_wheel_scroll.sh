@@ -21,15 +21,24 @@
 #   * On a wheel notch the app prints "[ham*] WHEEL dz applied" AND re-renders
 #     (top_line / scrollback moves) — PASS on either signal.
 #
-# KNOWN HARNESS LIMITATION (why this gate SKIPs rather than FAILs when the
-# marker is absent): in the LIVE DE, a write to /dev/mouse OR the raw #c/mouse
-# cdev from the SERIAL shell does NOT reach the kernel devmouse_write()
-# injection entry — confirmed with an unconditional entry probe that fired ZERO
-# times for both paths. So a wheel cannot be injected into the live compositor
-# from this serial-only harness, independent of the wheel fix. The authoritative
-# regression wall for the wheel wiring is the STATIC gate
-# test_de_term_editor_features.sh. This gate PASSES if the marker/scroll does
-# fire (on a harness where injection works) and SKIPS (exit 0) otherwise.
+# CORRECTION (2026-07-27) — the "known harness limitation" this header used to
+# describe was WRONG, and believing it cost real debugging time. It claimed that
+# a write to /dev/mouse from the serial shell never reaches devmouse_write() in
+# the live DE. It does: an instrumented boot shows the write entered, the
+# timer-tick pump routed it, and the compositor emitted the window-local
+# pointer line to the focused window's /event ring. What was missing was the
+# MARKER, not the event — hamtermscene wrote "[hamterm] WHEEL dz applied" to
+# fd 1, and devcons_write drops a background wsys window's console traffic
+# unless the write starts with a whitelisted prefix, so serial could never
+# carry it. The marker now goes to /dev/cons under the "[hamterm]" prefix.
+#
+# The gate still SKIPs rather than FAILs on an absent marker, because it drives
+# a RELATIVE cursor to an assumed screen position before wheeling — that aim is
+# genuinely load-sensitive. scripts/test_middle_paste_ondevice.sh shows the
+# deterministic shape (read the target window's real rect from its /ctl file
+# and derive every coordinate from it); porting that aiming here would let this
+# gate assert rather than skip. The authoritative regression wall for the wheel
+# wiring remains the STATIC gate test_de_term_editor_features.sh.
 #
 # Reuses the OVMF/KVM + serial + monitor-screendump harness of the flicker
 # gate. SKIPS CLEANLY (exit 0) when /dev/kvm, OVMF, socat, or the image is
@@ -352,7 +361,10 @@ fi
 # under the cursor, so EITHER marker proves the router -> /event -> app wheel
 # path end to end.
 #
-# KNOWN VM-INJECTION LIMITATION: in the LIVE DE, a write to /dev/mouse (or the
+# NOTE (superseded — see the CORRECTION at the top of this file): the claim
+# below that a serial-shell write to /dev/mouse never reaches devmouse_write()
+# is FALSE; it was an invisible marker, not a lost event. Kept for history.
+# OLD TEXT: in the LIVE DE, a write to /dev/mouse (or the
 # raw #c/mouse cdev) from the SERIAL shell does NOT reach the kernel
 # devmouse_write() injection entry point — verified with an unconditional
 # entry-probe that never fired for either path. So a wheel notch cannot be

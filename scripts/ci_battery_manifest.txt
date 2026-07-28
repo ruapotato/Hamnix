@@ -275,6 +275,15 @@ bash scripts/test_devmax_covers_all_ids.sh
 # middle press pastes exactly once, and a paste still fires while the
 # scrollback is wheeled up. Host-only; milliseconds.
 bash scripts/test_htermsel_evt_host.sh
+# ON-DEVICE gate for the user-reported "mid mouse does not paste the hilated
+# text": boots the shipped image under OVMF/KVM, drags across the DE terminal
+# with real /dev/mouse events aimed from the window's OWN rect (read from its
+# per-window /ctl file, so a click cannot miss), asserts /dev/snarf.primary
+# holds the highlighted text, asserts a chunked `echo x > /dev/snarf` lands
+# whole, then middle-clicks and asserts the paste BY EFFECT (the terminal runs
+# the pasted line). Caught two defects nine green host gates could not see:
+# DEV_MAX excluding DEV_SNARF_PRIMARY, and offset-blind devsnarf writes.
+bash scripts/test_middle_paste_ondevice.sh
 # QEMU-free host gate for the user-reported "clicking the default theme drops my
 # desktop icons" bug: applying a theme/wallpaper bumps the kernel wallpaper gen,
 # the desktop wakes and on the SAME wake runs its periodic refresh, and the old

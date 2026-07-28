@@ -82,10 +82,51 @@ Two gates, both green (and a native kernel-link check — ship blocker — passe
    `armE_copyall.ppm` shows the blue selection band. Direct device probes also
    confirmed `/dev/snarf` and `/dev/snarf.primary` write+read independently.
 
-Deferred: (a) terminal scrollback-grid selection (the terminal renders a grid,
-not a single text box — the #1 follow-up); (b) automated MOUSE
-click-to-position / drag-select / middle-paste confirmation (the infra is in
-place and the compositor delivers the events — window-local `m x y buttons dz`
-with middle=bit2 — but the DE mouse-injection harness is too pixel/timing
-sensitive to assert deterministically; a best-effort arm + screendump cover
-it, and the host unit test proves the click-to-position MATH exactly).
+## 4. What the deferred mouse confirmation was hiding (2026-07-27)
+
+This section used to close by DEFERRING automated mouse confirmation of
+drag-select and middle-paste, on the grounds that the DE mouse-injection
+harness was too pixel/timing sensitive to assert deterministically. Both parts
+of that were wrong, and the deferral is where the user's bug lived:
+
+* **Nine host gates were green while the feature was completely dead on
+  device.** They were green honestly — every one of them calls
+  `devsnarf_primary_read/write` DIRECTLY, and both real defects sat on the
+  syscall path those calls skip.
+* **Defect 1 — `/dev/snarf.primary` was `-EBADF` on every read and write.**
+  `namec.ad` admits an inline cdev only when `dev_type < DEV_MAX`.
+  `DEV_SNARF_PRIMARY` is 132; `DEV_MAX` was 131. The file OPENED fine and then
+  failed every access before the device body ran — silently, because a failed
+  read looks like an empty file (`cat` prints nothing, exits 0) and a failed
+  write looks like a successful shell redirect. So highlighting stored nothing
+  and middle-click read nothing back: BOTH halves of the user's report, one
+  constant. Guarded now by `scripts/test_devmax_covers_all_ids.sh`.
+* **Defect 2 — `devsnarf` ignored the write offset.** It replaced the buffer on
+  every write, so the shell's two-chunk `echo text > /dev/snarf` (payload, then
+  the trailing newline) left one byte behind. Writes are offset-addressed now:
+  offset 0 replaces, offset > 0 extends.
+* **Why nobody could see it — a third defect.** `hamtermscene` wrote its proof
+  markers to fd 1 and as `[term] ...`. `devcons_write` drops a BACKGROUND wsys
+  window's console traffic unless the write starts with a whitelisted prefix
+  (`[de_perf]`, `[hamterm]`, `[hambrowse]`), so serial could never carry them —
+  and `test_de_wheel_scroll.sh` had already written that absence up as a
+  "known harness limitation: mouse injection does not reach the kernel". It
+  does. All markers now use the whitelisted prefix.
+
+Mouse injection is also not too flaky to gate on: the fragility was aiming
+clicks at blind screen coordinates. `scripts/test_middle_paste_ondevice.sh`
+takes the terminal's wid off the kernel's window-mapped line, reads the real
+rect from the window's per-window `/ctl` file, and derives every click from
+`lib/htermsel.ad`'s own cell geometry, so a click cannot miss the window. It
+boots the shipped image under OVMF/KVM and asserts the paste BY EFFECT (the
+terminal executes the pasted line). It is in `ci_battery_manifest.txt`.
+
+The decision logic itself moved into `lib/htermsel.ad`
+(`htsel_evt_parse_m` / `htsel_pointer_step`) so it can be driven from raw wire
+bytes by `scripts/test_htermsel_evt_host.sh` — the altitude the nine gates
+missed. That gate also fails if `hamtermscene` stops calling the step, so it
+cannot decay into testing dead code.
+
+Still deferred: terminal SCROLLBACK-region selection (selection is grid-row
+indexed, so it is gated on the live tail; the middle-click paste is
+deliberately view-independent and works while scrolled).

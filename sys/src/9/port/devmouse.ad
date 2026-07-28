@@ -25,9 +25,7 @@
 # variant — wait_event_interruptible(mouse_ring_has) — lands when
 # devpoll / select() arrive.
 
-from kernel.printk.printk import printk0, printk1, printk2, printk3, \
-    printk_set_level
-from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
+from kernel.printk.printk import printk0, printk1, printk2
 from drivers.input.auxmouse import mouse_rx_pop, mouse_rx_has, mouse_rx_push, \
     mouse_rx_pop_dz, mouse_rx_push_dz, mouse_rx_push_abs, \
     mouse_rx_pop_aflag, mouse_rx_pop_ax, mouse_rx_pop_ay
@@ -270,10 +268,6 @@ def _devmouse_encode(dx: int32, dy: int32, buttons: uint32) -> int32:
          | ((dy & 0xFF) << 24)
 
 
-dbg_mw_n: uint64 = 0
-dbg_pump_n: uint64 = 0
-
-
 def devmouse_write(buf: Ptr[uint8], count: uint64) -> int64:
     # Synthetic-event injection. Parse one ASCII event line in the SAME
     # format devmouse_read emits — "<dx> <dy> <buttons>\n" (signed dx,
@@ -354,17 +348,6 @@ def devmouse_write(buf: Ptr[uint8], count: uint64) -> int64:
     # Optional trailing whitespace / newline is consumed silently.
     while pos < count and (buf[pos] == 32 or buf[pos] == 10 or buf[pos] == 13):
         pos = pos + 1
-
-    if dbg_mw_n < 40:
-        dbg_mw_n = dbg_mw_n + 1
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[mousedbg] write x=%d y=%d btn=%d\n",
-                cast[uint64](cast[uint32](dx)), cast[uint64](cast[uint32](dy)),
-                cast[uint64](buttons))
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk2("[mousedbg] write af=%d delive=%d\n",
-                cast[uint64](cast[uint32](af)),
-                cast[uint64](cast[uint32](wsys_de_is_live())))
 
     if af != 0:
         if mouse_rx_push_abs(dx, dy, buttons, dz) != 0:
@@ -484,13 +467,6 @@ def mouse_pump_to_compositor():
             ax: int32 = mouse_rx_pop_ax()
             ay: int32 = mouse_rx_pop_ay()
             btn_a: uint32 = _decode_buttons(encoded)
-            if btn_a != 0 and dbg_pump_n < 40:
-                dbg_pump_n = dbg_pump_n + 1
-                printk_set_level(PRINTK_LEVEL_EMERG)
-                printk3("[mousedbg] pump ABS ax=%d ay=%d btn=%d\n",
-                        cast[uint64](cast[uint32](ax)),
-                        cast[uint64](cast[uint32](ay)),
-                        cast[uint64](btn_a))
             wsys_route_mouse_abs(ax, ay, btn_a, dz)
         else:
             dx: int32 = _decode_dx(encoded)

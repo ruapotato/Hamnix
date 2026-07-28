@@ -11748,18 +11748,9 @@ def _wsys_evt_emit_dec(wid: int32, v: int64):
         _wsys_evt_push_byte(wid, digs[n])
 
 
-wsys_dbg_ptr_n: uint64 = 0
-
-
 def _wsys_evt_emit_pointer(wid: int32, lx: int64, ly: int64,
                            buttons: uint32, dz: int64):
     # Window-local pointer line: "m <x> <y> <buttons> <dz>\n".
-    if buttons != 0 and wsys_dbg_ptr_n < 40:
-        wsys_dbg_ptr_n = wsys_dbg_ptr_n + 1
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[wsysdbg] emit ptr wid=%d btn=%d lx=%d\n",
-                cast[uint64](cast[uint32](wid)),
-                cast[uint64](buttons), cast[uint64](lx))
     _wsys_evt_push_byte(wid, 109)                  # 'm'
     _wsys_evt_push_byte(wid, 32)
     _wsys_evt_emit_dec(wid, lx)
@@ -12491,21 +12482,8 @@ def wsys_de_is_live() -> int32:
     return 1
 
 
-wsys_dbg_route_n: uint64 = 0
-
-
 def _wsys_route_common(sx: int64, sy: int64, buttons: uint32, dz: int64):
     # Shared hit-test + focus + drag + event-forward logic.
-    if (buttons != 0 or wsys_prev_buttons != 0) and wsys_dbg_route_n < 40:
-        wsys_dbg_route_n = wsys_dbg_route_n + 1
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[wsysdbg] route sx=%d sy=%d btn=%d\n",
-                cast[uint64](sx), cast[uint64](sy), cast[uint64](buttons))
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[wsysdbg] route hit=%d drag=%d rez=%d\n",
-                cast[uint64](cast[uint32](_wsys_hit_test(sx, sy))),
-                cast[uint64](cast[uint32](wsys_drag_wid)),
-                cast[uint64](cast[uint32](wsys_resize_wid)))
     pressed: int32 = 0
     if (buttons & 1) != 0 and (wsys_prev_buttons & 1) == 0:
         pressed = 1

@@ -1872,8 +1872,8 @@ paste_buf: Array[4096, uint8]             # PRIMARY read on middle-click paste
 # them. All pointer-path markers now go to /dev/cons (writes -> printk ->
 # serial), the same channel the NS_PROBE / COLD_START markers already used.
 dbg_cons_fd: int32 = -1
-ptr_trace_n: uint64 = 0                   # bounded so live mousing can't flood
 ptr_seen: int32 = 0                       # one-shot "an 'm' line arrived"
+paste_marked: int32 = 0                   # one-shot paste-delivery marker
 
 
 def _cons_fd() -> int32:
@@ -1888,56 +1888,6 @@ def _cons_say(s: Ptr[uint8]):
         sys_write(cf, s, _slen(s))
 
 
-def _ptr_trace(x: int64, y: int64, btn: int64, prev: int64,
-               row: int64, col: int64):
-    # ONE line per pointer event with a button edge, capped. Proves (a) the
-    # 'm' line reached this app's /event ring, (b) the parsed fields, and
-    # (c) the grid cell the pixels mapped to.
-    if ptr_trace_n >= 40:
-        return
-    ptr_trace_n = ptr_trace_n + 1
-    cf: int32 = _cons_fd()
-    if cf < 0:
-        return
-    l: Array[128, uint8]
-    p: uint64 = 0
-    pfx: Ptr[uint8] = cast[Ptr[uint8]]("[hamterm] PTR x=")
-    while pfx[p] != 0:
-        l[p] = pfx[p]
-        p = p + 1
-    p = p + _u64_to_dec(cast[uint64](x), &l[p])
-    l[p] = 32
-    p = p + 1
-    l[p] = 121                              # 'y'
-    p = p + 1
-    l[p] = 61
-    p = p + 1
-    p = p + _u64_to_dec(cast[uint64](y), &l[p])
-    l[p] = 32
-    p = p + 1
-    l[p] = 98                               # 'b'
-    p = p + 1
-    l[p] = 61
-    p = p + 1
-    p = p + _u64_to_dec(cast[uint64](btn), &l[p])
-    l[p] = 47                               # '/'
-    p = p + 1
-    p = p + _u64_to_dec(cast[uint64](prev), &l[p])
-    l[p] = 32
-    p = p + 1
-    l[p] = 114                              # 'r'
-    p = p + 1
-    l[p] = 61
-    p = p + 1
-    p = p + _u64_to_dec(cast[uint64](row), &l[p])
-    l[p] = 47
-    p = p + 1
-    p = p + _u64_to_dec(cast[uint64](col), &l[p])
-    l[p] = 10
-    p = p + 1
-    sys_write(cf, &l[0], p)
-
-
 def _copy_selection(prim: int32) -> uint64:
     # Extract the active grid selection -> text and WRITE it to the CLIPBOARD
     # (prim=0, /dev/snarf) or the PRIMARY selection (prim=1, /dev/snarf.primary).
@@ -1950,11 +1900,30 @@ def _copy_selection(prim: int32) -> uint64:
     return n
 
 
+def _paste_inject(n: uint64):
+    # Feed the PRIMARY bytes to the local line editor as if typed (CR folded
+    # to NL, i.e. a pasted newline submits the line — standard terminal
+    # middle-click behaviour).
+    i: uint64 = 0
+    while i < n:
+        c: uint8 = paste_buf[i]
+        if c == 13:
+            c = 10
+        _key_local(cast[int32](c))
+        i = i + 1
+
+
 def _paste_primary():
     # Middle-click paste: read the PRIMARY selection and inject it into the local
     # line editor as if typed (CR folded to NL, i.e. a pasted newline submits the
     # line — standard terminal middle-click behaviour).
     n: uint64 = htsel_clip_get(1, &paste_buf[0], 4096)
+    # One-shot delivery proof: the gate needs a single line, and a live user
+    # pasting repeatedly must not flood the console.
+    if paste_marked != 0:
+        _paste_inject(n)
+        return
+    paste_marked = 1
     pl: Array[64, uint8]
     pp: uint64 = 0
     ppfx: Ptr[uint8] = cast[Ptr[uint8]]("[hamterm] PASTE primary n=")
@@ -1967,13 +1936,7 @@ def _paste_primary():
     cfp: int32 = _cons_fd()
     if cfp >= 0:
         sys_write(cfp, &pl[0], pp)
-    i: uint64 = 0
-    while i < n:
-        c: uint8 = paste_buf[i]
-        if c == 13:
-            c = 10
-        _key_local(cast[int32](c))
-        i = i + 1
+    _paste_inject(n)
 
 
 def _evt_next_field(pp: Ptr[uint64], le: uint64, out: Ptr[int64]) -> int32:
@@ -2038,12 +2001,6 @@ def _evt_apply_wheel(ls: uint64, le: uint64):
     live_tail: int32 = 0
     if term_view_off == 0:
         live_tail = 1
-    if btn != 0 or ptr_prev_buttons != 0:
-        trow: int64 = 0
-        tcol: int64 = 0
-        htsel_pix_to_cell(x, y, cast[int64](term_rows_n),
-                          cast[int64](term_cols_n), &trow, &tcol)
-        _ptr_trace(x, y, btn, cast[int64](ptr_prev_buttons), trow, tcol)
     act: int32 = htsel_pointer_step(x, y, btn, cast[int64](ptr_prev_buttons),
                                     cast[int64](term_rows_n),
                                     cast[int64](term_cols_n), live_tail)

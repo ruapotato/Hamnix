@@ -1,58 +1,55 @@
 #!/usr/bin/env bash
-# scripts/probe_middle_paste_ondevice.sh — ON-DEVICE REPRODUCER for the
-# middle-click PRIMARY paste defect. NOT a CI gate: it currently FAILS,
-# because the bug it reproduces is still open. Do not add it to
-# scripts/ci_battery_manifest.txt until it passes.
+# scripts/test_middle_paste_ondevice.sh — ON-DEVICE gate for X11-style PRIMARY
+# selection in the DE terminal: highlight text with the mouse, middle-click,
+# the text pastes. Boots the REAL shipped image under OVMF/KVM.
 #
-# WHY IT EXISTS
-# =============
+# THE BUG IT WAS WRITTEN FOR
+# ==========================
 # The user, twice: "Mid mouse does not paste the hilated text still but event
-# vewer does see the mid moues." Nine host gates already cover this feature
+# vewer does see the mid moues." Nine host gates covered this feature
 # (test_snarf_primary_host, test_htb_evt_paste_host, test_primary_paste_chain_host,
 # test_hamtextbox_host, test_htermsel_host, test_hamedit_clipboard,
-# test_paste_gnu_crosscheck, test_de_snarf_wctl, test_htb) and every one of
-# them is green. docs/text_selection_clipboard.md says so explicitly in its
-# closing paragraph: automated confirmation of click-to-position, drag-select
-# and middle-paste through a REAL MOUSE was deferred. That deferred surface is
-# exactly where the defect lives, so the host gates could never see it and a
-# tenth host gate would not help.
+# test_paste_gnu_crosscheck, test_de_snarf_wctl, test_htb) and every one was
+# green while the feature was completely dead on device — because every one of
+# them calls devsnarf_primary_read/write DIRECTLY, and the two defects both sat
+# on the syscall path those calls skip:
 #
-# This harness closes that hole. It drives the whole chain on a real OVMF+KVM
-# boot of the shipped image, with no screen scraping and no OCR — every
-# assertion reads a file over the serial console:
+#   1. namec.ad: DEV_SNARF_PRIMARY = 132 but DEV_MAX = 131, and _chan_id_valid
+#      admits an inline cdev only when dev_type < DEV_MAX. /dev/snarf.primary
+#      OPENED fine and then failed EVERY read and write with -EBADF before the
+#      device body ran — invisibly, since a failed read looks like an empty
+#      file and a failed write looks like a successful shell redirect.
+#   2. devsnarf.ad ignored the write OFFSET and replaced the buffer on every
+#      write, so the shell's two-chunk `echo text > file` (payload, then the
+#      trailing newline) left one byte behind.
 #
-#   SELECT half: type a marker into the DE terminal (QEMU `sendkey`), then
-#     left-press / drag / release across it by writing absolute pointer
-#     events to /dev/mouse, then `cat /dev/snarf.primary` from the serial
-#     shell. Highlighting must PUBLISH the selection.
+# A third defect hid both from every earlier on-device attempt: hamtermscene
+# wrote its proof markers to fd 1 and as "[term] ...", and devcons_write drops a
+# background wsys window's console traffic unless the write starts with a
+# whitelisted prefix ("[de_perf]", "[hamterm]", "[hambrowse]"). Serial could not
+# carry the signal, so "no marker" meant nothing.
 #
+# HOW IT ASSERTS
+# ==============
+# No screen scraping, no OCR, and no blind screen coordinates: it takes the
+# terminal's wid off the kernel's window-mapped line, reads the window's real
+# rect from its per-window /ctl file, and derives every click from
+# lib/htermsel.ad's own cell geometry — so a click that misses the window is
+# impossible rather than merely unlikely.
+#
+#   SELECT half: drag across the terminal's own startup output, then read
+#     /dev/snarf.primary back over the serial shell. The assertion is the
+#     CONTENT of the file (a marker line can be lost to the console gate; a
+#     file read cannot).
+#   CHUNK check: `echo CHUNKMARK > /dev/snarf` must store the text, not just
+#     the newline the shell writes as a second chunk.
 #   PASTE half: plant `echo <marker> > /dev/snarf` in /dev/snarf.primary,
-#     middle-click in the terminal, then `cat /dev/snarf` from the serial
-#     shell. The paste is asserted by its EFFECT — the terminal executed the
-#     pasted line — so there is nothing to misread off a screenshot.
+#     middle-click, then read /dev/snarf. The paste is asserted by its EFFECT —
+#     the terminal executed the pasted line.
 #
-# WHAT IT FOUND (2026-07-27, image 7747bfe1, 1280x800)
-# ====================================================
-# BOTH halves fail on device, which overturns the briefed framing that the
-# event arrives and only the "primary-selection -> paste plumbing" is
-# missing. The event does arrive — the injected pointer moves the cursor to
-# the requested screen pixel, confirmed by screendump — and the compositor
-# does route it: haminput, reading the same /dev/wsys/<wid>/event ring, shows
-# MIDDLE-down. But in hamtermscene:
+# SKIPs cleanly (exit 0) without /dev/kvm, socat, OVMF or an image.
 #
-#   * a left drag across text leaves /dev/snarf.primary EMPTY at every row
-#     tried, and the "[hamterm] SEL copied PRIMARY" marker never appears;
-#   * a middle click with a known-good PRIMARY payload executes nothing.
-#
-# So PRIMARY is never SET, and there is therefore nothing for the middle
-# click to paste. Chasing the paste half alone cannot fix this. The break is
-# between the compositor emitting `m <x> <y> <buttons> <dz>` on the window's
-# event ring and hamtermscene's _evt_apply_wheel acting on it — both ends of
-# which read correct in the source, so the next step is to instrument the
-# ring itself (does the app's non-blocking drain observe the press at all, or
-# does it observe it with coordinates that miss the grid?).
-#
-# USAGE:  bash scripts/probe_middle_paste_ondevice.sh
+# USAGE:  bash scripts/test_middle_paste_ondevice.sh
 #         artifacts land in build/middle_paste_probe/
 
 set -uo pipefail
@@ -74,6 +71,12 @@ if [ -z "$OVMF_FD" ]; then
     done
 fi
 [ -f "$OVMF_FD" ] || { echo "[mid-paste] SKIP: OVMF firmware not found" >&2; exit 0; }
+
+# Stale-image guard (MANDATORY for a gate that BOOTS the image): rebuild when
+# the image is missing or older than the tree under test. Booting a stale image
+# is how a gate reports green on a regression it was written to catch.
+source "$PROJ_ROOT/scripts/_installer_img.sh"
+ensure_installer_img "$INSTALLER_IMG" "[mid-paste]" || exit 0
 [ -f "$INSTALLER_IMG" ] || { echo "[mid-paste] SKIP: $INSTALLER_IMG absent" >&2; exit 0; }
 
 mkdir -p "$OUTDIR"
