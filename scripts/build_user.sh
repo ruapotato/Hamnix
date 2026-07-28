@@ -25,6 +25,55 @@ source "$PROJ_ROOT/scripts/_adder_cc.sh"
 
 mkdir -p build/user
 
+# --- Up-to-date short-circuit (content-addressed, NOT existence-based) -----
+#
+# 179 gates in scripts/ci_battery_manifest.txt open with `bash
+# scripts/build_user.sh`, and this script is NOT incremental: 89 s wall /
+# 7m43 s CPU on this 12-core host for a completely unchanged tree (measured
+# 2026-07-28), and roughly 200 s on a 4-core GitHub runner. 179 x 200 s is
+# ~10 h of rebuilding per battery run, ~37 min of every 50-min shard — one
+# of the three costs that made the 2026-07-27 battery time out on all 16
+# shards.
+#
+# The guard below is NOT the banned `if [ -f "$OUT" ]; then exit 0; fi`
+# stale-artifact factory that scripts/test_artifact_freshness.sh lints for.
+# It is strictly STRONGER than the mtime freshness rule that gate enforces:
+# it re-runs unless BOTH
+#   (a) every buildable input in the tree hashes to the same value it had
+#       when the stamp was written (scripts/_tree_fingerprint.sh: content of
+#       every tracked + untracked-not-ignored file, plus ADDER_*/HAMNIX_*),
+#   AND
+#   (b) every file this script recorded as its own output still hashes to
+#       the value it had then (fixtures a gate later drops into build/user/
+#       are ignored - they are not this script's output).
+# Touch any source, any compiler file, any build flag, or any output ELF and
+# the build runs for real. A skip therefore cannot produce a different
+# artifact from a full build — which is the property the freshness gate is
+# defending, expressed as content equality instead of mtime ordering.
+#
+# HAMNIX_BUILD_USER_FORCE=1 (or removing build/user/.stamp) forces a rebuild.
+# shellcheck source=_tree_fingerprint.sh
+source "$PROJ_ROOT/scripts/_tree_fingerprint.sh"
+_bu_stamp="build/user/.stamp"
+_bu_key="$(hamnix_tree_fingerprint)|$(hamnix_build_env_fingerprint)"
+# The stamp records the key on line 1 and a `sha256  path` manifest of the
+# files THIS script produced. Verification requires every recorded path to
+# still hash to its recorded value; files a gate later ADDS to build/user
+# (test fixtures) are ignored, because they are not this script's output.
+if [ "${HAMNIX_BUILD_USER_FORCE:-0}" != "1" ] && [ -f "$_bu_stamp" ] \
+   && [ "$(head -n1 "$_bu_stamp")" = "$_bu_key" ] \
+   && tail -n +2 "$_bu_stamp" | sha256sum --quiet --check - >/dev/null 2>&1; then
+    echo "[build_user] up to date (tree + recorded outputs unchanged) - nothing to do"
+    exit 0
+fi
+rm -f "$_bu_stamp"
+_bu_write_stamp() {
+    { printf '%s\n' "$_bu_key"
+      find build/user -type f ! -name '.stamp' | LC_ALL=C sort \
+        | tr '\n' '\0' | xargs -0 -r sha256sum
+    } > "$_bu_stamp"
+}
+
 # --- Parallel-compile infrastructure --------------------------------------
 # The 250+ Adder userland programs are INDEPENDENT whole-program compiles,
 # each writing its own build/user/<name>.elf. They were historically built
@@ -553,3 +602,9 @@ if [ -n "${ADDER_ELF64_APPS:-}" ]; then
         file "build/user/${_e64}.elf"
     done
 fi
+
+# Record what this successful build produced, so the next invocation over an
+# unchanged tree can prove it would produce the same bytes and short-circuit.
+# Reached only on success: `set -e` is in force and every failure path above
+# exits non-zero before here.
+_bu_write_stamp
