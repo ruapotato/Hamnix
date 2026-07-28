@@ -11774,6 +11774,48 @@ def set_task_interp_phys(slot: uint64, phys: uint64, sz: uint64):
     task_table[slot].interp_phys_sz = sz
 
 
+def task_free_owner_cow_strays(slot: uint64):
+    # execve-replace twin of task_reap's step 0d — see the call site in
+    # arch/x86/kernel/syscall.ad::do_execve for the measurement that found
+    # this gap and for why it must run EARLY (before the new image's
+    # coordinates overwrite the outgoing ones).
+    #
+    # task_free_owner_regions hands the OUTGOING image / interp / eager stack
+    # prefix back WHOLESALE by PHYSICAL base. That misses every page this task
+    # dirtied after fork()ing: cow_resolve_pte repointed the PTE at a fresh
+    # alloc_page() copy that lies OUTSIDE the run, and no VmaNode covers an
+    # owner span, so vma_clear cannot see it either. task_reap already sweeps
+    # those strays for a task that EXITS; without this a task that EXECVE's
+    # leaked one frame per dirtied page, per launch, until reboot.
+    #
+    # Same helper, same rules as step 0d: vma_free_cow_strays frees only
+    # frames OUTSIDE the run about to be freed wholesale (so it can never
+    # double-free with task_free_owner_regions) that are at COW refcount
+    # exactly 1, buddy-owned, and not inside any live task's owner run. Each
+    # PTE is zapped before its frame is freed.
+    if task_table[slot].is_user == 0 or task_table[slot].cr3 == 0:
+        return
+    if task_table[slot].image_phys != 0 and task_table[slot].image_lo != 0:
+        vma_free_cow_strays(slot, task_table[slot].image_lo,
+                            task_table[slot].image_hi,
+                            task_table[slot].image_phys,
+                            task_table[slot].image_phys
+                            + task_table[slot].image_phys_sz)
+    if task_table[slot].interp_phys != 0 and task_table[slot].interp_lo != 0:
+        vma_free_cow_strays(slot, task_table[slot].interp_lo,
+                            task_table[slot].interp_hi,
+                            task_table[slot].interp_phys,
+                            task_table[slot].interp_phys
+                            + task_table[slot].interp_phys_sz)
+    if task_table[slot].ustack_phys != 0 and task_table[slot].ustack_lo != 0:
+        vma_free_cow_strays(slot, task_table[slot].ustack_lo,
+                            task_table[slot].ustack_lo
+                            + task_table[slot].ustack_sz,
+                            task_table[slot].ustack_phys,
+                            task_table[slot].ustack_phys
+                            + task_table[slot].ustack_phys_sz)
+
+
 def task_free_owner_regions(slot: uint64):
     # execve-replace teardown (leak 2). do_execve installs a NEW image
     # over a task that may have OWNED a prior image / interp / user stack

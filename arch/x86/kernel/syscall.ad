@@ -86,7 +86,7 @@ from kernel.sched.core import (
     # Leak fix: execve replaces the image in place; free the OUTGOING
     # owner-only image/interp/ustack regions before recording the new
     # ones, else the pre-execve spans leak for the rest of the boot.
-    task_free_owner_regions,
+    task_free_owner_regions, task_free_owner_cow_strays,
     # POSIX execve resets caught-signal dispositions to SIG_DFL (a handler
     # VA into the outgoing image is meaningless in the new one).
     exec_reset_signal_dispositions,
@@ -2672,6 +2672,47 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
         # The outgoing COW alias is gone; the new image loaded below is
         # region-owned (recorded via set_task_image_phys), not COW-shared.
         set_task_image_cow_shared(exec_slot, 0)
+    # COW COPIES SITTING INSIDE THIS TASK'S OWN OUTGOING OWNER SPANS.
+    #
+    # This is the execve-replace twin of task_reap's step 0d, and its absence
+    # was the whole of the DE soak's PagesInUse drift (+11 pg/cycle against a
+    # 1.0 tolerance). A per-alloc-class live census of the buddy pool during a
+    # 10-minute soak attributed the leak exactly:
+    #
+    #     live cow_resolve_pte copies   +9.0 pg/cycle
+    #     live demand-fault anon pages  +2.4 pg/cycle
+    #     live page-table frames        +0.0 pg/cycle
+    #     measured PagesInUse drift    +11.0 pg/cycle
+    #
+    # The mechanism is the one vma_free_cow_strays already documents for
+    # reap. task_free_owner_regions (below, after the new image loads) hands
+    # the OUTGOING image / interp / eager stack prefix back WHOLESALE by
+    # PHYSICAL base — region_free_cow_safe(image_phys, sz) and
+    # free_pages(ustack_phys, order). That is correct for the frames the
+    # loader installed, but a task that fork()ed and then WROTE to one of
+    # those pages no longer maps the original frame there: cow_resolve_pte
+    # repointed the PTE at a fresh alloc_page() copy that lies OUTSIDE the
+    # run. No VmaNode covers an owner span either, so vma_clear cannot see it.
+    # task_reap sweeps those strays for a task that EXITS; a task that
+    # EXECVE's had no such sweep, so every page an app dirtied after forking
+    # leaked one frame per launch, forever.
+    #
+    # MUST RUN HERE, not next to task_free_owner_regions: by that point
+    # set_task_image_range / set_task_ustack_range have already overwritten
+    # the task's VA coordinates with the NEW image's, while *_phys still holds
+    # the OLD run — so a sweep there would walk the wrong span. Here the
+    # outgoing VA span and its physical run still agree, the old address space
+    # is torn down, and the new one has not been installed.
+    #
+    # vma_free_cow_strays is deliberately conservative and unchanged: it frees
+    # a frame only when its PTE is present, the frame lies OUTSIDE the run
+    # about to be freed wholesale (so it can never double-free with
+    # task_free_owner_regions), its COW refcount is EXACTLY 1 (a tracked frame
+    # whose single holder is this task — refcount 0 untracked owner frames and
+    # refcount > 1 frames a live relative still maps are both left alone), the
+    # buddy allocator owns it, and it is not inside any live task's owner run.
+    # It zaps the PTE before freeing, so ZAP-BEFORE-FREE holds.
+    task_free_owner_cow_strays(exec_slot)
     # U52 ASLR (load bias + mmap base). Draw per-exec randomized bases and
     # arm them BEFORE the ELF load / first mmap. elf_set_aslr_vbases tells
     # the loader where to place the ET_DYN application + interpreter images
