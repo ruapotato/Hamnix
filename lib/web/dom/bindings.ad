@@ -87,6 +87,50 @@ dom_warn_max:  int32 = 0               # DOM_MAX  — element objects
 dom_warn_txt:  int32 = 0               # DOM_TXT_CAP — baseline text/html buffer
 dom_warn_evl:  int32 = 0               # EVL_MAX  — addEventListener registry
 dom_warn_tx:   int32 = 0               # TX_MAX   — integer tree index
+dom_warn_ov:   int32 = 0               # DOM_OV_CAP — JS override text arena
+
+# ---- textContent walker sink (round 9) -----------------------------
+# See _extract_text. tw_buf is the ONE place a full element textContent is
+# materialised; it is reused per call, so it costs 1 MiB of BSS total rather
+# than 1 MiB per element. DOM_TXT_CAP stays small BECAUSE of this: dom_txtbuf is
+# now only the geometry-matching PREFIX (DOM_TXT_EL bytes per element), not a
+# baseline the readback depends on.
+TW_CAP:      int32 = 1048576
+tw_buf:      Array[1048576, uint8]
+g_tw_mode:   int32 = 0                 # 0 dom_txtbuf | 1 tw_buf | 2 compare
+g_tw_w:      int32 = 0                 # bytes produced (all modes)
+g_tw_ok:     int32 = 1                 # mode 2: still matching?
+g_tw_cmp_n:  int32 = 0
+g_tw_cmp_p:  Ptr[uint8] = 0
+
+# Per-element cap on the dom_txtbuf geometry prefix. Without it, <html> and
+# <body> each snapshot the WHOLE document and the shared arena is gone before
+# the third element registers — which is precisely how every later element ended
+# up with a zero-length text baseline and no usable geometry.
+DOM_TXT_EL:  int32 = 4096
+
+
+# One byte into the walker's current sink. Returns the updated count.
+def _tw_put(oo: int32, n: int32, c: uint8) -> int32:
+    if g_tw_mode == 2:
+        if g_tw_w < g_tw_cmp_n:
+            if g_tw_cmp_p[g_tw_w] != c:
+                g_tw_ok = 0
+        else:
+            g_tw_ok = 0
+        g_tw_w = g_tw_w + 1
+        return n + 1
+    if g_tw_mode == 1:
+        if g_tw_w < TW_CAP:
+            tw_buf[g_tw_w] = c
+            g_tw_w = g_tw_w + 1
+        else:
+            g_tw_w = TW_CAP + 1                       # mark overflow
+        return n + 1
+    if n < DOM_TXT_EL and oo + n < DOM_TXT_CAP:
+        dom_txtbuf[oo + n] = c
+        return n + 1
+    return n
 
 # ---- DOM tree index (task #324, browser round 2) -------------------
 # The DOM was flat/source-anchored (round 1): each element carried its source
@@ -562,6 +606,21 @@ NID_NODE_CTOR:    int32 = 121        # Node/Element/... — interface objects (n
 # empty string when the jar is empty, NEVER undefined.
 NID_COOKIE_GET:   int32 = 122        # get document.cookie -> "n1=v1; n2=v2"
 NID_COOKIE_SET:   int32 = 123        # set document.cookie = "n=v; attrs"
+# --- lazy textContent / innerHTML (round 9) ----------------------------------
+# Snapshotting both for every element into one shared 64 KiB arena is what made
+# document.body.textContent come back "" on every real page (archlinux: "" vs
+# chromium's 6797 chars; react_spa: 0 vs 144092). Sizing the arena for a real
+# page is hopeless — the sum over all elements is O(page x depth), ~10 MB for
+# one Wikipedia article — so these became LAZY accessors on
+# HTMLElement.prototype, computed from the element's source span on first
+# access and memoised as an own data property from then on.
+NID_TC_GET:       int32 = 124        # get el.textContent (from [cstart,cend))
+NID_TC_SET:       int32 = 125        # set el.textContent
+NID_IH_GET:       int32 = 126        # get el.innerHTML (raw source span)
+NID_IH_SET:       int32 = 127        # set el.innerHTML (parses the fragment)
+# Re-entrancy guard: the innerHTML setter runs _apply_inner_html, which itself
+# assigns properties on the same node.
+g_ih_setter_busy: int32 = 0
 
 # The cookie jar. Document-lifetime only (there is no persistent cookie store on
 # the host/native render path); name/value bytes are bump-allocated into ck_buf,
@@ -716,6 +775,15 @@ def _srcname_eq(at: uint64, ns: uint64, nl: uint64) -> int32:
 # span [ns, ns+nl), scanning from `from`. Sets g_close_lt (the '<' of the
 # close tag) and g_close_end (index just past its '>'). Returns 1 if a close
 # tag was found; on miss both are set to `from` (empty content, no close).
+#
+# RAW TEXT AND COMMENTS ARE SKIPPED (round 9). This used to scan the source
+# byte-by-byte, so any `<body`, `</body>` or `<html` appearing inside a
+# <script> string literal, a CSS rule or an HTML comment was counted as real
+# markup. MEASURED consequence on live snapshots: books.toscrape.com has 5
+# occurrences of "<html" and google.com 3 of "<body", so `depth` never returned
+# to 0, no close tag was found, and <body>/<html> got an EMPTY content span —
+# document.body.textContent and .innerHTML were "" on those pages no matter how
+# the DOM stored them. archlinux.org, with exactly one of each, worked.
 def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
     depth: int32 = 0
     i: uint64 = frm
@@ -733,9 +801,30 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
                         g_close_end = j
                         return 1
                     depth = depth - 1
+            elif i + 3 < src_len and src_ptr[i + 1] == 33 and \
+                 src_ptr[i + 2] == 45 and src_ptr[i + 3] == 45:   # '<!--'
+                i = i + 4
+                while i + 2 < src_len:
+                    if src_ptr[i] == 45 and src_ptr[i + 1] == 45 and \
+                       src_ptr[i + 2] == 62:              # '-->'
+                        i = i + 2
+                        break
+                    i = i + 1
             elif src_ptr[i + 1] != 33 and src_ptr[i + 1] != 63:
+                ts: uint64 = i + 1
+                je: uint64 = ts
+                while je < src_len and src_ptr[je] != 62:
+                    je = je + 1
+                ne: uint64 = ts
+                while ne < je and _alnum_at(ne) != 0:
+                    ne = ne + 1
                 if _srcname_eq(i + 1, ns, nl) != 0:
                     depth = depth + 1
+                rt: uint64 = _rawtext_skip(ts, ne, je)
+                if rt != 0:                               # <script>/<style> body
+                    i = rt
+                    continue
+                i = je
         i = i + 1
     g_close_lt = frm
     g_close_end = frm
@@ -758,6 +847,15 @@ def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
 # their character data is NOT entity-decoded, so a JS string literal containing
 # "&amp;" or a CSS `content:"\&"` must survive byte-for-byte. chromium's
 # body.textContent includes those bodies undecoded, so we copy them verbatim.
+#
+# THREE SINKS, ONE WALK (g_tw_mode). The textContent of an element is needed in
+# three shapes and they MUST agree, so there is exactly one walker:
+#   0  copy into dom_txtbuf[oo..]         (the geometry-matching prefix)
+#   1  copy into tw_buf[0..]              (materialise a JS string on demand)
+#   2  compare against g_tw_cmp_p[0..n)   (the readback's "was this mutated?"
+#                                          oracle — streams, allocates nothing)
+# Mode 2 is why the readback no longer needs a stored baseline at all: it can
+# re-derive the element's original text straight from the source span.
 def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
     n: int32 = 0
     i: uint64 = cs
@@ -785,9 +883,7 @@ def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
                 while i < ce:
                     if src_ptr[i] == 60 and i + 1 < ce and src_ptr[i + 1] == 47:
                         break
-                    if oo + n < DOM_TXT_CAP:
-                        dom_txtbuf[oo + n] = src_ptr[i]
-                        n = n + 1
+                    n = _tw_put(oo, n, src_ptr[i])
                     i = i + 1
             continue
         if c == 38:                                       # '&' — character ref
@@ -795,17 +891,56 @@ def _extract_text(cs: uint64, ce: uint64, oo: int32) -> int32:
             if cons > 0:
                 k: int32 = 0
                 while k < g_ent_len:
-                    if oo + n < DOM_TXT_CAP:
-                        dom_txtbuf[oo + n] = g_ent_buf[k]
-                        n = n + 1
+                    n = _tw_put(oo, n, g_ent_buf[k])
                     k = k + 1
                 i = i + cons
                 continue
-        if oo + n < DOM_TXT_CAP:
-            dom_txtbuf[oo + n] = c
-            n = n + 1
+        n = _tw_put(oo, n, c)
         i = i + 1
     return n
+
+
+# Materialise the FULL textContent of src span [cs,ce) into tw_buf and return
+# its length (clipped to TW_CAP). Used by the lazy textContent getter, which is
+# why it does not touch dom_txtbuf: that buffer is a per-page shared arena and a
+# single <body> would swallow it whole.
+def _text_into_tw(cs: uint64, ce: uint64) -> int32:
+    g_tw_mode = 1
+    g_tw_w = 0
+    ign: int32 = _extract_text(cs, ce, 0)
+    g_tw_mode = 0
+    if g_tw_w > TW_CAP:
+        g_tw_w = TW_CAP
+    return g_tw_w
+
+
+# Does p[0..n) equal the textContent of src span [cs,ce)? Streams the SAME walk
+# with no buffer, so it is exact at any size — the readback's mutation oracle.
+def _text_span_eq(p: Ptr[uint8], n: int32, cs: uint64, ce: uint64) -> int32:
+    g_tw_mode = 2
+    g_tw_cmp_p = p
+    g_tw_cmp_n = n
+    g_tw_w = 0
+    g_tw_ok = 1
+    ign: int32 = _extract_text(cs, ce, 0)
+    g_tw_mode = 0
+    if g_tw_ok == 0:
+        return 0
+    if g_tw_w != n:
+        return 0
+    return 1
+
+
+# Does p[0..n) equal the RAW markup of src span [cs,ce)? (innerHTML oracle.)
+def _html_span_eq(p: Ptr[uint8], n: int32, cs: uint64, ce: uint64) -> int32:
+    if cast[uint64](n) != ce - cs:
+        return 0
+    i: int32 = 0
+    while i < n:
+        if p[i] != src_ptr[cs + cast[uint64](i)]:
+            return 0
+        i = i + 1
+    return 1
 
 
 # Copy the RAW markup of src span [cs,ce) into out[oo..] (innerHTML).

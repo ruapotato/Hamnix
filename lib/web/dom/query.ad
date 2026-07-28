@@ -1336,28 +1336,31 @@ def _dom_register_el() -> int32:
     dom_ns[idx] = cast[int32](g_el_ns)
     dom_nl[idx] = cast[int32](g_el_nl)
     te: uint64 = g_el_cs - 1                              # the '>' of the start tag
-    # original text + html
+    # GEOMETRY PREFIX ONLY (round 9). This used to snapshot the element's FULL
+    # textContent *and* its full raw innerHTML into the shared 64 KiB dom_txtbuf
+    # — for EVERY element, so <html> and <body> alone (each holding the whole
+    # document twice over) exhausted it before the page's third element
+    # registered. Everything after that got a zero-length baseline, which is why
+    # document.body.textContent came back "" on real pages, and why raising the
+    # buffer was a trap: the readback trusted the full baseline, compared it
+    # against a js_str_ptr() readback truncated at 64 KiB, concluded <body> had
+    # been rewritten, and re-emitted google.com as escaped text (29 -> 0 segs).
+    #
+    # Now: textContent/innerHTML are LAZY accessors on HTMLElement.prototype
+    # (NID_TC_GET / NID_IH_GET) computed from [cstart,cend) on first access, and
+    # the readback re-derives the original by STREAMING the same walk
+    # (_text_span_eq), so no stored baseline is needed at all. dom_txtbuf keeps
+    # only a DOM_TXT_EL-byte prefix per element, which is all _el_bbox's
+    # segment matcher ever reads.
     ot: int32 = dom_txt_len
     otl: int32 = _extract_text(g_el_cs, g_el_ce, ot)
     dom_txt_len = ot + otl
     dom_orig_off[idx] = ot
     dom_orig_len[idx] = otl
-    oh: int32 = dom_txt_len
-    ohl: int32 = _extract_html(g_el_cs, g_el_ce, oh)
-    dom_txt_len = oh + ohl
-    dom_html_off[idx] = oh
-    dom_html_len[idx] = ohl
-    # Flag a truncated baseline: once dom_txtbuf fills, this element's captured
-    # text/html is incomplete, so the readback must not trust an inner-content
-    # diff against it (see dom_orig_trunc). Detects both "filled during MY
-    # extraction" and "was already full when I registered".
-    if dom_txt_len >= DOM_TXT_CAP - 1 or oh >= DOM_TXT_CAP - 1:
+    if dom_txt_len >= DOM_TXT_CAP - 1:
         if dom_warn_txt == 0:
             dom_warn_txt = 1
-            js_out_note(cast[Ptr[uint8]]("[engine] CEILING DOM_TXT_CAP reached: textContent/innerHTML baselines truncated from here on. DOM_TXT_CAP="), DOM_TXT_CAP)
-        dom_orig_trunc[idx] = 1
-    else:
-        dom_orig_trunc[idx] = 0
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING DOM_TXT_CAP reached: element geometry prefixes truncated from here on (text/DOM reads are unaffected). DOM_TXT_CAP="), DOM_TXT_CAP)
     # id attribute
     ido: int32 = dom_idbuf_len
     idl: int32 = 0
@@ -1438,10 +1441,10 @@ def _dom_register_el() -> int32:
     dom_origval_len[idx] = ovl
     # the JS object
     o: int32 = js_new_object_v()
-    js_set_prop(o, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&dom_txtbuf[ot], cast[uint64](otl)))
-    js_set_prop(o, cast[Ptr[uint8]]("innerHTML"), 9, \
-                js_new_string(&dom_txtbuf[oh], cast[uint64](ohl)))
+    # NO eager textContent / innerHTML own properties: both are lazy accessors
+    # inherited from HTMLElement.prototype and materialise on first access (own
+    # props win over prototype accessors in member_get AND member_set, so the
+    # memoised value takes over from then on).
     js_set_prop(o, cast[Ptr[uint8]]("id"), 2, \
                 js_new_string(&dom_idbuf[ido], cast[uint64](idl)))
     js_set_prop(o, cast[Ptr[uint8]]("className"), 9, \

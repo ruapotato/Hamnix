@@ -7,7 +7,7 @@ from lib.web.dom.forms import _has_word
 from lib.htmlengine import he_media_match
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -852,8 +852,11 @@ def _js_member_set_hook(dummy: int32) -> int32:
     if _find_el_by_obj(thisv) < 0 and _find_cre_by_obj(thisv) < 0:
         return 0                                          # not a DOM node yet
     valv: int32 = js_mset_val()
-    vp: Ptr[uint8] = js_str_ptr(valv)
-    vn: int32 = _cstr_len(vp)
+    # js_str_bytes: a pointer into the non-moving string pool. js_str_ptr's
+    # 64 KiB scratch ring is recycled by _apply_inner_html's own js_str_ptr
+    # calls and would be overwritten mid-parse.
+    vp: Ptr[uint8] = js_str_bytes(valv)
+    vn: int32 = js_str_bytelen(valv)
     if _is_undef_str(vp, vn) != 0:
         return 0
     _apply_inner_html(thisv, vp, vn)
@@ -2059,6 +2062,75 @@ def _mount_dispatch(rel: int32) -> int32:
     return js_undefined()
 
 
+# LAZY el.textContent / el.innerHTML (round 9).
+#
+# These are accessor properties on HTMLElement.prototype, so they fire ONLY for
+# an element that has no own property of that name — i.e. one script has never
+# touched. That is the whole point: a page with 4576 elements no longer pays to
+# materialise 4576 text snapshots plus 4576 raw-markup snapshots (which is what
+# exhausted the shared 64 KiB dom_txtbuf and returned "" for
+# document.body.textContent), it pays only for the elements it actually reads.
+#
+# The getter MEMOISES by installing an own data property through js_set_own,
+# which bypasses the accessor walk. From then on the element behaves exactly as
+# it did before this change: plain data property, normal member-set hook.
+#
+# An object that is not a registered SOURCE element returns undefined, which is
+# what a missing own property returned before — created nodes already carry
+# their own textContent, and the rewrite path branches on `undefined` meaning
+# "never set".
+def _inner_accessor(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    idx: int32 = _find_el_by_obj(thisv)
+    if rel == NID_TC_GET:
+        if idx < 0:
+            return js_undefined()
+        n: int32 = _text_into_tw(cast[uint64](dom_cstart[idx]), \
+                                 cast[uint64](dom_cend[idx]))
+        v: int32 = js_new_string(&tw_buf[0], cast[uint64](n))
+        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, v)
+        return v
+    if rel == NID_IH_GET:
+        if idx < 0:
+            return js_undefined()
+        cs: int32 = dom_cstart[idx]
+        hn: int32 = dom_cend[idx] - cs
+        if hn < 0:
+            hn = 0
+        hv: int32 = js_new_string(&src_ptr[cast[uint64](cs)], cast[uint64](hn))
+        js_set_own(thisv, cast[Ptr[uint8]]("innerHTML"), 9, hv)
+        return hv
+    # ---- setters: install the own data property, then run the same side
+    # effects member_set's hook would have run (an accessor set returns before
+    # the hook fires, so the work has to happen here).
+    val: int32 = js_undefined()
+    if js_arg_count() > 0:
+        val = js_arg(0)
+    if rel == NID_TC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, val)
+        if mreg_n != 0:
+            _mo_record_chardata(thisv)
+        return js_undefined()
+    js_set_own(thisv, cast[Ptr[uint8]]("innerHTML"), 9, val)
+    if g_ih_setter_busy != 0:
+        return js_undefined()
+    if idx < 0 and _find_cre_by_obj(thisv) < 0:
+        return js_undefined()                             # not a DOM node yet
+    # js_str_bytes, NOT js_str_ptr: the latter renders into an 8-slot 64 KiB
+    # scratch RING, and _apply_inner_html calls js_str_ptr many times while
+    # parsing, so the ring wraps and the markup we are parsing is overwritten
+    # underneath us (observed: <ul><li>one</li><li>two</li></ul> parsed as
+    # "r i>one"). The string pool is non-moving, so a pointer into it survives.
+    vp: Ptr[uint8] = js_str_bytes(val)
+    vn: int32 = js_str_bytelen(val)
+    if _is_undef_str(vp, vn) != 0:
+        return js_undefined()
+    g_ih_setter_busy = 1
+    _apply_inner_html(thisv, vp, vn)
+    g_ih_setter_busy = 0
+    return js_undefined()
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
@@ -2069,6 +2141,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _cookie_read()
     if rel == NID_COOKIE_SET:
         return _cookie_write()
+    if rel >= NID_TC_GET and rel <= NID_IH_SET:
+        return _inner_accessor(rel)
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:
@@ -3672,6 +3746,14 @@ def _build_dom_interfaces():
     # The stateless element methods live HERE, once, not on every element (see
     # _attach_proto_methods: 32 fewer JS objects per registered element).
     _attach_proto_methods(g_proto_elem)
+    # textContent / innerHTML are LAZY here, not snapshots on every element:
+    # one accessor pair on the prototype instead of two strings per element.
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_native_fn(js_hbase + NID_TC_GET), \
+                       js_new_native_fn(js_hbase + NID_TC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("innerHTML"), 9, \
+                       js_new_native_fn(js_hbase + NID_IH_GET), \
+                       js_new_native_fn(js_hbase + NID_IH_SET))
     # el.style / el.classList carry per-element STATE, but their methods do not:
     # one shared copy each on the real interface prototype (which also makes
     # `el.style instanceof CSSStyleDeclaration` and
@@ -4167,36 +4249,58 @@ def _dom_readback():
         dom_ov_val_len[idx] = -1
         dom_ov_checked[idx] = -1
         changed: int32 = 0
-        # A truncated baseline can't be trusted as a "did the inner content
-        # change?" oracle — comparing the JS engine's FULL recomputed
-        # textContent/innerHTML against a cut-off baseline always mis-fires and
-        # the rewrite then re-serializes the whole element as flat text (tags
-        # lost, style/script leaked). Skip inner-content overrides for such
-        # elements; their attribute/style/hide overrides below still apply.
+        # DID SCRIPT TOUCH THIS ELEMENT'S INNER CONTENT?
+        #
+        # Two things used to make this question unanswerable on a real page.
+        # (1) The baseline was a snapshot in a shared 64 KiB arena, so on any
+        #     real document it was truncated or empty and the diff mis-fired —
+        #     the rewrite then re-serialised the element as flat escaped text
+        #     (tags lost, <style>/<script> leaking as prose). dom_orig_trunc
+        #     papered over that by skipping the check entirely.
+        # (2) The CURRENT value was read through js_str_ptr(), which renders via
+        #     a 64 KiB scratch ring slot and SILENTLY TRUNCATES past it — so an
+        #     untouched <body> looked mutated the moment its text exceeded 64 KiB.
+        #
+        # Both are gone. textContent/innerHTML are lazy prototype accessors, so
+        # an OWN property exists only if script read or wrote one (js_has_own);
+        # untouched elements are skipped without materialising anything. When
+        # one does exist we compare it, UNTRUNCATED (js_str_bytes), against the
+        # original re-derived by streaming the source span (_text_span_eq /
+        # _html_span_eq) — no stored baseline, exact at any size.
         # innerHTML (raw) takes priority over textContent (escaped) as inner.
-        hv: int32 = js_get_prop(o, cast[Ptr[uint8]]("innerHTML"), 9)
-        hp: Ptr[uint8] = js_str_ptr(hv)
-        hn: int32 = _cstr_len(hp)
-        if dom_orig_trunc[idx] != 0:
-            changed = 0
-        elif _bytes_eq(hp, hn, &dom_txtbuf[dom_html_off[idx]], \
-                     dom_html_len[idx]) == 0 and _is_undef_str(hp, hn) == 0:
+        hp: Ptr[uint8] = cast[Ptr[uint8]]("")
+        hn: int32 = 0
+        hown: int32 = js_has_own(o, cast[Ptr[uint8]]("innerHTML"), 9)
+        if hown != 0:
+            hv: int32 = js_get_prop(o, cast[Ptr[uint8]]("innerHTML"), 9)
+            hp = js_str_bytes(hv)
+            hn = js_str_bytelen(hv)
+            if _is_undef_str(hp, hn) != 0:
+                hown = 0
+            elif _html_span_eq(hp, hn, cast[uint64](dom_cstart[idx]), \
+                               cast[uint64](dom_cend[idx])) != 0:
+                hown = 0                                  # identical: untouched
+        if hown != 0:
             off: int32 = dom_ov_len
             k: int32 = 0
             while k < hn and dom_ov_len < DOM_OV_CAP:
                 dom_ovbuf[dom_ov_len] = hp[k]
                 dom_ov_len = dom_ov_len + 1
                 k = k + 1
+            if k < hn and dom_warn_ov == 0:
+                dom_warn_ov = 1
+                js_out_note(cast[Ptr[uint8]]("[engine] CEILING DOM_OV_CAP reached: a JS-written innerHTML/textContent is clipped in the render. DOM_OV_CAP="), DOM_OV_CAP)
             dom_ov_inner_off[idx] = off
             dom_ov_inner_len[idx] = k
             dom_ov_inner_html[idx] = 1
             changed = 1
-        else:
+        elif js_has_own(o, cast[Ptr[uint8]]("textContent"), 11) != 0:
             tc: int32 = js_get_prop(o, cast[Ptr[uint8]]("textContent"), 11)
-            tp: Ptr[uint8] = js_str_ptr(tc)
-            tn: int32 = _cstr_len(tp)
-            if _bytes_eq(tp, tn, &dom_txtbuf[dom_orig_off[idx]], \
-                         dom_orig_len[idx]) == 0 and _is_undef_str(tp, tn) == 0:
+            tp: Ptr[uint8] = js_str_bytes(tc)
+            tn: int32 = js_str_bytelen(tc)
+            if _is_undef_str(tp, tn) == 0 and \
+               _text_span_eq(tp, tn, cast[uint64](dom_cstart[idx]), \
+                             cast[uint64](dom_cend[idx])) == 0:
                 off2: int32 = dom_ov_len
                 k2: int32 = 0
                 while k2 < tn and dom_ov_len < DOM_OV_CAP:

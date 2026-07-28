@@ -375,6 +375,55 @@ def js_get_prop(objv: int32, name: Ptr[uint8], n: uint64) -> int32:
     return member_get(objv, str_new(name, cast[int32](n)))
 
 
+# Does `objv` carry `name` as its OWN property (not inherited)?
+# The embedder needs the distinction once an IDL attribute becomes a LAZY
+# prototype accessor: for `el.textContent`, "has an own property" means script
+# (or a memoizing getter) actually touched this element, while "no own property"
+# means untouched — which is what the DOM readback must test instead of diffing
+# a snapshot it can no longer afford to take for every element on the page.
+def js_has_own(objv: int32, name: Ptr[uint8], n: uint64) -> int32:
+    if tag_of(objv) != TAG_OBJ:
+        return 0
+    if obj_find_prop(objid_of(objv), str_new(name, cast[int32](n))) >= 0:
+        return 1
+    return 0
+
+
+# Install an OWN DATA property, bypassing the accessor walk and the member-set
+# hook. This is how a lazy accessor memoizes itself: the getter computes the
+# value once and stores it as a plain own property, which then shadows the
+# prototype accessor for every later read and write (own props win in both
+# member_get and member_set). Going through js_set_prop would re-enter the very
+# setter that is running.
+def js_set_own(objv: int32, name: Ptr[uint8], n: uint64, val: int32):
+    if tag_of(objv) != TAG_OBJ:
+        return
+    obj_set(objid_of(objv), str_new(name, cast[int32](n)), val)
+
+
+# UNTRUNCATED view of a string value's bytes.
+# js_str_ptr() renders through a 64 KiB scratch ring slot, so anything longer
+# came back SILENTLY TRUNCATED — which is what made the DOM readback mistake an
+# intact <body>.textContent for a mutated one and re-serialise a whole page as
+# escaped text. The string pool is documented NON-MOVING, so a pointer straight
+# into it is valid for as long as the value is live. NOT NUL-terminated: pair
+# with js_str_bytelen(). Non-string values fall back to js_str_ptr's rendering.
+def js_str_bytes(val: int32) -> Ptr[uint8]:
+    if tag_of(val) == TAG_STR:
+        return &sp_buf[st_off[strid_of(val)]]
+    return js_to_display(val)
+
+
+def js_str_bytelen(val: int32) -> int32:
+    if tag_of(val) == TAG_STR:
+        return st_len[strid_of(val)]
+    p: Ptr[uint8] = js_to_display(val)
+    i: int32 = 0
+    while p[i] != 0:
+        i = i + 1
+    return i
+
+
 # Define an ACCESSOR property from the host side. The embedder needs this for
 # the IDL attributes whose value cannot be a snapshot — `document.cookie` must
 # re-serialise the jar on every read and PARSE on every write, which a data
