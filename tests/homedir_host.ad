@@ -1,0 +1,127 @@
+# tests/homedir_host.ad — HOST unit test for lib/homedir.ad's passwd(5) home
+# resolution.
+#
+# THE BUG THIS GATES (USER report: "the /home/username/Desktop does not seem
+# to reflect the GUI desktop background"). hamdesktop resolved its icon-source
+# directory as $HOME/Desktop with a HARDCODED /home/live fallback. DE clients
+# are spawned by the compositor and inherit the ambient HOME="/" placeholder,
+# which the resolver correctly rejects — and then fell straight through to
+# /home/live. On the LIVE image that is right by accident; on an INSTALLED
+# system the user is whatever the wizard named them, so the GUI desktop
+# watched a directory the user could not write to and nothing they created in
+# their real ~/Desktop ever appeared.
+#
+# The fix routes the resolution through /etc/passwd BY UID. That step can only
+# be gated deterministically against a uid that is NOT the live image's 1001,
+# which is what this host test does: it feeds hd_parse_passwd_home a synthetic
+# passwd table and asserts the home it returns per uid.
+#
+# Built for the x86_64-linux Adder target; runs on the dev host, no QEMU.
+# TEST shim only: no syscalls except write(2) to fd 1.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+from lib.homedir import hd_parse_passwd_home
+
+
+# ---- stdout helpers ------------------------------------------------------
+obuf: Array[512, uint8]
+obuf_n: uint64 = 0
+
+def _o_ch(c: uint8):
+    if obuf_n < 511:
+        obuf[obuf_n] = c
+        obuf_n = obuf_n + 1
+
+def _o_str(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        _o_ch(s[i])
+        i = i + 1
+
+def _o_flush():
+    if obuf_n > 0:
+        sys_write(1, &obuf[0], obuf_n)
+        obuf_n = 0
+
+def _o_dec(v: uint64):
+    if v == 0:
+        _o_ch(48)
+        return
+    digs: Array[24, uint8]
+    n: uint64 = 0
+    while v > 0:
+        digs[n] = cast[uint8](v % 10) + 48
+        v = v / 10
+        n = n + 1
+    while n > 0:
+        n = n - 1
+        _o_ch(digs[n])
+
+
+# A representative /etc/passwd: the shipped system accounts, the live image's
+# `live` (uid 1001), and `bobby` — an INSTALLED system's wizard-created
+# account (uid 1002), the case the old hardcoded /home/live never handled.
+pw: Array[512, uint8]
+pw_n: uint64 = 0
+
+def _pw_line(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        pw[pw_n] = s[i]
+        pw_n = pw_n + 1
+        i = i + 1
+    pw[pw_n] = 10
+    pw_n = pw_n + 1
+
+
+def _build_pw():
+    pw_n = 0
+    _pw_line(cast[Ptr[uint8]]("# /etc/passwd — comment line, no fields"))
+    _pw_line(cast[Ptr[uint8]]("hostowner:x:1:1::/home/hostowner:/bin/hamsh"))
+    _pw_line(cast[Ptr[uint8]]("sshd:x:2:2::/var/empty:/bin/false"))
+    _pw_line(cast[Ptr[uint8]]("dave:x:1000:1000::/home/dave:/bin/hamsh"))
+    _pw_line(cast[Ptr[uint8]]("live:x:1001:1001::/home/live:/bin/hamsh"))
+    _pw_line(cast[Ptr[uint8]]("bobby:x:1002:1002::/home/bobby:/bin/hamsh"))
+    _pw_line(cast[Ptr[uint8]]("nobody:x:65534:65534::/nonexistent:/bin/false"))
+
+
+out: Array[128, uint8]
+
+def _case(label: Ptr[uint8], uid: uint64):
+    out[0] = 0
+    n: uint64 = hd_parse_passwd_home(&pw[0], pw_n, uid, &out[0], 128)
+    _o_str(label)
+    _o_str(cast[Ptr[uint8]](" uid="))
+    _o_dec(uid)
+    _o_str(cast[Ptr[uint8]](" len="))
+    _o_dec(n)
+    _o_str(cast[Ptr[uint8]](" home="))
+    if n > 0:
+        _o_str(&out[0])
+    else:
+        _o_str(cast[Ptr[uint8]]("<none>"))
+    _o_ch(10)
+    _o_flush()
+
+
+def main() -> int32:
+    _build_pw()
+    # The live image's user — the ONLY case the old hardcode got right.
+    _case(cast[Ptr[uint8]]("LIVE"), 1001)
+    # An INSTALLED system's wizard account: MUST resolve to ITS home, not
+    # /home/live. This is the user-reported failure.
+    _case(cast[Ptr[uint8]]("INSTALLED"), 1002)
+    # A second regular user (fixture account).
+    _case(cast[Ptr[uint8]]("REGULAR"), 1000)
+    # The hostowner admin identity.
+    _case(cast[Ptr[uint8]]("HOSTOWNER"), 1)
+    # An unknown uid must resolve to NOTHING (the caller then falls back),
+    # never to a neighbouring line's home.
+    _case(cast[Ptr[uint8]]("UNKNOWN"), 4242)
+    # `nobody`'s home is absolute but the account is not a real user; the
+    # parser is uid-exact, so asking for it returns exactly its own field.
+    _case(cast[Ptr[uint8]]("NOBODY"), 65534)
+    _o_str(cast[Ptr[uint8]]("HOMEDIR_HOST_DONE\n"))
+    _o_flush()
+    return 0

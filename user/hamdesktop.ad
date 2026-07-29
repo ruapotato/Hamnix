@@ -63,6 +63,7 @@ extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_read_nb(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
+extern def sys_mkdir(path: Ptr[char]) -> int32
 extern def sys_get_jiffies() -> uint64
 extern def sys_yield() -> int32
 extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char], flag: int32) -> int32
@@ -84,6 +85,7 @@ from lib.hamfmcore import fmc_set_cur_path, fmc_mkdir, \
 from lib.desktopentry import desktop_parse, desktop_name_ptr, \
     desktop_name_len, desktop_prog_ptr, desktop_prog_len, \
     desktop_liveonly, desktop_name_is_entry, desktop_icon_ptr
+from lib.homedir import hd_resolve_home
 from lib.hamscene import hamscene_length, hamscene_bufptr, hamscene_image
 
 
@@ -1549,15 +1551,14 @@ def _run_action(i: uint64):
         # installed one.
         k2: uint64 = 0
         if src[0] == 126:                                 # '~'
-            hb: Array[64, uint8]
-            hn: uint64 = _desk_read_home(&hb[0], 64)
+            hb: Array[128, uint8]
+            hn: uint64 = hd_resolve_home(&hb[0], 128)
             if hn <= 1 or hb[0] != 47:
-                # Ambient HOME is absent or the bare "/" placeholder;
-                # _desk_dir() has already resolved a real desktop dir, so
-                # take its parent as the home.
+                # Nothing resolvable at all; _desk_dir() has already settled on
+                # a real desktop dir, so take its parent as the home.
                 dd: Ptr[uint8] = _desk_dir()
                 hn = 0
-                while dd[hn] != 0 and hn < 63:
+                while dd[hn] != 0 and hn < 127:
                     hb[hn] = dd[hn]
                     hn = hn + 1
                 # Strip the trailing "/Desktop".
@@ -1732,11 +1733,40 @@ def _load_positions():
 # .desktop files), pins the new icon at the drop coordinate, and consumes the
 # offer. While an offer is pending the normal icon click/drag path is
 # suppressed. TTL-guarded so an abandoned drag can't wedge desktop clicks.
+#
+# OFFER LIFETIME — the bug that made this feature LOOK dead ------------------
+# DROP_TTL_JIF used to be 48. Jiffies are HZ=100, so that is 480 MILLISECONDS,
+# measured from the moment WE first see the sidecar — which is the moment the
+# menu crosses its 14px drag threshold, i.e. the START of the gesture, with the
+# button still held and the cursor still nowhere near the drop point. Every
+# human drag takes longer than that, so the offer ALWAYS self-destructed
+# mid-gesture and the release found nothing to commit. Measured on a real
+# UEFI/OVMF boot: an offer + click issued inside one guest command line
+# (~50 ms apart) commits correctly; the same pair 2.5 s apart finds the sidecar
+# already truncated and creates nothing. That is the whole of the user's
+# "dragging an app to the panel seems to not work now" and "dragging to the
+# desktop should create a .desktop file" — the receivers were fine, the offer
+# was being garbage-collected out from under them.
+#
+# The TTL now covers a real drag (6 s) and is pure garbage collection for a
+# sidecar nobody ever picks up. What used to justify the short TTL — "a stale
+# offer must not wedge/hijack button handling" — is handled properly instead,
+# by two conditions that describe what a drag ACTUALLY is:
+#   * the offer only SUPPRESSES the normal click path while the button is
+#     actually DOWN (a live drag). With the button up, clicks behave normally.
+#   * a commit requires HELD-BUTTON MOTION over us first (drop_moved). An
+#     inbound drag always carries motion — the menu only emits after 14 px of
+#     it, and the cursor still has to travel here. A plain click is press +
+#     release at one point, so a leftover offer can never turn an ordinary
+#     desktop click into a launcher.
 drop_active:   int32 = 0
 drop_exec:     Array[64, uint8]
 drop_label:    Array[24, uint8]
 drop_seen_jif: uint64 = 0
-DROP_TTL_JIF:  uint64 = 48
+drop_moved:    int32 = 0        # saw held-button motion since the offer arrived
+drop_last_x:   int64 = -1       # last held-button position (motion detector)
+drop_last_y:   int64 = -1
+DROP_TTL_JIF:  uint64 = 600
 drop_sidebuf:  Array[128, uint8]
 drop_entrybuf: Array[256, uint8]
 drop_pathbuf:  Array[160, uint8]
@@ -1800,6 +1830,9 @@ def _poll_desk_offer():
     if drop_active == 0:
         drop_active = 1
         drop_seen_jif = now
+        drop_moved = 0                          # fresh offer: no motion yet
+        drop_last_x = -1
+        drop_last_y = -1
     elif now - drop_seen_jif > DROP_TTL_JIF:
         _consume_drop_sidecar()
         drop_active = 0
@@ -1927,32 +1960,30 @@ def parse_pointer(s: Ptr[uint8], n: uint64, bx: Ptr[int64], by: Ptr[int64],
 # cpio root `/`). Provisioned at build time (build_initramfs.py plants the
 # /etc/skel/Desktop/*.desktop launcher template there).
 #
-# The dir is resolved from $HOME (/env/HOME) exactly like the file manager
-# (user/hamfmscene.ad::_fm_apply_start_dir): the DE apps are spawned by the
-# COMPOSITOR, not by hamsh, so they inherit an ambient env whose HOME is the
-# "/" placeholder — a bare "/" HOME is REJECTED here (it would make the
-# desktop dir "/Desktop") and we fall back to /home/live, the live user's real
-# home. The resolved value is cached in DESK_DIR, and every call REVALIDATES
-# the cache (an absolute path starting with '/'): if the cached string is ever
+# The dir is resolved through the SHARED resolver (lib/homedir.ad), the same
+# chain the file manager uses: $HOME (/env/HOME) -> /etc/passwd BY UID ->
+# /home/live.
+#
+# USER-REPORTED BUG (2026-07): "the /home/<username>/Desktop does not seem to
+# reflect the GUI desktop background." The old chain here was ONLY
+# $HOME-then-/home/live. DE clients are spawned by the COMPOSITOR, not by
+# hamsh, so they inherit an ambient env with NO HOME at all (an on-device
+# probe shows `cat /env/HOME` -> "file does not exist"), which meant the
+# fallback ALWAYS won: every boot watched /home/live/Desktop. On the LIVE image
+# that is right by accident — `live` IS the session user. On an INSTALLED
+# system the session user is whatever the installer wizard named them, so the
+# GUI desktop watched a directory that was not theirs and NOTHING they created
+# in their real ~/Desktop ever appeared. The periodic re-scan was working the
+# whole time; it was watching the wrong directory. Routing through
+# /etc/passwd-by-uid is the step that was missing (hamfmscene already had it —
+# see the #329/parity work — hamdesktop never got it).
+#
+# The resolved value is cached in DESK_DIR, and every call REVALIDATES the
+# cache (an absolute path starting with '/'): if the cached string is ever
 # lost, the next call rebuilds it instead of handing out an empty path, which
 # is what turned the icon grid into a ROOT listing.
-DESK_DIR: Array[64, uint8]
-
-
-def _desk_read_home(out: Ptr[uint8], cap: uint64) -> uint64:
-    fd: int32 = sys_open(cast[Ptr[char]]("/env/HOME"))
-    if fd < 0:
-        return 0
-    n: int64 = sys_read(fd, out, cap - 1)
-    sys_close(fd)
-    if n <= 0:
-        return 0
-    ln: uint64 = cast[uint64](n)
-    while ln > 0 and (out[ln - 1] == 0 or out[ln - 1] == 10 or \
-                      out[ln - 1] == 13 or out[ln - 1] == 32):
-        ln = ln - 1
-    out[ln] = 0
-    return ln
+DESK_DIR: Array[128, uint8]
+DESK_DIR_CAP: uint64 = 128
 
 
 def _desk_dir_exists(p: Ptr[uint8]) -> int32:
@@ -1963,11 +1994,13 @@ def _desk_dir_exists(p: Ptr[uint8]) -> int32:
     return 1
 
 
-# Append "/Desktop" to `home` into DESK_DIR. Returns 1 if it fits + exists.
-def _desk_try_home(home: Ptr[uint8], hl: uint64) -> int32:
+# Append "/Desktop" to `home` into DESK_DIR. Returns 1 if it FITS (it does NOT
+# require the directory to exist — see _desk_dir: a missing ~/Desktop is
+# CREATED, not a reason to go and watch somebody else's home).
+def _desk_build_from_home(home: Ptr[uint8], hl: uint64) -> int32:
     if hl <= 1 or home[0] != 47:                 # empty / relative / bare "/"
         return 0
-    if hl + 9 > 64:                              # "/Desktop" + NUL must fit
+    if hl + 9 > DESK_DIR_CAP:                    # "/Desktop" + NUL must fit
         return 0
     i: uint64 = 0
     while i < hl:
@@ -1982,7 +2015,7 @@ def _desk_try_home(home: Ptr[uint8], hl: uint64) -> int32:
         i = i + 1
         j = j + 1
     DESK_DIR[i] = 0
-    return _desk_dir_exists(&DESK_DIR[0])
+    return 1
 
 
 def _desk_set_default():
@@ -1994,14 +2027,20 @@ def _desk_set_default():
     DESK_DIR[i] = 0
 
 
+# The GUI desktop IS a view of ~/Desktop, so if the session user has no
+# Desktop directory yet we CREATE it rather than silently degrade to the
+# built-in three-icon fallback (or, worse, to another account's home). A user
+# who then drops a file in there sees it on the next ~1s re-scan — which is
+# the whole point of the model.
 def _desk_dir() -> Ptr[uint8]:
     if DESK_DIR[0] == 47:                        # cached + still absolute
         return &DESK_DIR[0]
-    hbuf: Array[64, uint8]
-    hl: uint64 = _desk_read_home(&hbuf[0], 64)
-    if hl > 1:
-        if _desk_try_home(&hbuf[0], hl) != 0:
-            return &DESK_DIR[0]
+    hbuf: Array[128, uint8]
+    hl: uint64 = hd_resolve_home(&hbuf[0], DESK_DIR_CAP)
+    if hl > 1 and _desk_build_from_home(&hbuf[0], hl) != 0:
+        if _desk_dir_exists(&DESK_DIR[0]) == 0:
+            sys_mkdir(cast[Ptr[char]](&DESK_DIR[0]))
+        return &DESK_DIR[0]
     _desk_set_default()                          # /home/live/Desktop
     return &DESK_DIR[0]
 
@@ -2587,8 +2626,26 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                                 # held-button drag across the desktop must not
                                 # select/launch an icon) and COMMIT a desktop
                                 # launcher at the release point on button-up.
-                                if drop_active != 0:
-                                    if btn_down == 0 and prev_btn_down == 1:
+                                #
+                                # The offer branch is entered ONLY while the
+                                # gesture is LIVE — the button is down, or this
+                                # very event is its release edge. A pending
+                                # offer with the button already up is a drag
+                                # that ended somewhere else; it must not eat
+                                # the user's ordinary desktop clicks for the
+                                # rest of the (now long) TTL.
+                                if drop_active != 0 and \
+                                        (btn_down == 1 or prev_btn_down == 1):
+                                    if btn_down == 1:
+                                        # Held-button motion over us = a live
+                                        # inbound drag (see drop_moved).
+                                        if drop_last_x >= 0 and \
+                                                (bx != drop_last_x or
+                                                 by != drop_last_y):
+                                            drop_moved = 1
+                                        drop_last_x = bx
+                                        drop_last_y = by
+                                    elif prev_btn_down == 1 and drop_moved != 0:
                                         if _commit_desk_drop(bx, by) != 0:
                                             changed = 1
                                     prev_btn_down = btn_down

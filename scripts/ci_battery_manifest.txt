@@ -4194,3 +4194,18 @@ bash scripts/test_hambrowse_docevent_host.sh
 # against scripts/wpt_baseline.txt: the number may only go up. Baseline at
 # registration: 395 PASS / 4063 subtests = 9.72%. ~2 min, QEMU-free.
 bash scripts/test_wpt_ratchet_host.sh
+# DESKTOP = A LIVE VIEW OF ~/Desktop (2026-07-29). Three USER-reported DE
+# failures, one root cause each. (a) A ~1 s host gate on the shared home
+# resolver: hamdesktop watched a HARDCODED /home/live/Desktop because
+# compositor-spawned clients have no $HOME, so on an INSTALLED system the GUI
+# desktop reflected an account that was not the user's. Resolution now goes
+# through /etc/passwd BY UID; this proves it for a uid that is not the live
+# image's 1001, with no install and no QEMU. REGISTERED 2026-07-29.
+bash scripts/test_de_home_resolve_host.sh
+# (b) The on-device EFFECT gate for all three: a file created in ~/Desktop must
+# appear in the rendered icon grid (and vanish when deleted), and a REAL
+# pointer drag out of the Applications menu must pin a launcher on the panel
+# and write a usable ~/Desktop/<Name>.desktop. Both drops were dead because the
+# #327 drag OFFER carried a 48-jiffy (480 ms) TTL measured from the START of
+# the gesture. ~5-10 min (one OVMF boot; rebuilds the image if stale).
+bash scripts/ci_run_gate.sh scripts/test_de_desktop_live_view.sh

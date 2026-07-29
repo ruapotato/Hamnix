@@ -2278,7 +2278,28 @@ pend_active:   int32 = 0
 pend_exec:     Array[64, uint8]
 pend_label:    Array[24, uint8]
 pend_seen_jif: uint64 = 0
-PEND_TTL_JIF:  uint64 = 48
+# OFFER LIFETIME — the bug that made drag-to-panel LOOK dead ----------------
+# This was 48. Jiffies are HZ=100, so that is 480 MILLISECONDS, measured from
+# the moment WE first see the sidecar — which is the moment the Applications
+# menu crosses its 14 px drag threshold, i.e. the START of the gesture, with
+# the button still held and the cursor still nowhere near the bar. Every human
+# drag takes longer than that, so the offer ALWAYS self-destructed mid-gesture
+# and the release found nothing to commit: the user's "dragging an app from
+# the app menu to the panel seems to not work now". It is a REGRESSION from
+# the #327 rework (135013df) — before that the panel committed the launcher
+# the instant it saw the sidecar (at a fixed spot), which worked; #327 made
+# the placement correct and the lifetime wrong. Measured on a real UEFI/OVMF
+# boot: offer + click issued ~50 ms apart commits; the same pair 2.5 s apart
+# finds the sidecar already truncated.
+#
+# The TTL now covers a real drag and is pure garbage collection. The reasons
+# the short TTL existed ("a stale offer must not wedge/hijack the bar") are
+# handled by what a drag actually IS: suppression only while the button is
+# DOWN, and a commit only after held-button MOTION over the bar (pend_moved).
+PEND_TTL_JIF:  uint64 = 600
+pend_moved:    int32 = 0        # saw held-button motion since the offer arrived
+pend_last_x:   int64 = -1
+pend_last_y:   int64 = -1
 
 # ---- LIVE DROP PREVIEW (user-reported) -----------------------------------
 # While a drag-from-menu offer is in flight and the cursor is over the bar, we
@@ -3866,6 +3887,9 @@ def _poll_panel_offer():
     if pend_active == 0:
         pend_active = 1                    # newly seen offer: start the TTL
         pend_seen_jif = now
+        pend_moved = 0                     # fresh offer: no motion yet
+        pend_last_x = -1
+        pend_last_y = -1
     elif now - pend_seen_jif > PEND_TTL_JIF:
         # Abandoned drag: discard so the panel/desktop aren't wedged.
         _consume_drop_sidecar()
@@ -4612,12 +4636,25 @@ def _drain_events(pi: uint64, sw: int64, sh: int64) -> int32:
             # Buttons newly RELEASED (down->up): set last event, clear now.
             g_release_edge = g_prev_bv & (bv ^ g_prev_bv)
             g_prev_bv = bv
-            if pend_active != 0:
-                # A drag-from-menu offer is in flight. SUPPRESS normal bar
-                # button handling (a held-button drag across the bar must not
-                # toggle a widget or launch), and COMMIT the launcher at the
-                # release point on the left-button RELEASE over this bar (#327).
-                if (g_release_edge & 1) != 0 and _on_bar(xv, yv, bar) != 0:
+            if pend_active != 0 and ((bv & 1) != 0 or (g_release_edge & 1) != 0):
+                # A drag-from-menu offer is in flight AND the gesture is LIVE
+                # (button down, or this very event is its release edge).
+                # SUPPRESS normal bar button handling (a held-button drag
+                # across the bar must not toggle a widget or launch), and
+                # COMMIT the launcher at the release point on the left-button
+                # RELEASE over this bar (#327). A pending offer with the button
+                # already UP is a drag that ended elsewhere: it falls through
+                # to normal handling so it cannot eat the user's clicks for the
+                # rest of the (now long) TTL.
+                if (bv & 1) != 0:
+                    # Held-button motion over the bar = a live inbound drag.
+                    if pend_last_x >= 0 and (xv != pend_last_x
+                                             or yv != pend_last_y):
+                        pend_moved = 1
+                    pend_last_x = xv
+                    pend_last_y = yv
+                if (g_release_edge & 1) != 0 and pend_moved != 0 \
+                        and _on_bar(xv, yv, bar) != 0:
                     if _commit_panel_drop(pi, _flow_of(xv, yv)) != 0:
                         need_redraw = 1
                     # committed: tear down the live preview.

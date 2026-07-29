@@ -1,0 +1,152 @@
+# lib/homedir.ad
+#
+# SHARED "where is THIS session's home directory?" resolver.
+#
+# WHY THIS EXISTS. Every DE client that wants the user's files (the file
+# manager's start dir, the desktop's ~/Desktop icon source, ...) has to answer
+# the same question, and each one that answered it privately got it wrong in
+# the same way: they hardcoded `/home/live`. `live` is the LIVE IMAGE's user
+# (uid 1001); an INSTALLED system names its regular user whatever the wizard
+# collected, so on a real install every one of those clients silently pointed
+# at a directory that does not exist. That is the "/home/<username>/Desktop
+# does not reflect the GUI desktop" report: the desktop was watching
+# /home/live/Desktop, a path the installed user could never write to.
+#
+# RESOLUTION ORDER (the order that is correct for BOTH the live image and an
+# installed system):
+#   1. $HOME from /env/HOME, if it is absolute and LONGER than the bare "/".
+#      DE clients are spawned by the COMPOSITOR, not by hamsh, so they inherit
+#      an ambient env whose HOME is the "/" placeholder — a bare "/" is NOT a
+#      home and must not be treated as one (it turns "$HOME/Desktop" into
+#      "/Desktop" and the icon grid into a ROOT listing).
+#   2. /etc/passwd field 6 of the line whose uid field (field 3) equals
+#      sys_getuid(). This is the step that makes an installed system work:
+#      the session runs as the wizard's account, so its real home comes back.
+#   3. /home/live — the live image's user, as a last resort.
+#
+# The resolver does NOT check that the directory exists: callers decide
+# whether a missing home is fatal, and some (hamdesktop) CREATE the subtree
+# they need. It never returns an empty or relative path — the return is 0
+# ("unresolvable") or a NUL-terminated absolute path.
+
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+extern def sys_getuid() -> uint32
+
+hd_pw_scratch: Array[4096, uint8]
+
+
+# Read /env/HOME into `out` (NUL-terminated, trailing whitespace stripped).
+# Returns the length, 0 if unreadable/empty.
+def hd_env_home(out: Ptr[uint8], cap: uint64) -> uint64:
+    if cap < 2:
+        return 0
+    fd: int32 = sys_open(cast[Ptr[char]]("/env/HOME"))
+    if fd < 0:
+        return 0
+    n: int64 = sys_read(fd, out, cap - 1)
+    sys_close(fd)
+    if n <= 0:
+        return 0
+    ln: uint64 = cast[uint64](n)
+    while ln > 0 and (out[ln - 1] == 0 or out[ln - 1] == 10 or \
+                      out[ln - 1] == 13 or out[ln - 1] == 32):
+        ln = ln - 1
+    out[ln] = 0
+    return ln
+
+
+# PURE passwd(5) parse: field 6 (home) of the line whose field 3 (uid) equals
+# `uid`. No I/O — the caller supplies the file bytes, so this is directly
+# host-unit-testable against a synthetic table (tests/homedir_host.ad), which
+# is the only way to gate the INSTALLED-system case (a uid that is not the
+# live image's 1001) without performing a full install.
+# Returns the length written to `out` (0 = no match / home not absolute /
+# home does not fit in `cap`).
+def hd_parse_passwd_home(buf: Ptr[uint8], blen: uint64, uid: uint64,
+                         out: Ptr[uint8], cap: uint64) -> uint64:
+    p: uint64 = 0
+    while p < blen:
+        q: uint64 = p
+        while q < blen and buf[q] != 10:
+            q = q + 1
+        # name:passwd:uid:gid:gecos:home:shell
+        f: uint64 = 0
+        fs: uint64 = p
+        uid_val: uint64 = 0
+        have_uid: int32 = 0
+        home_s: uint64 = 0
+        home_e: uint64 = 0
+        i: uint64 = p
+        while i <= q:
+            if i == q or buf[i] == 58:                     # ':' or EOL
+                if f == 2:
+                    v: uint64 = 0
+                    k: uint64 = fs
+                    ok: int32 = 1
+                    while k < i:
+                        if buf[k] < 48 or buf[k] > 57:
+                            ok = 0
+                        else:
+                            v = v * 10 + cast[uint64](buf[k] - 48)
+                        k = k + 1
+                    if ok != 0 and i > fs:
+                        uid_val = v
+                        have_uid = 1
+                elif f == 5:
+                    home_s = fs
+                    home_e = i
+                f = f + 1
+                fs = i + 1
+            i = i + 1
+        if have_uid != 0 and uid_val == uid \
+                and home_e > home_s + 1 and buf[home_s] == 47:
+            hl: uint64 = home_e - home_s
+            if hl + 1 < cap:
+                j: uint64 = 0
+                while j < hl:
+                    out[j] = buf[home_s + j]
+                    j = j + 1
+                out[hl] = 0
+                return hl
+        p = q
+        if p < blen and buf[p] == 10:
+            p = p + 1
+    return 0
+
+
+# Field 6 of the /etc/passwd line whose uid field matches sys_getuid().
+# Returns the length written (0 = no match / unreadable / not absolute).
+def hd_home_from_passwd(out: Ptr[uint8], cap: uint64) -> uint64:
+    uid: uint32 = sys_getuid()
+    fd: int32 = sys_open(cast[Ptr[char]]("/etc/passwd"))
+    if fd < 0:
+        return 0
+    n: int64 = sys_read(fd, &hd_pw_scratch[0], 4095)
+    sys_close(fd)
+    if n <= 0:
+        return 0
+    return hd_parse_passwd_home(&hd_pw_scratch[0], cast[uint64](n),
+                                cast[uint64](uid), out, cap)
+
+
+# The full chain: $HOME -> /etc/passwd(uid) -> /home/live.
+# Returns the length written, 0 only if `cap` is too small for even the
+# fallback.
+def hd_resolve_home(out: Ptr[uint8], cap: uint64) -> uint64:
+    hl: uint64 = hd_env_home(out, cap)
+    if hl > 1 and out[0] == 47:
+        return hl
+    pl: uint64 = hd_home_from_passwd(out, cap)
+    if pl > 1:
+        return pl
+    fb: Ptr[uint8] = cast[Ptr[uint8]]("/home/live")
+    k: uint64 = 0
+    while fb[k] != 0 and k + 1 < cap:
+        out[k] = fb[k]
+        k = k + 1
+    if k == 0:
+        return 0
+    out[k] = 0
+    return k
