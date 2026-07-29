@@ -186,8 +186,9 @@ def timer_schedule_fn(fnv: int32, delay: float64) -> int32:
 
 
 # Drain the task queue: pop due callbacks in (microtask-first, delay, insertion)
-# order and invoke them, capped at TIMER_DRAIN_CAP total invocations so a
-# self-re-enqueuing setInterval cannot spin forever. NOT wall-clock async.
+# order and invoke them, capped at timer_drain_cap total invocations so a
+# self-re-enqueuing setInterval cannot spin forever (the cap leaves the rest
+# QUEUED and reports itself — see note_drain_trunc). NOT wall-clock async.
 # Pop and run ONE due callback (microtask-first, then delay, then insertion).
 # Returns 1 if a task ran, 0 if the queue was empty. Shared by drain_timers
 # (the end-of-turn drain) and drain_until_settled (the await drain) so both use

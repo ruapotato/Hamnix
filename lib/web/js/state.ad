@@ -506,17 +506,58 @@ pr_overflow:  int32 = 0           # .then registrations DROPPED (pool full)
 pr_noted:     int32 = 0           # one-shot latch for the CEILING report
 
 # ---- Promise combinator cells (Promise.all / race / allSettled shared state) ----
+#
+# STILL BUMP-ONLY, deliberately, and now loud (promise_combinator). One cell per
+# Promise.all / race / allSettled / any CALL, so a page that awaits a combinator
+# per turn is a hard stop at COMB_CAP turns. Reclamation is the same shape of
+# problem as res_flag: a cell is live while any of its per-element NAT_COMB_*
+# closures can still fire, which is object liveness, not a bump counter.
 COMB_CAP: int32 = 4096
 comb_result:    Array[4096, int32]   # result promise VALUE handle
 comb_remaining: Array[4096, int32]   # count still to settle (all / allSettled)
 comb_results:   Array[4096, int32]   # results ARRAY value (all / allSettled)
 comb_kind:      Array[4096, uint8]   # 0 = all, 1 = race, 2 = allSettled
 comb_n: int32 = 0
+comb_noted: int32 = 0                # one-shot latch for the CEILING report
 
 # ---- resolver "alreadyCalled" cells shared by a resolve/reject closure pair ----
+#
+# One cell per resolve/reject PAIR, and a pair is minted at exactly two places:
+# `new Promise(executor)` and the adoption of a thenable. So this pool was a hard
+# BUMP-ONLY ceiling of RES_FLAG_CAP `new Promise(...)` calls PER PAGE — the
+# binding wall on any promise-using page once the leaks above were fixed — and
+# alloc_res_flag had NO BOUNDS CHECK, so past it the writes went into whatever
+# BSS follows res_flag.
+#
+# RETENTION ARGUMENT (gc_res_sweep, piggybacked on the object collector). Unlike
+# the pools above, a cell's liveness is purely an OBJECT question, and a precise
+# one: the only things that can ever read a cell are the resolve/reject closures
+# minted with it, which carry its index in obj_p_b and are identifiable by
+# obj_fn_native. So:
+#   * The sweep runs at the END of gc_collect_objs, where a dead closure has
+#     already been freed and had its obj_fn_native/obj_p_b CLEARED, so surviving
+#     resolvers are exactly the live ones. The free list is rebuilt from scratch
+#     each time (like the value collector), so a still-free cell is listed once.
+#   * res_pin covers the IN-FLIGHT cell. Both mint sites read res_flag[slot]
+#     AFTER invoking user code (the executor / the thenable's `then`), and while
+#     that user code runs the pair may become garbage. Today both sites sit
+#     inside a native call, where gc_disabled already blocks collection — but
+#     relying on that would make this correct only by a coincidence two modules
+#     away, and the failure mode is a recycled cell letting a settled promise
+#     settle twice. The pin is a depth COUNT: adoption nests.
+#   * A cell whose flag is already 1 is still retained while a live closure names
+#     it: that closure must keep SEEING 1 to refuse the second call.
 RES_FLAG_CAP: int32 = 16384
 res_flag: Array[16384, uint8]
-res_flag_n: int32 = 0
+res_link: Array[16384, int32]     # free-list link (-1 terminator)
+res_mark: Array[16384, uint8]     # sweep scratch: named by a live resolver closure
+res_pin:  Array[16384, int32]     # >0 while a mint site is mid-invoke on this cell
+res_flag_n: int32 = 0             # bump frontier (allocated EXTENT, not "free")
+res_free_head: int32 = -1
+res_live:      int32 = 0          # cells currently allocated
+res_live_hi:   int32 = 0          # high-water of res_live
+res_recycled:  int32 = 0          # cells served off the free list
+res_flag_noted: int32 = 0         # one-shot latch for the CEILING report
 
 # ---- fetch() fixture table (deterministic data source; no network) ----
 # Each __setFetchFixture(url, {...}) registration is one row keyed by the url

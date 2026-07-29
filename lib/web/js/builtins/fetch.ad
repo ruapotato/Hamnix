@@ -566,6 +566,14 @@ def promise_combinator(iterable: int32, kind: int32) -> int32:
             promise_reject(objid_of(result), make_type_error(cast[Ptr[uint8]]("All promises were rejected")))
         return result
     if comb_n >= COMB_CAP:
+        # Also still bump-only (one cell per Promise.all/race/allSettled/any call
+        # — see the note above the comb_* block in state.ad). This used to return
+        # a promise that could NEVER settle, with nothing said: the page's whole
+        # `await Promise.all(...)` step simply vanished.
+        if comb_noted == 0:
+            comb_noted = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING promise combinator pool exhausted — Promise.all/race/allSettled/any return promises that can never settle. COMB_CAP="), COMB_CAP)
+        set_error(cast[Ptr[uint8]]("promise combinator pool exhausted"))
         return result
     comb: int32 = comb_alloc(kind, result, n, results)
     i: int32 = 0

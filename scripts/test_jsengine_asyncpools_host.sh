@@ -180,9 +180,22 @@ check_loud() {
         ok "$name reports its ceiling instead of dropping work silently"
     fi
 }
+# COMB_CAP stays BUMP-ONLY (one cell per Promise.all/race/allSettled/any call;
+# reclaiming it is an object-lifetime question — see state.ad), so it must at
+# least name itself. RES_FLAG_CAP is NOT gated for exhaustion here on purpose:
+# now that its cells are reclaimed off the object sweep, 16,384 SIMULTANEOUSLY
+# live resolve/reject pairs need more live objects than the 40,000-object arena
+# holds, so the object ceiling (itself loud) is always hit first. Its bounds check
+# is a memory-safety guard, not a reachable gate — what IS gated is the
+# reclamation, below.
+cat > "$D/loud_comb.js" <<'EOF'
+for (var i = 0; i < 5000; i++) Promise.all([Promise.resolve(i)]);
+console.log("COMBINED_OK");
+EOF
 check_loud loud_timer "$D/loud_timer.js" "CEILING timer table full"
 check_loud loud_pr    "$D/loud_pr.js"    "CEILING promise reaction pool full"
 check_loud loud_mse   "$D/loud_mse.js"   "CEILING Map/Set entry pool full"
+check_loud loud_comb  "$D/loud_comb.js"  "CEILING promise combinator pool exhausted"
 
 # The per-drain fairness budget is a DIFFERENT thing (it loses no work) but it
 # was equally silent. It must announce itself too.
@@ -323,6 +336,39 @@ else
     bad "GC stress changed the result (missing root):"; diff -u "$D/liveretain.out" "$D/liveretain.stress" | sed -n '1,20p'
 fi
 
+cat > "$D/resretain.js" <<'EOF'
+// L4 — a HELD resolver's "alreadyCalled" cell must not be recycled underneath it.
+//      The cell is SHARED by a resolve/reject pair, and its whole job is to make
+//      the SECOND call a no-op. So if the sweep hands a live pair's cell to a new
+//      pair, whichever fires second is silently REFUSED and its promise never
+//      settles — exactly the corruption a wrong retention rule causes here. 300
+//      held resolvers are fired after 60,000 throwaway promises have churned the
+//      pool and forced collections; every one must still settle.
+var held = [], settled = 0;
+for (var i = 0; i < 300; i++) (function (k) {
+  var r;
+  var p = new Promise(function (res) { r = res; });
+  p.then(function () { settled = settled + 1; });
+  held.push(r);
+})(i);
+for (var j = 0; j < 5000; j++) { var t = new Promise(function (res) { res(j); }); }
+if (typeof gc === "function") gc();
+// Then allocate FRESH pairs, so any cell the sweep wrongly freed is handed out
+// again and its new owner's res() sets the shared flag — which is what silently
+// refuses the held resolver below.
+for (var j = 0; j < 2000; j++) { var t2 = new Promise(function (res) { res(j); }); }
+for (var i = 0; i < 300; i++) held[i]("v" + i);
+setTimeout(function () { console.log("L4 held-resolvers-settled=" + settled + "/300"); }, 300);
+EOF
+timeout 300 "$BIN" "$D/resretain.js" >"$D/resretain.out" 2>&1
+HAMNIX_JS_GC_STRESS=1 timeout 600 "$BIN" "$D/resretain.js" >"$D/resretain.stress" 2>&1
+if grep -q "^L4 held-resolvers-settled=300/300\$" "$D/resretain.out" && \
+   grep -q "^L4 held-resolvers-settled=300/300\$" "$D/resretain.stress"; then
+    ok "300 held resolver pairs keep their own cells across 7k promises of churn + gc() (plain + gc stress)"
+else
+    bad "a LIVE resolver pair lost its cell: $(tail -1 "$D/resretain.out") / stress: $(tail -1 "$D/resretain.stress")"
+fi
+
 # An abandoned pending promise carrying a .then used to be IMMORTAL: the record
 # rooted the promise (pr_source, scanned wholesale) and the promise rooted the
 # record (prom_react). 100k of them died at ~4,000 with "object pool exhausted".
@@ -332,10 +378,18 @@ console.log("ABANDONED_OK");
 EOF
 HAMNIX_JS_ARENA_STATS=1 timeout 300 "$BIN" "$D/abandoned.js" >"$D/abandoned.out" 2>"$D/abandoned.stat"
 arec=$(tr ' ' '\n' <"$D/abandoned.stat" | sed -n 's/^prrecyc=//p')
+ares=$(tr ' ' '\n' <"$D/abandoned.stat" | sed -n 's/^resrecyc=//p')
 if grep -q "^ABANDONED_OK\$" "$D/abandoned.out" && [ -n "$arec" ] && [ "$arec" -gt 50000 ]; then
     ok "100k abandoned pending promises with .then are collectable (prrecyc=$arec)"
 else
     bad "abandoned pending promises still leak: $(tail -1 "$D/abandoned.out") prrecyc=$arec"
+fi
+# The resolver-flag cells those 100k `new Promise(...)` calls minted must come
+# back too: one cell per pair, bump-only, was a hard 16,384-promise-per-page wall.
+if [ -n "$ares" ] && [ "$ares" -gt 50000 ]; then
+    ok "resolver-flag cells recycle off the object sweep (resrecyc=$ares)"
+else
+    bad "resolver-flag cells are not being reclaimed (resrecyc=$ares, want > 50000)"
 fi
 
 if [ "$fail" -eq 0 ]; then

@@ -682,6 +682,8 @@ def gc_collect_objs():
             freed = freed + 1
         o = o - 1
     obj_last_freed = freed
+    # ---- resolver "alreadyCalled" cells, reclaimed off the same sweep ----------
+    gc_res_sweep()
     # ---- trigger policy for the NEXT object collection (mirrors gc_collect) ----
     if gc_stress != 0:
         nw2: int32 = n_objs + OBJ_STRESS_GAP
@@ -695,6 +697,41 @@ def gc_collect_objs():
         if nw > MAX_OBJ:
             nw = MAX_OBJ
         obj_hi_water = nw
+
+
+# Rebuild the resolver-flag free list. Runs at the END of gc_collect_objs, where
+# every dead object has already been freed and had its obj_fn_native / obj_p_b
+# CLEARED by obj_gc_free — so the resolver closures still identifiable below are
+# exactly the live ones, and each names the one cell it can still read.
+#
+# See the RETENTION ARGUMENT above the res_* block in state.ad. The list is
+# rebuilt from scratch (head reset first) so a cell that is already free is added
+# exactly once, and res_pin holds back the cell a mint site is mid-invoke on.
+def gc_res_sweep():
+    i: int32 = 0
+    while i < res_flag_n:
+        res_mark[i] = cast[uint8](0)
+        i = i + 1
+    o: int32 = 0
+    while o < n_objs:
+        if obj_freed[o] == 0:
+            nat: int32 = obj_fn_native[o]
+            if nat == NAT_PROMISE_RESOLVE_FN or nat == NAT_PROMISE_REJECT_FN:
+                s: int32 = obj_p_b[o]
+                if s >= 0 and s < res_flag_n:
+                    res_mark[s] = cast[uint8](1)
+        o = o + 1
+    res_free_head = -1
+    live: int32 = 0
+    s2: int32 = res_flag_n - 1
+    while s2 >= 0:
+        if res_mark[s2] == 0 and res_pin[s2] == 0:
+            res_link[s2] = res_free_head
+            res_free_head = s2
+        else:
+            live = live + 1
+        s2 = s2 - 1
+    res_live = live
 
 
 # Capacity -> array-storage free-list class. arr_grow only ever allocates a
@@ -983,4 +1020,20 @@ def js_arena_stat(which: int32) -> int32:
         return mse_overflow
     if which == 39:
         return MS_CAP
+    #  40 res_live  41 res_live_hi  42 res_flag_n (extent)
+    #  43 res_recycled  44 RES_FLAG_CAP  45 comb_n  46 COMB_CAP
+    if which == 40:
+        return res_live
+    if which == 41:
+        return res_live_hi
+    if which == 42:
+        return res_flag_n
+    if which == 43:
+        return res_recycled
+    if which == 44:
+        return RES_FLAG_CAP
+    if which == 45:
+        return comb_n
+    if which == 46:
+        return COMB_CAP
     return -1

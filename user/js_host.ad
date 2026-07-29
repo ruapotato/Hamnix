@@ -235,7 +235,7 @@ def _env_is_set(argc: int32, argv: Ptr[uint64], key: Ptr[uint8]) -> int32:
 # each pool actually reached over the run. Exists so a pool-exhaustion report
 # can be diagnosed as leak / lifetime bug / genuine capacity need by MEASURING
 # occupancy, rather than by raising a constant and hoping.
-stat_buf: Array[1024, uint8]
+stat_buf: Array[2048, uint8]
 
 
 def _ap_i32(buf: Ptr[uint8], at: int32, v: int32) -> int32:
@@ -291,6 +291,11 @@ def _dump_arena_stats():
     n = _ap_stat(n, cast[Ptr[uint8]]("msemax="), 39)
     n = _ap_stat(n, cast[Ptr[uint8]]("mserecyc="), 37)
     n = _ap_stat(n, cast[Ptr[uint8]]("mseovf="), 38)
+    n = _ap_stat(n, cast[Ptr[uint8]]("reshi="), 41)
+    n = _ap_stat(n, cast[Ptr[uint8]]("resmax="), 44)
+    n = _ap_stat(n, cast[Ptr[uint8]]("resrecyc="), 43)
+    n = _ap_stat(n, cast[Ptr[uint8]]("comb="), 45)
+    n = _ap_stat(n, cast[Ptr[uint8]]("combmax="), 46)
     stat_buf[n] = 10
     stat_buf[n + 1] = 0
     sys_write(2, &stat_buf[0], cast[uint64](n + 1))

@@ -447,6 +447,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
             call_args[call_top] = resfn
             call_args[call_top + 1] = rejfn
             call_top = call_top + 2
+            res_flag_pin(eslot)              # read back below, across the executor
             invoke(execu, v_undef(), eb, 2)
             call_top = eb
             if ctl == CTL_THROW:
@@ -455,6 +456,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
                 if cast[int32](res_flag[eslot]) == 0:
                     res_flag[eslot] = cast[uint8](1)
                     promise_reject(po, exr)
+            res_flag_unpin(eslot)
         return pv
     if id == NAT_PROMISE_RESOLVE_FN:
         rfo: int32 = native_self
