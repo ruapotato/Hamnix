@@ -158,9 +158,28 @@ BUSYBOX_APPLETS = [
 
 
 def _write(out_path: Path, lines: list[str]) -> None:
+    """Write only if the CONTENT changed — never just bump the mtime.
+
+    These manifests live under etc/, which scripts/_installer_img.sh scans by
+    MTIME to decide whether build/hamnix-installer.img is stale
+    (_HAMNIX_IMG_INPUT_DIRS includes "etc"). Rewriting byte-identical content
+    with a fresh mtime pushed "newest tracked build input" past any artifact
+    built earlier in the same session, so test_artifact_freshness.sh reported
+    STALE for images that were in fact current — a false red on the one guard
+    whose job is telling us when an artifact is genuinely out of date.
+    A guard that cries wolf gets disabled, so fix the generator, not the guard.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    text = "\n".join(lines) + "\n"
     n = sum(1 for ln in lines if ln and not ln.startswith("#"))
+    try:
+        if out_path.read_text(encoding="utf-8") == text:
+            print(f"[gen_install_manifest] {out_path} unchanged "
+                  f"({n} entries) — mtime left alone", flush=True)
+            return
+    except (OSError, UnicodeDecodeError):
+        pass
+    out_path.write_text(text, encoding="utf-8")
     print(f"[gen_install_manifest] wrote {out_path} ({n} entries)",
           flush=True)
 
@@ -378,10 +397,9 @@ def main() -> int:
     for applet in BUSYBOX_APPLETS:
         lines.append(f"bin/{applet}    {src_root}/bin/{applet}")
 
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"[gen_install_manifest] wrote {out_path} "
-          f"({sum(1 for ln in lines if ln and not ln.startswith('#'))} "
-          f"entries)", flush=True)
+    # Same content-compare discipline as _write(): see its docstring for why a
+    # no-op mtime bump on a tracked etc/ file makes the freshness guard lie.
+    _write(out_path, lines)
 
     # The two manifests the PACKAGE-driven installer (user/install.ad,
     # the path the desktop "Install Hamnix" icon drives) consumes. They
