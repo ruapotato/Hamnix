@@ -181,9 +181,11 @@ merely unobservable.
 Ordered by subtests recovered per unit of work. Each row is measured, not
 guessed; the repro column is a minimal page that reproduces it.
 
-### 1. `getComputedStyle()` re-enters the event loop mid-call — **~250 subtests, all of CSS**
+### 1. `getComputedStyle()` re-enters the event loop mid-call — **166 confirmed, all of CSS**
 
-`css/css-cascade` scores **0.0 %** (0 / 243, 25 files silent) and it is one bug.
+`css/css-cascade` scores **0.0 %** (0 / 243, with a further 25 files silent) and
+it is one bug. 166 of those are confirmed against chromium; the rest are in
+files we cannot get a comparable reading from yet.
 Calling `getComputedStyle()` pumps the timer queue from inside the call. In a
 testharness page that means `testharness.js`'s own watchdog timer fires *in the
 middle of the first `test()`*, the harness declares itself complete with one
