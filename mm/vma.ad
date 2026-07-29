@@ -110,7 +110,13 @@ from kernel.rcu.rcu import (
 )
 from arch.x86.kernel.setup_percpu import get_cpu_id
 from mm.slab import kmalloc, kfree
-from mm.page_alloc import alloc_pages, alloc_page, free_pages, free_page, _pa_link_ok, page_alloc_owns
+from mm.page_alloc import (
+    alloc_pages, alloc_page, free_pages, free_page, _pa_link_ok,
+    page_alloc_owns, pa_set_site, pa_set_tag, pa_set_owner,
+    PA_SITE_VMA_LARGE, PA_SITE_VMA_FIXED, PA_SITE_VMA_PREFAULT,
+    PA_SITE_VMA_FILE, PA_SITE_VMA_HUGE, PA_SITE_VMA_ANON,
+    PA_SITE_VMA_SWAPIN, PA_SITE_VMA_GROW,
+)
 from mm.cow import cow_drop_page, cow_pte_bit, cow_boot_cr3, \
     cow_ref_inc, cow_refcount
 from mm.swap import (
@@ -3719,6 +3725,8 @@ def _vma_alloc_large(slot: uint64, length: uint64, prot: int32,
         if remain < csize:
             csize = remain
         corder: int32 = _order_for_chunk(csize)
+        pa_set_site(PA_SITE_VMA_LARGE)
+        pa_set_owner(slot)
         cphys: uint64 = alloc_pages(corder)
         if cphys == 0:
             printk1("vma: large alloc OOM at chunk order=%d\n",
@@ -3846,6 +3854,8 @@ def _vma_alloc_fixed_at(slot: uint64, addr_in: uint64, length: uint64,
         if remain < csize:
             csize = remain
         corder: int32 = _order_for_chunk(csize)
+        pa_set_site(PA_SITE_VMA_FIXED)
+        pa_set_owner(slot)
         cphys: uint64 = alloc_pages(corder)
         if cphys == 0:
             ok = 0
@@ -4157,6 +4167,8 @@ def _vma_alloc_locked(slot: uint64, addr_in: uint64, len_in: uint64,
                             pw2 = 1
                         pgv: uint64 = addr_in
                         while pgv < end_req:
+                            pa_set_site(PA_SITE_VMA_PREFAULT)
+                            pa_set_owner(slot)
                             zf: uint64 = alloc_page()
                             if zf != 0:
                                 _vma_zero_phys(zf, VMA_PAGE_SIZE)
@@ -4869,6 +4881,8 @@ def _vma_demand_fault_file_shared(slot: uint64, pml4_phys: uint64,
     # MISS: allocate the frame, fill it from the backing file, register it
     # as the shared frame for this key, and map it. Allocation happens
     # OUTSIDE the cache lock (alloc_page may sleep on reclaim).
+    pa_set_site(PA_SITE_VMA_FILE)
+    pa_set_owner(slot)
     newp: uint64 = alloc_page()
     if newp == 0:
         printk1("vma: shared-mmap demand OOM at va=0x%x\n", fault_va)
@@ -5113,6 +5127,8 @@ def _vma_demand_fault_huge(slot: uint64, pml4_phys: uint64,
     # buddy allocator's memblock fallback aligns a 2 MiB request to 2 MiB,
     # and a split from a higher order is also naturally aligned — so the
     # returned base is guaranteed 2 MiB-aligned (required by a PS=1 PDE).
+    pa_set_site(PA_SITE_VMA_HUGE)
+    pa_set_owner(slot)
     phys: uint64 = alloc_pages(VMA_HUGE_ORDER)
     if phys == 0:
         nscap_mem_uncharge_slot(slot, VMA_HUGE_SIZE)
@@ -5286,6 +5302,9 @@ def _vma_demand_fault_inner(slot: uint64, pml4_phys: uint64,
 
     # Allocate one physical page and zero-fill it (anonymous mapping
     # contract: demand pages read as zero on first access).
+    pa_set_site(PA_SITE_VMA_ANON)
+    pa_set_owner(slot)
+    pa_set_tag(fault_va)
     phys: uint64 = alloc_page()
     if phys == 0:
         # Charged but couldn't get a page — give the charge back so the
@@ -5751,6 +5770,8 @@ def vma_swap_in_fault(slot: uint64, pml4_phys: uint64,
         return 0
     # It IS a swap entry. Decode the slot, allocate a restore page.
     sw_slot: uint64 = swap_pte_slot(pte)
+    pa_set_site(PA_SITE_VMA_SWAPIN)
+    pa_set_owner(slot)
     phys: uint64 = alloc_page()
     if phys == 0:
         printk1("vma: swap-in OOM at va=0x%x\n", fault_va)
@@ -6139,6 +6160,8 @@ def _vma_grow_in_place(slot: uint64, node: uint64, old_end: uint64,
         if remain < csize:
             csize = remain
         corder: int32 = _order_for_chunk(csize)
+        pa_set_site(PA_SITE_VMA_GROW)
+        pa_set_owner(slot)
         cphys: uint64 = alloc_pages(corder)
         if cphys == 0:
             ok = 0

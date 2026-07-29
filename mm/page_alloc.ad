@@ -34,7 +34,7 @@
 
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
 from mm.cow import cow_boot_cr3, cow_refcount, cow_drop_page
-from kernel.printk.printk import printk1, printk2, printk_set_level
+from kernel.printk.printk import printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 # #mm-parity: reset a frame's struct-page descriptor (LRU membership,
 # rmap, flags, mapcount) when it is freed, so a later re-allocation of the
@@ -287,6 +287,369 @@ def page_alloc_owns(phys: uint64) -> int32:
     return 0
 
 
+# --- ALLOCATION TRACKING (--track-allocs) -----------------------------
+#
+# WHY THIS IS A FIRST-CLASS FEATURE AND NOT A THROWAWAY PATCH
+# ===========================================================
+# Eleven leak-hunting passes ran against the DE stress soak. FOUR of them
+# independently hand-rolled the same instrumentation — a byte per frame
+# tagging its allocating call site, a live per-site histogram, free-path
+# counters, per-frame order/VA — and each one was reverted before commit.
+# That instrumentation is what actually solved things: it localised the
+# residual soak leak to cow_resolve_pte (+9.0 pages/cycle) with every other
+# site at exactly 0.00, exonerated page tables / slab / region / wsys, and
+# disproved three hypotheses at 0.00. Rebuilding it from scratch each pass
+# cost hours and risked silent divergence between passes (a site numbered
+# 11 in one pass and 12 in the next makes two logs incomparable).
+#
+# So it lives here, permanently, DEFAULT-OFF, with STABLE site ids.
+#
+# WHY A RUNTIME CTL AND NOT A BUILD FLAG
+# ======================================
+# A build flag would mean: rebuild the kernel, rebuild the initramfs,
+# rebuild the installer image, reboot the guest — before a soak can even
+# start. That rebuild/reflash cycle, not the instrumentation itself, was
+# the dominant cost of the eleven passes, and it also means CI and the
+# soak run DIFFERENT binaries (so a leak that only reproduces on the CI
+# build is invisible to the instrumented one). Tracking is therefore armed
+# at RUNTIME by a ctl-file write — Plan 9 shape, per the project's
+# "control = ctl-file writes, not syscalls" invariant:
+#
+#     echo 'track on'    > /proc/meminfo   # site + order/owner metadata
+#     echo 'track full'  > /proc/meminfo   # ... plus a per-frame tag word
+#     echo 'track reset' > /proc/meminfo   # re-baseline the counters
+#     echo 'track dump'  > /proc/meminfo   # one-shot EMERG report to console
+#     echo 'track off'   > /proc/meminfo
+#
+# ONE binary serves CI, the soak, and the debug session; a soak can arm
+# tracking after boot has settled so boot-time allocations do not pollute
+# the baseline; and the per-frame arrays (which cost ~3.25 MiB on a 1 GiB
+# machine in `full` mode) are carved LAZILY from memblock on first enable,
+# so a kernel that never arms tracking never pays a byte for it.
+#
+# THE DEFAULT-OFF COST is exactly: one global load + one compare + one
+# not-taken branch in alloc_pages / free_pages, and the same in each
+# pa_set_site() call at the tagged sites. No per-frame writes, no memory,
+# no change to /proc/meminfo's bytes.
+#
+# WHAT IS DELIBERATELY NOT HERE: a scan. /proc/meminfo is re-rendered ONCE
+# PER 128-BYTE READ CHUNK (see devmeminfo_read_at), so an O(frames) walk in
+# _build_meminfo runs ~20x per `cat` and wedges the guest — two soak runs
+# were lost to exactly that. Every counter below is an O(1) tally updated
+# at alloc/free time. The ONE O(frames) routine, page_alloc_site_sample(),
+# is reachable ONLY from the explicit `track dump` ctl.
+
+PA_SITE_MAX: uint64 = 32
+
+# STABLE call-site ids. Append only — NEVER renumber, or a log from an
+# older pass stops being comparable with a newer one. Ids 1..19 are
+# frozen at the values the pass-6..pass-11 leak hunts used, so the
+# archived soak logs in those passes' notes still read correctly.
+PA_SITE_UNKNOWN:      uint64 = 0   # untagged site, or pre-arming allocation
+PA_SITE_VMA_LARGE:    uint64 = 1   # _vma_alloc_large chunk
+PA_SITE_VMA_FIXED:    uint64 = 2   # _vma_alloc_fixed_at chunk
+PA_SITE_VMA_PREFAULT: uint64 = 3   # _vma_alloc_locked eager zero-fill
+PA_SITE_VMA_FILE:     uint64 = 4   # shared file-backed mmap demand fault
+PA_SITE_VMA_HUGE:     uint64 = 5   # 2 MiB huge demand fault
+PA_SITE_VMA_ANON:     uint64 = 6   # anonymous demand fault
+PA_SITE_VMA_SWAPIN:   uint64 = 7   # swap-in restore page
+PA_SITE_VMA_GROW:     uint64 = 8   # _vma_grow_in_place chunk
+PA_SITE_PGTABLE:      uint64 = 9   # intermediate PDPT/PD/PT page-table page
+PA_SITE_FORK_COPY:    uint64 = 10  # vm_fork_copy_range chunk
+PA_SITE_COW_RESOLVE:  uint64 = 11  # cow_resolve_pte private copy
+PA_SITE_KSTACK:       uint64 = 12  # create_user_thread kernel stack
+PA_SITE_USTACK:       uint64 = 13  # create_user_thread user stack page
+PA_SITE_PML4:         uint64 = 14  # a fresh address space's PML4
+PA_SITE_SELFTEST:     uint64 = 15  # boot selftest probe pages
+PA_SITE_SLAB:         uint64 = 16  # slab refill / large kmalloc
+PA_SITE_UACCESS:      uint64 = 17  # uaccess smoke-test pages
+PA_SITE_TMPFS:        uint64 = 18  # tmpfs file chunk
+PA_SITE_WSYS:         uint64 = 19  # window-system layer/back/shadow buffers
+PA_SITE_EXECVE:       uint64 = 20  # execve eager user-stack prefix
+
+# Mode: 0 = off, 1 = site + order/owner metadata, 2 = also per-frame tags.
+_pa_trk_mode:   uint64 = 0
+_pa_trk_frames: uint64 = 0
+_pa_trk_site:   uint64 = 0         # byte per frame: site id
+_pa_trk_meta:   uint64 = 0         # uint32 per frame: order | owner << 4
+_pa_trk_tag:    uint64 = 0         # uint64 per frame: caller tag (fault VA)
+
+# Pending attribution for the NEXT alloc_pages/alloc_page on this CPU.
+# Not per-CPU: a mis-attribution under an SMP race costs one frame's tag,
+# which is noise against a leak measured in pages per cycle, and a per-CPU
+# array here would cost a get_cpu_id() on the default-off path.
+_pa_trk_cur_site:  uint64 = 0
+_pa_trk_cur_owner: uint64 = 0
+_pa_trk_cur_tag:   uint64 = 0
+
+# O(1) tallies. live[] is the histogram ("pages held right now, by site");
+# allocs[]/frees[] are cumulative frame counts, so a per-site slope can be
+# computed from two samples without a scan.
+_pa_trk_live:   Array[32, uint64]
+_pa_trk_allocs: Array[32, uint64]
+_pa_trk_frees:  Array[32, uint64]
+
+
+def pa_set_site(s: uint64):
+    # Attribute the NEXT buddy allocation on this CPU to call site `s`.
+    # Default-off cost: one global load, one compare, one return.
+    if _pa_trk_mode == 0:
+        return
+    _pa_trk_cur_site = s
+
+
+def pa_set_owner(o: uint64):
+    # Attribute the next allocation to a task slot (+1; 0 means unknown).
+    # Only the sites that already have a slot in hand call this — there is
+    # deliberately NO hook in the scheduler's switch path, because a
+    # per-context-switch store would be a real cost paid by everyone.
+    if _pa_trk_mode == 0:
+        return
+    _pa_trk_cur_owner = o + 1
+
+
+def pa_set_tag(t: uint64):
+    # Attach an arbitrary uint64 to the next allocation (the leak hunts
+    # used the faulting VA). Only recorded in `full` mode.
+    if _pa_trk_mode == 0:
+        return
+    _pa_trk_cur_tag = t
+
+
+def _pa_trk_stamp(base: uint64, npages: uint64, order: int32):
+    # Called from alloc_pages with the buddy lock HELD, so the per-frame
+    # writes and the tallies move atomically with nr_pages_live.
+    if _pa_trk_site == 0:
+        return
+    s: uint64 = _pa_trk_cur_site
+    if s >= PA_SITE_MAX:
+        s = PA_SITE_UNKNOWN
+    meta: uint64 = (cast[uint64](order) & 15) | (_pa_trk_cur_owner << 4)
+    pfn: uint64 = base >> 12
+    i: uint64 = 0
+    while i < npages:
+        p: uint64 = pfn + i
+        if p < _pa_trk_frames:
+            cast[Ptr[uint8]](_pa_trk_site + p)[0] = cast[uint8](s)
+            if _pa_trk_meta != 0:
+                cast[Ptr[uint32]](_pa_trk_meta + (p << 2))[0] = \
+                    cast[uint32](meta)
+            if _pa_trk_tag != 0:
+                cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0] = _pa_trk_cur_tag
+        i = i + 1
+    _pa_trk_live[s] = _pa_trk_live[s] + npages
+    _pa_trk_allocs[s] = _pa_trk_allocs[s] + npages
+    # One-shot: the attribution applies to this allocation only, so an
+    # untagged site downstream is honestly reported as PA_SITE_UNKNOWN
+    # rather than inheriting whatever ran before it.
+    _pa_trk_cur_site = PA_SITE_UNKNOWN
+    _pa_trk_cur_owner = 0
+    _pa_trk_cur_tag = 0
+
+
+def _pa_trk_unstamp(base: uint64, npages: uint64):
+    # Called from free_pages with the buddy lock HELD, BEFORE the raw free,
+    # while the run's frames still belong to the caller. Per-FRAME (not
+    # per-run) because the buddy may hand a run out at one order and take
+    # it back split across several.
+    if _pa_trk_site == 0:
+        return
+    pfn: uint64 = base >> 12
+    i: uint64 = 0
+    while i < npages:
+        p: uint64 = pfn + i
+        if p < _pa_trk_frames:
+            s: uint64 = cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0])
+            if s >= PA_SITE_MAX:
+                s = PA_SITE_UNKNOWN
+            if _pa_trk_live[s] > 0:
+                _pa_trk_live[s] = _pa_trk_live[s] - 1
+            _pa_trk_frees[s] = _pa_trk_frees[s] + 1
+            cast[Ptr[uint8]](_pa_trk_site + p)[0] = cast[uint8](0)
+        i = i + 1
+
+
+def _pa_trk_carve(nbytes: uint64) -> uint64:
+    # memblock-carve and zero a tracking array. memblock_alloc still works
+    # long after boot (region_alloc cold-misses into it every execve), so
+    # arming tracking from a live shell is fine.
+    b: uint64 = memblock_alloc(nbytes, 8)
+    if b == 0:
+        return 0
+    i: uint64 = 0
+    while i < nbytes:
+        cast[Ptr[uint8]](b + i)[0] = 0
+        i = i + 1
+    return b
+
+
+def page_alloc_track_reset():
+    # Re-baseline. Every frame that is live RIGHT NOW was allocated before
+    # this instant, so its attribution is not knowable: park the whole live
+    # population under PA_SITE_UNKNOWN and let subsequent frees drain it.
+    # Without this the UNKNOWN bucket would underflow-clamp at 0 and its
+    # slope would be a lie.
+    i: uint64 = 0
+    while i < PA_SITE_MAX:
+        _pa_trk_live[i] = 0
+        _pa_trk_allocs[i] = 0
+        _pa_trk_frees[i] = 0
+        i = i + 1
+    _pa_trk_live[PA_SITE_UNKNOWN] = nr_pages_live
+    if _pa_trk_site != 0:
+        j: uint64 = 0
+        while j < _pa_trk_frames:
+            cast[Ptr[uint8]](_pa_trk_site + j)[0] = 0
+            j = j + 1
+
+
+def page_alloc_track_enable(mode: uint64) -> int32:
+    # Arm tracking. mode 1 = site + order/owner; mode 2 = also per-frame
+    # tag words. Returns 1 on success, 0 if memblock could not supply the
+    # arrays (in which case tracking stays OFF rather than half-armed).
+    if mode == 0:
+        _pa_trk_mode = 0
+        return 1
+    _pa_own_init()
+    if _pa_trk_site == 0:
+        top: uint64 = memblock_region_top()
+        if top == 0:
+            return 0
+        frames: uint64 = top >> 12
+        sb: uint64 = _pa_trk_carve(frames)
+        if sb == 0:
+            return 0
+        mb: uint64 = _pa_trk_carve(frames << 2)
+        if mb == 0:
+            return 0
+        _pa_trk_frames = frames
+        _pa_trk_meta = mb
+        _pa_trk_site = sb
+    if mode >= 2 and _pa_trk_tag == 0:
+        tb: uint64 = _pa_trk_carve(_pa_trk_frames << 3)
+        if tb == 0:
+            # Downgrade rather than fail: site+meta is the load-bearing
+            # half, per-frame tags are the luxury.
+            mode = 1
+        else:
+            _pa_trk_tag = tb
+    page_alloc_track_reset()
+    _pa_trk_mode = mode
+    return 1
+
+
+def page_alloc_track_mode() -> uint64:
+    return _pa_trk_mode
+
+
+def page_alloc_track_frames() -> uint64:
+    return _pa_trk_frames
+
+
+def page_alloc_site_live(i: uint64) -> uint64:
+    if i >= PA_SITE_MAX:
+        return 0
+    return _pa_trk_live[i]
+
+
+def page_alloc_site_allocs(i: uint64) -> uint64:
+    if i >= PA_SITE_MAX:
+        return 0
+    return _pa_trk_allocs[i]
+
+
+def page_alloc_site_frees(i: uint64) -> uint64:
+    if i >= PA_SITE_MAX:
+        return 0
+    return _pa_trk_frees[i]
+
+
+def page_alloc_site_sample(site: uint64, k: uint64) -> uint64:
+    # The k'th live frame tagged `site`, sampled evenly across the PFN
+    # space, returned as its recorded tag word (the faulting VA in `full`
+    # mode) — the "which addresses are leaking?" question.
+    #
+    # THIS IS O(frames). It must NEVER be called from _build_meminfo (see
+    # the header): the meminfo blob is re-rendered per 128-byte read chunk
+    # and a scan there wedges the guest. `track dump` is the only caller.
+    if _pa_trk_site == 0 or _pa_trk_tag == 0:
+        return 0
+    if site >= PA_SITE_MAX:
+        return 0
+    want: uint64 = _pa_trk_live[site]
+    if want == 0:
+        return 0
+    step: uint64 = want / 8
+    if step == 0:
+        step = 1
+    seen: uint64 = 0
+    hit: uint64 = 0
+    p: uint64 = 0
+    while p < _pa_trk_frames:
+        if cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0]) == site:
+            if (seen % step) == 0:
+                if hit == k:
+                    return cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0]
+                hit = hit + 1
+            seen = seen + 1
+        p = p + 1
+    return 0
+
+
+def page_alloc_site_owner(site: uint64) -> uint64:
+    # Owner slot (+1) recorded on the FIRST live frame tagged `site`, or 0.
+    # O(frames) — `track dump` only, same rule as page_alloc_site_sample.
+    if _pa_trk_site == 0 or _pa_trk_meta == 0:
+        return 0
+    if site >= PA_SITE_MAX:
+        return 0
+    p: uint64 = 0
+    while p < _pa_trk_frames:
+        if cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0]) == site:
+            m: uint64 = cast[uint64](cast[Ptr[uint32]](_pa_trk_meta + (p << 2))[0])
+            return m >> 4
+        p = p + 1
+    return 0
+
+
+def page_alloc_track_dump():
+    # One-shot console report. TWO hard-won constraints are encoded here:
+    #
+    #   1. console_set_interactive() suppresses INFO-level printks once the
+    #      shell prompt is up, so an in-guest trace MUST be EMERG or it is
+    #      simply not printed. A pass lost a run to a "silent" probe that
+    #      was working perfectly and being swallowed.
+    #   2. printk_set_level() arms EXACTLY ONE message. A multi-line report
+    #      that sets the level once loses everything after the first line.
+    #      So every printk below is preceded by its own set_level call.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[trk] mode=%d frames=%d\n", _pa_trk_mode, _pa_trk_frames)
+    i: uint64 = 0
+    while i < PA_SITE_MAX:
+        if _pa_trk_allocs[i] != 0 or _pa_trk_live[i] != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[trk] site=%d live=%d allocs=%d\n",
+                    i, _pa_trk_live[i], _pa_trk_allocs[i])
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[trk]   site=%d frees=%d\n", i, _pa_trk_frees[i])
+        i = i + 1
+    if _pa_trk_tag == 0:
+        return
+    # VA samples for the two sites the COW leak lives on.
+    _pa_trk_dump_tags(PA_SITE_COW_RESOLVE)
+    _pa_trk_dump_tags(PA_SITE_VMA_ANON)
+
+
+def _pa_trk_dump_tags(site: uint64):
+    k: uint64 = 0
+    while k < 8:
+        v: uint64 = page_alloc_site_sample(site, k)
+        if v != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[trk] site=%d va=%p\n", site, v)
+        k = k + 1
+
+
 def _pa_link_ok(addr: uint64) -> int32:
     # A valid intrusive free-list link is either NULL (end of list) or a
     # page-aligned physical address inside allocator-managed RAM. Anything
@@ -362,6 +725,11 @@ def alloc_pages(order: int32) -> uint64:
     # buddy lock so the RMW is SMP-atomic with the raw body's own counters.
     if ret != 0 and order >= 0 and order <= MAX_ORDER:
         nr_pages_live = nr_pages_live + (cast[uint64](1) << cast[uint64](order))
+        # Allocation tracking (default-off: one load + one not-taken
+        # branch). Inside the buddy lock so the per-site tallies stay
+        # consistent with nr_pages_live under SMP.
+        if _pa_trk_mode != 0:
+            _pa_trk_stamp(ret, cast[uint64](1) << cast[uint64](order), order)
     spinlock_unlock(&_pa_buddy_lock)
     if _ap_sw != 0:
         load_cr3(_ap_live)
@@ -624,6 +992,12 @@ def free_pages(addr: uint64, order: int32):
         _fp_sw = 1
     # SMP mutual exclusion over the shared free lists (see _pa_buddy_lock).
     spinlock_lock(&_pa_buddy_lock)
+    # Allocation tracking: un-tag BEFORE the raw free, while the run's
+    # frames are still ours to read (the merge below can fold them into a
+    # higher-order block whose base is not `addr`).
+    if _pa_trk_mode != 0:
+        if addr != 0 and order >= 0 and order <= MAX_ORDER:
+            _pa_trk_unstamp(addr, cast[uint64](1) << cast[uint64](order))
     _free_pages_raw(addr, order)
     # Mirror of the alloc-side live accounting: a valid free returns
     # 2^order pages to the buddy pool, growing (nr_pages_total -

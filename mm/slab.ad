@@ -54,6 +54,7 @@
 
 from mm.page_alloc import (
     alloc_page, free_page, alloc_pages, free_pages, PAGE_SIZE, MAX_ORDER,
+    pa_set_site, PA_SITE_SLAB,
 )
 from kernel.printk.printk import printk0, printk1, printk2
 
@@ -98,6 +99,7 @@ def _slab_refill(cache: Ptr[KmemCache]) -> int32:
     # for this cache: header at offset 0, then objects_per_slab back-
     # to-back objects, all linked into the free list. Returns 0 on
     # success, -1 on OOM.
+    pa_set_site(PA_SITE_SLAB)
     page: uint64 = alloc_page()
     if page == 0:
         return -1
@@ -255,6 +257,7 @@ def _kmalloc_large(size: uint64) -> uint64:
     if order < 0:
         printk1("kmalloc: request %d bytes exceeds MAX_ORDER\n", size)
         return 0
+    pa_set_site(PA_SITE_SLAB)
     page: uint64 = alloc_pages(order)
     if page == 0:
         return 0

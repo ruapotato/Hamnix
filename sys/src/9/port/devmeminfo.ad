@@ -39,6 +39,9 @@ from mm.page_alloc import (
     page_alloc_buddy_free_pages,
     region_pool_free_bytes, region_carved_bytes, region_leaked_bytes,
     region_quarantine_bytes, region_recovered_bytes,
+    page_alloc_track_enable, page_alloc_track_reset, page_alloc_track_dump,
+    page_alloc_track_mode, page_alloc_site_live, page_alloc_site_allocs,
+    page_alloc_site_frees, PA_SITE_MAX,
 )
 from mm.slab import kmalloc_live_objects, kmalloc_live_slabs
 from mm.vma import (
@@ -238,6 +241,49 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     pos = _emit_count_line(out, pos, "HugePages_Live: ", vma_hugepages_live())
     pos = _emit_kb_line(out, pos, "Hugepagesize:    ", 0x200000)
 
+    # --- allocation tracking (mm/page_alloc.ad, default-OFF) ----------
+    #
+    # Emitted ONLY when tracking is armed, so the default blob is
+    # byte-for-byte what it was before this feature existed.
+    #
+    # ABSOLUTELY NO SCAN HERE. This function is re-run ONCE PER 128-BYTE
+    # READ CHUNK (see devmeminfo_read_at below), so an O(frames) walk runs
+    # ~20 times per `cat /proc/meminfo` and wedges the guest — two soak
+    # runs were lost to exactly that mistake. Every value below is an O(1)
+    # counter read that the alloc/free paths maintain.
+    #
+    # One line per site, ALL sites, every render — a fixed line set. The
+    # tempting optimisation of "only emit sites with activity" makes the
+    # blob's line count change between chunk renders, which tears the
+    # output of a chunked reader mid-file.
+    #
+    # Format:  PgSite<id>: <live> <allocs> <frees>
+    #          live   = pages held right now by that site  (histogram)
+    #          allocs/frees = cumulative frames, so a per-site slope comes
+    #          from two samples with no scan. scripts/leakprobe_slopes.py
+    #          splits each into PgSite<id>.live/.allocs/.frees series.
+    if page_alloc_track_mode() != 0:
+        pos = _emit_count_line(out, pos, "PgTrackMode:    ",
+                               page_alloc_track_mode())
+        si: uint64 = 0
+        while si < PA_SITE_MAX:
+            pos = _mi_emit_str(out, pos, "PgSite")
+            pos = pos + _devmeminfo_u64_to_dec(si, &out[pos])
+            pos = _mi_emit_str(out, pos, ": ")
+            pos = pos + _devmeminfo_u64_to_dec(page_alloc_site_live(si),
+                                               &out[pos])
+            out[pos] = 32
+            pos = pos + 1
+            pos = pos + _devmeminfo_u64_to_dec(page_alloc_site_allocs(si),
+                                               &out[pos])
+            out[pos] = 32
+            pos = pos + 1
+            pos = pos + _devmeminfo_u64_to_dec(page_alloc_site_frees(si),
+                                               &out[pos])
+            out[pos] = 10
+            pos = pos + 1
+            si = si + 1
+
     return pos
 
 
@@ -273,8 +319,12 @@ def devmeminfo_read_at(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
     # and it is exactly what the single-read path already did.
     if count == 0:
         return 0
-    scratch: Array[1024, uint8]
-    n: uint64 = _build_meminfo(&scratch[0], 1024)
+    # 4 KiB, not 1 KiB: with allocation tracking armed the blob grows by
+    # PA_SITE_MAX lines (~1.4 KiB). The kernel stack is KSTACK_ORDER=4
+    # (64 KiB), so a 4 KiB frame here is comfortable. With tracking OFF
+    # the blob is unchanged, byte for byte.
+    scratch: Array[4096, uint8]
+    n: uint64 = _build_meminfo(&scratch[0], 4096)
     if off >= n:
         return 0
     remain: uint64 = n - off
@@ -293,7 +343,62 @@ def devmeminfo_read(buf: Ptr[uint8], count: uint64) -> int64:
     return devmeminfo_read_at(buf, count, 0)
 
 
+def _mi_wmatch(buf: Ptr[uint8], count: uint64, want: Ptr[uint8]) -> int32:
+    # 1 iff buf[0..count) begins with `want` and the next byte (if any) is
+    # a terminator — newline, CR, space or NUL. Written by hand because a
+    # ctl write arrives with whatever trailing newline the shell added.
+    i: uint64 = 0
+    while want[i] != 0:
+        if i >= count:
+            return 0
+        if buf[i] != want[i]:
+            return 0
+        i = i + 1
+    if i >= count:
+        return 1
+    c: uint64 = cast[uint64](buf[i])
+    if c == 10 or c == 13 or c == 32 or c == 0:
+        return 1
+    return 0
+
+
 def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
-    # /dev/meminfo is read-only. Mirrors devcpuinfo / devtime / devpid /
-    # devmouse.
+    # /dev/meminfo is a CTL FILE for the page allocator's allocation
+    # tracker (mm/page_alloc.ad) and otherwise read-only.
+    #
+    # WHY HERE. Plan 9 shape: control is a write to the file you read the
+    # state from, not a new syscall and not a build flag. Arming tracking
+    # at runtime means ONE kernel binary serves CI, the soak and the debug
+    # session — no rebuild/reflash round trip before a leak hunt can start
+    # (that round trip, not the instrumentation, was the expensive part of
+    # the eleven passes), and a soak can arm tracking AFTER boot settles so
+    # boot allocations do not pollute the baseline.
+    #
+    #   echo 'track on'    > /proc/meminfo   site + order/owner metadata
+    #   echo 'track full'  > /proc/meminfo   ... plus per-frame tag words
+    #   echo 'track reset' > /proc/meminfo   re-baseline the counters
+    #   echo 'track dump'  > /proc/meminfo   EMERG report to the console
+    #   echo 'track off'   > /proc/meminfo
+    #
+    # Anything else still returns -1, so every pre-existing "meminfo is
+    # read-only" expectation holds.
+    if count == 0:
+        return -1
+    if _mi_wmatch(buf, count, "track on") != 0:
+        if page_alloc_track_enable(1) == 0:
+            return -1
+        return cast[int64](count)
+    if _mi_wmatch(buf, count, "track full") != 0:
+        if page_alloc_track_enable(2) == 0:
+            return -1
+        return cast[int64](count)
+    if _mi_wmatch(buf, count, "track off") != 0:
+        page_alloc_track_enable(0)
+        return cast[int64](count)
+    if _mi_wmatch(buf, count, "track reset") != 0:
+        page_alloc_track_reset()
+        return cast[int64](count)
+    if _mi_wmatch(buf, count, "track dump") != 0:
+        page_alloc_track_dump()
+        return cast[int64](count)
     return -1

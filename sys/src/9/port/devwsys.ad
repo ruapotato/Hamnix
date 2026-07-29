@@ -142,7 +142,10 @@ from mm.slab import kmalloc, kfree
 # buddy allocator (order 10 = 1024 pages = 4 MiB) rather than living in a
 # 32-slot static BSS array — see the OOM regression note at the
 # wsys_layer_fb_page / wsys_backbuffer_page declarations below.
-from mm.page_alloc import alloc_pages, free_pages, region_alloc, region_free
+from mm.page_alloc import (
+    alloc_pages, free_pages, region_alloc, region_free,
+    pa_set_site, PA_SITE_WSYS,
+)
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
 extern def memcpy(dst: Ptr[uint8], src: Ptr[uint8], n: uint64) -> Ptr[uint8]
 # F2 #447: /dev/wsys/ctl `frame <wid> <n>` calls the kernel software
@@ -2078,6 +2081,7 @@ def _wsys_layer_fb_ensure_bytes(wid: int32, need: uint64) -> Ptr[uint8]:
     np: uint64 = 0
     if want <= WSYS_LAYER_FB_BYTES_PER_WIN:
         want = WSYS_LAYER_FB_BYTES_PER_WIN
+        pa_set_site(PA_SITE_WSYS)
         np = alloc_pages(WSYS_LAYER_FB_ORDER)
     else:
         want = (want + 4095) & ~cast[uint64](4095)
@@ -6899,6 +6903,7 @@ def _wsys_backbuffer_ensure(wid: int32) -> Ptr[uint8]:
     if u >= MAX_WINDOWS:
         return cast[Ptr[uint8]](0)
     if wsys_backbuffer_page[u] == 0:
+        pa_set_site(PA_SITE_WSYS)
         p: uint64 = alloc_pages(WSYS_BB_ORDER)
         if p == 0:
             return cast[Ptr[uint8]](0)
@@ -7066,6 +7071,7 @@ def _wsys_img_store(wid: int32, name: Ptr[uint8], nlen: uint64,
         return 0                                # store full
     u: uint64 = cast[uint64](slot)
     if wsys_img_page[u] == 0:
+        pa_set_site(PA_SITE_WSYS)
         pg: uint64 = alloc_pages(WSYS_IMG_ORDER)
         if pg == 0:
             return 0
@@ -10404,6 +10410,7 @@ def _wsys_shadow_init_if_needed():
     sb: uint64 = sw * sh * 4
     pg: uint64 = 0
     if sw * sh <= WSYS_SHADOW_MAX_PX:
+        pa_set_site(PA_SITE_WSYS)
         pg = alloc_pages(WSYS_SHADOW_ORDER)
     else:
         if sb > WSYS_SHADOW_MAX_BYTES:

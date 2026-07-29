@@ -110,7 +110,7 @@ from mm.slab import kmalloc, kfree
 # the mapping and read()s it back without msync). The chunk-pointer TABLE
 # stays kmalloc'd (it is never mapped to user space). TMPFS_CHUNK_SIZE
 # (64 KiB) is order-4 — comfortably within MAX_ORDER.
-from mm.page_alloc import alloc_pages, free_pages
+from mm.page_alloc import alloc_pages, free_pages, pa_set_site, PA_SITE_TMPFS
 from kernel.printk.printk import printk0, printk1
 from kernel.sched.core import set_current_errstr, current_task_uid
 # §stat-mtime: tmpfs files carry a STABLE stored mtime (Unix epoch
@@ -1157,6 +1157,7 @@ def _tmpfs_get_chunk(slot: int32, chunk_idx: uint64,
     # directly (see tmpfs_page_phys). Zero it (a fresh chunk reads as zero,
     # matching a file hole / extend-with-zeros). free via free_pages in
     # _tmpfs_free_storage.
+    pa_set_site(PA_SITE_TMPFS)
     chunk: uint64 = alloc_pages(TMPFS_CHUNK_ORDER)
     if chunk == 0:
         spinlock_unlock(&tmpfs_chunk_lock)

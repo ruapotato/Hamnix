@@ -53,7 +53,7 @@
 from kernel.printk.printk import printk0, printk1, printk2, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 from kernel.sched.core import current_task, TaskStruct, current_idx_get, uaccess_kernel_active
-from mm.page_alloc import alloc_page, free_page
+from mm.page_alloc import alloc_page, free_page, pa_set_site, PA_SITE_UACCESS
 from fs.elf import vm_map_user_page, cow_handle_write_fault
 
 # Demand-paging / swap-in resolvers used by uaccess_fault_in. Declared
@@ -628,6 +628,7 @@ def uaccess_smoke_test():
     pml4: uint64 = uaccess_current_pml4()
 
     # --- map a writable page at V_rw -> P_rw (V_rw != P_rw) ---------
+    pa_set_site(PA_SITE_UACCESS)
     p_rw: uint64 = alloc_page()
     if p_rw == 0:
         printk0("  [uaccess-smoke] SKIP: alloc_page failed\n")
@@ -733,6 +734,7 @@ def uaccess_smoke_test():
                 cast[uint64](plen))
 
     # 4. a READ-ONLY user page: copy_from_user OK, copy_to_user rejected.
+    pa_set_site(PA_SITE_UACCESS)
     p_ro: uint64 = alloc_page()
     if p_ro != 0:
         memset(cast[Ptr[uint8]](p_ro), 0x5C, 4096)
@@ -796,6 +798,7 @@ def smap_enforced_test():
                 " SMAP_RUNTIME_ENABLE=0) — kernel-VA audit above still ran\n")
         return
     pml4: uint64 = uaccess_current_pml4()
+    pa_set_site(PA_SITE_UACCESS)
     p_u: uint64 = alloc_page()
     if p_u == 0:
         printk0("  [smap-enforced] SKIP: alloc_page failed\n")

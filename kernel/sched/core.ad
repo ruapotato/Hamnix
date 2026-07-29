@@ -22,7 +22,11 @@
 # the CPU to a sibling when the current task tears down.
 
 from mm.memblock import memblock_alloc, memblock_region_top
-from mm.page_alloc import alloc_page, alloc_pages, free_page, free_pages, region_free, region_free_cow_safe
+from mm.page_alloc import (
+    alloc_page, alloc_pages, free_page, free_pages,
+    region_free, region_free_cow_safe, pa_set_site,
+    PA_SITE_KSTACK, PA_SITE_USTACK, PA_SITE_PML4, PA_SITE_SELFTEST,
+)
 from mm.slab import kfree
 from mm.cow import cow_boot_cr3
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
@@ -4144,6 +4148,7 @@ def create_user_thread(entry: uint64, name0: uint64,
     # KSTACK_SIZE worth of pages — a single page is too small for the
     # deepest kernel call chains, and an overflow corrupts whatever the
     # buddy allocator placed just below (see the KSTACK_SIZE history).
+    pa_set_site(PA_SITE_KSTACK)
     kstack: uint64 = alloc_pages(KSTACK_ORDER)
     if kstack == 0:
         return -1
@@ -4157,6 +4162,7 @@ def create_user_thread(entry: uint64, name0: uint64,
     ustack: uint64 = 0
     ustack_top: uint64 = user_rsp
     if user_rsp == 0:
+        pa_set_site(PA_SITE_USTACK)
         ustack = alloc_page()
         if ustack == 0:
             return -1
@@ -4262,6 +4268,7 @@ def create_user_thread(entry: uint64, name0: uint64,
         # Fresh process (own address space): own its mm group. Clear any
         # stale group link left on a recycled slot.
         vma_reset_mm_owner(s)
+        pa_set_site(PA_SITE_PML4)
         new_pml4: uint64 = alloc_page()
         if new_pml4 == 0:
             return -1
@@ -12651,6 +12658,7 @@ def smp_user_ap_selftest():
     pend: uint64 = cast[uint64](&smp_user_probe_end)
     blob_len: uint64 = pend - pe
     SMP_USER_PROBE_VA: uint64 = 0x600000          # low user VA, 4 KiB aligned
+    pa_set_site(PA_SITE_SELFTEST)
     code_page: uint64 = alloc_page()
     if code_page == 0:
         printk0("[smp_user] FAIL: OOM allocating probe code page\n")
@@ -12806,6 +12814,7 @@ def pf_smp_race_selftest():
     pe:   uint64 = cast[uint64](&pf_race_probe_entry)
     pend: uint64 = cast[uint64](&pf_race_probe_end)
     blob_len: uint64 = pend - pe
+    pa_set_site(PA_SITE_SELFTEST)
     code_page: uint64 = alloc_page()
     if code_page == 0:
         printk0("[pf_race] FAIL: OOM allocating probe code page\n")

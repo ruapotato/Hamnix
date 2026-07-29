@@ -256,7 +256,10 @@ from fs.elf import (
 # routines through the hook block further down. A pure-native build never
 # installs the hook; the call sites become harmless no-ops (vdso_user_code_vaddr
 # returns 0 → AT_SYSINFO_EHDR omitted, vdso_map_into_user becomes a no-op).
-from mm.page_alloc import alloc_page, alloc_pages, free_page, region_can_alloc, pages_can_alloc, free_pages
+from mm.page_alloc import (
+    alloc_page, alloc_pages, free_page, region_can_alloc,
+    pages_can_alloc, free_pages, pa_set_site, PA_SITE_EXECVE,
+)
 from mm.slab import kmalloc, kfree
 from mm.memblock import memblock_region_top
 # Real uaccess translation layer. copy_to_user / copy_from_user /
@@ -2841,6 +2844,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # onto physical [0, ...) — the boot page tables / AP trampoline — and #DF-
     # halt the box). The caller's address space is already torn down here, so
     # -ENOMEM terminates this task cleanly rather than corrupting kernel memory.
+    pa_set_site(PA_SITE_EXECVE)
     new_ustack_phys: uint64 = alloc_pages(LINUX_USTACK_EAGER_ORDER)
     if new_ustack_phys == 0:
         printk_set_level(PRINTK_LEVEL_ERR)

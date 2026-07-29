@@ -47,7 +47,7 @@
 # current x86_64 server config Hamnix targets.
 
 from kernel.printk.printk import printk0, printk1, printk2
-from mm.page_alloc import alloc_page, free_page
+from mm.page_alloc import alloc_page, free_page, pa_set_site, PA_SITE_PGTABLE
 
 extern def get_mb_info() -> uint64
 extern def get_mb_magic() -> uint64
@@ -259,6 +259,7 @@ def pgtable_build_page_offset_map():
     # propagates PML4[273] to every per-task address space automatically
     # (the kernel executes on the task's CR3 during syscalls, so it needs
     # the direct map mapped there too).
+    pa_set_site(PA_SITE_PGTABLE)
     pdpt: uint64 = alloc_page()
     if pdpt == 0:
         printk0("[pgtable] page_offset: OOM allocating direct-map PDPT\n")
@@ -302,6 +303,7 @@ def pgtable_page_offset_selftest() -> uint64:
     if pgt_page_offset_ready == 0:
         printk0("[pgtable] page_offset selftest SKIP: map not built\n")
         return 0
+    pa_set_site(PA_SITE_PGTABLE)
     p: uint64 = alloc_page()
     if p == 0:
         printk0("[pgtable] page_offset selftest SKIP: OOM\n")
@@ -345,6 +347,7 @@ def pgtable_dma_roundtrip_selftest() -> uint64:
     if pgt_page_offset_ready == 0:
         printk0("[pgtable] dma-roundtrip SKIP: page_offset map not built\n")
         return 0
+    pa_set_site(PA_SITE_PGTABLE)
     p: uint64 = alloc_page()            # low-identity VA == physical address
     if p == 0:
         printk0("[pgtable] dma-roundtrip SKIP: OOM\n")
@@ -490,6 +493,7 @@ def _cea_walk_child(parent: uint64, idx: uint64) -> uint64:
     slot: Ptr[uint64] = cast[Ptr[uint64]](parent + idx * 8)
     ent: uint64 = slot[0]
     if (ent & PGT_FLAG_P) == 0:
+        pa_set_site(PA_SITE_PGTABLE)
         child: uint64 = alloc_page()
         if child == 0:
             return 0
@@ -551,6 +555,7 @@ def pgtable_build_cpu_entry_area():
     text_end:   uint64 = cea_entry_text_end()
     pgt_cea_text_start = text_start
 
+    pa_set_site(PA_SITE_PGTABLE)
     pdpt: uint64 = alloc_page()
     if pdpt == 0:
         printk0("[pgtable] cpu_entry_area: OOM allocating CEA PDPT\n")
