@@ -169,6 +169,39 @@ echo "[kllvm] 2) clang -c ($LLVM_CLANG_OPT, -mcmodel=kernel) -> ELF64 relocatabl
     || { echo "[kllvm] ERROR: clang compile of kernel .ll failed" >&2; exit 1; }
 file "$WORK/kernel_main_llvm.o" | sed 's/^/[kllvm]    /'
 
+# 2b) HYBRID-FALLBACK SYMBOL VISIBILITY (defense in depth).
+#
+# elf_emit.ad emits every LEADING-UNDERSCORE Adder function as STB_LOCAL
+# STT_FUNC ("module-private": many modules define a same-named `_align_up` etc.,
+# and intra-object calls are already rel32-patched, so LOCAL avoids collisions).
+# That is correct for the single native object, but it silently breaks the LLVM
+# hybrid: when an `_`-prefixed function BAILS out of the SSA subset the LLVM
+# object carries only a `declare` (UNDEF), and `ld` cannot bind it to a LOCAL
+# definition in native_main.o -> "undefined reference to `__stack_chk_init'".
+# (Never hit before because no `_`-prefixed kernel function had ever bailed;
+# adding one `unsafe:` to __stack_chk_init was enough to break the ship build.)
+#
+# Fix, LLVM-lane-only: for every symbol the LLVM object leaves UNDEFINED that
+# native_main.o defines LOCALLY, promote that one definition to GLOBAL in a
+# rewritten copy of native_main.o. Touches only the GENERATED object, so the
+# default native kernel stays byte-identical.
+if [ -n "$NATIVE_MAIN" ]; then
+    OBJCOPY_CMD="${OBJCOPY:-objcopy}"
+    undef_list="$(nm -f posix --undefined-only "$WORK/kernel_main_llvm.o" 2>/dev/null | awk '{print $1}' | sort -u)"
+    localdef_list="$(nm -f posix "$NATIVE_MAIN" 2>/dev/null | awk '$2=="t"{print $1}' | sort -u)"
+    need_global="$(comm -12 <(printf '%s\n' "$undef_list") <(printf '%s\n' "$localdef_list"))"
+    if [ -n "$need_global" ]; then
+        echo "[kllvm] 2b) globalize LOCAL fallback symbols in native_main.o: $(printf '%s' "$need_global" | tr '\n' ' ')"
+        gargs=()
+        while IFS= read -r s; do
+            [ -n "$s" ] && gargs+=(--globalize-symbol="$s")
+        done <<< "$need_global"
+        "$OBJCOPY_CMD" "${gargs[@]}" "$NATIVE_MAIN" "$WORK/native_main_glob.o" \
+            || { echo "[kllvm] ERROR: objcopy globalize of native fallback symbols failed" >&2; exit 1; }
+        mv "$WORK/native_main_glob.o" "$NATIVE_MAIN"
+    fi
+fi
+
 echo "[kllvm] 3) assemble boot stubs + all hand-written .S under arch/x86, fs, drivers"
 "$AS_CMD" --64 -o "$WORK/header.o" "$BOOT_S" || { echo "[kllvm] ERROR: as header.S" >&2; exit 1; }
 "$AS_CMD" --64 -o "$WORK/head_64.o" "$HEAD_S" || { echo "[kllvm] ERROR: as head_64.S" >&2; exit 1; }

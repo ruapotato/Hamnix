@@ -1844,6 +1844,12 @@ def cl_scan_stmts(head: uint32):
             sr_mark(nd_name_off[s], nd_name_len[s])
             cl_scan_expr(nd_a[s])
             cl_scan_stmts(nd_b[s])
+        elif k == ND_UNSAFE:
+            # `unsafe:` is semantically transparent (see cfg_lower_stmt): nd_a is
+            # a STATEMENT CHAIN. The opaque fallback below would cl_scan_expr it,
+            # which threads nd_next only of a node's CHILDREN — so it saw the
+            # FIRST body statement and missed every mark in statements 2..N.
+            cl_scan_stmts(nd_a[s])
         elif k == ND_FOR_UNPACK:
             # Each unpack target ident is a loop-bound name read from its slot.
             ut: uint32 = nd_a[s]

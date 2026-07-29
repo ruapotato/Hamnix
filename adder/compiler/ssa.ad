@@ -89,6 +89,7 @@ from compiler.parser import (
     ND_FUNCTION,
     ND_EXTERN,
     ND_PARAM,
+    ND_UNSAFE,
     BINOP_ADD,
     BINOP_SUB,
     BINOP_MUL,
@@ -4228,6 +4229,22 @@ def ssa_lower_stmt(bb: uint32, stmt: uint32) -> uint32:
     if k == ND_DO_WHILE:
         return ssa_lower_do_while(bb, stmt)
 
+    if k == ND_UNSAFE:
+        # `unsafe:` (memory-safety / arithmetic-check opt-out) is SEMANTICALLY
+        # TRANSPARENT: codegen.ad lowers its body chain inline, only toggling
+        # cg_unsafe_depth (no new scope, no control flow), and cfg.ad does the
+        # same. nd_a[stmt] is a STATEMENT CHAIN (body head), so lower it inline
+        # here too rather than bailing the whole function.
+        #
+        # Why this matters (regression this fixed): bailing here dropped the
+        # ENCLOSING function from the LLVM lane's IR, leaving only a `declare`,
+        # and the hybrid native_main.o fallback can only cover names elf_emit.ad
+        # exports as STB_GLOBAL — a LEADING-UNDERSCORE function (`__stack_chk_init`)
+        # is emitted STB_LOCAL there, so the kernel link failed with an undefined
+        # reference. `unsafe:` is the documented --check-bounds/--check-arith
+        # opt-out, so it must be usable in kernel code on BOTH lanes.
+        return ssa_lower_chain(bb, nd_a[stmt])
+
     # for/match/try/with/defer/yield/global/... -> bail.
     if k == ND_FOR:
         ssa_set_bail(SBR_FORLOOP)
@@ -4485,6 +4502,10 @@ def ssa_prealloc_scan(head: uint32):
             ssa_prealloc_if_alts(nd_c[s], nd_d[s])
         elif k == ND_WHILE or k == ND_DO_WHILE:
             ssa_prealloc_scan(nd_b[s])
+        elif k == ND_UNSAFE:
+            # transparent block: its body chain hangs off nd_a and its decls are
+            # ordinary function-scope locals (see ssa_lower_stmt's ND_UNSAFE).
+            ssa_prealloc_scan(nd_a[s])
         s = nd_next[s]
 
 
