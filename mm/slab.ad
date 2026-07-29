@@ -356,6 +356,20 @@ def km_track_reset():
         _km_allocs[i] = 0
         _km_frees[i]  = 0
         i = i + 1
+    # The pre-charge is EXACT for slab-backed objects: slab_init's seven
+    # kmalloc caches are the only KmemCache instances in the tree (nothing
+    # else calls kmem_cache_init), so summing nr_allocated counts every live
+    # slab object with no double count and none missed.
+    #
+    # THE ONE KNOWN GAP, stated rather than hidden: a LARGE (> 2048 B) block
+    # allocated BEFORE arming carries site 0 in its header word, so its kfree
+    # drains UNKNOWN — but reset did not pre-charge it, because the allocator
+    # keeps no list of outstanding large blocks to walk. _km_drain clamps at
+    # 0, so the effect is bounded and one-directional: KmSite0's live/bytes
+    # read LOW by at most the number of pre-arming large blocks, and can
+    # never underflow into a 2^64 lie in a soak log. It does NOT affect any
+    # real site, and it decays as those blocks are freed. `kmtrack reset`
+    # again once the workload is warm removes it entirely.
     live: uint64 = 0
     bytes_live: uint64 = 0
     c: uint64 = 0
