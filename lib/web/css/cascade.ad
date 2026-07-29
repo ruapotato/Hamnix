@@ -7146,57 +7146,114 @@ def _av_at(vs: uint64, ve: uint64, at: int32, voff: int32, vlen: int32) -> int32
     return 1
 
 
+# ---- tag-body ATTRIBUTE TOKENIZER ------------------------------------------
+# The attribute matchers below used to hunt for the attribute NAME as a
+# substring of the raw tag body, accepting any non-alphanumeric char before it.
+# Inside a quoted VALUE that is trivially satisfied, so
+#     <a href="/docs/Global_attributes/hidden">
+# matched the selector `[hidden]` (the "hidden" after a '/'), and MDN's
+# `[hidden]{display:none!important}` deleted the very list items that DOCUMENT
+# the hidden attribute. Chromium (verified, getComputedStyle over the three
+# <li>s of tests/fixtures/hambrowse_attrsel_wordpos.html): list-item, list-item,
+# none — only the element that really carries the attribute is hidden.
+#
+# `_tagbody_next_attr` instead walks the body attribute by attribute, stepping
+# OVER each quoted value, so a name is only ever recognized at a real
+# attribute-name position. It reports the name span in ab_ns/ab_ne and the value
+# span (exclusive of quotes; empty for a valueless attribute) in ab_vs/ab_ve,
+# and returns the cursor to resume from — or `te` when the body is exhausted.
+ab_ns: uint64 = 0
+ab_ne: uint64 = 0
+ab_vs: uint64 = 0
+ab_ve: uint64 = 0
+
+
+def _ab_ws(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 13 or c == 12:
+        return 1
+    return 0
+
+
+def _tagbody_next_attr(frm: uint64, te: uint64) -> uint64:
+    ab_ns = te
+    ab_ne = te
+    ab_vs = te
+    ab_ve = te
+    i: uint64 = frm
+    # Skip separators and any junk that cannot start an attribute name ('/' of a
+    # self-closing tag, a stray '=' or quote from malformed markup).
+    while i < te and _is_name_ch(src_ptr[i]) == 0:
+        i = i + 1
+    if i >= te:
+        return te
+    ns: uint64 = i
+    while i < te and _is_name_ch(src_ptr[i]) != 0:
+        i = i + 1
+    ne2: uint64 = i
+    vs: uint64 = ne2
+    ve: uint64 = ne2
+    j: uint64 = i
+    while j < te and _ab_ws(src_ptr[j]) != 0:
+        j = j + 1
+    if j < te and src_ptr[j] == 61:                      # '=' -> a value follows
+        j = j + 1
+        while j < te and _ab_ws(src_ptr[j]) != 0:
+            j = j + 1
+        q: uint8 = 0
+        if j < te and (src_ptr[j] == 34 or src_ptr[j] == 39):
+            q = src_ptr[j]
+            j = j + 1
+        vs = j
+        while j < te:
+            c0: uint8 = src_ptr[j]
+            if q != 0:
+                if c0 == q:
+                    break
+            else:
+                if _ab_ws(c0) != 0:
+                    break
+            j = j + 1
+        ve = j
+        if q != 0 and j < te:
+            j = j + 1                                    # step past the closing quote
+        i = j
+    else:
+        i = ne2
+    ab_ns = ns
+    ab_ne = ne2
+    ab_vs = vs
+    ab_ve = ve
+    return i
+
+
+# Does the attribute name at src[ab_ns,ab_ne) equal css_sbuf[noff..noff+nlen)?
+# (Selector names are stored pre-lowercased; markup names are lowered here.)
+def _ab_name_is(noff: int32, nlen: int32) -> int32:
+    if ab_ne - ab_ns != cast[uint64](nlen):
+        return 0
+    k: int32 = 0
+    while k < nlen:
+        if _hx_lower(src_ptr[ab_ns + cast[uint64](k)]) != css_sbuf[noff + k]:
+            return 0
+        k = k + 1
+    return 1
+
+
 # Match attribute selector (name css_sbuf[noff..], op, value css_sbuf[voff..])
 # against the element tag body [ts,te). Returns 1 on match, else 0. Value ops
 # with an EMPTY selector value never match (per spec [a=""], [a^=""] are false).
 def _attr_match(ts: uint64, te: uint64, noff: int32, nlen: int32, op: int32, \
                 voff: int32, vlen: int32) -> int32:
+    if nlen <= 0:
+        return 0
     i: uint64 = ts
-    while i + cast[uint64](nlen) <= te:
-        prev_alnum: int32 = 0
-        if i > ts:
-            pc: uint8 = _hx_lower(src_ptr[i - 1])
-            if (pc >= 97 and pc <= 122) or (pc >= 48 and pc <= 57) or pc == 45:
-                prev_alnum = 1
-        matched: int32 = 0
-        if prev_alnum == 0:
-            k: int32 = 0
-            matched = 1
-            while k < nlen:
-                if _hx_lower(src_ptr[i + cast[uint64](k)]) != css_sbuf[noff + k]:
-                    matched = 0
-                    break
-                k = k + 1
-            # the name must end at a non-name char (so `data-x` != `data-xy`)
-            if matched != 0 and i + cast[uint64](nlen) < te and \
-               _is_name_ch(src_ptr[i + cast[uint64](nlen)]) != 0:
-                matched = 0
-        if matched != 0:
-            # locate the value span (empty if the attribute is valueless)
-            j: uint64 = i + cast[uint64](nlen)
-            while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9):
-                j = j + 1
-            vs: uint64 = j
-            ve: uint64 = j
-            if j < te and src_ptr[j] == 61:              # '='
-                j = j + 1
-                while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9):
-                    j = j + 1
-                q: uint8 = 0
-                if j < te and (src_ptr[j] == 34 or src_ptr[j] == 39):
-                    q = src_ptr[j]
-                    j = j + 1
-                vs = j
-                while j < te:
-                    c: uint8 = src_ptr[j]
-                    if q != 0:
-                        if c == q:
-                            break
-                    else:
-                        if c == 32 or c == 9:
-                            break
-                    j = j + 1
-                ve = j
+    while i < te:
+        i = _tagbody_next_attr(i, te)
+        if ab_ne == ab_ns:
+            return 0
+        if _ab_name_is(noff, nlen) != 0:
+            vs: uint64 = ab_vs
+            ve: uint64 = ab_ve
             if op == 1:                                  # [attr] exists
                 return 1
             if vlen == 0:                                # empty value never matches
@@ -7237,14 +7294,14 @@ def _attr_match(ts: uint64, te: uint64, noff: int32, nlen: int32, op: int32, \
                    src_ptr[vs + cast[uint64](vlen)] == 45:
                     return 1
             return 0
-        i = i + 1
     return 0
 
 
-# Whole-word boolean-attribute presence test on the tag body src[ts..te): the
-# name `lit` must sit at an attribute-name position (preceded by start/space/
-# '/', ended by a non-name char), so `value="checked"` and `data-checked` do
-# NOT match. Drives :checked/:disabled/:required/:enabled.
+# Whole-word boolean-attribute presence test on the tag body src[ts..te), on the
+# SAME tokenizer as _attr_match: `lit` must be a real attribute NAME, so neither
+# `value="checked"` (the word inside a quoted value — the old scanner accepted
+# it because a space preceded it) nor `data-checked` matches.
+# Drives :checked/:disabled/:required/:enabled.
 def _body_has_attr(ts: uint64, te: uint64, lit: Ptr[uint8]) -> int32:
     nlen: uint64 = 0
     while lit[nlen] != 0:
@@ -7252,29 +7309,20 @@ def _body_has_attr(ts: uint64, te: uint64, lit: Ptr[uint8]) -> int32:
     if nlen == 0:
         return 0
     i: uint64 = ts
-    while i + nlen <= te:
-        boundary: int32 = 0
-        if i == ts:
-            boundary = 1
-        else:
-            pc: uint8 = src_ptr[i - 1]
-            if pc == 32 or pc == 9 or pc == 10 or pc == 13 or pc == 47:
-                boundary = 1
-        if boundary != 0:
+    while i < te:
+        i = _tagbody_next_attr(i, te)
+        if ab_ne == ab_ns:
+            return 0
+        if ab_ne - ab_ns == nlen:
             k: uint64 = 0
             m: int32 = 1
             while k < nlen:
-                if _hx_lower(src_ptr[i + k]) != lit[k]:
+                if _hx_lower(src_ptr[ab_ns + k]) != lit[k]:
                     m = 0
                     break
                 k = k + 1
             if m != 0:
-                nc: uint8 = 0
-                if i + nlen < te:
-                    nc = src_ptr[i + nlen]
-                if _is_name_ch(nc) == 0:
-                    return 1
-        i = i + 1
+                return 1
     return 0
 
 

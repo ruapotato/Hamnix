@@ -1191,7 +1191,7 @@ def _dom_control_valid(el: int32) -> int32:
     tyn: int32 = _cstr_len(typ)
     is_num: int32 = _bytes_eq(typ, tyn, cast[Ptr[uint8]]("number"), 6)
     v_missing: int32 = 0
-    if _has_word(ts, te, cast[Ptr[uint8]]("required")) != 0 and vn == 0:
+    if hx_has_bool_attr(ts, te, cast[Ptr[uint8]]("required")) != 0 and vn == 0:
         v_missing = 1
     v_type: int32 = 0
     if vn > 0:
@@ -7242,7 +7242,7 @@ def _do_submit(idx: int32):
         if dom_kind[idx] == 5:
             nts: uint64 = cast[uint64](dom_ns[idx])
             nte: uint64 = cast[uint64](dom_cstart[idx]) - 1
-            if _has_word(nts, nte, cast[Ptr[uint8]]("novalidate")) != 0:
+            if hx_has_bool_attr(nts, nte, cast[Ptr[uint8]]("novalidate")) != 0:
                 novalid = 1
         if novalid != 0 or dom_kind[idx] != 5 or _form_check_all(idx) != 0:
             _serialize_form(idx)

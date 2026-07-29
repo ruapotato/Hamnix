@@ -77,7 +77,7 @@ def _is_icon_font_el(ne: uint64, te: uint64) -> int32:
     return 0
 
 
-def _has_bool_attr(ne: uint64, te: uint64, name: Ptr[uint8]) -> int32:
+def hx_has_bool_attr(ne: uint64, te: uint64, name: Ptr[uint8]) -> int32:
     nl: uint64 = 0
     while name[nl] != 0:
         nl = nl + 1
@@ -310,9 +310,9 @@ def _emit_input(np: uint64, nlen: uint64, ne: uint64, te: uint64):
         # no HTML content attribute (it is a JS property), so as an honest static
         # trigger we honour an `indeterminate` boolean attribute on the control.
         chk: int32 = 0
-        if _has_word(ne, te, cast[Ptr[uint8]]("checked")) != 0:
+        if hx_has_bool_attr(ne, te, cast[Ptr[uint8]]("checked")) != 0:
             chk = 1
-        if _has_word(ne, te, cast[Ptr[uint8]]("indeterminate")) != 0:
+        if hx_has_bool_attr(ne, te, cast[Ptr[uint8]]("indeterminate")) != 0:
             chk = 2
         # resolve the control's CSS accent-color (stylesheet + inline style="")
         # via a transient cascade match — <input> is void, so it is not otherwise
@@ -334,7 +334,7 @@ def _emit_input(np: uint64, nlen: uint64, ne: uint64, te: uint64):
         return
     if _input_type_is(ne, te, cast[Ptr[uint8]]("radio")) != 0:
         rchk: int32 = 0
-        if _has_word(ne, te, cast[Ptr[uint8]]("checked")) != 0:
+        if hx_has_bool_attr(ne, te, cast[Ptr[uint8]]("checked")) != 0:
             rchk = 1
         _img_cascade(np, nlen, ne, te)
         racc: int32 = m_accent
@@ -585,7 +585,7 @@ def _select_text(body0: uint64) -> int32:
                 if first_s < 0:
                     first_s = cast[int32](cs)
                     first_e = cast[int32](ce)
-                if _has_word(ne, je, cast[Ptr[uint8]]("selected")) != 0:
+                if hx_has_bool_attr(ne, je, cast[Ptr[uint8]]("selected")) != 0:
                     n: int32 = 0
                     p: uint64 = cs
                     while p < ce and n < 511:
@@ -623,7 +623,7 @@ def _select_index(body0: uint64) -> int32:
                 idx = idx + 1
                 je: uint64 = i + 1
                 je = _hx_tag_end_p(src_ptr, src_len, je)
-                if _has_word(i + 1, je, cast[Ptr[uint8]]("selected")) != 0 and \
+                if hx_has_bool_attr(i + 1, je, cast[Ptr[uint8]]("selected")) != 0 and \
                    sel < 0:
                     sel = idx
         i = i + 1
@@ -1052,7 +1052,7 @@ def _handle_tag(ts: uint64, te: uint64):
             # Enter to activate/deactivate dropdown" a11y prose ships as
             # `<div class="screen-reader-only" ... hidden>`). Presence hides
             # regardless of value, per the boolean-attribute rule.
-            if _has_bool_attr(ne, te, cast[Ptr[uint8]]("hidden")) != 0:
+            if hx_has_bool_attr(ne, te, cast[Ptr[uint8]]("hidden")) != 0:
                 _el_pop(np, nlen)
                 _word_flush()
                 _enter_skip(np, nlen)

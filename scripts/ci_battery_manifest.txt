@@ -1693,6 +1693,19 @@ bash scripts/test_hambrowse_domapi_host.sh
 # an un-catchable SyntaxError without it) plus an in-memory localStorage /
 # sessionStorage Web Storage (a missing global aborted MDN's theme script).
 bash scripts/test_hambrowse_realsite_host.sh
+# scripts/test_hambrowse_inert_css_host.sh: QEMU-free gate for the two CSS bugs
+# behind the user report "the browser ... loads a broken google search window
+# and its not useable at all". (1) The stylesheet collectors are raw-source
+# scanners, so they harvested <style>/<link rel=stylesheet> out of <noscript>
+# (RAWTEXT when scripting is enabled, which hambrowse always is) and <template>
+# (an inert DocumentFragment). real google.com's results page ships
+# <noscript><style>table,div,span,p{display:none}</style></noscript>, which hid
+# every element on the page — segs=0, a blank window. (2) Attribute selectors
+# matched the attribute NAME as a substring of the raw tag body, so [hidden]
+# matched href="/docs/Global_attributes/hidden" and :checked matched
+# value="checked disabled". Both parts are asserted value-by-value against a
+# chromium --headless getComputedStyle/styleSheets oracle recorded in the gate.
+bash scripts/test_hambrowse_inert_css_host.sh
 # scripts/test_hambrowse_searchbox_host.sh: QEMU-free gate for the two real-user
 # browser improvements — (1) a Firefox/Chrome-style Google SEARCH BOX beside the
 # URL bar (chrome compositor draws the field; Enter URL-encodes the query and

@@ -1524,7 +1524,7 @@ def _dom_register_el() -> int32:
             dom_txt_len = dom_txt_len + ovl
         if _input_type_is(g_el_ns, te, cast[Ptr[uint8]]("checkbox")) != 0 or \
            _input_type_is(g_el_ns, te, cast[Ptr[uint8]]("radio")) != 0:
-            if _has_word(g_el_ns, te, cast[Ptr[uint8]]("checked")) != 0:
+            if hx_has_bool_attr(g_el_ns, te, cast[Ptr[uint8]]("checked")) != 0:
                 dom_origchecked[idx] = 1
             else:
                 dom_origchecked[idx] = 0

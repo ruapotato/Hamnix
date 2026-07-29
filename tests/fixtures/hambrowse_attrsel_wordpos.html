@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><title>attr word position</title>
+<style>
+[hidden]{display:none!important}
+[data-x="1"]{color:#ff0000}
+</style></head><body>
+<ul>
+<li><a href="/docs/Global_attributes/hidden"><code>KEEP-HREF-HIDDEN</code></a></li>
+<li title="this value mentions hidden and data-x too">KEEP-VALUE-MENTION</li>
+<li data-hidden="1">KEEP-PREFIXED-NAME</li>
+<li hidden>DROP-REAL-HIDDEN</li>
+</ul>
+<input type="checkbox" value="checked disabled">
+<p id="p1" data-x="1">RED-BY-ATTR-VALUE</p>
+<p id="p2" title="data-x=1">PLAIN-BY-VALUE-MENTION</p>
+</body></html>

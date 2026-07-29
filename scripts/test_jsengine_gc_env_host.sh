@@ -24,6 +24,11 @@
 #     DURING scopes): deep recursion, let-per-iteration for-loops, generators,
 #     async, try/catch, and switch each produce output byte-identical to the
 #     non-stress run and to the hand-computed expected string.
+#   PART D — NO BUILTIN SUPPRESSION. The trigger must not be gated on
+#     gc_disabled: Function.prototype.call/apply run the whole user callback
+#     under it, which is how live google.com reached "environment pool
+#     exhausted". Drives call/apply/bind and a HOF past the ceiling and checks
+#     the HAMNIX_JS_ARENA_STATS occupancy readout corroborates reclamation.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -169,6 +174,82 @@ elif ! diff -q "$xbase" "$xstr" >/dev/null; then
     echo "  base:   $(cat "$xbase")"; echo "  stress: $(cat "$xstr")"; fail=1
 else
     echo "[js-gc-env] PASS: recursion/let-loops/generators/async/try-catch/switch/blocks byte-identical under env-GC stress"
+fi
+
+# ---------------------------------------------------------------------------
+# PART D — env collection is NOT suppressed inside builtins.
+# The env-arena trigger in env_new used to be gated on `gc_disabled == 0`, the
+# flag that protects the VALUE arena from builtins holding raw value handles in
+# Adder locals. The ENV arena has no such exposure (no builtin calls env_new;
+# every env is on env_root / obj_fn_env / mod_env / g_env), so the gate bought
+# nothing and broke real pages: interp.ad runs Function.prototype.call/apply
+# with gc_disabled > 0 for the WHOLE user callback, so every `fn.call(...)`
+# bump-allocated a call scope that could never be reclaimed. A user driving the
+# shipped browser at google.com — which leans on call/apply constantly — got
+# "environment pool exhausted".
+#
+# MEASURED on the pre-fix binary, 200,000 `f.call(null,i)`:
+#   envcolls=0 envfreed=0 envs=80000/80000 -> "environment pool exhausted"
+# and after: envcolls=5, each freeing 71,996 of 72,000 envs (99.99% garbage,
+# live set 4). This is a LIFETIME bug, not a capacity one: no constant moved.
+#
+# Array HOFs escaped only because array_map/filter/find/... each hand-lowered
+# gc_disabled around their own callback loop, so this part drives call/apply/
+# bind AND a HOF, all well past the 80,000-env ceiling.
+# ---------------------------------------------------------------------------
+NB=200000
+bi="$OUT/js_gc_env_builtin.js"
+cat > "$bi" <<EOF
+function f(v) { var t = v & 1; return t; }
+var s = 0;
+for (var i = 0; i < $NB; i++) s += f.call(null, i);          // Function.prototype.call
+// .apply — the args array is HOISTED on purpose: an inline [i] literal per turn
+// allocates an object per iteration and objects are not collected at all
+// (MAX_OBJ 40000), which is a DIFFERENT ceiling this part is not about.
+var args = [0];
+var s2 = 0;
+for (var i = 0; i < $NB; i++) { args[0] = i; s2 += f.apply(null, args); }
+var g = f.bind(null);
+var s3 = 0;
+for (var i = 0; i < $NB; i++) s3 += g(i);                    // a bound function
+var a = []; for (var k = 0; k < 60000; k++) a.push(k);
+var s4 = a.map(function (v) { var t = v & 1; return t; })
+          .reduce(function (x, y) { return x + y; }, 0);     // higher-order methods
+console.log("BUILTIN s=" + s + " s2=" + s2 + " s3=" + s3 + " s4=" + s4);
+EOF
+HALF=$(python3 -c "print($NB // 2)")
+WANT_B="BUILTIN s=$HALF s2=$HALF s3=$HALF s4=$(python3 -c 'print(sum(k & 1 for k in range(60000)))')"
+bbase="$OUT/js_gc_env_builtin.base"; bstr="$OUT/js_gc_env_builtin.stress"
+timeout 600 "$BIN" "$bi" > "$bbase" 2>&1;                      rc_bb=$?
+timeout 600 env HAMNIX_JS_GC_STRESS=1 "$BIN" "$bi" > "$bstr" 2>&1; rc_bs=$?
+if [ "$rc_bb" -ne 0 ]; then echo "[js-gc-env] FAIL: builtin-callback run exited $rc_bb: $(tail -1 "$bbase")"; fail=1; fi
+if [ "$rc_bs" -ne 0 ]; then echo "[js-gc-env] FAIL: builtin-callback stress run exited $rc_bs: $(tail -1 "$bstr")"; fail=1; fi
+if grep -qF "environment pool exhausted" "$bbase"; then
+    echo "[js-gc-env] FAIL: env collection is suppressed inside builtins again (call/apply/bind)"; fail=1
+elif ! grep -qF "$WANT_B" "$bbase"; then
+    echo "[js-gc-env] FAIL: builtin-callback output wrong"; echo "  got:  $(tail -1 "$bbase")"; echo "  want: $WANT_B"; fail=1
+elif ! diff -q "$bbase" "$bstr" >/dev/null; then
+    echo "[js-gc-env] FAIL: builtin-callback output DIFFERS under env-GC stress (a scope pin is missing)"; fail=1
+else
+    echo "[js-gc-env] PASS: ${NB}x call/apply/bind + 60k-element map/reduce reclaim their scopes (no builtin suppression)"
+fi
+
+# The ARENA OCCUPANCY readout must corroborate the diagnosis rather than assert
+# a magic constant: collections MUST have run, and they must have freed the vast
+# majority of the arena (a live set of a handful). If a future change re-gates
+# the trigger, envcolls goes to 0 here BEFORE the ceiling is even reached.
+astat="$OUT/js_gc_env_arena.txt"
+HAMNIX_JS_ARENA_STATS=1 timeout 600 "$BIN" "$bi" >/dev/null 2>"$astat"
+ecolls=$(sed -n 's/.*envcolls=\([0-9]*\).*/\1/p' "$astat")
+efreed=$(sed -n 's/.*envfreed=\([0-9]*\).*/\1/p' "$astat")
+if [ -z "$ecolls" ] || [ -z "$efreed" ]; then
+    echo "[js-gc-env] FAIL: HAMNIX_JS_ARENA_STATS produced no ARENA line: $(cat "$astat")"; fail=1
+elif [ "$ecolls" -lt 1 ]; then
+    echo "[js-gc-env] FAIL: zero env collections over ${NB} builtin callbacks (trigger suppressed)"; fail=1
+elif [ "$efreed" -lt 40000 ]; then
+    echo "[js-gc-env] FAIL: last env collection freed only $efreed envs; the arena is not being reclaimed"; fail=1
+else
+    echo "[js-gc-env] PASS: arena stats corroborate ($ecolls collections, last freed $efreed envs of a bounded live set)"
 fi
 
 if [ "$fail" -eq 0 ]; then
