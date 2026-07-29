@@ -4172,3 +4172,12 @@ bash scripts/test_hambrowse_ihlive_host.sh
 # (chromium: getAttribute reports the CURRENT attribute). REGISTERED 2026-07-28.
 bash scripts/test_hambrowse_attrlive_host.sh
 bash scripts/test_hambrowse_docevent_host.sh
+
+# EXTERNAL BROWSER CONFORMANCE — Web Platform Tests (2026-07-29). Our 275
+# hand-written hambrowse gates all encode OUR idea of correct; a sweep on
+# 2026-07-28 found 16 of 19 gates in one family asserting behaviour Chromium
+# does not have. tests/wpt/ vendors a pinned 708-test WPT subset (3-Clause BSD,
+# a TEST SUITE, not engine source) and this gate ratchets the per-subtest score
+# against scripts/wpt_baseline.txt: the number may only go up. Baseline at
+# registration: 395 PASS / 4063 subtests = 9.72%. ~2 min, QEMU-free.
+bash scripts/test_wpt_ratchet_host.sh

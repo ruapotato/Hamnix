@@ -27,6 +27,24 @@ import sys
 
 SUB = {0: "PASS", 1: "FAIL", 2: "TIMEOUT", 3: "NOTRUN", 4: "PRECOND"}
 
+# testharness.js runs every assertion message through sanitize_unpaired_surrogates,
+# whose regex is /([\ud800-\udbff]+)(?![\udc00-\udfff])|.../g. Our engine's regex
+# engine matches that surrogate range against ORDINARY ASCII, so every message
+# comes back as "U+61U+73U+73..." -- the whole text, code-unit escaped. That is
+# itself a top-ranked bug (see docs/browser_wpt_conformance.md), but until it is
+# fixed the messages are still readable if we undo it here. Decoding rather than
+# discarding is the difference between "738 failures with no message" and a
+# ranked list of real causes.
+MANGLED_RE = re.compile(r"(?:U\+[0-9a-fA-F]{1,6}){4,}")
+
+
+def unmangle(msg):
+    if not msg:
+        return msg
+    def dec(m):
+        return "".join(chr(int(t, 16)) for t in m.group(0).split("U+") if t)
+    return MANGLED_RE.sub(dec, msg)
+
 
 def load(path):
     recs = []
@@ -186,8 +204,7 @@ def main():
             per_area[a][SUB.get(s["status"], "?")] += 1
             tot[SUB.get(s["status"], "?")] += 1
             if s["status"] != 0:
-                m = s["message"] or "(no message)"
-                m = re.sub(r"U\+[0-9a-f]{1,6}", "", m)          # engine escaping noise
+                m = unmangle(s["message"]) or "(no message)"
                 m = re.sub(r"\d+", "N", m)
                 msg_hist[m[:90]] += 1
 

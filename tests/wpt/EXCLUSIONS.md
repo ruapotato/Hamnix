@@ -74,6 +74,13 @@ As legacy-mb-japanese: machine-generated bulk table tests.
 - `encoding/legacy-mb-korean/euc-kr/euckr-encode-form-cseuckr.html`
 - ... and 14 more
 
+## `prefix:encoding/legacy-mb-schinese` -- 2 file(s)
+
+As legacy-mb-japanese. Kept in the first import by oversight and measured: gb18030-encoder.html alone contributed 254 subtests -- 6% of the entire suite from ONE machine-generated codepoint table. Excluded for the same score-hygiene reason as its three sibling directories, so encoding/ measures the TextDecoder/TextEncoder API rather than CJK table coverage.
+
+- `encoding/legacy-mb-schinese/gb18030/gb18030-encoder.html`
+- `encoding/legacy-mb-schinese/gbk/gbk-encoder.html`
+
 ## `prefix:encoding/legacy-mb-tchinese` -- 23 file(s)
 
 As legacy-mb-japanese: machine-generated bulk table tests.
