@@ -184,6 +184,14 @@ for (var i = 0; i < pairs.length; i++) if (pairs[i].k !== i) sorted_ok = 0;
 var mapped = pairs.map(function (p) { churn(200); return { kk: p.k + 1 }; });
 var mapped_sum = 0; for (var i = 0; i < mapped.length; i++) mapped_sum += mapped[i].kk;
 
+// 13b. PROTOTYPE reachable ONLY through obj_proto. The prototype literal is
+//      built inside a call whose scope dies immediately and holds no closure,
+//      so after that scope is reclaimed the ONLY edge to it is the instances'
+//      [[Prototype]] link — nothing names it from any binding or property.
+var orphans = [];
+function mkOrphan(i) { var P = { tag: 900 + i }; return Object.create(P); }
+for (var i = 0; i < 50; i++) orphans.push(mkOrphan(i));
+
 // 13. DEEP nesting, reachable only through the root of the chain.
 var deep = {}; var cur = deep;
 for (var i = 0; i < 200; i++) { cur.next = { d: i }; cur = cur.next; }
@@ -207,6 +215,8 @@ log.push("ta=" + i32[0] + "," + i32[1] + "," + u8[0]);
 log.push("proxy=" + prox.z);
 log.push("sym=" + (Symbol.for("gcobj") === sy) + "," + symobj[sy]);
 log.push("sort=" + sorted_ok + ",map=" + mapped_sum);
+var osum = 0; for (var i = 0; i < orphans.length; i++) osum += orphans[i].tag;
+log.push("orphanproto=" + osum);
 var dcur = deep, dn = 0; while (dcur.next) { dcur = dcur.next; dn++; }
 log.push("deep=" + dn + "," + dcur.d);
 log.push("burn=" + burn);
@@ -216,8 +226,9 @@ setTimeout(function () { console.log("DRAIN pval=" + pval + " tsaw=" + tsaw); },
 EOF
 CSUM=$(python3 -c 'print(sum(k*2 for k in range(500)))')
 MAPSUM=$(python3 -c 'print(sum(i+1 for i in range(60)))')
+OSUM=$(python3 -c 'print(sum(900 + i for i in range(50)))')
 BURN=$(python3 -c 'print(2 * sum((i + 1) & 1 for i in range(120000)))')
-WANT_RET="cyc=7,1 | clo=$CSUM | proto=42,31 | bound=123 | map=v9,2,true,2 | gen=123 | ta=123,456,123 | proxy=30 | sym=true,1 | sort=1,map=$MAPSUM | deep=200,199 | burn=$BURN"
+WANT_RET="cyc=7,1 | clo=$CSUM | proto=42,31 | bound=123 | map=v9,2,true,2 | gen=123 | ta=123,456,123 | proxy=30 | sym=true,1 | sort=1,map=$MAPSUM | orphanproto=$OSUM | deep=200,199 | burn=$BURN"
 rbase="$OUT/js_gc_obj_ret.base"; rstr="$OUT/js_gc_obj_ret.stress"
 timeout 900 "$BIN" "$ret" > "$rbase" 2>&1;                          rc_rb=$?
 timeout 900 env HAMNIX_JS_GC_STRESS=1 "$BIN" "$ret" > "$rstr" 2>&1; rc_rs=$?
