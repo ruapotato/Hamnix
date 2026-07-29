@@ -47,7 +47,102 @@ def call_native_proto(id: int32, thisv: int32, base: int32, argc: int32) -> int3
         return number_proto_method(thisv, name, base, argc)
     if id == NAT_BP_METHOD:
         return boolean_proto_method(thisv, name, base, argc)
+    if id == NAT_EP_METHOD:
+        return error_proto_to_string(thisv)
+    if id == NAT_RP_METHOD:
+        return regexp_proto_to_string(thisv)
     return v_undef()
+
+
+# ---- Error.prototype.toString (ES2024 20.5.3.4) ------------------------------
+# `name` defaults to "Error" and `message` to "" when absent/undefined; an empty
+# name yields just the message, an empty message just the name, otherwise
+# "name: message". Both are read through the [[Prototype]] chain (a subclass that
+# only sets `MyErr.prototype.name` still renders "MyErr: ...") and coerced with
+# ToString, so `{name: 1, message: 2}` renders "1: 2" exactly as node does.
+def error_proto_to_string(thisv: int32) -> int32:
+    if tag_of(thisv) != TAG_OBJ:
+        throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("Error.prototype.toString called on non-object"))
+        return v_undef()
+    nv: int32 = member_get(thisv, str_from_cstr(cast[Ptr[uint8]]("name")))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    nsid: int32 = 0
+    if tag_of(nv) == TAG_UNDEF:
+        nsid = str_from_cstr(cast[Ptr[uint8]]("Error"))
+    else:
+        nsid = strid_of(to_string_val(nv))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    mv: int32 = member_get(thisv, str_from_cstr(cast[Ptr[uint8]]("message")))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    msid: int32 = 0
+    if tag_of(mv) == TAG_UNDEF:
+        msid = str_from_cstr(cast[Ptr[uint8]](""))
+    else:
+        msid = strid_of(to_string_val(mv))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    if str_len(nsid) == 0:
+        return v_string_id(msid)
+    if str_len(msid) == 0:
+        return v_string_id(nsid)
+    # Both non-empty: build "name: message". Every interned lookup above is done,
+    # so no pool append can splice into this build (see object_tag_string).
+    save: int32 = emit_tgt
+    emit_tgt = 0
+    bld_begin()
+    emit_strid(nsid)
+    emit_c(58)                      # ':'
+    emit_c(32)                      # ' '
+    emit_strid(msid)
+    sid: int32 = bld_end()
+    emit_tgt = save
+    return v_string_id(sid)
+
+
+# ---- RegExp.prototype.toString (ES2024 22.2.6.13) ---------------------------
+# "/" + source + "/" + flags. Non-regex receivers fall back to the same Get-based
+# shape the spec uses, so `RegExp.prototype.toString.call({source:'a',flags:'g'})`
+# is "/a/g" as in node.
+def regexp_proto_to_string(thisv: int32) -> int32:
+    if tag_of(thisv) != TAG_OBJ:
+        throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("RegExp.prototype.toString called on non-object"))
+        return v_undef()
+    srcv: int32 = member_get(thisv, str_from_cstr(cast[Ptr[uint8]]("source")))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    ssid: int32 = strid_of(to_string_val(srcv))
+    flv: int32 = member_get(thisv, str_from_cstr(cast[Ptr[uint8]]("flags")))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    fsid: int32 = strid_of(to_string_val(flv))
+    if err_flag != 0 or ctl == CTL_THROW:
+        return v_undef()
+    save2: int32 = emit_tgt
+    emit_tgt = 0
+    bld_begin()
+    emit_c(47)                      # '/'
+    emit_strid(ssid)
+    emit_c(47)                      # '/'
+    emit_strid(fsid)
+    sid2: int32 = bld_end()
+    emit_tgt = save2
+    return v_string_id(sid2)
+
+
+# Does this object's [[Prototype]] chain reach Error.prototype?
+def is_error_obj(v: int32) -> int32:
+    if g_error_proto == 0 or tag_of(v) != TAG_OBJ:
+        return 0
+    ep: int32 = objid_of(g_error_proto)
+    c: int32 = objid_of(v)
+    while c >= 0:
+        if c == ep:
+            return 1
+        c = obj_proto[c]
+    return 0
 
 
 # ---- Object.prototype -------------------------------------------------------
@@ -60,9 +155,20 @@ def object_tag_string(thisv: int32) -> int32:
     if tag_of(thisv) == TAG_OBJ:
         ub = unbox_prim(thisv)
         if g_sym_tostringtag != 0:
-            tp: int32 = obj_find_prop(objid_of(thisv), symbol_key(g_sym_tostringtag))
-            if tp >= 0 and tag_of(p_val[tp]) == TAG_STR:
-                tagv = p_val[tp]
+            # ES 20.1.3.6 step 14 is Get(O, @@toStringTag) — an ORDINARY get, so
+            # it walks the [[Prototype]] chain. Map/Set/Promise/... carry the tag
+            # on their PROTOTYPE (as in node), not on each instance; an own-only
+            # lookup reported every one of them as "[object Object]".
+            ttk: int32 = symbol_key(g_sym_tostringtag)
+            co: int32 = objid_of(thisv)
+            while co >= 0:
+                tp: int32 = obj_find_prop(co, ttk)
+                if tp >= 0:
+                    if tag_of(p_val[tp]) == TAG_STR:
+                        tagv = p_val[tp]
+                    co = -1
+                else:
+                    co = obj_proto[co]
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
@@ -93,6 +199,10 @@ def object_tag_string(thisv: int32) -> int32:
             emit_cstr(cast[Ptr[uint8]]("Date"))
         elif obj_re_prog[o] >= 0:
             emit_cstr(cast[Ptr[uint8]]("RegExp"))
+        elif is_error_obj(thisv) != 0:
+            # node brands anything with an [[ErrorData]] slot; the chain to
+            # Error.prototype is this engine's equivalent.
+            emit_cstr(cast[Ptr[uint8]]("Error"))
         elif ub >= 0 and tag_of(ub) == TAG_NUM:
             emit_cstr(cast[Ptr[uint8]]("Number"))
         elif ub >= 0 and tag_of(ub) == TAG_STR:
@@ -628,6 +738,80 @@ def install_prototypes(string_ctor: int32, boolean_ctor: int32):
     proto_add_method(g_boolean_proto, cast[Ptr[uint8]]("toLocaleString"), NAT_BP_METHOD)
     proto_add_method(g_boolean_proto, cast[Ptr[uint8]]("valueOf"), NAT_BP_METHOD)
     proto_link_ctor(boolean_ctor, g_boolean_proto)
+
+    # Everything install_builtins created BEFORE this point (Math, JSON, console,
+    # Error.prototype, Map/Set/WeakMap/WeakSet/Promise.prototype, the generator
+    # prototype, every native method function object, ...) was allocated while
+    # g_object_proto / g_func_proto were still 0, so v_new_object / v_new_native
+    # left its [[Prototype]] null. In real JS every one of those has
+    # Object.prototype (resp. Function.prototype) in its chain — and since
+    # ToPrimitive landed that is load-bearing, not cosmetic: `String(x)` on such
+    # an object finds NO callable toString/valueOf anywhere and throws
+    # "Cannot convert object to primitive value" instead of rendering. Retro-link
+    # them here, once the roots exist.
+    link_orphan_protos()
+
+
+# Give every already-allocated object a [[Prototype]], by kind. Runs exactly once
+# at the end of install_prototypes, when the only objects in existence are
+# builtins — so this cannot re-parent a user `Object.create(null)`.
+def link_orphan_protos():
+    op: int32 = objid_of(g_object_proto)
+    fp: int32 = objid_of(g_func_proto)
+    ap: int32 = objid_of(g_array_proto)
+    o: int32 = 0
+    while o < n_objs:
+        if obj_proto[o] < 0 and o != op:
+            k: int32 = cast[int32](obj_kind[o])
+            if k == OK_FUNC:
+                obj_proto[o] = fp
+            elif k == OK_ARRAY:
+                obj_proto[o] = ap
+            elif k == OK_PLAIN:
+                obj_proto[o] = op
+        o = o + 1
+
+
+# Brand the builtin prototypes that node tags with @@toStringTag, so
+# `Object.prototype.toString.call(new Map)` is "[object Map]" and not the generic
+# "[object Object]" — which is also what `String(map)` now renders, since
+# ToPrimitive routes it through the inherited Object.prototype.toString.
+# Called at the END of install_builtins: g_sym_tostringtag and every constructor
+# global have to exist first.
+def tag_proto_of(ctor_name: Ptr[uint8], tag: Ptr[uint8]):
+    b: int32 = env_lookup_bind(g_env, str_from_cstr(ctor_name))
+    if b < 0:
+        return
+    cv: int32 = b_val[b]
+    if tag_of(cv) != TAG_OBJ:
+        return
+    pv: int32 = obj_get(objid_of(cv), str_from_cstr(cast[Ptr[uint8]]("prototype")))
+    if tag_of(pv) != TAG_OBJ:
+        return
+    tag_object(pv, tag)
+
+
+def tag_object(ov: int32, tag: Ptr[uint8]):
+    if g_sym_tostringtag == 0 or tag_of(ov) != TAG_OBJ:
+        return
+    k: int32 = symbol_key(g_sym_tostringtag)
+    obj_set(objid_of(ov), k, v_string_cstr(tag))
+    obj_mark_nonenum(objid_of(ov), k)
+
+
+def install_tostring_tags():
+    tag_proto_of(cast[Ptr[uint8]]("Map"), cast[Ptr[uint8]]("Map"))
+    tag_proto_of(cast[Ptr[uint8]]("Set"), cast[Ptr[uint8]]("Set"))
+    # NOT WeakMap/WeakSet: this engine aliases them to the Map/Set constructor
+    # (same prototype OBJECT), so tagging them would relabel every Map as
+    # "[object WeakMap]". A weak collection therefore reads "[object Map]".
+    tag_proto_of(cast[Ptr[uint8]]("Promise"), cast[Ptr[uint8]]("Promise"))
+    tag_proto_of(cast[Ptr[uint8]]("ArrayBuffer"), cast[Ptr[uint8]]("ArrayBuffer"))
+    tag_proto_of(cast[Ptr[uint8]]("DataView"), cast[Ptr[uint8]]("DataView"))
+    # Namespace objects carry the tag directly (no constructor).
+    tag_object(g_math, cast[Ptr[uint8]]("Math"))
+    tag_object(g_json, cast[Ptr[uint8]]("JSON"))
+    tag_object(g_gen_proto, cast[Ptr[uint8]]("Generator"))
 
 
 def install_string_proto_methods(protov: int32):

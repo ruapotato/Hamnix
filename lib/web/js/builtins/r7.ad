@@ -711,7 +711,13 @@ def install_typed_array(name: Ptr[uint8], kind: int32):
 
 
 def install_typed_arrays():
-    def_global_native(cast[Ptr[uint8]]("ArrayBuffer"), NAT_ARRAYBUFFER)
+    # ArrayBuffer needs a real .prototype: `new ArrayBuffer(4)` links its
+    # instances there, which is what carries the @@toStringTag that makes
+    # Object.prototype.toString (and hence String()) say "[object ArrayBuffer]".
+    ab_ctor: int32 = v_new_native(NAT_ARRAYBUFFER)
+    ab_proto: int32 = v_new_object()
+    proto_link_ctor(ab_ctor, ab_proto)
+    env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("ArrayBuffer")), ab_ctor, 0)
     install_typed_array(cast[Ptr[uint8]]("Int8Array"), TA_INT8)
     install_typed_array(cast[Ptr[uint8]]("Uint8Array"), TA_UINT8)
     install_typed_array(cast[Ptr[uint8]]("Uint8ClampedArray"), TA_UINT8C)

@@ -99,6 +99,17 @@ def display_val(h: int32):
 
 def display_obj(h: int32):
     o: int32 = objid_of(h)
+    # A Symbol is a TAG_OBJ under the hood but is a PRIMITIVE: ToPrimitive skips
+    # it, so it lands here. Render it as its SymbolDescriptiveString ("Symbol(d)",
+    # ES 20.4.3.3) — node's console.log and String(sym) both print that. Falling
+    # through to the generic object printer showed "{ description: 'd' }".
+    if is_symbol(h) != 0:
+        emit_cstr(cast[Ptr[uint8]]("Symbol("))
+        d: int32 = obj_get_cstr(o, cast[Ptr[uint8]]("description"))
+        if tag_of(d) == TAG_STR:
+            emit_strid(strid_of(d))
+        emit_c(41)                            # ')'
+        return
     if obj_is_date[o] != cast[uint8](0):      # Date -> ISO string
         emit_strid(date_iso_strid(obj_date_ms[o]))
         return

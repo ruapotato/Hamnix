@@ -1157,6 +1157,8 @@ def js_make_regex(src_sid: int32, flags_sid: int32) -> int32:
     re_emit(RI_MATCH, 0, 0)
     rv: int32 = v_new_object()
     o: int32 = objid_of(rv)
+    if g_regexp_proto != 0:
+        obj_proto[o] = objid_of(g_regexp_proto)
     obj_re_prog[o] = prog_start
     obj_re_ncap[o] = re_gcount
     obj_re_gnstart[o] = gname_compile_start
@@ -1710,6 +1712,16 @@ def install_error(name: Ptr[uint8], native_id: int32, super_ctor: int32) -> int3
         basep: int32 = obj_get(objid_of(super_ctor), str_from_cstr(cast[Ptr[uint8]]("prototype")))
         if tag_of(basep) == TAG_OBJ:
             obj_proto[objid_of(proto)] = objid_of(basep)
+    else:
+        # Error.prototype itself carries the shared toString + the default
+        # `message` (""). ES 20.5.3: the SUBCLASS prototypes get neither — they
+        # inherit both from here, which is why `String(new TypeError("x"))` is
+        # "TypeError: x" (own `name` from the subclass proto, inherited toString).
+        g_error_proto = proto
+        mpk: int32 = str_from_cstr(cast[Ptr[uint8]]("message"))
+        obj_set(objid_of(proto), mpk, v_string_cstr(cast[Ptr[uint8]]("")))
+        obj_mark_nonenum(objid_of(proto), mpk)
+        proto_add_method(proto, cast[Ptr[uint8]]("toString"), NAT_EP_METHOD)
     epk: int32 = str_from_cstr(cast[Ptr[uint8]]("prototype"))
     obj_set(objid_of(fv), epk, proto)
     obj_mark_nonenum(objid_of(fv), epk)
@@ -2019,7 +2031,16 @@ def install_builtins():
     # an async generator): @@asyncIterator returns the generator itself.
     obj_set(gp_o, symbol_key(g_sym_async), v_new_native(NAT_GEN_ITER))
     def_global_native(cast[Ptr[uint8]]("Boolean"), NAT_BOOLEAN)
-    def_global_native(cast[Ptr[uint8]]("RegExp"), NAT_REGEXP)
+    # RegExp — the constructor plus a real RegExp.prototype every literal and
+    # `new RegExp` instance chains to. The prototype only needs toString: exec /
+    # test still go through the fast name-dispatch in try_regex_method. Before
+    # ToPrimitive it was absent entirely, so `String(/a/g)` found no toString and
+    # threw instead of yielding "/a/g".
+    g_regexp_ctor: int32 = v_new_native(NAT_REGEXP)
+    g_regexp_proto = v_new_object()
+    proto_add_method(g_regexp_proto, cast[Ptr[uint8]]("toString"), NAT_RP_METHOD)
+    proto_link_ctor(g_regexp_ctor, g_regexp_proto)
+    env_define(g_env, str_from_cstr(cast[Ptr[uint8]]("RegExp")), g_regexp_ctor, 0)
     def_global_native(cast[Ptr[uint8]]("eval"), NAT_EVAL)
     # Real builtin prototype OBJECTS (Object/Array/Function/String/Number/Boolean
     # .prototype) with genuine native method VALUES — makes the transpiled
@@ -2161,3 +2182,6 @@ def install_builtins():
     install_xhr()
 
 
+    # @@toStringTag branding for the builtin prototypes node tags. LAST: every
+    # constructor global and the well-known symbol must already exist.
+    install_tostring_tags()

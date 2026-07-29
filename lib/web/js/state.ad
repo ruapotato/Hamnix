@@ -562,6 +562,11 @@ g_gen_proto: int32 = 0             # shared prototype object for generator insta
 # all resolve as first-class values. Array instances chain their [[Prototype]] here
 # so `[].slice === Array.prototype.slice`.
 g_object_proto: int32 = 0
+# Error.prototype. Held as a global so Object.prototype.toString can brand any
+# object whose [[Prototype]] chain reaches it as "[object Error]" (node's
+# [[ErrorData]] slot), and so install_error can share one toString.
+g_error_proto: int32 = 0
+g_regexp_proto: int32 = 0          # RegExp.prototype (regex instances chain here)
 g_array_proto: int32 = 0
 g_func_proto: int32 = 0
 g_string_proto: int32 = 0

@@ -856,7 +856,7 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         return reflect_apply(arg_or(base, argc, 0), arg_or(base, argc, 1), arg_or(base, argc, 2))
     if id == NAT_REFLECT_CONSTRUCT:
         return reflect_construct(arg_or(base, argc, 0), arg_or(base, argc, 1))
-    if id >= NAT_OP_METHOD and id <= NAT_BP_METHOD:
+    if (id >= NAT_OP_METHOD and id <= NAT_BP_METHOD) or id == NAT_EP_METHOD or id == NAT_RP_METHOD:
         return call_native_proto(id, thisv, base, argc)
     return call_native_r7(id, thisv, base, argc)
 
