@@ -6,6 +6,10 @@ An exclusion says what our RUNNER cannot observe. "We fail it"
 is never a valid reason -- a failing external test is the whole
 point of importing an external suite.
 
+This file covers the **testharness.js** lane only. The REFTEST
+lane (pixel comparison against `<link rel="match">`) keeps its
+exclusions in `REFTEST_EXCLUSIONS.md`.
+
 ## `glob:*-manual.html` -- 1 file(s)
 
 Requires a human to perform the interaction.
