@@ -17,7 +17,21 @@
 #   * width: 33.3%      -> a width strictly WIDER than an integer 33% (which
 #     truncation would produce). Against 784: 33% -> ~275; 33.3% -> 277 (x1).
 #   * width: 25.5%      -> a fractional percentage distinct from 25% (25.5% of
-#     784 = 199.9 -> 215 x1; 25% would be 212).
+#     784 = 199.9 -> 207 x1; 25% would be 204).
+#
+# UPDATED 2026-07-29 (box-model round): all three right edges above WERE 8px too
+# far right, and this gate pinned that error -- the header even spelled it out as
+# "240px fill = 200 + 24 pad + 16". An explicitly-sized block box was painted at
+# `used width + CELL_W`, a monospace right bleed only correct for a width:auto
+# full-bleed band. The three sized boxes now match getBoundingClientRect() from
+# `chromium --headless --window-size=800,600` on this same fixture to the pixel:
+#     padbox  8..232  (chromium x1=232, w=224 = 200 + 2*12 padding)  was 240
+#     thirds  8..269  (chromium x1=269.0625)                         was 277
+#     quarter 8..207  (chromium x1=207.90625)                        was 215
+# The FRACTIONAL-LENGTH arithmetic this gate exists to pin is untouched: 33.3%
+# still resolves strictly wider than an integer 33% (269 vs 267) and 25.5%
+# strictly wider than 25% (207 vs 204), which is the truncation this gate
+# catches. Only the box-model error carried on top of it is gone.
 #   * font-size:1.5rem / 1.5em -> 24px headings that parse (the host preview is
 #     monospace and cannot depict glyph scaling — see feedback_host_preview_
 #     monospace_lies — so size is proven by the pixel-accurate length math
@@ -73,17 +87,17 @@ assert_grep 'LAYOUT segs=[1-9][0-9]* rows=[1-9][0-9]* ' "layout produced segment
 # and the text would start at x=8, not x=20. The 240px fill (200 width + 24px
 # horizontal padding + 16 chrome) and the text at x=20 (8 + 12px left padding)
 # both prove the fractional 0.75rem resolved to 12px.
-assert_grep '^FILL [0-9]+ [0-9]+ 8 240 #ffcc00'  "padding:0.75rem -> 12px (240px fill = 200 + 24 pad + 16, not 216)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 232 #ffcc00'  "padding:0.75rem -> 12px (224px padded box, 8..232 -- chromium x1=232)"
 assert_grep '^SEG [0-9]+ 20 #[0-9a-f]+ b0 u0 s0 l-1 bg#ffcc00 .Padded 0.75rem box.' \
     "padding:0.75rem -> text at x=20 (8 + 12px left padding, not x=8)"
 
 # --- 33.3% width -> right edge WIDER than an integer 33% --------------
 # 33.3% of 784 = 261.1 -> 261px width -> x1 277 (33% -> ~259 -> x1 275).
-assert_grep '^FILL [0-9]+ [0-9]+ 8 277 #33aa33'  "width:33.3% -> 277px right edge (33% would be 275)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 269 #33aa33'  "width:33.3% -> 8..269 right edge (chromium x1=269.0625; 33% would be 267)"
 
 # --- 25.5% width -> a fractional percentage box ----------------------
 # 25.5% of 784 = 199.9 -> 199px width -> x1 215 (25% -> 196 -> x1 212).
-assert_grep '^FILL [0-9]+ [0-9]+ 8 215 #2255aa'  "width:25.5% -> 215px right edge (fractional %)"
+assert_grep '^FILL [0-9]+ [0-9]+ 8 207 #2255aa'  "width:25.5% -> 8..207 right edge (fractional %; chromium x1=207.90625)"
 
 # --- decimal em/rem font-size boxes render (value path exercised) ----
 assert_grep '^SEG 0 8 #[0-9a-f]+ b1 u0 s0 l-1 bg#eeeeee .Heading at 1.5rem.' \

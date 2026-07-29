@@ -58,7 +58,7 @@ assert_grep 'SEG .* #0000ff .*hsla'   "hsla(240,100%,50%,.4) text -> blue (alpha
 # (B) Custom properties: colour token, length token, colour token on text, and
 # the undefined-token fallback.
 assert_grep 'FILL .* #2255aa'                    "var(--brand) colour token resolves"
-assert_grep 'FILL 4 5 8 176 #123456'             "var(--pad-w:160px) length token -> 176px box"
+assert_grep 'FILL 4 5 8 168 #123456'             "var(--pad-w:160px) length token -> a 160px box (chromium x1=168)"
 assert_grep 'SEG .* #663399 .*rebecca'           "var(--ink:rebeccapurple) colour token on text"
 assert_grep 'FILL .* #cc0000'                    "var(--missing, #cc0000) uses the fallback"
 
@@ -66,8 +66,8 @@ assert_grep 'FILL .* #cc0000'                    "var(--missing, #cc0000) uses t
 # prose now spans the FULL viewport like Chrome (content column = 800-2*8 =
 # 784px), so 100% - 200 = 584 -> 600px painted box. The margin:auto box centres
 # on the same window centre (400) as before, so its coords are unchanged.
-assert_grep 'FILL 8 9 325 483 #eeeeee'  "calc(100px + 50px)=150px, margin:auto centred"
-assert_grep 'FILL 9 10 8 600 #ff9900'  "calc(100% - 200px) percentage arithmetic"
+assert_grep 'FILL 8 9 325 475 #eeeeee'  "calc(100px + 50px)=150px, margin:auto centred (chromium 325..475)"
+assert_grep 'FILL 9 10 8 592 #ff9900'  "calc(100% - 200px) percentage arithmetic (chromium x1=592)"
 
 # The centred calc box's text must shift RIGHT of a full-width plain row.
 cx=$(grep -E 'SEG [0-9]+ [0-9]+ .*\|calc sum box'        "$D0" | awk '{print $3}' | head -1)
@@ -80,7 +80,7 @@ else
 fi
 
 # (D) rem, 8-digit hex, extended named colours.
-assert_grep 'FILL 10 11 8 176 #445566'  "width:10rem -> 160px (176px box)"
+assert_grep 'FILL 10 11 8 168 #445566'  "width:10rem -> 160px (chromium x1=168)"
 assert_grep 'FILL .* #112233'             "#11223344 8-digit hex -> #112233 (alpha dropped)"
 assert_grep 'FILL .* #4682b4'             "named colour steelblue -> #4682b4"
 
@@ -88,14 +88,32 @@ assert_grep 'FILL .* #4682b4'             "named colour steelblue -> #4682b4"
 # inside calc()). Plain prose is now full-viewport (content column = 784px), so
 # percentages resolve against 784 (edge-to-edge like Chrome). Boxes start at
 # x0=0 (left content edge = CONTENT_X 8, less the 8px fill inset):
-#   min(100%, 300px)           -> 300px  (box x1 = 0 + 300 + 16 chrome = 316)
-#   max(200px, 40%=~313)       -> 313px  (40% of 784 = 313.6; x1 = 329)
-#   clamp(150px, 10%=~78, 400) -> 150px  (clamped up to the floor; x1 = 166)
-#   calc(min(100px,50px)+20px) -> 70px   (nested min in calc; x1 = 86)
-assert_grep 'FILL 15 16 8 316 #778899'  "min(100%, 300px) -> 300px width"
-assert_grep 'FILL 16 17 8 329 #99aabb'  "max(200px, 40%) -> 313px width"
-assert_grep 'FILL 17 18 8 166 #bbccdd'  "clamp(150px, 10%, 400px) -> 150px (floor)"
-assert_grep 'FILL 18 20 8 86 #ddeeff'  "calc(min(100px,50px)+20px) -> 70px (nested)"
+#   min(100%, 300px)           -> 300px  (box 8..308)
+#   max(200px, 40%=~313)       -> 313px  (40% of 784 = 313.6; 8..321)
+#   clamp(150px, 10%=~78, 400) -> 150px  (clamped up to the floor; 8..158)
+#   calc(min(100px,50px)+20px) -> 70px   (nested min in calc; 8..78)
+#
+# UPDATED 2026-07-29 (box-model round): every SIZED box's right edge above was
+# 8px too far right and this gate pinned that error -- an explicitly-sized block
+# was painted at `used width + CELL_W`, a monospace right bleed that is only
+# correct for a width:auto full-bleed band. All eight sized boxes now agree with
+# getBoundingClientRect() from `chromium --headless --window-size=800,600` on
+# this same fixture, to the pixel:
+#     toklen   8..168     (chromium x1=168)        was 176
+#     calcbox  325..475   (chromium 325..475)      was 325..483
+#     calcpct  8..592     (chromium x1=592)        was 600
+#     rembox   8..168     (chromium x1=168)        was 176
+#     minbox   8..308     (chromium x1=308)        was 316
+#     maxbox   8..321     (chromium x1=321.59375)  was 329
+#     clampbox 8..158     (chromium x1=158)        was 166
+#     calcmin  8..78      (chromium x1=78)         was 86
+# The var()/calc()/min()/max()/clamp() ARITHMETIC this gate exists to pin --
+# 160/150/584/160/300/313/150/70 px -- is unchanged; only the box-model error it
+# was carrying is gone. The full-width (width:auto) rows are untouched.
+assert_grep 'FILL 15 16 8 308 #778899'  "min(100%, 300px) -> 300px width (chromium x1=308)"
+assert_grep 'FILL 16 17 8 321 #99aabb'  "max(200px, 40%) -> 313px width (chromium x1=321.59)"
+assert_grep 'FILL 17 18 8 158 #bbccdd'  "clamp(150px, 10%, 400px) -> 150px floor (chromium x1=158)"
+assert_grep 'FILL 18 20 8 78 #ddeeff'  "calc(min(100px,50px)+20px) -> 70px nested (chromium x1=78)"
 
 if [ "$fail" -ne 0 ]; then
     echo "[hb-cssvalues] RESULT: FAIL"; exit 1
