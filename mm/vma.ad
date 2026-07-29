@@ -109,7 +109,7 @@ from kernel.rcu.rcu import (
     rcu_read_lock, rcu_read_unlock,
 )
 from arch.x86.kernel.setup_percpu import get_cpu_id
-from mm.slab import kmalloc, kfree
+from mm.slab import kmalloc, kfree, km_set_site, KM_SITE_VMA
 from mm.page_alloc import (
     alloc_pages, alloc_page, free_pages, free_page, _pa_link_ok,
     page_alloc_owns, pa_set_site, pa_set_tag, pa_set_owner,
@@ -1019,6 +1019,7 @@ VMA_NODE_SIZE: uint64 = 168
 
 
 def _vma_node_new() -> uint64:
+    km_set_site(KM_SITE_VMA)
     p: uint64 = kmalloc(VMA_NODE_SIZE)
     if p == 0:
         return 0
@@ -3706,6 +3707,7 @@ def _vma_alloc_large(slot: uint64, length: uint64, prot: int32,
     if node == 0:
         return cast[int64](-12)
 
+    km_set_site(KM_SITE_VMA)
     carr: uint64 = kmalloc(cast[uint64](nchunks) * VMA_CHUNK_SIZE)
     if carr == 0:
         kfree(node)
@@ -3836,6 +3838,7 @@ def _vma_alloc_fixed_at(slot: uint64, addr_in: uint64, length: uint64,
     node: uint64 = _vma_node_new()
     if node == 0:
         return cast[int64](-12)
+    km_set_site(KM_SITE_VMA)
     carr: uint64 = kmalloc(cast[uint64](nchunks) * VMA_CHUNK_SIZE)
     if carr == 0:
         kfree(node)
@@ -6136,6 +6139,7 @@ def _vma_grow_in_place(slot: uint64, node: uint64, old_end: uint64,
     if old_carr == 0 or old_nchunks <= 0:
         return -22
     total: int32 = old_nchunks + nnew
+    km_set_site(KM_SITE_VMA)
     newcarr: uint64 = kmalloc(cast[uint64](total) * VMA_CHUNK_SIZE)
     if newcarr == 0:
         return -12

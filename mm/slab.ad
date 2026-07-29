@@ -56,7 +56,11 @@ from mm.page_alloc import (
     alloc_page, free_page, alloc_pages, free_pages, PAGE_SIZE, MAX_ORDER,
     pa_set_site, PA_SITE_SLAB,
 )
-from kernel.printk.printk import printk0, printk1, printk2
+from mm.memblock import memblock_alloc, memblock_region_top
+from kernel.printk.printk import (
+    printk0, printk1, printk2, printk3, printk_set_level,
+)
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
 
@@ -90,6 +94,379 @@ SLAB_MAGIC: uint64 = 0x424C535855_4E_5950
 # kmalloc cache table. Seven slots cover 32..2048 in powers of two.
 NUM_KMALLOC_CACHES: uint64 = 7
 kmalloc_caches: Array[7, KmemCache]
+
+
+# --- KERNEL-HEAP ALLOCATION TRACKING (kmtrack) -------------------------
+#
+# WHY THIS EXISTS
+# ===============
+# mm/page_alloc.ad's --track-allocs answers "which call site is holding
+# pages?" and it ended a ten-pass leak hunt in one soak. But it attributes
+# PAGE allocations only, and the kernel heap is a total blind spot: the
+# whole of kmalloc / kzalloc / kmem_cache_alloc reports through exactly ONE
+# page site (PA_SITE_SLAB) and one bare number, KmallocLive. So "slab 0.00"
+# in a soak means only "the slab allocator is not growing its PAGE
+# footprint" — a heap object leaked inside an already-resident slab page is
+# INVISIBLE to it, and 1896 slab frames churn per DE cycle so there is
+# plenty of resident slack to hide in. A kmalloc leak of a few hundred
+# 64-byte objects per cycle would not move a single page counter.
+#
+# The USER's requirement is no leak at all over months of uptime. At that
+# horizon an unattributed kernel heap is not an acceptable blind spot: a
+# 64-byte object leaked once per app launch is ~90 MiB/year, and nothing in
+# the tree could currently even see it, let alone name the caller.
+#
+# So this mirrors --track-allocs exactly, in the same shape, with the same
+# hard-won constraints, for kmalloc/slab:
+#
+#     echo kmtrack on    > /proc/meminfo   # arm per-object attribution
+#     echo kmtrack reset > /proc/meminfo   # re-baseline the counters
+#     echo kmtrack dump  > /proc/meminfo   # one-shot EMERG report
+#     echo kmtrack off   > /proc/meminfo
+#
+# and /proc/meminfo grows one FIXED line per site while armed:
+#
+#     KmSite<id>: <live_objs> <live_bytes> <allocs> <frees>
+#
+# scripts/leakprobe_slopes.py splits those into .live/.bytes/.allocs/.frees
+# sub-series, so a per-site kernel-heap slope comes out of the SAME soak
+# run, with the same step-aware estimator, as the page slopes.
+#
+# THE DEFAULT-OFF COST is exactly one global load + one compare + one
+# not-taken branch per kmalloc / kfree / kmem_cache_alloc /
+# kmem_cache_free / _slab_refill, and in km_set_site(). No memory is
+# reserved, no per-object writes happen, and /proc/meminfo's bytes are
+# unchanged. The large-kmalloc marker word is byte-identical when off
+# (the site nibble is 0), so kfree's dispatch is unaffected.
+#
+# NO SCAN, EVER, IN _build_meminfo. Same rule as the page tracker and for
+# the same reason: the meminfo blob is re-rendered once per 128-byte read
+# chunk, so an O(objects) walk there runs ~20x per `cat` and wedges the
+# guest — two soak runs were lost to exactly that. Every counter below is
+# an O(1) tally maintained on the alloc/free path. The ONE routine that
+# walks anything, km_track_dump(), is reachable only from the explicit
+# `kmtrack dump` ctl.
+#
+# HOW A PER-OBJECT SITE IS STORED
+# ===============================
+# kfree() gets only a pointer — no size, no site — so a `live` histogram
+# needs the ALLOCATING site recoverable from the object address alone.
+# Widening objects would change the slab layout (and cost when off), and a
+# byte per 32-byte granule of RAM would be 32 MiB on a 1 GiB machine. So:
+#
+#   * _km_pgblk: one uint16 per PFN, 0 = "not a tracked slab page",
+#     N = "site bytes live in block N-1". 512 KiB on a 1 GiB machine.
+#   * _km_blk: a pool of KM_BLK_SLOTS blocks of KM_BLK_OBJS bytes. A
+#     4 KiB slab page holds at most (4096-32)/32 = 127 objects, so 128
+#     bytes per block covers the smallest cache exactly.
+#
+# A block is bound to a page in _slab_refill and never returned, which is
+# correct because this allocator never reaps empty slabs (see the header's
+# deferred list). If the pool is exhausted the page is left untracked and
+# _km_blk_exhausted counts it, so the shortfall is REPORTED rather than
+# silently mis-attributed — an exhausted pool shows up as growth in
+# KmSite0 (unknown), never as a false 0.00 on a real site.
+#
+# Large kmalloc (> 2048 B) has no slab page. Its site rides in the block
+# header word the large path already writes, in bits 40..47 — free, exact,
+# and reclaimed on kfree with the order.
+
+KM_SITE_MAX:  uint64 = 32
+KM_BLK_OBJS:  uint64 = 128
+KM_BLK_SLOTS: uint64 = 8192
+
+# STABLE call-site ids. APPEND ONLY — never renumber, or a log from an
+# older pass stops being comparable with a newer one. This is the same
+# discipline PA_SITE_* keeps, and for the same reason: four separate leak
+# passes hand-rolled incompatible numbering before page tagging was made
+# first-class.
+KM_SITE_UNKNOWN:  uint64 = 0   # untagged caller, or pre-arming allocation
+KM_SITE_VFS:      uint64 = 1   # fs/vfs.ad nodes / dirents / mounts
+KM_SITE_VMA:      uint64 = 2   # mm/vma.ad VmaNode and friends
+KM_SITE_WSYS:     uint64 = 3   # window system / scene display lists
+KM_SITE_VK:       uint64 = 4   # lib/vk objects
+KM_SITE_TASK:     uint64 = 5   # task / sched auxiliary allocations
+KM_SITE_ABI:      uint64 = 6   # linux_abi shim (api_*.ad kmalloc exports)
+KM_SITE_NET:      uint64 = 7   # net stack / skb-ish buffers
+KM_SITE_BLOCK:    uint64 = 8   # block layer (ahci / nvme / xhci)
+KM_SITE_SND:      uint64 = 9   # sound
+KM_SITE_TMPFS:    uint64 = 10  # tmpfs metadata
+KM_SITE_SELFTEST: uint64 = 11  # in-kernel selftest probes
+
+# Mode: 0 = off, 1 = per-object site attribution armed.
+_km_trk_mode:      uint64 = 0
+_km_pgblk:         uint64 = 0
+_km_pgblk_frames:  uint64 = 0
+_km_blk:           uint64 = 0
+_km_blk_next:      uint64 = 0
+_km_blk_exhausted: uint64 = 0
+
+# Pending attribution for the NEXT kmalloc on this CPU. Deliberately not
+# per-CPU: a mis-attribution under an SMP race costs one object's tag,
+# which is noise against a leak measured in objects per cycle, whereas a
+# per-CPU array here would cost a get_cpu_id() on the hot path.
+_km_trk_cur_site: uint64 = 0
+
+# O(1) tallies. live/bytes are the "held right now" histogram; allocs and
+# frees are cumulative, so a per-site slope comes from two samples with no
+# scan at all.
+_km_live:   Array[32, uint64]
+_km_bytes:  Array[32, uint64]
+_km_allocs: Array[32, uint64]
+_km_frees:  Array[32, uint64]
+
+
+def km_set_site(s: uint64):
+    # Attribute the NEXT kernel-heap allocation on this CPU to site `s`.
+    # Default-off cost: one global load, one compare, one return.
+    if _km_trk_mode == 0:
+        return
+    _km_trk_cur_site = s
+
+
+def _km_take_site() -> uint64:
+    # Consume the pending attribution. One-shot, exactly like
+    # pa_set_site: an untagged caller downstream is honestly reported as
+    # KM_SITE_UNKNOWN rather than inheriting whatever ran before it.
+    s: uint64 = _km_trk_cur_site
+    if s >= KM_SITE_MAX:
+        s = KM_SITE_UNKNOWN
+    _km_trk_cur_site = KM_SITE_UNKNOWN
+    return s
+
+
+def _km_carve(nbytes: uint64) -> uint64:
+    # memblock-carve and zero a tracking array. memblock_alloc still works
+    # long after boot (region_alloc cold-misses into it every execve), so
+    # arming from a live shell is fine.
+    b: uint64 = memblock_alloc(nbytes, 8)
+    if b == 0:
+        return 0
+    memset(cast[Ptr[uint8]](b), 0, nbytes)
+    return b
+
+
+def _km_bind_page(page: uint64):
+    # Give a freshly refilled slab page a site block. Called from
+    # _slab_refill with tracking already known to be armed.
+    if _km_pgblk == 0:
+        return
+    pfn: uint64 = page >> 12
+    if pfn >= _km_pgblk_frames:
+        return
+    slot: Ptr[uint16] = cast[Ptr[uint16]](_km_pgblk + (pfn << 1))
+    if cast[uint64](slot[0]) != 0:
+        # Recycled page that already owns a block (a large-kmalloc frame
+        # returned to the buddy allocator and handed back as a slab page).
+        # Reuse the block but clear it: the previous occupants are gone.
+        blk: uint64 = _km_blk + (cast[uint64](slot[0]) - 1) * KM_BLK_OBJS
+        memset(cast[Ptr[uint8]](blk), 0, KM_BLK_OBJS)
+        return
+    if _km_blk_next >= KM_BLK_SLOTS:
+        # Pool exhausted. Leave the page untracked and SAY SO, so the
+        # shortfall reads as growth in KmSite0 rather than a false 0.00.
+        _km_blk_exhausted = _km_blk_exhausted + 1
+        return
+    slot[0] = cast[uint16](_km_blk_next + 1)
+    blk2: uint64 = _km_blk + _km_blk_next * KM_BLK_OBJS
+    memset(cast[Ptr[uint8]](blk2), 0, KM_BLK_OBJS)
+    _km_blk_next = _km_blk_next + 1
+
+
+def _km_site_slot(obj: uint64, obj_size: uint64) -> Ptr[uint8]:
+    # Address of the site byte for a slab object, or 0 if this page is not
+    # tracked / the index is out of range.
+    if _km_pgblk == 0 or obj_size == 0:
+        return cast[Ptr[uint8]](0)
+    page: uint64 = obj & ~(PAGE_SIZE - 1)
+    pfn: uint64 = page >> 12
+    if pfn >= _km_pgblk_frames:
+        return cast[Ptr[uint8]](0)
+    b: uint64 = cast[uint64](cast[Ptr[uint16]](_km_pgblk + (pfn << 1))[0])
+    if b == 0:
+        return cast[Ptr[uint8]](0)
+    idx: uint64 = (obj - page - SLAB_HEADER_SIZE) / obj_size
+    if idx >= KM_BLK_OBJS:
+        return cast[Ptr[uint8]](0)
+    return cast[Ptr[uint8]](_km_blk + (b - 1) * KM_BLK_OBJS + idx)
+
+
+def _km_note_alloc(obj: uint64, obj_size: uint64):
+    # Record the pending site against a slab object and bump the tallies.
+    # Called from kmem_cache_alloc with tracking known to be armed.
+    s: uint64 = _km_take_site()
+    slot: Ptr[uint8] = _km_site_slot(obj, obj_size)
+    if cast[uint64](slot) != 0:
+        slot[0] = cast[uint8](s)
+    else:
+        # Untracked page (pool exhausted): the object's site cannot be
+        # recovered at kfree, so attributing the ALLOC to a real site would
+        # make that site's live count drift upward forever. Book it under
+        # UNKNOWN so allocs and frees stay paired.
+        s = KM_SITE_UNKNOWN
+    _km_live[s]   = _km_live[s] + 1
+    _km_bytes[s]  = _km_bytes[s] + obj_size
+    _km_allocs[s] = _km_allocs[s] + 1
+
+
+def _km_note_free(obj: uint64, obj_size: uint64):
+    # Recover a slab object's allocating site and drain the tallies.
+    s: uint64 = KM_SITE_UNKNOWN
+    slot: Ptr[uint8] = _km_site_slot(obj, obj_size)
+    if cast[uint64](slot) != 0:
+        s = cast[uint64](slot[0])
+        if s >= KM_SITE_MAX:
+            s = KM_SITE_UNKNOWN
+        slot[0] = 0
+    _km_drain(s, obj_size)
+
+
+def _km_drain(s: uint64, nbytes: uint64):
+    # Shared tally decrement. Clamped at 0: an object allocated BEFORE
+    # arming has no recorded site and drains from UNKNOWN, which
+    # km_track_reset() pre-charges with the whole live population — but a
+    # reset mid-flight can still leave a site short, and an underflowing
+    # uint64 would turn a tiny error into a 2^64 lie in the soak log.
+    if s >= KM_SITE_MAX:
+        s = KM_SITE_UNKNOWN
+    if _km_live[s] > 0:
+        _km_live[s] = _km_live[s] - 1
+    if _km_bytes[s] >= nbytes:
+        _km_bytes[s] = _km_bytes[s] - nbytes
+    else:
+        _km_bytes[s] = 0
+    _km_frees[s] = _km_frees[s] + 1
+
+
+def km_track_reset():
+    # Re-baseline. Every object live RIGHT NOW was allocated before this
+    # instant, so its site is not knowable: park the whole live population
+    # under KM_SITE_UNKNOWN and let subsequent frees drain it. Without this
+    # the UNKNOWN bucket would clamp at 0 and its slope would be a lie.
+    #
+    # The per-object site bytes are NOT cleared: a stale byte would
+    # mis-attribute the FREE of a pre-reset object to a real site and push
+    # that site's live count down, which reads as a negative slope on a
+    # site that is actually flat. Zeroing them makes every pre-reset object
+    # drain from UNKNOWN, which is exactly where reset just charged it.
+    i: uint64 = 0
+    while i < KM_SITE_MAX:
+        _km_live[i]   = 0
+        _km_bytes[i]  = 0
+        _km_allocs[i] = 0
+        _km_frees[i]  = 0
+        i = i + 1
+    live: uint64 = 0
+    bytes_live: uint64 = 0
+    c: uint64 = 0
+    while c < NUM_KMALLOC_CACHES:
+        live = live + kmalloc_caches[c].nr_allocated
+        bytes_live = bytes_live \
+            + kmalloc_caches[c].nr_allocated * kmalloc_caches[c].object_size
+        c = c + 1
+    _km_live[KM_SITE_UNKNOWN]  = live
+    _km_bytes[KM_SITE_UNKNOWN] = bytes_live
+    if _km_blk != 0:
+        memset(cast[Ptr[uint8]](_km_blk), 0, KM_BLK_SLOTS * KM_BLK_OBJS)
+
+
+def km_track_enable(mode: uint64) -> int32:
+    # Arm / disarm. Returns 1 on success, 0 if memblock could not supply
+    # the arrays (in which case tracking stays OFF rather than half-armed,
+    # so a soak never reports attribution it does not actually have).
+    if mode == 0:
+        _km_trk_mode = 0
+        return 1
+    if _km_pgblk == 0:
+        top: uint64 = memblock_region_top()
+        if top == 0:
+            return 0
+        frames: uint64 = top >> 12
+        pb: uint64 = _km_carve(frames << 1)
+        if pb == 0:
+            return 0
+        kb: uint64 = _km_carve(KM_BLK_SLOTS * KM_BLK_OBJS)
+        if kb == 0:
+            return 0
+        _km_pgblk_frames = frames
+        _km_pgblk = pb
+        _km_blk = kb
+        _km_blk_next = 0
+        _km_blk_exhausted = 0
+    km_track_reset()
+    # Bind every ALREADY-RESIDENT slab page now, so an object freed after
+    # arming lands in a real block instead of silently going untracked.
+    # This is O(resident slab pages) and runs exactly once per arm, from
+    # the ctl write — never from _build_meminfo.
+    c: uint64 = 0
+    while c < NUM_KMALLOC_CACHES:
+        pg: uint64 = kmalloc_caches[c].slab_pages_head
+        while pg != 0:
+            _km_bind_page(pg)
+            pg = cast[Ptr[SlabHeader]](pg)[0].next_slab
+        c = c + 1
+    _km_trk_mode = mode
+    return 1
+
+
+def km_track_mode() -> uint64:
+    return _km_trk_mode
+
+
+def km_site_live(i: uint64) -> uint64:
+    if i >= KM_SITE_MAX:
+        return 0
+    return _km_live[i]
+
+
+def km_site_bytes(i: uint64) -> uint64:
+    if i >= KM_SITE_MAX:
+        return 0
+    return _km_bytes[i]
+
+
+def km_site_allocs(i: uint64) -> uint64:
+    if i >= KM_SITE_MAX:
+        return 0
+    return _km_allocs[i]
+
+
+def km_site_frees(i: uint64) -> uint64:
+    if i >= KM_SITE_MAX:
+        return 0
+    return _km_frees[i]
+
+
+def km_track_blocks_used() -> uint64:
+    return _km_blk_next
+
+
+def km_track_blocks_exhausted() -> uint64:
+    return _km_blk_exhausted
+
+
+def km_track_dump():
+    # One-shot console report. TWO hard-won constraints, identical to
+    # page_alloc_track_dump's:
+    #   1. console_set_interactive() suppresses INFO-level printks once the
+    #      shell prompt is up, so an in-guest trace MUST be EMERG or it is
+    #      simply not printed — a pass lost a run to a "silent" probe that
+    #      was working perfectly and being swallowed.
+    #   2. printk_set_level() arms EXACTLY ONE message, so the level is
+    #      re-armed before every line.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[kmtrack] mode=%d blocks=%d exhausted=%d\n",
+            _km_trk_mode, _km_blk_next, _km_blk_exhausted)
+    i: uint64 = 0
+    while i < KM_SITE_MAX:
+        if _km_live[i] != 0 or _km_allocs[i] != 0 or _km_frees[i] != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[kmtrack] site %d: live=%d bytes=%d\n",
+                    i, _km_live[i], _km_bytes[i])
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[kmtrack] site %d: allocs=%d frees=%d\n",
+                    i, _km_allocs[i], _km_frees[i])
+        i = i + 1
 
 
 # --- internals ------------------------------------------------------
@@ -130,6 +507,11 @@ def _slab_refill(cache: Ptr[KmemCache]) -> int32:
     cache[0].free_objects_head = first_obj
     cache[0].nr_slabs = cache[0].nr_slabs + 1
     cache[0].nr_free  = cache[0].nr_free + n
+    # kmtrack: give the new page a per-object site block. Default-off cost
+    # is one global load + a not-taken branch on a path that already went
+    # to the buddy allocator.
+    if _km_trk_mode != 0:
+        _km_bind_page(page)
     return 0
 
 
@@ -167,12 +549,21 @@ def kmem_cache_alloc(cache: Ptr[KmemCache]) -> uint64:
     slab_page: uint64 = obj & ~(PAGE_SIZE - 1)
     hdr: Ptr[SlabHeader] = cast[Ptr[SlabHeader]](slab_page)
     hdr[0].nr_inuse = hdr[0].nr_inuse + 1
+    # kmtrack: stamp the pending site into this object's slot.
+    if _km_trk_mode != 0:
+        _km_note_alloc(obj, cache[0].object_size)
     return obj
 
 
 def kmem_cache_free(cache: Ptr[KmemCache], obj: uint64):
     if obj == 0:
         return
+    # kmtrack: recover the allocating site BEFORE the object is recycled —
+    # the free-list next pointer is about to overwrite its first 8 bytes,
+    # and the site byte lives in a side table, but reading it first keeps
+    # the ordering obviously correct.
+    if _km_trk_mode != 0:
+        _km_note_free(obj, cache[0].object_size)
     # Prepend onto the free list — next slot of `obj` becomes the
     # current head, then `obj` itself is the new head.
     cast[Ptr[uint64]](obj)[0] = cache[0].free_objects_head
@@ -261,8 +652,22 @@ def _kmalloc_large(size: uint64) -> uint64:
     page: uint64 = alloc_pages(order)
     if page == 0:
         return 0
-    # Pack [order:32 | magic:32] into the first 8 bytes; return base + 8.
-    marker: uint64 = (cast[uint64](order) << 32) | cast[uint64](KMALLOC_LARGE_MAGIC)
+    # Pack [site:8 | order:8 | magic:32] into the first 8 bytes; return
+    # base + 8. kmtrack rides in bits 40..47 — a large block has no slab
+    # page and therefore no site block, but it DOES already write a header
+    # word, so the site is free to carry and exact to recover. With
+    # tracking off the site is 0 and this word is byte-identical to the
+    # pre-kmtrack layout, so kfree's dispatch is unchanged.
+    ksite: uint64 = 0
+    if _km_trk_mode != 0:
+        ksite = _km_take_site()
+        _km_live[ksite]   = _km_live[ksite] + 1
+        _km_bytes[ksite]  = _km_bytes[ksite] \
+            + (PAGE_SIZE << cast[uint64](order))
+        _km_allocs[ksite] = _km_allocs[ksite] + 1
+    marker: uint64 = (ksite << 40) \
+        | ((cast[uint64](order) & 0xFF) << 32) \
+        | cast[uint64](KMALLOC_LARGE_MAGIC)
     cast[Ptr[uint64]](page)[0] = marker
     return page + LARGE_KMALLOC_HEADER
 
@@ -306,7 +711,13 @@ def kfree(obj: uint64):
         if cast[uint32](marker & 0xFFFFFFFF) != KMALLOC_LARGE_MAGIC:
             printk1("kfree: page-backed magic mismatch at %p\n", obj)
             return
-        order: int32 = cast[int32](marker >> 32)
+        # Mask the order to 8 bits: bits 40..47 now carry the kmtrack site
+        # (see _kmalloc_large). MAX_ORDER is far under 255, so this is the
+        # same value the unmasked shift produced before kmtrack existed.
+        order: int32 = cast[int32]((marker >> 32) & 0xFF)
+        if _km_trk_mode != 0:
+            _km_drain((marker >> 40) & 0xFF,
+                      PAGE_SIZE << cast[uint64](order))
         free_pages(page, order)
         return
 

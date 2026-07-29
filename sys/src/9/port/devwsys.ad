@@ -136,7 +136,7 @@ from sys.src.port9.port.chan import (
     MountEntry, Pgrp, MNT_CAP,
     pgrp_current, CHAN_KIND_SRV,
 )
-from mm.slab import kmalloc, kfree
+from mm.slab import kmalloc, kfree, km_set_site, KM_SITE_WSYS
 # Per-window screen-sized framebuffers (layer fb + v2 backbuffer) are each
 # exactly 4 MiB. They are allocated lazily, one window at a time, from the
 # buddy allocator (order 10 = 1024 pages = 4 MiB) rather than living in a
@@ -1503,6 +1503,7 @@ def devwsys_text_read(wid: int32, off: uint64, buf: Ptr[uint8],
     # itself it nearly fills an entire kernel stack, and stacked under
     # the read(2) chain it overflows it. Heap-allocate instead; the
     # snapshot is transient.
+    km_set_site(KM_SITE_WSYS)
     scratch: uint64 = kmalloc(WSYS_SCRATCH_CAP)
     if scratch == 0:
         return -12                          # -ENOMEM
@@ -1521,6 +1522,7 @@ def devwsys_output_read(wid: int32, off: uint64, buf: Ptr[uint8],
         return -2
     # #438: heap-allocated for the same kstack-pressure reason as
     # devwsys_text_read above (this one was a 16 KiB stack Array).
+    km_set_site(KM_SITE_WSYS)
     scratch: uint64 = kmalloc(16384)
     if scratch == 0:
         return -12                          # -ENOMEM
@@ -7567,6 +7569,7 @@ def _wsys_img_verb_total(buf: Ptr[uint8], count: uint64) -> uint64:
 def _wsys_img_stg_begin(wid: int32, buf: Ptr[uint8], count: uint64,
                         total: uint64) -> int64:
     _wsys_img_stg_reset()
+    km_set_site(KM_SITE_WSYS)
     sb: uint64 = kmalloc(total)
     if sb == 0:
         set_current_errstr("/dev/wsys/draw/ctl: I staging OOM")

@@ -819,7 +819,7 @@ from fs.ext4 import (
     # what hid the Firefox font-lookup deadlock.
     EXT4_OPEN_EMFILE,
 )
-from mm.slab import kmalloc, kfree
+from mm.slab import kmalloc, kfree, km_set_site, KM_SITE_VFS
 
 extern def memcpy(dst: Ptr[uint8], src: Ptr[uint8], n: uint64) -> Ptr[uint8]
 # SMAP: vfs_read's data-delivery memcpys may write into a USER (US=1)
@@ -1003,6 +1003,7 @@ def _ns_blob_tmpfs_load(resolved: Ptr[char]) -> uint64:
     size: uint64 = tmpfs_size(slot)
     if size == 0 or size > _NS_BLOB_MAX:
         return 0
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(size)
     if buf == 0:
         return 0
@@ -1057,6 +1058,7 @@ def _ns_blob_partition_load(resolved: Ptr[char]) -> uint64:
             vfs_close(fd)
             return 0
         size = _NS_BLOB_MAX
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(size)
     if buf == 0:
         vfs_close(fd)
@@ -2464,6 +2466,7 @@ def _open_dir_with(name: Ptr[char], backend: int32) -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                       # -ENOMEM
@@ -2798,6 +2801,7 @@ def vfs_chan_p9_dir_mode_set(cid: int32, mode: int32,
         # transform. Subsequent reads return 0 (EOF) which is correct.
         namec_chan_set_p9_dir_mode(cid, 1)
         return 0
+    km_set_site(KM_SITE_VFS)
     new_buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if new_buf == 0:
         return -1
@@ -2829,6 +2833,7 @@ def _open_dir_srv() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                       # -ENOMEM
@@ -2849,6 +2854,7 @@ def _open_dir_blk() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                       # -ENOMEM
@@ -2890,6 +2896,7 @@ def _open_dir_dev() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                       # -ENOMEM
@@ -2943,6 +2950,7 @@ def _open_empty_dir() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                           # -ENOMEM
@@ -2962,6 +2970,7 @@ def _open_dir_proc() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                           # -ENOMEM
@@ -2985,6 +2994,7 @@ def _open_dir_fd() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                           # -ENOMEM
@@ -3103,6 +3113,7 @@ def _open_dir_n() -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                       # -ENOMEM
@@ -3553,6 +3564,7 @@ def _ns_ext4_slurp_by_id(name: Ptr[char], buf_out: Ptr[uint64],
         return -1
     if fsize == 0 or fsize > _NS_BLOB_MAX:
         return -1
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(fsize)
     if buf == 0:
         return -1
@@ -3814,6 +3826,7 @@ def _open_dir_proc_fd(path_ptr: Ptr[char]) -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         vfs_close(fd)
@@ -3866,6 +3879,7 @@ def _open_dir_proc_pid(name: Ptr[char]) -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         vfs_close(fd)
@@ -7595,6 +7609,7 @@ def _open_tmpfs_read(name: Ptr[char]) -> int32:
         fd: int32 = _alloc_fd(task)
         if fd < 0:
             return EMFILE
+        km_set_site(KM_SITE_VFS)
         buf: uint64 = kmalloc(DIR_BUF_SIZE)
         if buf == 0:
             return cast[int32](-12)                   # -ENOMEM
@@ -8307,6 +8322,7 @@ def _open_net_dir(sub: Ptr[char]) -> int32:
     fd: int32 = _alloc_fd(task)
     if fd < 0:
         return EMFILE
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(DIR_BUF_SIZE)
     if buf == 0:
         return cast[int32](-12)                        # -ENOMEM
@@ -8659,6 +8675,7 @@ def _open_proc(name: Ptr[char]) -> int32:
     # (including messages the console-loglevel gate kept off the live
     # console). proc_buf_size() returns the right size per path.
     bufsz: uint64 = proc_buf_size(name)
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(bufsz)
     if buf == 0:
         return cast[int32](-12)              # -ENOMEM
@@ -8689,6 +8706,7 @@ def _open_cgroup(name: Ptr[char]) -> int32:
     if fd < 0:
         return EMFILE
     # cgroup interface files all render well under one page.
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(4096)
     if buf == 0:
         return cast[int32](-12)              # -ENOMEM
@@ -8737,6 +8755,7 @@ def _open_node(name: Ptr[char]) -> int32:
     if fd < 0:
         return EMFILE
     # NUMA node interface files all render well under one page.
+    km_set_site(KM_SITE_VFS)
     buf: uint64 = kmalloc(4096)
     if buf == 0:
         return cast[int32](-12)              # -ENOMEM

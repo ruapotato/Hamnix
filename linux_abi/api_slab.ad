@@ -38,7 +38,7 @@
 # per-cache backing storage; not before.
 
 from linux_abi.exports import _add_export
-from mm.slab import kmalloc, kfree, kzalloc
+from mm.slab import kmalloc, kfree, kzalloc, km_set_site, KM_SITE_ABI
 
 
 # --- L3 kmem_cache handle table -------------------------------------
@@ -104,6 +104,7 @@ def _l_kmem_cache_alloc(s: uint64, flags: uint64) -> uint64:
         # Caller passed a destroyed (or never-created) handle.
         # Linux would BUG_ON here; for L3 we just fail the alloc.
         return 0
+    km_set_site(KM_SITE_ABI)
     return kmalloc(cache[0].object_size)
 
 

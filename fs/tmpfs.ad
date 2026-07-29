@@ -100,7 +100,7 @@
 # buffer of an unlinked file is deliberately NOT kfreed (reused on the
 # next create into the same slot) — see tmpfs_unlink.
 
-from mm.slab import kmalloc, kfree
+from mm.slab import kmalloc, kfree, km_set_site, KM_SITE_TMPFS
 # §shared-mmap coherence: tmpfs DATA chunks are allocated PAGE-ALIGNED via
 # the buddy allocator (alloc_pages) — NOT kmalloc, whose large path returns
 # base+8 — so a MAP_SHARED writable mmap of a tmpfs file can map the chunk's
@@ -1139,6 +1139,7 @@ def _tmpfs_get_chunk(slot: int32, chunk_idx: uint64,
     spinlock_lock(&tmpfs_chunk_lock)
     # Lazily allocate the chunk-pointer table on first need.
     if tmpfs_table[su].data == 0:
+        km_set_site(KM_SITE_TMPFS)
         tbl: uint64 = kmalloc(TMPFS_MAX_CHUNKS * 8)
         if tbl == 0:
             spinlock_unlock(&tmpfs_chunk_lock)
@@ -1743,6 +1744,7 @@ def tmpfs_create_symlink(linkname: Ptr[char], target: Ptr[char]) -> int32:
         printk0("tmpfs: out of entry slots (symlink)\n")
         return TMPFS_ENOSPC
     tlen: uint64 = _cstr_len(target)
+    km_set_site(KM_SITE_TMPFS)
     buf: uint64 = kmalloc(tlen + 1)
     if buf == 0:
         return TMPFS_ENOSPC

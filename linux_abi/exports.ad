@@ -24,7 +24,7 @@
 
 from kernel.printk.printk import printk0
 from kernel.stack_protect import __stack_chk_guard, __stack_chk_fail
-from mm.slab import kmalloc, kfree, kzalloc
+from mm.slab import kmalloc, kfree, kzalloc, km_set_site, KM_SITE_ABI
 from linux_abi.api_slab import linux_abi_register_slab
 from linux_abi.api_proc import linux_abi_register_proc
 from linux_abi.api_chrdev import linux_abi_register_chrdev
@@ -190,7 +190,9 @@ def _linux_kmalloc_shim(size: uint64, flags: uint64) -> uint64:
     # data-correctness flag: kmalloc(size, GFP_*|__GFP_ZERO) must
     # return zeroed memory, so honor it.
     if (flags & 0x100) != 0:
+        km_set_site(KM_SITE_ABI)
         return kzalloc(size)
+    km_set_site(KM_SITE_ABI)
     return kmalloc(size)
 
 
@@ -198,6 +200,7 @@ def _linux_kzalloc_shim(size: uint64, flags: uint64) -> uint64:
     # Linux's kzalloc is kmalloc + memset 0. Hamnix's kzalloc
     # does the same thing; we keep it separate so module callers
     # that take the kzalloc symbol get the dedicated entry point.
+    km_set_site(KM_SITE_ABI)
     return kzalloc(size)
 
 
@@ -220,10 +223,12 @@ def _linux_krealloc_shim(old: uint64, new_size: uint64,
     # smaller, the trailing tail bytes are garbage but the module's
     # intent (grow buffer) is satisfied.
     if old == 0:
+        km_set_site(KM_SITE_ABI)
         return kmalloc(new_size)
     if new_size == 0:
         kfree(old)
         return 0
+    km_set_site(KM_SITE_ABI)
     fresh: uint64 = kmalloc(new_size)
     if fresh == 0:
         return 0

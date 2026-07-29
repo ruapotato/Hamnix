@@ -47,7 +47,12 @@ from mm.page_alloc import (
 )
 from kernel.printk.printk import printk0, printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
-from mm.slab import kmalloc_live_objects, kmalloc_live_slabs
+from mm.slab import (
+    kmalloc_live_objects, kmalloc_live_slabs,
+    km_track_enable, km_track_reset, km_track_dump, km_track_mode,
+    km_site_live, km_site_bytes, km_site_allocs, km_site_frees,
+    km_track_blocks_used, km_track_blocks_exhausted, KM_SITE_MAX,
+)
 from mm.vma import (
     vma_nodes_live, vma_hugepages_total, vma_hugepages_live,
     cow_priv_reclaimed_total,
@@ -288,6 +293,46 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
             pos = pos + 1
             si = si + 1
 
+    # --- kernel-heap tracking (mm/slab.ad kmtrack, default-OFF) --------
+    #
+    # Same rules, same reasons as the page block above: emitted ONLY when
+    # armed (so the default blob is byte-for-byte unchanged), a FIXED line
+    # set every render (a varying line count tears a chunked reader
+    # mid-file), and every value an O(1) tally — NO SCAN, EVER, here.
+    #
+    # Format:  KmSite<id>: <live_objs> <live_bytes> <allocs> <frees>
+    #
+    # This is the half of the picture --track-allocs cannot see: a heap
+    # object leaked inside an already-resident slab page moves no page
+    # counter at all, so PgSite16 (slab) can read a flat 0.00 while the
+    # kernel heap grows without bound. KmBlocks/KmBlocksLost report the
+    # tracker's own capacity so an exhausted block pool is visible as a
+    # measurement shortfall rather than a false exoneration.
+    if km_track_mode() != 0:
+        pos = _emit_count_line(out, pos, "KmTrackMode:    ", km_track_mode())
+        pos = _emit_count_line(out, pos, "KmBlocks:       ",
+                               km_track_blocks_used())
+        pos = _emit_count_line(out, pos, "KmBlocksLost:   ",
+                               km_track_blocks_exhausted())
+        ki: uint64 = 0
+        while ki < KM_SITE_MAX:
+            pos = _mi_emit_str(out, pos, "KmSite")
+            pos = pos + _devmeminfo_u64_to_dec(ki, &out[pos])
+            pos = _mi_emit_str(out, pos, ": ")
+            pos = pos + _devmeminfo_u64_to_dec(km_site_live(ki), &out[pos])
+            out[pos] = 32
+            pos = pos + 1
+            pos = pos + _devmeminfo_u64_to_dec(km_site_bytes(ki), &out[pos])
+            out[pos] = 32
+            pos = pos + 1
+            pos = pos + _devmeminfo_u64_to_dec(km_site_allocs(ki), &out[pos])
+            out[pos] = 32
+            pos = pos + 1
+            pos = pos + _devmeminfo_u64_to_dec(km_site_frees(ki), &out[pos])
+            out[pos] = 10
+            pos = pos + 1
+            ki = ki + 1
+
     return pos
 
 
@@ -323,12 +368,16 @@ def devmeminfo_read_at(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
     # and it is exactly what the single-read path already did.
     if count == 0:
         return 0
-    # 4 KiB, not 1 KiB: with allocation tracking armed the blob grows by
-    # PA_SITE_MAX lines (~1.4 KiB). The kernel stack is KSTACK_ORDER=4
-    # (64 KiB), so a 4 KiB frame here is comfortable. With tracking OFF
-    # the blob is unchanged, byte for byte.
-    scratch: Array[4096, uint8]
-    n: uint64 = _build_meminfo(&scratch[0], 4096)
+    # 8 KiB, not 1 KiB: with BOTH trackers armed the blob grows by
+    # PA_SITE_MAX PgSite lines (~1.4 KiB) plus KM_SITE_MAX KmSite lines,
+    # which carry four columns each (~2.5 KiB) — over 4 KiB together with
+    # the base fields, which would have silently TRUNCATED the KmSite tail
+    # and made the last sites read as a flat 0 forever (the exact shape of
+    # a false exoneration this tooling exists to prevent). The kernel stack
+    # is KSTACK_ORDER=4 (64 KiB), so an 8 KiB frame here is comfortable.
+    # With both trackers OFF the blob is unchanged, byte for byte.
+    scratch: Array[8192, uint8]
+    n: uint64 = _build_meminfo(&scratch[0], 8192)
     if off >= n:
         return 0
     remain: uint64 = n - off
@@ -441,6 +490,23 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
         return cast[int64](count)
     if _mi_wmatch(line, n, "track dump") != 0:
         page_alloc_track_dump()
+        return cast[int64](count)
+    # Kernel-heap (kmalloc/slab) per-site attribution — mm/slab.ad. Armed
+    # independently of page tracking: the two answer different questions
+    # and a soak usually wants both, but a kmalloc-only hunt should not
+    # have to pay for the page tracker's per-frame arrays.
+    if _mi_wmatch(line, n, "kmtrack on") != 0:
+        if km_track_enable(1) == 0:
+            return -1
+        return cast[int64](count)
+    if _mi_wmatch(line, n, "kmtrack off") != 0:
+        km_track_enable(0)
+        return cast[int64](count)
+    if _mi_wmatch(line, n, "kmtrack reset") != 0:
+        km_track_reset()
+        return cast[int64](count)
+    if _mi_wmatch(line, n, "kmtrack dump") != 0:
+        km_track_dump()
         return cast[int64](count)
     return -1
 
