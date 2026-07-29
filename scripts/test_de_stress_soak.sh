@@ -555,6 +555,26 @@ CYCLES_RUN=$c
 SOAK_SECONDS=$(( SECONDS - SOAK_T0 ))
 snapshot 999_final
 assert_alive final
+
+# ORPHAN CENSUS — the last thing asked of the live guest.
+#
+# The per-site slopes say WHICH site is holding pages. They cannot say
+# whether those pages are still mapped, and that is the difference between
+# "a free path is missing" and "the desktop genuinely keeps more memory
+# live". Ten leak passes ran without that distinction and every one had its
+# hypothesis overturned; two fixes freed frames that were still reachable
+# and wedged the desktop in a single cycle.
+#
+# So a `full` soak now finishes by walking every live address space and
+# reporting, per site, how many of its live frames are reachable from NO
+# page table, with sample fault VAs so the leaking SPAN is named. Requires
+# `full` (mode 2) because the sample VAs come from the per-frame tag word.
+# Emitted at EMERG so console_set_interactive cannot swallow it — a pass
+# already lost a run to a probe that worked perfectly and was suppressed.
+if [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ]; then
+    printf 'echo track census > /proc/meminfo\n' >&3
+    sleep 6
+fi
 sleep 2
 
 exec 3>&-
@@ -899,6 +919,14 @@ echo "$TAG code=143 exits : $(grep -ao 'exited (code=143)' "$LOG" | wc -l) (note
 echo "$TAG SIGTERM audit  : $(a=$(audit_143); [ -z "$a" ] && echo 'CLEAN — every code=143 attributable to a note we posted' || echo "$a")"
 echo "$TAG table-full hits: $(grep -ac 'newwindow: table full' "$LOG")"
 echo "$TAG artifacts      : $OUT_DIR"
+# Surface the census verbatim. An ORPHANED frame is a leak with no remaining
+# reachability excuse; a site with live frames and ZERO orphans is exonerated
+# on the only ground that matters, which is a stronger statement than a flat
+# slope (a flat slope can hide equal-and-opposite growth and reclaim).
+if grep -aq '\[census\]' "$LOG"; then
+    echo "$TAG --- orphan census (unreachable tracked frames) ---"
+    grep -a '\[census\]' "$LOG" | sed "s/^/$TAG /"
+fi
 grep -q "VERDICT: LEAK" "$SUMMARY" && fail=1
 [ "$fail" -ne 0 ] && { echo "$TAG OVERALL FAIL"; exit 1; }
 echo "$TAG OVERALL PASS"
