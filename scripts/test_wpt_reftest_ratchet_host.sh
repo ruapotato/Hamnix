@@ -8,7 +8,7 @@
 # skipped every reftest, on the grounds that pixel comparison was
 # "framediff_gfx_all.sh's job". It was not. framediff_gfx_all.sh renders TEN
 # corpus pages and scores them against Chromium/Firefox screenshots — a PARITY
-# instrument. css/CSS2 alone holds ~6,275 reftests, and they are the largest
+# instrument. css/CSS2 alone holds ~6,265 reftests, and they are the largest
 # body of external evidence that exists about whether a layout engine is
 # correct. Skipping them meant the CSS box model had no external gate at all.
 #
@@ -56,6 +56,10 @@
 # verdict.
 #
 # ~40 s: pixel-backend compile (~21 s) + ~300 renders at ~13 ms each.
+#
+# RUN SERIALLY with the other pixel gates. This gate rebuilds
+# build/host/hambrowse_gfx, the SAME artifact every test_hambrowse_*_host.sh /
+# scripts/framediff_gfx_*.sh uses. Two of them at once race on that path.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1

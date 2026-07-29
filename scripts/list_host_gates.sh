@@ -42,7 +42,14 @@ fam="${1:-}"
 if [ -n "$fam" ]; then
     pats=("scripts/test_${fam}"*.sh)
 else
-    pats=(scripts/test_hambrowse*.sh scripts/test_jsengine*.sh)
+    # test_wpt* joined the family 2026-07-29. Both WPT lanes are QEMU-free
+    # browser gates and BOTH build into build/host/ alongside the hambrowse
+    # gates -- the reftest lane rebuilds build/host/hambrowse_gfx, the exact
+    # artifact this file's serial-execution note is about. Leaving them out of
+    # "the authoritative list of QEMU-free host gates" reproduced, for the
+    # external-conformance lanes, the same dark-gate hole the header describes.
+    pats=(scripts/test_hambrowse*.sh scripts/test_jsengine*.sh
+          scripts/test_wpt*.sh)
 fi
 
 for f in "${pats[@]}"; do

@@ -11,10 +11,10 @@ wrong twice over:
   * framediff_gfx_all.sh renders TEN corpus pages and scores them against
     Chromium/Firefox screenshots. It is a *parity* instrument, not a
     conformance suite. "Its job" described work nobody was doing.
-  * css/CSS2 alone holds 12,901 files, ~6,275 of them reftests. Skipping them
-    excluded the single largest body of external evidence about whether our
-    layout engine is correct. A browser meant to be an OS's primary browser
-    has to pass CSS reftests.
+  * css/CSS2 alone holds 11,318 test-shaped files, 6,265 of them carrying a
+    rel=match/mismatch link. Skipping them excluded the single largest body of
+    external evidence about whether our layout engine is correct. A browser
+    meant to be an OS's primary browser has to pass CSS reftests.
 
 THE REFTEST MODEL (what we implement)
 -------------------------------------
@@ -52,6 +52,41 @@ end to end on a coherent 171-file slice is the deliverable; volume comes next.
 NEVER EDIT A VENDORED TEST OR REFERENCE. Exclusions are recorded, with a
 reason, in tests/wpt/REFTEST_EXCLUSIONS.md. "We fail it" is never a reason --
 a failing external test is the entire point of importing an external suite.
+
+SCALING TO THE FULL css/CSS2 (measured, not guessed)
+----------------------------------------------------
+css/CSS2 holds 11,318 test-shaped files; 6,265 carry a rel=match/mismatch link.
+What actually gates coverage is NOT runner throughput -- the pixel backend
+renders in 13 ms and the lane needs ~3 renders per pair, so all 6,265 would run
+in about FOUR MINUTES. Two capability walls gate it instead, in this order:
+
+  1. AN XML PARSE MODE -- worth ~5,300 reftests, by far the biggest lever.
+     10,501 of the 11,318 files are .xht, served as application/xhtml+xml. An
+     HTML tokenizer mis-parses `<style><![CDATA[...]]></style>`, self-closing
+     `<div/>` and the XHTML DTD doctype, so the pixels are not an observation of
+     the test. Estimated cost: an XML tokenizer feeding the existing tree
+     builder (well-formed input only -- XHTML has no error recovery to
+     emulate, which makes it much smaller than the HTML parser it sits beside).
+
+  2. @font-face / THE AHEM FONT -- worth several hundred reftests, and it
+     compounds: Ahem is how reftests make text geometry pixel-predictable, so
+     every text-layout area (linebox, text, bidi-text, fonts: ~800 reftests
+     between them) leans on it. lib/htmlpaint already loads TrueType
+     (htmlpaint_load_ttf), so this is a CSS-plumbing job, not a rasterizer one.
+
+  3. AREA-BY-AREA IMPORT thereafter is a one-line change to AREAS below. The
+     honest sequencing is to import an area only once the lane can say
+     something about it, because 500 uniform FAILs teach less than 50 that
+     bisect a specific bug -- and every import grows the NONDISCRIMINATING
+     bucket, which is the number to watch, not the ratio.
+
+Before ANY of that, the two systemic box-model defects the round-1 baseline
+exposed are worth more than volume: on a bare `div{width:Npx;height:Npx}`,
+computed width overshoots by exactly +8px at every size and computed height is
+quantized upward to whole text rows (50->54, 100->108, 200->234, 300->342).
+Nearly every CSS2 box-model reftest fails on those two before reaching its own
+subject matter, so 6,265 imported tests today would mostly measure the same two
+bugs 6,265 times.
 
 To refresh:
     python3 scripts/wpt_reftest_import.py --wpt /path/to/wpt-checkout
