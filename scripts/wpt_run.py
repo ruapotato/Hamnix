@@ -261,11 +261,50 @@ def parse_console(raw, missing, rc):
     return res
 
 
+DUMP_JS = (b"<script>(function(){function d(){try{"
+           b"document.documentElement.setAttribute('data-hamnix-wpt',"
+           b"JSON.stringify(HAMNIX_WPT_OUT));}catch(e){"
+           b"document.documentElement.setAttribute('data-hamnix-wpt-err',''+e);}}"
+           b"try{add_completion_callback(d);}catch(e){"
+           b"document.documentElement.setAttribute('data-hamnix-wpt-err','acc: '+e);}"
+           b"addEventListener('load',function(){setTimeout(d,0);});"
+           b"setTimeout(d,2500);})();</script>")
+
+# WPT tests load their harness with a ROOT-ABSOLUTE URL (/resources/...), which
+# on a file:// origin resolves to the filesystem root. Rewriting just that
+# prefix to a relative path lets chromium load the vendored tree directly.
+ABS_SRC_RE = re.compile(rb"""(\bsrc\s*=\s*["']?)/(?!/)""")
+
+
+def preprocess_chromium(rel):
+    """Chromium ground truth: the vendored file, UNCHANGED except for URL
+    rebasing and the vendor-hook swap.
+
+    Deliberately NOT the same preprocessing our engine gets. Chromium has a real
+    resource loader and correct script/task ordering, so it needs neither the
+    inlining nor the script coalescing. Feeding it the untouched document is
+    what makes it a control: if chromium scores ~100% on the same tests through
+    the same reporter, a failure on our side is ours."""
+    doc = open(os.path.join(TESTS, rel.replace("/", os.sep)), "rb").read()
+    depth = rel.count("/")
+    up = b"../" * depth if depth else b"./"
+    doc = ABS_SRC_RE.sub(lambda m: m.group(1) + up, doc)
+    # Point WPT's deliberately-empty vendor stub at our implementation of it,
+    # so both engines report through the SAME reporter.
+    doc = doc.replace(up + b"resources/testharnessreport.js",
+                      up + b"../hamnix_testharnessreport.js")
+    return doc + DUMP_JS, []
+
+
 def run_chromium(rel, timeout, mode="separate", binary="chromium"):
-    payload, missing = preprocess(rel, mode=mode, chromium_dump=True)
+    payload, missing = preprocess_chromium(rel)
+    # The temp file lives NEXT TO the test so its relative src/href/iframe URLs
+    # resolve exactly as upstream intended.
+    testdir = os.path.dirname(os.path.join(TESTS, rel.replace("/", os.sep)))
+    fd, tmp = tempfile.mkstemp(suffix=".html", prefix="__wptchrome_", dir=testdir)
+    os.write(fd, payload)
+    os.close(fd)
     d = tempfile.mkdtemp(prefix="wptchrome_")
-    tmp = os.path.join(d, "t.html")
-    open(tmp, "wb").write(payload)
     try:
         p = subprocess.run(
             [binary, "--headless", "--disable-gpu", "--no-sandbox",
@@ -279,10 +318,18 @@ def run_chromium(rel, timeout, mode="separate", binary="chromium"):
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
+        # The temp file sits inside the vendored tree; it must never survive.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
     m = re.search(r'data-hamnix-wpt="([^"]*)"', dom)
     if not m:
-        return {"harness": None, "harness_note": "chromium: no result attribute",
+        e = re.search(r'data-hamnix-wpt-err="([^"]*)"', dom)
+        return {"harness": None,
+                "harness_note": "chromium: " + (htmlmod.unescape(e.group(1))
+                                                if e else "no result attribute"),
                 "subtests": [], "missing": missing, "rc": p.returncode}
     try:
         rows = json.loads(htmlmod.unescape(m.group(1)))

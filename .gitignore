@@ -221,3 +221,8 @@ tests/u-binary/src/glib_selfwake/hello
 
 # Local on-device audio demo assets (large .wav; the shipped default is /usr/share/music/hamnix-music-demo.mp3)
 /Sounds/
+
+# WPT chromium cross-check writes its temp page NEXT TO the vendored test so
+# the test's relative resource URLs resolve (scripts/wpt_run.py:run_chromium).
+# It is unlinked in a finally block; this is the belt to that braces.
+tests/wpt/tests/**/__wptchrome_*.html
