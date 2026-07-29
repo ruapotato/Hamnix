@@ -87,8 +87,27 @@ else
     fi
 fi
 
+# SHORT-WRITE TRUTH on the /dev/wsys event rings. devwsys_{keys,pointer,cmd}_
+# write used to push `count` bytes and `return count` unconditionally, so a
+# ring that filled mid-write dropped the tail and write(2) still reported the
+# full count — a partial action reported as a complete one. The in-kernel
+# selftest asserts the RETURN equals the ring's measured free space, that a
+# full ring returns -EAGAIN, that the accepted prefix reads back byte-exact
+# and that the drop is accounted. Mutation: restore `return count` in
+# devwsys_keys_write and this goes FAIL.
+if grep -aq '\[RING_SHORTWRITE\] PASS' "$LOG"; then
+    echo "[cursor_hotspot] OK: a short ring write reports the bytes actually accepted"
+else
+    if grep -aq '\[RING_SHORTWRITE\] FAIL' "$LOG"; then
+        echo "[cursor_hotspot] FAIL: a /dev/wsys write lied about how many bytes it took"
+        fail=1
+    else
+        verdict_inconclusive "$TAG" "no [RING_SHORTWRITE] marker in the boot log (selftest never ran)"
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     verdict_fail "$TAG" "a wsys input self-test reported FAIL"
 fi
 
-verdict_pass "$TAG" "cursor hotspot + keys-lossless self-tests PASS"
+verdict_pass "$TAG" "cursor hotspot + keys-lossless + ring short-write self-tests PASS"

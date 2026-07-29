@@ -13824,10 +13824,19 @@ def wsys_ring_shortwrite_selftest() -> int32:
 
     # The accepted prefix must be intact: drain the prefill, then the FREE
     # bytes we were told landed must be probe[0..FREE-1] exactly.
+    # Drain in CHUNKS THAT FIT wsys_sw_probe[128..255]. `fill` is ~4 KiB and
+    # this scratch is 512 bytes: asking pop_into for `fill - drained` at once
+    # smashed everything after the array (it showed up as a #GP with
+    # 0x4141414141414141 — this prefill's own 'A' bytes — on the kernel
+    # stack). Bound the request by the destination, which is what the caller
+    # of a fill-up-to-`count` API is always responsible for.
+    SW_CHUNK: uint64 = 128
     drained: uint64 = 0
     while drained < fill:
-        n: int64 = _wsys_keys_pop_into(wid, &wsys_sw_probe[128],
-                                       fill - drained)
+        want: uint64 = fill - drained
+        if want > SW_CHUNK:
+            want = SW_CHUNK
+        n: int64 = _wsys_keys_pop_into(wid, &wsys_sw_probe[128], want)
         if n <= 0:
             printk0("[RING_SHORTWRITE] FAIL prefill did not drain\n")
             wsys_scene_len[u] = 0

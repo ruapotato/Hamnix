@@ -170,9 +170,32 @@ want "C6F 6"  'case 6f: "x * 2" is still multiplication'
 want "C6G 8"  'case 6g: "2 ** 3" is still exponentiation'
 want "C6H 12" "case 6h: multiplication in an assignment RHS is unaffected"
 
+# ================================================================ case 7
+# DICTIONARIES, the same defect one seam over. v_dict_set returns 0 when the
+# shared list/dict element pool is at LISTELEM_MAX, and all three callers —
+# `d[k] = v`, `d.get(k, default)` (documented to STORE the default) and
+# `update()` — dropped that status. The pair was not stored, the caller was
+# told it was, and the very next read of the same key handed back the
+# default again: a dict that silently refuses to remember.
+#
+# NOTE ON REACHABILITY. In the shipping shell VAL_MAX (the value arena)
+# exhausts a few cells BEFORE LISTELEM_MAX does, so today the observable
+# raise carries the arena's name rather than the pool's. That is exactly
+# why the assertions below are on the EFFECT — the store stops, LOUDLY,
+# naming a limit, and the session survives — and not on one string. The
+# v_dict_set checks are the second line of defence for the day the ratio
+# changes; the ledger entry is retired either way.
+run "$(printf 'echo C7_BEFORE\nd = {}\nn = 0\nwhile n < 20000 {\nd[n] = n\nn = n + 1\n}\necho C7_AFTER\n')"
+want "C7_BEFORE" "case 7a: the session is healthy before the dict overflow"
+want "exhausted" \
+     "case 7b: a dict store past capacity RAISES rather than silently not storing"
+want "16384" \
+     "case 7c: the raise NAMES the limit and its value"
+want "C7_AFTER" "case 7d: the session survives the refused dict store"
+
 echo
 if [ "$fail" = "0" ]; then
-    echo "[argvcap-host] PASS — no silently truncated argument vector, alias, def or input line"
+    echo "[argvcap-host] PASS — no silently truncated argument vector, alias, def, input line or dict store"
     exit 0
 fi
 echo "[argvcap-host] FAIL"

@@ -4037,3 +4037,13 @@ bash scripts/test_hambrowse_inlbgap_host.sh
 # HAMNIX_SOAK=1, written as an `if` so the real verdict passes through when the
 # switch is on (never `&& ... || true`, which would discard it).
 if [ "${HAMNIX_SOAK:-0}" = "1" ]; then bash scripts/ci_run_gate.sh scripts/test_de_panel_taskbar_soak.sh; fi
+
+# test_userfaultfd: the userfaultfd(2) round-trip, AND the two message-loss
+# properties added when the must_use sweep reached this leaf. uffd_read used
+# to pop the message and re-queue it unchecked on a copy_to_user failure
+# ("Re-queue the message so it is not lost" — a guarantee the code did not
+# provide); a full queue lost it and the faulting thread waited forever. The
+# selftest now asserts a FAILED read leaves the message queued, and that a
+# fault the queue cannot accept is reported (hook == 2) rather than claimed
+# as delivered. Previously dark (ci_ondemand_baseline.txt).
+bash scripts/ci_run_gate.sh scripts/test_userfaultfd.sh
