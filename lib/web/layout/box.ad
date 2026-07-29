@@ -837,6 +837,10 @@ box_pady_stack: Array[64, int32]      # top+bottom padding sum
 box_bord_stack: Array[64, int32]
 box_lx_stack:   Array[64, int32]
 box_rx_stack:   Array[64, int32]
+# 1 when an EXPLICIT CSS `width` actually pinned this box's right edge (rx ==
+# indent_x + used width). The paint-time fill/border rect must then be exactly
+# the used width — no monospace right bleed. See _block_box_close.
+box_exw_stack:  Array[64, int32]
 box_srow_stack: Array[64, int32]
 box_bg_stack:   Array[64, int32]      # element background-color (0xRRGGBB) or -1
 box_bordc_stack: Array[64, int32]     # border colour (0xRRGGBB) or -1 (=> black)
@@ -2423,6 +2427,12 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         rmax = _content_right()
     if new_right > rmax:
         new_right = rmax
+    # Did an explicit CSS `width` actually END UP pinning the right edge? Only
+    # then is `new_right - indent_x` the USED width, and only then may the paint
+    # rect drop the monospace right bleed (see _block_box_close).
+    exw: int32 = 0
+    if wd >= 0 and new_right == indent_x + wd:
+        exw = 1
     if blk_right_sp < 64:
         blk_right_stack[blk_right_sp] = parent_right
         blk_right_sp = blk_right_sp + 1
@@ -2466,6 +2476,7 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         box_bord_stack[box_sp] = bord
         box_lx_stack[box_sp]   = lx
         box_rx_stack[box_sp]   = rx
+        box_exw_stack[box_sp]  = exw
         box_srow_stack[box_sp] = cast[int32](cur_row)
         box_bg_stack[box_sp]   = bgc
         # border colour + radius: resolve the cascade winner (inline d_* over the
@@ -2769,6 +2780,7 @@ def _block_box_close():
     bord: int32 = 0
     lx: int32 = 0
     rx: int32 = 0
+    exw: int32 = 0
     srow: int32 = 0
     bgc: int32 = -1
     bordc: int32 = -1
@@ -2799,6 +2811,7 @@ def _block_box_close():
         bord = box_bord_stack[box_sp]
         lx   = box_lx_stack[box_sp]
         rx   = box_rx_stack[box_sp]
+        exw  = box_exw_stack[box_sp]
         srow = box_srow_stack[box_sp]
         bgc  = box_bg_stack[box_sp]
         bordc = box_bordc_stack[box_sp]
@@ -2980,9 +2993,22 @@ def _block_box_close():
                     # to the content bbox, that fixes the trim anchor and re-registers
                     # ALL prose horizontally (article SSIM 0.527 -> 0.582).
                     frx = rx + xpad
+                elif exw != 0:
+                    # EXPLICITLY SIZED box (`width: Npx/%` actually pinned the right
+                    # edge): its painted width must be EXACTLY the used width. rx is
+                    # indent_x + used width and fplx is indent_x - xpad, so the
+                    # padding-box right edge is rx + xpad — with NO +CELL_W. That
+                    # bleed made every sized box 8px too wide at EVERY size, a
+                    # constant size-independent error: measured against
+                    # /usr/bin/chromium --headless on `div{width:Npx;height:Npx}`,
+                    # Chrome reports used width 50/100/200/300 where we painted
+                    # 58/108/208/308. It survived because it is invisible on a
+                    # width:auto band (where it usefully cancels the canvas
+                    # `maxx + LEFT_PAD` right gutter) — that case is kept below.
+                    frx = rx + xpad
                 else:
-                    # Non-float borderless box (full-bleed band, sized/centred panel):
-                    # KEEP the +CELL_W right bleed. It cancels the canvas
+                    # AUTO-width borderless box (full-bleed band, shrink-wrapped
+                    # chip): KEEP the +CELL_W right bleed. It cancels the canvas
                     # `maxx + LEFT_PAD` right-gutter so a full-bleed nav/hero band
                     # reaches the viewport edge the reference fills, and it
                     # compensates for the monospace under-measure of a shrink-wrapped
