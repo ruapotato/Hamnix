@@ -42,7 +42,10 @@ from mm.page_alloc import (
     page_alloc_track_enable, page_alloc_track_reset, page_alloc_track_dump,
     page_alloc_track_mode, page_alloc_site_live, page_alloc_site_allocs,
     page_alloc_site_frees, PA_SITE_MAX,
+    alloc_pages, free_pages, pa_set_site,
+    PA_SITE_TMPFS, PA_SITE_COW_RESOLVE, PA_SITE_UNKNOWN,
 )
+from kernel.printk.printk import printk0, printk1, printk2
 from mm.slab import kmalloc_live_objects, kmalloc_live_slabs
 from mm.vma import (
     vma_nodes_live, vma_hugepages_total, vma_hugepages_live,
@@ -402,3 +405,180 @@ def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
         page_alloc_track_dump()
         return cast[int64](count)
     return -1
+
+
+# --- allocation-tracker self-test -------------------------------------
+#
+# Gated on /etc/trkalloc-test (planted by build_initramfs.py when
+# ENABLE_TRACK_ALLOCS_TEST=1, i.e. exclusively by
+# scripts/test_track_allocs.sh). Runs in-kernel and touches no shell, so
+# it cannot be flaked by hamsh dropping its first serial command.
+#
+# It drives the WHOLE stack the way a leak hunt does — the ctl-file
+# parser, the per-frame stamp/unstamp, the O(1) tallies, and the meminfo
+# renderer including its chunked-read path — and it proves the two claims
+# that matter most about a default-off debug feature:
+#
+#   * with tracking OFF the meminfo blob contains no tracker bytes at all,
+#   * with tracking OFF an allocation moves NO counter.
+
+def _trk_find(hay: Ptr[uint8], hlen: uint64, needle: Ptr[uint8]) -> int32:
+    # 1 iff `needle` occurs in hay[0..hlen).
+    i: uint64 = 0
+    while i < hlen:
+        j: uint64 = 0
+        hit: int32 = 1
+        while needle[j] != 0:
+            if i + j >= hlen or hay[i + j] != needle[j]:
+                hit = 0
+                j = 0
+                while needle[j] != 0:
+                    j = j + 1
+            else:
+                j = j + 1
+        if hit == 1:
+            return 1
+        i = i + 1
+    return 0
+
+
+def track_allocs_selftest() -> int32:
+    scratch: Array[4096, uint8]
+    ok: int32 = 1
+
+    # (1) DEFAULT-OFF: no tracker bytes in the blob, at all.
+    if page_alloc_track_mode() != 0:
+        printk0("[TRKALLOC] FAIL: tracking was already armed at boot\n")
+        ok = 0
+    n0: uint64 = _build_meminfo(&scratch[0], 4096)
+    if _trk_find(&scratch[0], n0, "PgSite") != 0:
+        printk0("[TRKALLOC] FAIL: default-off blob contains PgSite lines\n")
+        ok = 0
+
+    # (2) DEFAULT-OFF COSTS NOTHING SEMANTICALLY: an allocation while
+    #     tracking is off must move no counter once tracking comes on.
+    pa_set_site(PA_SITE_TMPFS)
+    off_p: uint64 = alloc_pages(2)
+    if off_p == 0:
+        printk0("[TRKALLOC] FAIL: alloc_pages(2) OOM (off leg)\n")
+        return 0
+    free_pages(off_p, 2)
+
+    # (3) A garbage ctl write is still rejected: /dev/meminfo stays
+    #     read-only for everything that is not a `track` verb.
+    if devmeminfo_write("hello", 5) != -1:
+        printk0("[TRKALLOC] FAIL: a non-ctl write was accepted\n")
+        ok = 0
+
+    # (4) Arm via the REAL ctl path, trailing newline and all.
+    if devmeminfo_write("track on\n", 9) <= 0:
+        printk0("[TRKALLOC] FAIL: `track on` ctl write rejected\n")
+        return 0
+    if page_alloc_track_mode() != 1:
+        printk1("[TRKALLOC] FAIL: mode is %d after `track on`\n",
+                page_alloc_track_mode())
+        ok = 0
+
+    n1: uint64 = _build_meminfo(&scratch[0], 4096)
+    if _trk_find(&scratch[0], n1, "PgSite11: ") == 0:
+        printk0("[TRKALLOC] FAIL: armed blob has no PgSite11 line\n")
+        ok = 0
+    if n1 <= n0:
+        printk2("[TRKALLOC] FAIL: armed blob did not grow (%d -> %d)\n",
+                n0, n1)
+        ok = 0
+
+    # (5) STAMP: a tagged allocation lands on ITS site and nowhere else.
+    live_before: uint64 = page_alloc_site_live(PA_SITE_TMPFS)
+    alloc_before: uint64 = page_alloc_site_allocs(PA_SITE_TMPFS)
+    cow_before: uint64 = page_alloc_site_allocs(PA_SITE_COW_RESOLVE)
+    pa_set_site(PA_SITE_TMPFS)
+    p: uint64 = alloc_pages(2)                    # 4 frames
+    if p == 0:
+        printk0("[TRKALLOC] FAIL: alloc_pages(2) OOM (on leg)\n")
+        return 0
+    if page_alloc_site_live(PA_SITE_TMPFS) != live_before + 4:
+        printk2("[TRKALLOC] FAIL: tmpfs live %d -> %d, wanted +4\n",
+                live_before, page_alloc_site_live(PA_SITE_TMPFS))
+        ok = 0
+    if page_alloc_site_allocs(PA_SITE_TMPFS) != alloc_before + 4:
+        printk0("[TRKALLOC] FAIL: tmpfs cumulative allocs did not move by 4\n")
+        ok = 0
+    if page_alloc_site_allocs(PA_SITE_COW_RESOLVE) != cow_before:
+        printk0("[TRKALLOC] FAIL: an unrelated site's counter moved\n")
+        ok = 0
+
+    # (6) UNSTAMP: the free returns the pages to that site's histogram and
+    #     is itself attributed, so a per-site alloc/free slope is possible.
+    free_before: uint64 = page_alloc_site_frees(PA_SITE_TMPFS)
+    free_pages(p, 2)
+    if page_alloc_site_live(PA_SITE_TMPFS) != live_before:
+        printk2("[TRKALLOC] FAIL: tmpfs live did not return (%d vs %d)\n",
+                page_alloc_site_live(PA_SITE_TMPFS), live_before)
+        ok = 0
+    if page_alloc_site_frees(PA_SITE_TMPFS) != free_before + 4:
+        printk0("[TRKALLOC] FAIL: tmpfs frees did not move by 4\n")
+        ok = 0
+
+    # (7) An UNTAGGED allocation is honestly reported as UNKNOWN rather
+    #     than inheriting the previous site's attribution.
+    unk_before: uint64 = page_alloc_site_allocs(PA_SITE_UNKNOWN)
+    q: uint64 = alloc_pages(0)
+    if q != 0:
+        if page_alloc_site_allocs(PA_SITE_UNKNOWN) != unk_before + 1:
+            printk0("[TRKALLOC] FAIL: untagged alloc was not booked to site 0\n")
+            ok = 0
+        free_pages(q, 0)
+
+    # (8) The CHUNKED read path — /bin/cat reads 128 bytes at a time and
+    #     the blob is re-rendered per chunk. This is the shape that hid
+    #     every leak counter behind byte 128 once, and the shape an
+    #     O(frames) scan in _build_meminfo would wedge the guest on.
+    chunk: Array[128, uint8]
+    total: uint64 = 0
+    off: uint64 = 0
+    guard: uint64 = 0
+    while guard < 64:
+        got: int64 = devmeminfo_read_at(&chunk[0], 128, off)
+        if got <= 0:
+            guard = 64
+        else:
+            total = total + cast[uint64](got)
+            off = off + cast[uint64](got)
+            guard = guard + 1
+    if total < n1:
+        printk2("[TRKALLOC] FAIL: chunked read delivered %d of %d bytes\n",
+                total, n1)
+        ok = 0
+
+    # (9) DISARM, and prove it: with tracking off an allocation moves
+    #     nothing. This is the default-off guarantee, measured.
+    if devmeminfo_write("track off\n", 10) <= 0:
+        printk0("[TRKALLOC] FAIL: `track off` ctl write rejected\n")
+        ok = 0
+    if page_alloc_track_mode() != 0:
+        printk0("[TRKALLOC] FAIL: still armed after `track off`\n")
+        ok = 0
+    quiet_live: uint64 = page_alloc_site_live(PA_SITE_TMPFS)
+    quiet_alloc: uint64 = page_alloc_site_allocs(PA_SITE_TMPFS)
+    pa_set_site(PA_SITE_TMPFS)
+    r: uint64 = alloc_pages(1)
+    if r != 0:
+        if page_alloc_site_live(PA_SITE_TMPFS) != quiet_live:
+            printk0("[TRKALLOC] FAIL: a counter moved with tracking OFF\n")
+            ok = 0
+        if page_alloc_site_allocs(PA_SITE_TMPFS) != quiet_alloc:
+            printk0("[TRKALLOC] FAIL: cumulative allocs moved with tracking OFF\n")
+            ok = 0
+        free_pages(r, 1)
+    n2: uint64 = _build_meminfo(&scratch[0], 4096)
+    if n2 != n0:
+        printk2("[TRKALLOC] FAIL: disarmed blob is %d bytes, was %d\n",
+                n2, n0)
+        ok = 0
+
+    if ok == 1:
+        printk2("[TRKALLOC] PASS blob_off=%d blob_on=%d\n", n0, n1)
+        return 1
+    printk0("[TRKALLOC] FAIL\n")
+    return 0

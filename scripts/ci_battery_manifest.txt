@@ -4061,3 +4061,20 @@ if [ "${HAMNIX_SOAK:-0}" = "1" ]; then bash scripts/ci_run_gate.sh scripts/test_
 # Promoting it now would only turn the whole battery red for someone else's
 # bug. Fix the handshake, then move this line into the manifest and drop it
 # from ci_ondemand_baseline.txt.
+# Allocation tracking (--track-allocs, mm/page_alloc.ad) — the per-frame
+# call-site tagger that four separate leak passes hand-rolled and reverted
+# before it was made permanent. Two gates, cheapest first.
+#
+# The slope estimator is QEMU-FREE and sub-second: it gates
+# scripts/leakprobe_slopes.py against synthetic series whose true rate is
+# known by construction, because the number a leak hunt reports IS a slope
+# and two phantom findings have already been reported from a wrong one (a
+# true flat +10 pg/cycle read as least-squares +104 because of one 16 MiB
+# level shift, and "robust" Theil-Sen contaminated by the same step).
+bash scripts/test_leakprobe_slopes_host.sh
+# The tracker itself, on the real bare-metal kernel: arms through the real
+# ctl-file write, attributes a tagged allocation to its own site and no
+# other, attributes the free too, books an untagged allocation honestly to
+# site 0, survives the chunked meminfo read — and proves the default-off
+# guarantee both ways (no tracker bytes in the blob, no counter movement).
+bash scripts/ci_run_gate.sh scripts/test_track_allocs.sh

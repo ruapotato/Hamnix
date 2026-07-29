@@ -1919,6 +1919,17 @@ if os.environ.get("ENABLE_PRIOSYS_TEST"):
 if os.environ.get("ENABLE_VMSTAT_TEST") == "1":
     FILES.append(("/etc/vmstat-test", b"1\n"))
 
+# Page-allocator allocation tracking (--track-allocs) self-test.
+# scripts/test_track_allocs.sh sets ENABLE_TRACK_ALLOCS_TEST=1 to plant
+# /etc/trkalloc-test. init/main.ad at boot:37.trkalloc detects the marker
+# and calls track_allocs_selftest() (sys/src/9/port/devmeminfo.ad): it
+# arms the tracker through the real `echo 'track on' > /proc/meminfo` ctl
+# path, proves per-site stamp/unstamp accounting, and proves the
+# default-off guarantee (no tracker bytes in the blob, no counter
+# movement). Emits the [TRKALLOC] PASS banner. Default boots omit it.
+if os.environ.get("ENABLE_TRACK_ALLOCS_TEST") == "1":
+    FILES.append(("/etc/trkalloc-test", b"1\n"))
+
 # /proc/<pid>/statm self-test. scripts/test_statm.sh sets
 # ENABLE_STATM_TEST=1 to plant /etc/statm-test. init/main.ad detects the
 # marker and calls statm_selftest() (linux_abi/u_syscalls.ad): it builds

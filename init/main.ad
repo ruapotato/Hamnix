@@ -489,6 +489,11 @@ from linux_abi.u_syscalls import (
     fchmodat2_selftest,
     priority_syscall_selftest,
 )
+# Page-allocator allocation tracking (--track-allocs) self-test. Lives in
+# the meminfo cdev because it drives the whole stack — the ctl-file
+# parser, the per-frame tagging, the O(1) tallies and the chunked blob
+# render — not just the allocator half.
+from sys.src.port9.port.devmeminfo import track_allocs_selftest
 # §fuse: the /dev/fuse + FUSE wire-protocol round-trip self-test, gated
 # boot:37.fuse on /etc/fuse-test (planted when ENABLE_FUSE_TEST=1). Lives in
 # linux_abi/u_fuse.ad; re-exported through u_syscalls' flat namespace.
@@ -1202,6 +1207,11 @@ g_priosys_test: int32 = 0
 # marker scan in start_kernel and vmstat_selftest() in
 # linux_abi/u_syscalls.ad.
 g_vmstat_test: int32 = 0
+# 1 when /etc/trkalloc-test was found in the cpio, arming the page
+# allocator's allocation-tracking self-test (track_allocs_selftest). See
+# the marker scan in start_kernel and track_allocs_selftest() in
+# sys/src/9/port/devmeminfo.ad.
+g_trkalloc_test: int32 = 0
 # 1 when /etc/statm-test was found in the cpio, arming the
 # /proc/<pid>/statm self-test (statm_selftest). See the marker scan in
 # start_kernel and statm_selftest() in linux_abi/u_syscalls.ad.
@@ -3286,6 +3296,31 @@ def block_smoke_test():
             vms_idx = vms_cnt
         else:
             vms_idx = vms_idx + 1
+    # [boot:37.trkalloc] page-allocator allocation-tracking self-test
+    # arming. Gated on /etc/trkalloc-test (planted exclusively by
+    # scripts/test_track_allocs.sh). track_allocs_selftest() drives the
+    # ctl-file parser, the per-frame stamp/unstamp, the O(1) per-site
+    # tallies and the chunked meminfo render, and proves the default-off
+    # guarantee: no tracker bytes in the blob and no counter movement.
+    # "/etc/trkalloc-test" is 18 chars + NUL = 19 bytes.
+    trk_target: Ptr[uint8] = "/etc/trkalloc-test"
+    trk_idx: uint64 = 0
+    trk_cnt: uint64 = initramfs_entry_count()
+    while trk_idx < trk_cnt:
+        trk_nm: Ptr[char] = initramfs_entry_name(trk_idx)
+        trk_ok: int32 = 1
+        trk_j: uint64 = 0
+        while trk_j < 19:                       # 18 chars + NUL
+            if cast[uint8](trk_nm[trk_j]) != trk_target[trk_j]:
+                trk_ok = 0
+                trk_j = 19
+            else:
+                trk_j = trk_j + 1
+        if trk_ok == 1:
+            g_trkalloc_test = 1
+            trk_idx = trk_cnt
+        else:
+            trk_idx = trk_idx + 1
     # [boot:37.statm] /proc/<pid>/statm self-test arming. Gated on
     # /etc/statm-test (planted exclusively by scripts/test_statm.sh).
     # statm_selftest() builds a demand-paged anonymous VMA, faults its
@@ -9337,6 +9372,24 @@ def start_kernel():
                 printk0("[VMSTAT] self-test reported FAIL\n")
         else:
             printk0("[VMSTAT] skipped (no /etc/vmstat-test marker)\n")
+
+        # Page-allocator allocation tracking (--track-allocs) self-test.
+        # Gated on /etc/trkalloc-test (planted by build_initramfs.py when
+        # ENABLE_TRACK_ALLOCS_TEST=1, via scripts/test_track_allocs.sh).
+        # track_allocs_selftest() (sys/src/9/port/devmeminfo.ad) arms the
+        # tracker through its REAL ctl-file write, checks that a tagged
+        # allocation lands on its own site and no other, that the free
+        # path returns it and is itself attributed, that an untagged
+        # allocation is booked honestly to site 0, that the chunked
+        # meminfo read still delivers the whole blob, and — the load-
+        # bearing pair for a default-off feature — that with tracking OFF
+        # the blob contains no tracker bytes and no counter moves.
+        if g_trkalloc_test == 1:
+            printk0("[boot:37.trkalloc] /etc/trkalloc-test found — running self-test\n")
+            if track_allocs_selftest() != 1:
+                printk0("[TRKALLOC] self-test reported FAIL\n")
+        else:
+            printk0("[TRKALLOC] skipped (no /etc/trkalloc-test marker)\n")
 
         # /proc/<pid>/statm self-test. Gated on /etc/statm-test (planted by
         # build_initramfs.py when ENABLE_STATM_TEST=1, via scripts/test_statm.sh).
