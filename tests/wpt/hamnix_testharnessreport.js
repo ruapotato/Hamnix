@@ -56,11 +56,13 @@ var HAMNIX_WPT_OUT = [];
     /* --- 3. per-test results, streamed as they land ----------------------
      * add_result_callback fires when each individual test finishes, which is
      * independent of whether the FILE-level harness ever reaches "complete".
-     * That matters here: our engine does not yet dispatch `load` to `window`,
-     * so testharness's completion path is reached via its own timeout rather
-     * than the load event. Streaming per-test means a file whose harness never
-     * completes still yields real per-assertion data instead of one opaque
-     * ERROR -- the difference between a ranked gap list and a shrug.
+     * That was load-bearing when the engine ran its timer queue between
+     * <script> elements: testharness's own watchdog fired before `load`, so
+     * every file reported TIMEOUT and the completion callback was useless.
+     * That is fixed (499 of 706 files now report OK), but streaming per-test
+     * is kept: a file whose harness still never completes yields real
+     * per-assertion data instead of one opaque ERROR -- the difference between
+     * a ranked gap list and a shrug.
      */
     add_result_callback(function (t) {
         HAMNIX_WPT_OUT.push(["R", t.status, esc(t.name), esc(t.message)]);
