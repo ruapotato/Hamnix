@@ -21,6 +21,13 @@ def js_init():
     gc_last_freed = 0
     gc_collections = 0
     gc_hi_water = gc_base_water
+    # External value pins do NOT survive a fresh program: n_vals was just reset,
+    # so every previously pinned index now names a cell this run will re-issue.
+    vpc: int32 = 0
+    while vpc < v_pin_hi:
+        v_pin[vpc] = cast[uint8](0)
+        vpc = vpc + 1
+    v_pin_hi = 0
     # Phase-3 env-arena GC: fresh free lists + pin stack every run. gc_stress
     # persists (set once by the embedder after js_init); env_hi_water resets to
     # base so a non-stress run starts from the near-ceiling water mark.
@@ -93,6 +100,10 @@ def js_init():
     res_flag_n = 0
     fx_n = 0
     native_self = -1
+    # The Symbol.for registry is a raw OBJECT id into a pool that was just
+    # zeroed, so carrying it over would point at a REUSED slot (the same hazard
+    # the prototype handles above are reset for).
+    sym_registry = -1
     scratch_slot = 0
     emit_tgt = 1
     # Reset the builtin PROTOTYPE-object handles. These are part of the object
@@ -417,7 +428,10 @@ def js_error_msg() -> Ptr[uint8]:
 # phase exists for — never cross the boundary and ARE reclaimed.
 # Returns its argument so it can wrap a return expression.
 def ext_pin(h: int32) -> int32:
-    if h >= 0 and h < n_vals:
+    if h >= 4 and h < n_vals:          # 0..3 are singletons; never swept
+        v_pin[h] = cast[uint8](1)      # the CELL: the DOM's tables hold handles
+        if h >= v_pin_hi:
+            v_pin_hi = h + 1
         if cast[int32](v_tag[h]) == TAG_OBJ:
             o: int32 = v_ref[h]
             if o >= 0 and o < n_objs:

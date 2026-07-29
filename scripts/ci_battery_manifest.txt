@@ -4209,3 +4209,21 @@ bash scripts/test_de_home_resolve_host.sh
 # #327 drag OFFER carried a 48-jiffy (480 ms) TTL measured from the START of
 # the gesture. ~5-10 min (one OVMF boot; rebuilds the image if stale).
 bash scripts/ci_run_gate.sh scripts/test_de_desktop_live_view.sh
+
+# scripts/test_jsengine_gc_obj_host.sh: QEMU-free gate for Phase-5 GC — the
+# OBJECT arena is now reclaimed by a TRACING (not wholesale-conservative)
+# mark-sweep collector. MEASURED before: the ordinary render-loop shape (one
+# closure + one object literal + one array per turn, O(1) live set) died with
+# "object pool exhausted" after 13,086 turns, which made MAX_OBJ the binding
+# constraint for every long-running page. Precision is what reclaims memory and
+# also what makes a missing root a silent LIVE-FREE, so the gate is built around
+# proving nothing live is freed: a 400k-turn ceiling run with the arena readout
+# corroborating reclamation; an adversarial retention battery (cycles, closures
+# capturing objects, prototype chains, class instances, bound functions, Map/Set
+# object keys AND values, pending promises, generators, typed arrays over a
+# shared buffer, proxies, Symbol.for registry, timer-only and builtin-mid-call
+# reachability) read back after 240k objects of churn; object IDENTITY across
+# recycled slots; per-construct byte-identity under HAMNIX_JS_GC_STRESS=1; and a
+# real page proving embedder-held (DOM) handles survive 200k objects of churn.
+# ~4 min, QEMU-free.
+bash scripts/test_jsengine_gc_obj_host.sh

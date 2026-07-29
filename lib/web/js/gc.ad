@@ -44,6 +44,14 @@ def gc_collect():
         v_mark[i] = cast[uint8](0)
         i = i + 1
     # ---- ROOTS (wholesale over every value-bearing arena) ----
+    # EXTERNAL (embedder) handles: permanently pinned at the js_* API boundary
+    # (see ext_pin / v_pin). The embedder's own tables are invisible to this
+    # scan, so a cell it holds must never be recycled underneath it.
+    pn: int32 = 0
+    while pn < v_pin_hi:
+        if v_pin[pn] != 0:
+            v_mark[pn] = cast[uint8](1)
+        pn = pn + 1
     # explicit transient pins
     r: int32 = 0
     while r < gc_top:
@@ -183,7 +191,7 @@ def gc_collect():
     # missing value root: retention-only, but the Phase-5 object collector is
     # PRECISE and would live-free through the gap).
     gc_m(g_dataview_proto)
-    gc_m(sym_registry)                 # Symbol.for registry object
+    # (sym_registry is a raw OBJECT id, not a value handle — see gc_collect_objs)
     gc_m(hostcall_this)                # receiver of the in-flight host dispatch
     gc_m(json_rep_fn)                  # JSON.stringify function replacer
     gc_m(ref_base)                     # resolved assignment target base
@@ -642,7 +650,7 @@ def gc_collect_objs():
     obj_gc_mv(g_formdata_proto)
     obj_gc_mv(g_xhr_proto)
     obj_gc_mv(g_dataview_proto)
-    obj_gc_mv(sym_registry)            # Symbol.for registry object
+    obj_gc_m(sym_registry)             # Symbol.for registry (a RAW OBJECT ID)
     obj_gc_mv(hostcall_this)           # receiver of the in-flight host dispatch
     obj_gc_mv(json_rep_fn)             # JSON.stringify function replacer
     obj_gc_m(json_rep_allow)           # JSON.stringify allowlist (raw object id)

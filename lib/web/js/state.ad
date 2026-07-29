@@ -47,6 +47,27 @@ gc_hi_water:  int32 = 800000      # current high-water (raised on low-yield coll
 gc_last_freed: int32 = 0          # cells reclaimed by the most recent collection
 gc_collections: int32 = 0         # total collections this run (stats/debug)
 
+# EXTERNAL (embedder) VALUE PIN — see ext_pin in api.ad.
+#
+# The wholesale roots above cover every ENGINE arena, but NOT the embedder's own
+# Adder-side tables: the DOM keeps JS handles in dom_obj / dom_clsobj /
+# dom_on*_fn / evl_fn / mo_cb / cv_sstk_* / mrec_attr / g_cur_event, and the
+# engine cannot see them. That was a latent live-free — unreachable in practice
+# only because a page died on the OBJECT ceiling (13,086 turns of a render loop)
+# long before it could allocate the 800,000 values a collection needs. Phase 5
+# lifts that ceiling, so the gap became reachable and MEASURABLY broke a page:
+# 200,000 turns of churn silently lost an addEventListener handler whose cell
+# had been recycled underneath evl_fn.
+#
+# Every handle crossing the js_* API boundary therefore pins its VALUE CELL
+# permanently, the same way it pins its object. A pinned cell is never swept, so
+# nothing an embedder holds can be recycled underneath it, and no per-call-site
+# audit in another module can be wrong. The cost is a leak bounded by the number
+# of distinct handles the embedder ever touched — which is exactly the set that
+# was already immortal before Phase 5.
+v_pin: Array[1000000, uint8]      # 1 = permanently rooted (handle crossed the js_* API)
+v_pin_hi: int32 = 0               # highest pinned index + 1 (bounds the js_init clear)
+
 
 # Pin a value handle so a collection triggered during a nested allocation cannot
 # free it while it is still held only in an Adder native local. Returns the new
