@@ -4282,3 +4282,16 @@ bash scripts/test_jsengine_asyncpools_host.sh
 # the tick/preemption), plus a fix-OFF/fix-ON A/B via the `ptrsvc` ctl verb that
 # doubles as the gate's built-in mutation test. ~6 min incl. image build.
 bash scripts/ci_run_gate.sh scripts/test_pointer_latency_under_load.sh
+
+# memhog (user/memhog.ad) + the System Monitor's DISPLAYED memory figure.
+# Asserts the NUMBERS, not that code ran: asked == got for a 96M/64M request,
+# /proc/meminfo's MemFree really falls by ~the ask (a lazy reservation cannot),
+# the RAM comes back after release, a 4G ask on a 512M box is reported as a
+# LOUD short/refused allocation instead of silently under-allocating, and
+# --ramp reports a ceiling. Then, with ONE never-restarted /bin/hammonscene, it
+# reads the monitor's own scene text three times — idle, while a `memhog
+# --no-free` process holds 96 MiB, and after that process has EXITED (the
+# app-close reclamation path) — and requires the displayed "used" figure to
+# rise and come back down. INCONCLUSIVE (125) if the scene is unreadable.
+# ~6 min, one QEMU.
+bash scripts/test_memhog.sh

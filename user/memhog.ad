@@ -55,6 +55,18 @@
 #                  recovery across cycles is a leak, in one screenful.
 #   --no-verify    skip the read-back verify pass (still touches; for when
 #                  you want maximum pressure per second)
+#   --no-free      EXIT while still holding, without munmap. The kernel's
+#                  process-teardown path is then the thing being measured
+#                  — which is the scenario that actually matters: "the
+#                  browser took 10% of RAM, I closed it, did the box get it
+#                  back?" A tool that only ever tests munmap cannot answer
+#                  that, because exit() reclaims through completely
+#                  different code (address-space teardown, page tables,
+#                  kernel stack, and the ELF image's region span, none of
+#                  which munmap touches). Pair it with a monitor or a
+#                  second /proc/meminfo read from the shell AFTER the
+#                  process is gone — memhog cannot report its own
+#                  post-mortem.
 #   --batch        do NOT poll stdin during the hold. MANDATORY for any
 #                  serial-driven gate: the hold loop's non-blocking read
 #                  would otherwise swallow the NEXT command the harness
@@ -344,12 +356,14 @@ def _usage():
     _puts(2, "  --cycles N  repeat alloc/free N times\n")
     _puts(2, "  --no-verify  skip the sentinel read-back pass\n")
     _puts(2, "  --batch   do not poll stdin while holding (use in gates)\n")
+    _puts(2, "  --no-free exit while holding; let process teardown reclaim\n")
     _puts(2, "  -q        summary lines only\n")
 
 
 opt_quiet:   int32 = 0
 opt_verify:  int32 = 1
 opt_batch:   int32 = 0
+opt_nofree:  int32 = 0
 opt_ramp:    int32 = 0
 opt_hold:    uint64 = 3
 opt_cycles:  uint64 = 1
@@ -418,6 +432,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             opt_verify = 0
         elif _argeq(a, "--batch") != 0:
             opt_batch = 1
+        elif _argeq(a, "--no-free") != 0:
+            opt_nofree = 1
         elif _argeq(a, "--chunk") != 0:
             i = i + 1
             if i >= argc:
@@ -564,6 +580,21 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             else:
                 _puts(1, " s (Enter releases early) ...\n")
         _hold(opt_hold)
+
+        # --no-free: leave every mapping in place and EXIT. The kernel's
+        # address-space teardown is then what has to give the memory back,
+        # which is the code path an app being CLOSED actually exercises.
+        # We cannot observe our own post-mortem, so we print the baseline a
+        # watcher needs and get out of the way.
+        if opt_nofree != 0:
+            _puts(1, "memhog: --no-free: exiting while holding ")
+            _putsize(1, got)
+            _puts(1, "\n")
+            _puts(1, "memhog: pre-alloc MemFree baseline was ")
+            _putdec(1, free0)
+            _puts(1, " kB — a watcher must see it return AFTER this pid dies\n")
+            _puts(1, "memhog: OK\n")
+            return 0
 
         freed: uint64 = _release_all()
         free2: uint64 = _memfree_kb()
