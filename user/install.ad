@@ -717,16 +717,60 @@ def write_hamnix_roots(p2: Ptr[uint8]) -> int32:
 # installed system exactly as it was before this step existed. Neither
 # aborts the install — a box with no Linux namespace is degraded, not
 # unbootable.
+def _path_readable(path: Ptr[uint8]) -> int32:
+    fd: int32 = sys_open(cast[Ptr[char]](path))
+    if fd < 0:
+        return 0
+    sys_close(fd)
+    return 1
+
+
+def _bind_distro() -> int32:
+    return sys_bind(cast[Ptr[char]]("/n/distros"),
+                    cast[Ptr[char]]("#distro"), 0)
+
+
 def install_distro_tree(p2: Ptr[uint8]) -> int32:
     write_str(1, "[install] (6/7) install Linux namespace tree (#distro) "
                  "-> distro/ on ")
     write_str(1, p2)
     write_str(1, "\n")
-    if sys_bind(cast[Ptr[char]]("/n/distros"),
-                cast[Ptr[char]]("#distro"), 0) < 0:
+    if _bind_distro() < 0:
         write_str(2, "[install] WARN: no #distro on this medium — the "
                      "installed system will have no Linux namespace\n")
         return -1
+
+    # Is the REAL Debian/busybox tree actually behind that name yet?
+    #
+    # etc/rc.boot spawns `live_distro_up` on the LIVE-DESKTOP branch ONLY.
+    # The UNATTENDED installer branch (the /etc/installer-autorun medium and
+    # the keyboard-less NUC) sources /etc/install_nvme.hamsh instead and
+    # never brings the live distro up — so `#distro` resolves to the tiny
+    # cpio-resident stub (a PROVENANCE marker plus two /etc files), the
+    # manifest below installs 3 files and skips 164, and the installed
+    # system STILL has no shell in its Linux namespace. Measured, not
+    # assumed: that is exactly what the first run of
+    # scripts/test_installed_system_parity.sh produced.
+    #
+    # So probe for a shell and, if none is there, run the same bringup the
+    # live branch does — the kernel loop-attaches /rootfs.sqfs, decompresses
+    # /live-distro.ext4 into a RAM block device and posts ITS named roots.
+    # Re-bind afterwards to pick up the freshly pushed `#distro`. The probe
+    # keeps this a no-op on the interactive live-desktop install, where
+    # rc.boot already paid the ~145 MiB of RAM for that tree.
+    if _path_readable(cast[Ptr[uint8]]("/n/distros/bin/busybox")) == 0 \
+            and _path_readable(cast[Ptr[uint8]]("/n/distros/bin/sh")) == 0 \
+            and _path_readable(
+                cast[Ptr[uint8]]("/n/distros/usr/bin/dash")) == 0:
+        write_str(1, "[install] (6/7) #distro carries no shell yet — running "
+                     "live_distro_up (in-RAM squashfs bringup)\n")
+        run_tool4(cast[Ptr[uint8]]("live_distro_up"),
+                  cast[Ptr[uint8]](0), cast[Ptr[uint8]](0),
+                  cast[Ptr[uint8]](0), cast[Ptr[uint8]](0))
+        if _bind_distro() < 0:
+            write_str(2, "[install] WARN: re-bind of #distro failed after "
+                         "live_distro_up\n")
+            return -1
     rc: int32 = run_tool4(
         cast[Ptr[uint8]]("install_rootfs_from_manifest"), p2,
         cast[Ptr[uint8]]("/etc/install/distro.manifest"),

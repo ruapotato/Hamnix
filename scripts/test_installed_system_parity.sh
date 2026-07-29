@@ -52,8 +52,9 @@
 #   OVMF_FD            OVMF firmware path               (auto-resolved)
 #   HAMNIX_SKIP_BUILD  1 = reuse a FRESH autorun medium (default: rebuild)
 #   KEEP_LOGS          1 = keep logs + qcow2 on PASS    (default: 0)
-#   MUTATE             a marker name to deliberately break (self-test of
-#                      the gate): distro | homedir | audio | man
+#   MUTATE             comma-separated assertion label(s) to deliberately
+#                      blind, for mutation-testing this gate:
+#                      distro | homedir | audio | man | alive
 
 set -uo pipefail
 
@@ -182,6 +183,13 @@ grep -a -q 'Linux namespace installed' "$LOG_B" \
 grep -a -q 'install home skeleton' "$LOG_B" \
     && ok "installer ran the home-skeleton step" \
     || miss "installer never ran the home-skeleton step"
+# ...and the #distro step must have found a POPULATED source. The first run
+# of this gate showed it running against the cpio-resident #distro STUB and
+# installing 3 files while skipping 164 — a step that "ran" and delivered
+# nothing. Assert a shell actually crossed.
+grep -a -q 'install: distro/bin/busybox' "$LOG_B" \
+    && ok "the #distro step copied a real shell (distro/bin/busybox)" \
+    || miss "the #distro step found no shell at the source — it ran against an empty/stub #distro"
 
 # --- Stage C: boot the INSTALLED disk and prove the capabilities ------
 say "Stage C: boot the installed NVMe ALONE (medium detached); drive assertions"
@@ -254,12 +262,19 @@ kill "$QEMU_C_PID" 2>/dev/null; wait "$QEMU_C_PID" 2>/dev/null
 exec 5>&-; exec 6>&-
 
 # --- Stage C assertions ----------------------------------------------
-# MUTATE=<name> deliberately blinds one assertion so the gate can be
-# mutation-tested (it must go RED for that marker and only that marker).
-mutated="${MUTATE:-}"
+# MUTATE=<name>[,<name>...] deliberately blinds the named assertion(s) so
+# the gate can be mutation-tested: it must go RED for exactly the named
+# markers and stay green everywhere else. A blinded check reports its own
+# MISS line, so one run with the full list shows each grep is wired to its
+# own assertion rather than to a shared code path.
+mutated=",${MUTATE:-},"
 grep_c() {
     local re="$1"
-    [ "$2" = "$mutated" ] && return 1
+    local label="$2"
+    # An empty label is never mutable (guard against ",," matching it).
+    if [ -n "$label" ] && [ "${mutated#*,${label},}" != "$mutated" ]; then
+        return 1
+    fi
     grep -aE -q "$re" "$LOG_C"
 }
 
@@ -294,7 +309,7 @@ grep_c 'NAME|SYNOPSIS|hamsh —' man \
     && ok "man pages installed (man hamsh returned a page)" \
     || miss "man pages missing on the installed system"
 
-grep_c '^PARITY_DONE_99' "" \
+grep_c '^PARITY_DONE_99' alive \
     && ok "the installed shell stayed alive through every command" \
     || miss "the installed shell died mid-run"
 
