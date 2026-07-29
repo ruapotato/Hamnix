@@ -15893,10 +15893,12 @@ def evt_emit_i64(out: Ptr[uint8], pos: uint64, v: int64) -> uint64:
 evt_short_write_bytes: uint64 = 0
 evt_torn_lines:        uint64 = 0
 # Retry budget for a full ring. The client drains from a blocked read that
-# our own write() just woke, so one or two retries is all a live consumer
-# ever needs; a bigger number would only stall the compositor's frame loop
-# behind a wedged client. Measured: with a draining client, 0 retries are
-# used (the first write always takes the whole line).
+# our own write() just woke, so a couple of yields is all a live consumer
+# should ever need; a bigger number would only stall the compositor's frame
+# loop behind a WEDGED client, which is the case this budget exists to cap.
+# Not tuned against a measurement — the number that matters is
+# evt_short_write_bytes, which is 0 whenever any retry budget suffices and
+# tells you plainly when none does.
 EVT_WRITE_RETRIES: int32 = 4
 
 
@@ -15916,6 +15918,10 @@ def evt_write_line(fd: int32, buf: Ptr[uint8], n: uint64) -> int32:
             off = off + cast[uint64](w)
             tries = 0
             continue
+        if w < 0 and w != -11:
+            # A HARD error (the window went away: -EBADF / -ENOENT). Retrying
+            # would only spin the frame loop; report and stop.
+            break
         # w == 0 or -EAGAIN: the ring is full right now.
         tries = tries + 1
         if tries > EVT_WRITE_RETRIES:
