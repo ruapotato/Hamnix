@@ -42,6 +42,23 @@
 # K/M/G are binary 1024-based, like every other memory tool here).
 #
 # OPTIONS
+#   --margin SIZE  free-memory headroom to leave untouched (default 24M).
+#                  THIS IS LOAD-BEARING, not politeness. An anonymous mmap of
+#                  <= VMA_MAX_CHUNK is DEMAND-PAGED, so the kernel happily
+#                  hands out a 4 GiB mapping on a 512 MiB box and the refusal
+#                  arrives later, as a page fault it cannot satisfy:
+#                    [pf] demand-page OOM va=...
+#                    [pf]   OOM in USER fault -> SIGSEGV (task killed)
+#                  A memhog that just kept touching would therefore be KILLED
+#                  mid-measurement and report nothing at all — measured, not
+#                  theorised (`memhog 4G` and `memhog --ramp` both died this
+#                  way before this guard existed). So the refusal signal is
+#                  the kernel's OWN MemFree: before each chunk memhog checks
+#                  that taking it would still leave --margin free, and stops
+#                  with a LOUD short/refused report if it would not. That is
+#                  what makes --ramp's ceiling a number you can read instead
+#                  of a SIGSEGV, and it is why memhog never OOMs the box it
+#                  is measuring.
 #   --chunk SIZE   allocation granularity (default 4M == mm/vma.ad's
 #                  VMA_MAX_CHUNK, so one chunk is one buddy-backed span
 #                  and a refusal is a REAL out-of-memory, not a
@@ -81,6 +98,8 @@
 #   3  allocation entirely REFUSED (not one chunk)
 #   4  a page did not read back its sentinel (not resident / aliased)
 #   5  the kernel's MemFree did not move like a real allocation would
+#   6  MemFree is unreadable, so nothing could be verified — INCONCLUSIVE,
+#      deliberately distinct from success
 #
 # Plan 9 shape: memhog is a plain terminal program over sys_mmap /
 # sys_munmap and a READ of /proc/meminfo. It adds no syscall and no ctl
@@ -357,6 +376,7 @@ def _usage():
     _puts(2, "  --no-verify  skip the sentinel read-back pass\n")
     _puts(2, "  --batch   do not poll stdin while holding (use in gates)\n")
     _puts(2, "  --no-free exit while holding; let process teardown reclaim\n")
+    _puts(2, "  --margin S free RAM to leave untouched (default 24M)\n")
     _puts(2, "  -q        summary lines only\n")
 
 
@@ -364,6 +384,8 @@ opt_quiet:   int32 = 0
 opt_verify:  int32 = 1
 opt_batch:   int32 = 0
 opt_nofree:  int32 = 0
+opt_margin:  uint64 = 25165824          # 24 MiB of headroom to leave free
+hit_ceiling: int32 = 0                  # 1 = stopped on the MemFree guard
 opt_ramp:    int32 = 0
 opt_hold:    uint64 = 3
 opt_cycles:  uint64 = 1
@@ -388,6 +410,7 @@ def _argeq(a: Ptr[uint8], b: Ptr[uint8]) -> int32:
 def _alloc(want: uint64) -> uint64:
     got: uint64 = 0
     nchunks = 0
+    hit_ceiling = 0
     while nchunks < MAXCHUNKS:
         step: uint64 = opt_chunk
         if want != 0:
@@ -395,6 +418,18 @@ def _alloc(want: uint64) -> uint64:
                 break
             if want - got < step:
                 step = want - got
+        # HEADROOM GUARD — the refusal signal on an overcommitting kernel.
+        # mmap succeeding says nothing: a <= 4 MiB anonymous mapping is
+        # demand-paged, so the kernel only discovers it cannot back the
+        # pages when we TOUCH them, and its answer then is SIGSEGV. Ask
+        # /proc/meminfo instead, per chunk (every field it exposes is an
+        # O(1) counter, so this is cheap by construction).
+        free_kb: uint64 = _memfree_kb()
+        if free_kb != 0:
+            need_kb: uint64 = step / KIB + opt_margin / KIB
+            if free_kb < need_kb:
+                hit_ceiling = 1
+                break
         p: int64 = sys_mmap(0, step, PROT_RW, MAP_PANON, -1, 0)
         if p <= 0:
             break
@@ -434,6 +469,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             opt_batch = 1
         elif _argeq(a, "--no-free") != 0:
             opt_nofree = 1
+        elif _argeq(a, "--margin") != 0:
+            i = i + 1
+            if i >= argc:
+                _usage()
+                return 1
+            opt_margin = _parse_size(cast[Ptr[uint8]](argv[cast[uint64](i)]))
         elif _argeq(a, "--chunk") != 0:
             i = i + 1
             if i >= argc:
@@ -516,7 +557,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         if got == 0:
             _puts(2, "memhog: *** ALLOCATION REFUSED *** not a single ")
             _putdec(2, opt_chunk / MIB)
-            _puts(2, " MiB chunk was granted\n")
+            _puts(2, " MiB chunk was granted")
+            if hit_ceiling != 0:
+                _puts(2, " — free RAM is already at/below the ")
+                _putdec(2, opt_margin / MIB)
+                _puts(2, " MiB margin")
+            _puts(2, "\n")
             return 3
 
         free1: uint64 = _memfree_kb()
@@ -545,6 +591,10 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             _putdec(2, got)
             _puts(2, " bytes — MISSING ")
             _putsize(2, req_bytes - got)
+            if hit_ceiling != 0:
+                _puts(2, " (stopped at the ")
+                _putdec(2, opt_margin / MIB)
+                _puts(2, " MiB free-RAM margin — this box cannot serve the ask)")
             _puts(2, "\n")
 
         # /proc/meminfo cross-check: real RAM moves MemFree. If the
@@ -618,7 +668,11 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 _putdec(1, free0 - free2)
                 _puts(1, " kB\n")
         else:
-            _puts(1, "memhog: MemFree unreadable — reclamation INCONCLUSIVE\n")
+            _puts(1, "memhog: MemFree unreadable — reclamation INCONCLUSIVE, and")
+            _puts(1, " the headroom guard was INACTIVE (a large ask can be")
+            _puts(1, " SIGSEGV-killed at touch time on this kernel)\n")
+            if rc == 0:
+                rc = 6
 
         if short != 0 and rc == 0:
             rc = 2

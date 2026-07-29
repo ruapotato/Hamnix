@@ -98,15 +98,21 @@ set +e
   sleep 8
   printf '\n';                                       sleep 2
   printf 'echo GATE-PRIME\n';                        sleep 3
+  printf 'echo GATE-READY\n';                        sleep 3
   # --- (B) start the monitor ONCE. It is never restarted below. ---
   printf 'hammonscene &\n';                          sleep 8
   printf 'echo GATE-SCENE-A\n';                      sleep 2
   printf 'cat /dev/wsys/2/scene\n';                  sleep 5
   # --- (B) pressure via a process that EXITS while holding ---
-  printf 'memhog 96M --hold 5 --batch --no-free\n';  sleep 7
+  # BACKGROUNDED (`&`) deliberately. Run in the FOREGROUND the shell blocks
+  # until memhog is gone, every queued `cat` below then executes AFTER the
+  # exit, and B would sample the post-release state — a gate that always
+  # reads "no change" and calls it a pass. Cost one false FAIL to learn.
+  printf 'memhog 96M --hold 30 --batch --no-free &\n'; sleep 14
   printf 'echo GATE-SCENE-B\n';                      sleep 2
   printf 'cat /dev/wsys/2/scene\n';                  sleep 6
-  printf 'echo GATE-SCENE-C\n';                      sleep 10
+  # memhog is still holding here; wait out the rest of its hold + exit.
+  printf 'echo GATE-SCENE-C\n';                      sleep 26
   printf 'cat /dev/wsys/2/scene\n';                  sleep 5
   # --- (A) allocate / verify / release with the full report ---
   printf 'echo GATE-ALLOC\n';                        sleep 2
@@ -118,7 +124,7 @@ set +e
   printf 'echo GATE-RAMP\n';                         sleep 2
   printf 'memhog --ramp --hold 0 --batch -q\n';      sleep 22
   printf 'echo GATE-DONE\n';                         sleep 3
-) | timeout 260s qemu-system-x86_64 \
+) | timeout 320s qemu-system-x86_64 \
     -kernel "$ELF" \
     -smp 1 -nographic -no-reboot -m 512M \
     -monitor none -serial stdio \
@@ -127,7 +133,10 @@ rc=$?
 set -e
 
 # ------------------------------------------------------------- verdict
-if ! grep -a -q "GATE-PRIME" "$LOG"; then
+# GATE-READY, not GATE-PRIME: hamsh drops the FIRST command line it is given
+# over serial, so the first echo is expected to vanish. Two priming echoes are
+# sent and the SECOND one is the liveness marker.
+if ! grep -a -q "GATE-READY" "$LOG"; then
     echo "[memhog] INCONCLUSIVE: no guest marker at all — the boot never" \
          "reached an interactive shell (qemu rc=$rc)" >&2
     tail -40 "$LOG" >&2
