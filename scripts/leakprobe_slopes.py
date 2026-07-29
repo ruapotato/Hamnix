@@ -109,6 +109,13 @@ PA_SITES = {
     17: "uaccess", 18: "tmpfs", 19: "wsys", 20: "execve",
 }
 
+# Per-site names for the kernel-heap tracker's KmSite<N> lines. Mirrors the
+# KM_SITE_* constants in mm/slab.ad; ids are frozen there, append-only.
+KM_SITES = {
+    0: "unknown", 1: "vfs", 2: "vma", 3: "wsys", 4: "vk", 5: "task",
+    6: "abi", 7: "net", 8: "block", 9: "snd", 10: "tmpfs", 11: "selftest",
+}
+
 
 # --- estimators -------------------------------------------------------
 
@@ -241,6 +248,16 @@ def subkeys(key, count):
         sid = int(m.group(1))
         base = "PgSite%s:%s" % (sid, PA_SITES.get(sid, "site%d" % sid))
         return [base + ".live", base + ".allocs", base + ".frees"]
+    # KmSite<N> carries FOUR columns (mm/slab.ad kmtrack): live objects,
+    # live bytes, cumulative allocs, cumulative frees. .live is the leak
+    # series; .bytes says how much the leak actually costs, which for a
+    # 32-byte cache and a 2048-byte cache differ by 64x for the same count.
+    m = re.fullmatch(r'KmSite(\d+)', key)
+    if m and count == 4:
+        sid = int(m.group(1))
+        base = "KmSite%s:%s" % (sid, KM_SITES.get(sid, "site%d" % sid))
+        return [base + ".live", base + ".bytes",
+                base + ".allocs", base + ".frees"]
     if count == 1:
         return [key]
     return ["%s.c%d" % (key, i) for i in range(count)]
@@ -409,12 +426,29 @@ def selftest():
         body.append("SOAKSMP_%d_closed_B" % i)
         body.append("MemFree: %d kB" % (900000 - 40 * i))
         body.append("PgSite11: %d %d %d" % (100 + 9 * i, 500 + 20 * i, 400 + 11 * i))
+        # KmSite carries FOUR columns; a 4-column line must NOT fall through
+        # to the generic .c0/.c1 naming, or a kernel-heap leak would be
+        # reported under a name no human recognises.
+        body.append("KmSite1: %d %d %d %d"
+                    % (200 + 5 * i, (200 + 5 * i) * 64,
+                       900 + 30 * i, 700 + 25 * i))
         body.append("SOAKSMP_%d_closed_E" % i)
     parsed = parse("\n".join(body).replace("SOAKSMP_%d_closed" % 0,
                                            "SOAKSMP_0_closed"))
     # labels are per-sample unique, so match on the shared substring
     sel = [v for l, v in parsed if "closed" in l]
     check("parser: 20 samples recovered", len(sel) == 20, "n=%d" % len(sel))
+    kmkey = "KmSite1:vfs.live"
+    check("parser: KmSite 4 columns named", kmkey in (sel[0] if sel else {}),
+          "keys=%s" % sorted(k for k in (sel[0] if sel else {})
+                             if k.startswith("KmSite")))
+    if sel and kmkey in sel[0]:
+        rk = analyse([v[kmkey] for v in sel])
+        check("parser: kmalloc vfs.live slopes to +5",
+              abs(rk["steady"] - 5) < 0.6, "steady=%.2f" % rk["steady"])
+        rb = analyse([v["KmSite1:vfs.bytes"] for v in sel])
+        check("parser: kmalloc vfs.bytes slopes to +320 (5 objs x 64 B)",
+              abs(rb["steady"] - 320) < 40, "steady=%.2f" % rb["steady"])
     key = "PgSite11:cow_resolve_pte.live"
     check("parser: PgSite columns named", key in (sel[0] if sel else {}),
           "keys=%s" % sorted(sel[0])[:3] if sel else "")

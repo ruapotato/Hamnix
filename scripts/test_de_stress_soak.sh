@@ -192,6 +192,24 @@ case "${HAMNIX_TRACK_ALLOCS:-0}" in
     full)   printf "echo track full > /proc/meminfo\n" >&3; sleep 2 ;;
 esac
 
+# KERNEL-HEAP TRACKING (opt-in, independent of the page tracker).
+# HAMNIX_KMTRACK=1 arms mm/slab.ad's per-object kmalloc/slab call-site
+# attribution, here and for the same reason: after boot has settled, so
+# boot-time objects land in the UNKNOWN bucket and drain instead of
+# polluting every site's baseline. Every subsequent `sample` then carries
+# KmSite<N>: <live_objs> <live_bytes> <allocs> <frees>, which
+# scripts/leakprobe_slopes.py slopes per site.
+#
+# WHY IT IS A SEPARATE KNOB. A "slab 0.00" verdict from the PAGE tracker
+# means only that the slab allocator is not growing its page footprint — a
+# heap object leaked inside an already-resident slab page is invisible to
+# it. These two answer different questions and a thorough soak wants BOTH;
+# they are separate so a kmalloc-only hunt need not pay for the page
+# tracker's per-frame arrays (~3.25 MiB in full mode).
+case "${HAMNIX_KMTRACK:-0}" in
+    1|on)   printf "echo kmtrack on > /proc/meminfo\n" >&3; sleep 2 ;;
+esac
+
 fail=0
 say_fail() { echo "$TAG FAIL $*" >&2; fail=1; }
 alive_n=0
