@@ -1,0 +1,599 @@
+# user/memhog.ad
+#
+# memhog — a deliberate memory-pressure tool, in the spirit of SUSE's
+# `memhog` (numactl's). It exists to make the kernel's memory behaviour
+# MEASURABLE from userspace: allocate a requested amount, TOUCH every page
+# so it is genuinely resident, hold it, then release it — reporting, at
+# every step, what it actually got versus what it asked for.
+#
+# WHY IT MATTERS. The standing goal is "months or even years without
+# needing a reboot"; at a 1-page-per-cycle leak tolerance that is ~4 GB a
+# year. A leak is only observable if you can (a) apply a known amount of
+# pressure and (b) check the system gives it back. memhog is that
+# instrument: allocate big, free, and compare /proc/meminfo before and
+# after. The numbers it prints ARE the evidence.
+#
+# THE ONE THING IT MUST NOT DO is silently under-allocate. A tool that
+# says "256 MiB" while quietly mapping 4 MiB is worse than no tool: every
+# measurement taken with it is a lie. So memhog proves residency three
+# ways and shouts if any of them disagrees:
+#
+#   1. CHUNK COUNT       — the request is split into fixed chunks; a
+#      refused chunk is counted and reported (asked vs got, in chunks and
+#      in bytes). A short allocation is a LOUD failure, never a warning.
+#   2. PER-PAGE SENTINEL — every page gets its own globally-unique 64-bit
+#      stamp written at offset 0, then ALL pages are re-read and verified.
+#      That forces a real write fault per page (so lazily-reserved pages
+#      become resident) AND catches aliasing: if two virtual pages share
+#      one physical frame, the second stamp overwrites the first and the
+#      verify pass sees the wrong value.
+#   3. /proc/meminfo DELTA — MemFree is sampled before and after. If the
+#      kernel's own accounting did not move by roughly the requested
+#      amount, the allocation was a reservation rather than RAM and
+#      memhog says so.
+#
+# MODES
+#   memhog SIZE                allocate SIZE, verify, hold, release
+#   memhog --ramp              climb in --chunk steps until the kernel
+#                              refuses; report the CEILING reached. This is
+#                              the "how well does all that work" number.
+#
+# SIZE accepts the usual suffixes: 4096, 256K, 256M, 2G (bare = bytes;
+# K/M/G are binary 1024-based, like every other memory tool here).
+#
+# OPTIONS
+#   --chunk SIZE   allocation granularity (default 4M == mm/vma.ad's
+#                  VMA_MAX_CHUNK, so one chunk is one buddy-backed span
+#                  and a refusal is a REAL out-of-memory, not a
+#                  large-VMA-splitting artefact)
+#   --hold SEC     seconds to hold before releasing (default 3). Pressing
+#                  Enter releases early — the hold loop polls stdin
+#                  non-blocking and yields, so memhog never wedges the box
+#                  while it is holding.
+#   --cycles N     repeat allocate/verify/hold/free N times and report the
+#                  MemFree recovered each cycle. A monotonically falling
+#                  recovery across cycles is a leak, in one screenful.
+#   --no-verify    skip the read-back verify pass (still touches; for when
+#                  you want maximum pressure per second)
+#   --batch        do NOT poll stdin during the hold. MANDATORY for any
+#                  serial-driven gate: the hold loop's non-blocking read
+#                  would otherwise swallow the NEXT command the harness
+#                  typed at the shell, and the gate would hang blaming
+#                  memhog. Interactive use wants the default.
+#   -q / --quiet   only the summary lines
+#
+# EXIT STATUS — chosen so a shell gate can branch on the FAILURE MODE:
+#   0  everything asked for was granted, resident, and released
+#   1  usage error
+#   2  SHORT allocation (got less than asked)
+#   3  allocation entirely REFUSED (not one chunk)
+#   4  a page did not read back its sentinel (not resident / aliased)
+#   5  the kernel's MemFree did not move like a real allocation would
+#
+# Plan 9 shape: memhog is a plain terminal program over sys_mmap /
+# sys_munmap and a READ of /proc/meminfo. It adds no syscall and no ctl
+# verb. To pair it with per-site page accounting, arm the tracker first —
+#   echo track on > /proc/meminfo
+# — which is a ctl write to the file you read the state from.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read_nb(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_close(fd: int32) -> int32
+extern def sys_mmap(addr: uint64, len: uint64, prot: int32, flags: int32,
+                    fd: int32, off: uint64) -> int64
+extern def sys_munmap(addr: uint64, len: uint64) -> int32
+extern def sys_get_jiffies() -> uint64
+extern def sys_yield() -> int32
+
+
+PROT_RW:       int32 = 0x3            # PROT_READ | PROT_WRITE
+MAP_PANON:     int32 = 0x22           # MAP_PRIVATE | MAP_ANONYMOUS
+
+PAGE_SIZE:     uint64 = 4096
+KIB:           uint64 = 1024
+MIB:           uint64 = 1048576
+
+# 4 MiB == mm/vma.ad VMA_MAX_CHUNK: the largest span the buddy allocator
+# serves in one piece. Chunking at exactly that boundary means a refused
+# chunk is a genuine "the allocator has nothing left", not an artefact of
+# the large-VMA multi-chunk splitter.
+DEF_CHUNK:     uint64 = 0x400000
+
+# Chunk table. 4096 * 4 MiB = 16 GiB of addressable hog, which is past any
+# machine this OS boots on today; a bigger request is rejected in usage
+# rather than silently clamped (silent clamping is the exact sin this tool
+# exists to detect).
+MAXCHUNKS:     uint64 = 4096
+chunk_addr:    Array[4096, uint64]
+chunk_len:     Array[4096, uint64]
+nchunks:       uint64 = 0
+
+mi_buf:        Array[4096, uint8]
+
+
+# ==================================================================
+# output helpers
+# ==================================================================
+def _slen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def _puts(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, _slen(s))
+
+
+def _putdec(fd: int32, v: uint64):
+    if v == 0:
+        sys_write(fd, "0", 1)
+        return
+    digs: Array[24, uint8]
+    i: uint64 = 0
+    x: uint64 = v
+    while x != 0:
+        digs[i] = cast[uint8](x % 10) + 48
+        x = x / 10
+        i = i + 1
+    out: Array[24, uint8]
+    j: uint64 = 0
+    while j < i:
+        out[j] = digs[i - 1 - j]
+        j = j + 1
+    sys_write(fd, &out[0], i)
+
+
+# "<v> bytes (<v/MiB> MiB)" — every size is printed in BOTH units so a
+# log is unambiguous about whether a suffix was honoured.
+def _putsize(fd: int32, v: uint64):
+    _putdec(fd, v)
+    _puts(fd, " bytes (")
+    _putdec(fd, v / MIB)
+    _puts(fd, " MiB)")
+
+
+# ==================================================================
+# raw 64-bit access at an arbitrary address (the sentinel stamp)
+# ==================================================================
+def _ld64(addr: uint64) -> uint64:
+    p: Ptr[uint64] = cast[Ptr[uint64]](addr)
+    return p[0]
+
+
+def _st64(addr: uint64, val: uint64):
+    p: Ptr[uint64] = cast[Ptr[uint64]](addr)
+    p[0] = val
+
+
+# ==================================================================
+# SIZE parsing with K/M/G suffixes
+# ==================================================================
+# Returns the byte count, or 0 for a malformed argument (0 is not a legal
+# hog size either, so one sentinel covers both).
+def _parse_size(s: Ptr[uint8]) -> uint64:
+    v: uint64 = 0
+    i: uint64 = 0
+    ndig: uint64 = 0
+    while s[i] >= 48 and s[i] <= 57:
+        v = v * 10 + cast[uint64](s[i] - 48)
+        ndig = ndig + 1
+        i = i + 1
+    if ndig == 0:
+        return 0
+    mult: uint64 = 1
+    c: uint8 = s[i]
+    if c == 107 or c == 75:                   # k K
+        mult = KIB
+        i = i + 1
+    elif c == 109 or c == 77:                 # m M
+        mult = MIB
+        i = i + 1
+    elif c == 103 or c == 71:                 # g G
+        mult = MIB * KIB
+        i = i + 1
+    # An optional trailing 'b'/'B' ("256MB") is accepted and ignored, the
+    # way `dd`/`free` treat it: the unit is already binary.
+    if s[i] == 98 or s[i] == 66:
+        i = i + 1
+    if s[i] != 0:
+        return 0                              # trailing junk: reject loudly
+    return v * mult
+
+
+# ==================================================================
+# /proc/meminfo reader
+# ==================================================================
+# Consumes the WHOLE file. /proc/meminfo is re-rendered per read chunk in
+# the kernel (sys/src/9/port/devmeminfo.ad), so a reader that assumes one
+# atomic read can see a torn snapshot — loop to EOF and never assume the
+# first read delivered everything. This is a pure O(1)-counter read on the
+# kernel side; it is cheap and deliberately stays that way.
+def _read_meminfo() -> uint64:
+    fd: int32 = sys_open(cast[Ptr[char]]("/proc/meminfo"))
+    if fd < 0:
+        return 0
+    total: uint64 = 0
+    while total < 4095:
+        r: int64 = sys_read(fd, &mi_buf[total], 4095 - total)
+        if r <= 0:
+            break
+        total = total + cast[uint64](r)
+    sys_close(fd)
+    mi_buf[total] = 0
+    return total
+
+
+# Value of a "<Label> <digits>" line, matched only at a LINE START so
+# "MemFree:" cannot be found inside another label.
+def _mi_field(n: uint64, label: Ptr[uint8]) -> uint64:
+    ll: uint64 = _slen(label)
+    if ll == 0 or ll >= n:
+        return 0
+    i: uint64 = 0
+    while i + ll <= n:
+        atline: int32 = 0
+        if i == 0:
+            atline = 1
+        elif mi_buf[i - 1] == 10:
+            atline = 1
+        if atline != 0:
+            m: uint64 = 0
+            while m < ll and mi_buf[i + m] == label[m]:
+                m = m + 1
+            if m == ll:
+                j: uint64 = i + ll
+                while j < n and (mi_buf[j] < 48 or mi_buf[j] > 57):
+                    j = j + 1
+                v: uint64 = 0
+                while j < n and mi_buf[j] >= 48 and mi_buf[j] <= 57:
+                    v = v * 10 + cast[uint64](mi_buf[j] - 48)
+                    j = j + 1
+                return v
+        i = i + 1
+    return 0
+
+
+# MemFree in kB, or 0 if /proc/meminfo is unreadable (which makes the
+# delta checks report INCONCLUSIVE rather than a bogus pass).
+def _memfree_kb() -> uint64:
+    n: uint64 = _read_meminfo()
+    if n == 0:
+        return 0
+    return _mi_field(n, cast[Ptr[uint8]]("MemFree:"))
+
+
+# ==================================================================
+# the hog itself
+# ==================================================================
+sent_next: uint64 = 0x6D686F6700000001      # "mhog" + a running counter
+
+
+# Touch every page of [base, base+len) by writing a UNIQUE sentinel into
+# each page's first 8 bytes. The write (not a read) is what forces the
+# page to become genuinely resident, and uniqueness is what turns the
+# later verify pass into an ALIASING check as well as a residency check.
+def _touch(base: uint64, len_b: uint64):
+    off: uint64 = 0
+    while off < len_b:
+        _st64(base + off, sent_next)
+        sent_next = sent_next + 1
+        off = off + PAGE_SIZE
+
+
+# Re-read every sentinel. Returns the number of pages that did NOT read
+# back the value written to them. Recomputes the same sentinel sequence,
+# so it is an exact comparison rather than a "is it non-zero" hand-wave.
+def _verify(base: uint64, len_b: uint64, first_sent: uint64) -> uint64:
+    bad: uint64 = 0
+    off: uint64 = 0
+    s: uint64 = first_sent
+    while off < len_b:
+        if _ld64(base + off) != s:
+            bad = bad + 1
+        s = s + 1
+        off = off + PAGE_SIZE
+    return bad
+
+
+def _release_all() -> uint64:
+    freed: uint64 = 0
+    i: uint64 = 0
+    while i < nchunks:
+        if chunk_addr[i] != 0:
+            sys_munmap(chunk_addr[i], chunk_len[i])
+            freed = freed + chunk_len[i]
+            chunk_addr[i] = 0
+        i = i + 1
+    nchunks = 0
+    return freed
+
+
+# Hold the allocation for `secs` seconds, returning early if anything
+# arrives on stdin (so `memhog 1G` in a terminal is interruptible with
+# Enter and always reaches its release path). sys_yield each pass: Hamnix
+# multitasks cooperatively, so a bare spin here would starve every peer —
+# including the very system monitor you are watching the numbers on.
+def _hold(secs: uint64) -> int32:
+    if secs == 0:
+        return 0
+    start: uint64 = sys_get_jiffies()
+    target: uint64 = secs * 100
+    kb: Array[8, uint8]
+    while sys_get_jiffies() - start < target:
+        if opt_batch == 0:
+            r: int64 = sys_read_nb(0, &kb[0], 8)
+            if r > 0:
+                return 1
+        sys_yield()
+    return 0
+
+
+# ==================================================================
+# main
+# ==================================================================
+def _usage():
+    _puts(2, "memhog: usage: memhog [OPTIONS] SIZE\n")
+    _puts(2, "                memhog --ramp [OPTIONS]\n")
+    _puts(2, "  SIZE      bytes, or with a K/M/G suffix (256M, 2G)\n")
+    _puts(2, "  --ramp    climb until refused; report the ceiling\n")
+    _puts(2, "  --chunk S allocation granularity (default 4M)\n")
+    _puts(2, "  --hold N  hold N seconds before release (default 3)\n")
+    _puts(2, "  --cycles N  repeat alloc/free N times\n")
+    _puts(2, "  --no-verify  skip the sentinel read-back pass\n")
+    _puts(2, "  --batch   do not poll stdin while holding (use in gates)\n")
+    _puts(2, "  -q        summary lines only\n")
+
+
+opt_quiet:   int32 = 0
+opt_verify:  int32 = 1
+opt_batch:   int32 = 0
+opt_ramp:    int32 = 0
+opt_hold:    uint64 = 3
+opt_cycles:  uint64 = 1
+opt_chunk:   uint64 = 0x400000
+req_bytes:   uint64 = 0
+
+
+def _argeq(a: Ptr[uint8], b: Ptr[uint8]) -> int32:
+    i: uint64 = 0
+    while a[i] != 0 and b[i] != 0:
+        if a[i] != b[i]:
+            return 0
+        i = i + 1
+    if a[i] == 0 and b[i] == 0:
+        return 1
+    return 0
+
+
+# Allocate up to `want` bytes in opt_chunk steps (want == 0 means "ramp:
+# keep going until the kernel refuses"). Fills the chunk table. Returns
+# the bytes actually obtained.
+def _alloc(want: uint64) -> uint64:
+    got: uint64 = 0
+    nchunks = 0
+    while nchunks < MAXCHUNKS:
+        step: uint64 = opt_chunk
+        if want != 0:
+            if got >= want:
+                break
+            if want - got < step:
+                step = want - got
+        p: int64 = sys_mmap(0, step, PROT_RW, MAP_PANON, -1, 0)
+        if p <= 0:
+            break
+        first: uint64 = sent_next
+        _touch(cast[uint64](p), step)
+        if opt_verify != 0:
+            bad: uint64 = _verify(cast[uint64](p), step, first)
+            if bad != 0:
+                _puts(2, "memhog: *** NOT RESIDENT *** ")
+                _putdec(2, bad)
+                _puts(2, " page(s) in chunk ")
+                _putdec(2, nchunks)
+                _puts(2, " did not read back their sentinel\n")
+                chunk_addr[nchunks] = cast[uint64](p)
+                chunk_len[nchunks] = step
+                nchunks = nchunks + 1
+                _release_all()
+                return 0xffffffffffffffff       # signals the verify failure
+        chunk_addr[nchunks] = cast[uint64](p)
+        chunk_len[nchunks] = step
+        nchunks = nchunks + 1
+        got = got + step
+    return got
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    i: int32 = 1
+    while i < argc:
+        a: Ptr[uint8] = cast[Ptr[uint8]](argv[cast[uint64](i)])
+        if _argeq(a, "--ramp") != 0:
+            opt_ramp = 1
+        elif _argeq(a, "-q") != 0 or _argeq(a, "--quiet") != 0:
+            opt_quiet = 1
+        elif _argeq(a, "--no-verify") != 0:
+            opt_verify = 0
+        elif _argeq(a, "--batch") != 0:
+            opt_batch = 1
+        elif _argeq(a, "--chunk") != 0:
+            i = i + 1
+            if i >= argc:
+                _usage()
+                return 1
+            opt_chunk = _parse_size(cast[Ptr[uint8]](argv[cast[uint64](i)]))
+            if opt_chunk < PAGE_SIZE:
+                _puts(2, "memhog: --chunk must be at least one page\n")
+                return 1
+        elif _argeq(a, "--hold") != 0:
+            i = i + 1
+            if i >= argc:
+                _usage()
+                return 1
+            opt_hold = _parse_size(cast[Ptr[uint8]](argv[cast[uint64](i)]))
+        elif _argeq(a, "--cycles") != 0:
+            i = i + 1
+            if i >= argc:
+                _usage()
+                return 1
+            opt_cycles = _parse_size(cast[Ptr[uint8]](argv[cast[uint64](i)]))
+            if opt_cycles == 0:
+                opt_cycles = 1
+        elif a[0] == 45:
+            _puts(2, "memhog: unknown option\n")
+            _usage()
+            return 1
+        else:
+            req_bytes = _parse_size(a)
+            if req_bytes == 0:
+                _puts(2, "memhog: bad SIZE (want e.g. 4096, 256M, 2G)\n")
+                return 1
+        i = i + 1
+
+    if opt_ramp == 0 and req_bytes == 0:
+        _usage()
+        return 1
+    # Page-round the request UP so "asked" and "got" are comparable in the
+    # same units the kernel works in; a sub-page ask is one page.
+    if req_bytes != 0:
+        req_bytes = (req_bytes + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
+        if req_bytes / opt_chunk > MAXCHUNKS:
+            _puts(2, "memhog: SIZE needs more than 4096 chunks; raise --chunk\n")
+            return 1
+
+    rc: int32 = 0
+    cyc: uint64 = 0
+    while cyc < opt_cycles:
+        cyc = cyc + 1
+        free0: uint64 = _memfree_kb()
+
+        if opt_quiet == 0:
+            _puts(1, "memhog: cycle ")
+            _putdec(1, cyc)
+            _puts(1, "/")
+            _putdec(1, opt_cycles)
+            _puts(1, "  MemFree before ")
+            _putdec(1, free0)
+            _puts(1, " kB\n")
+            if opt_ramp != 0:
+                _puts(1, "memhog: ramping in ")
+                _putdec(1, opt_chunk / MIB)
+                _puts(1, " MiB steps until refused ...\n")
+            else:
+                _puts(1, "memhog: requesting ")
+                _putsize(1, req_bytes)
+                _puts(1, " in ")
+                _putdec(1, opt_chunk / MIB)
+                _puts(1, " MiB chunks\n")
+
+        want: uint64 = req_bytes
+        if opt_ramp != 0:
+            want = 0
+        got: uint64 = _alloc(want)
+
+        if got == 0xffffffffffffffff:
+            _puts(2, "memhog: FAILED — allocated pages were not resident\n")
+            return 4
+
+        if got == 0:
+            _puts(2, "memhog: *** ALLOCATION REFUSED *** not a single ")
+            _putdec(2, opt_chunk / MIB)
+            _puts(2, " MiB chunk was granted\n")
+            return 3
+
+        free1: uint64 = _memfree_kb()
+
+        if opt_ramp != 0:
+            _puts(1, "memhog: CEILING ")
+            _putsize(1, got)
+            _puts(1, " in ")
+            _putdec(1, nchunks)
+            _puts(1, " chunks before refusal\n")
+        else:
+            _puts(1, "memhog: got ")
+            _putsize(1, got)
+            _puts(1, " of ")
+            _putsize(1, req_bytes)
+            _puts(1, "\n")
+
+        # LOUD short-allocation report. A short hog invalidates every
+        # measurement taken with it, so it is an error, not a note.
+        short: int32 = 0
+        if opt_ramp == 0 and got < req_bytes:
+            short = 1
+            _puts(2, "memhog: *** SHORT ALLOCATION *** asked ")
+            _putdec(2, req_bytes)
+            _puts(2, " bytes, got ")
+            _putdec(2, got)
+            _puts(2, " bytes — MISSING ")
+            _putsize(2, req_bytes - got)
+            _puts(2, "\n")
+
+        # /proc/meminfo cross-check: real RAM moves MemFree. If the
+        # kernel's own accounting barely moved, what we got was a
+        # reservation, and any "memory pressure" measured with it is
+        # fiction. Threshold at half the ask — generous enough to absorb
+        # concurrent activity on the box, strict enough that a purely lazy
+        # mapping cannot pass.
+        lazy: int32 = 0
+        if free0 != 0 and free1 != 0 and free0 > free1:
+            drop_kb: uint64 = free0 - free1
+            if opt_quiet == 0:
+                _puts(1, "memhog: MemFree ")
+                _putdec(1, free0)
+                _puts(1, " -> ")
+                _putdec(1, free1)
+                _puts(1, " kB (kernel saw ")
+                _putdec(1, drop_kb)
+                _puts(1, " kB leave the free pool)\n")
+            if drop_kb < (got / KIB) / 2:
+                lazy = 1
+        elif free0 != 0 and free1 != 0:
+            lazy = 1
+        if lazy != 0:
+            _puts(2, "memhog: *** LAZY RESERVATION *** MemFree did not fall ")
+            _puts(2, "like a resident allocation of this size would\n")
+
+        if opt_quiet == 0 and opt_hold != 0:
+            _puts(1, "memhog: holding ")
+            _putdec(1, opt_hold)
+            if opt_batch != 0:
+                _puts(1, " s ...\n")
+            else:
+                _puts(1, " s (Enter releases early) ...\n")
+        _hold(opt_hold)
+
+        freed: uint64 = _release_all()
+        free2: uint64 = _memfree_kb()
+        _puts(1, "memhog: released ")
+        _putsize(1, freed)
+        _puts(1, "\n")
+
+        # RECLAMATION EVIDENCE — the number the "years of uptime" goal
+        # actually rests on. Recovered vs the pre-allocation baseline,
+        # printed as a percentage so a leak shows up as a shortfall.
+        if free0 != 0 and free2 != 0:
+            _puts(1, "memhog: MemFree after free ")
+            _putdec(1, free2)
+            _puts(1, " kB of ")
+            _putdec(1, free0)
+            _puts(1, " kB baseline")
+            if free2 >= free0:
+                _puts(1, " — FULLY RECLAIMED\n")
+            else:
+                _puts(1, " — SHORT BY ")
+                _putdec(1, free0 - free2)
+                _puts(1, " kB\n")
+        else:
+            _puts(1, "memhog: MemFree unreadable — reclamation INCONCLUSIVE\n")
+
+        if short != 0 and rc == 0:
+            rc = 2
+        if lazy != 0 and rc == 0:
+            rc = 5
+
+    if rc == 0:
+        _puts(1, "memhog: OK\n")
+    return rc

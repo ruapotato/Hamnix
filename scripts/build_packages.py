@@ -384,7 +384,7 @@ COREUTILS_BINS = (
     "du", "echo", "ed", "env_show", "expr", "false", "find", "free",
     "getty", "grep", "halt", "hamwd", "head", "hostname", "id",
     "insmod", "kill", "less", "ln", "login", "ls", "lsblk", "lsmod",
-    "md5sum",
+    "md5sum", "memhog",
     "mkdir", "more", "motd", "mv", "nsbindprobe", "nsrun", "numfmt", "od",
     "p9srv_demo", "passwd", "patch", "pgrep", "poweroff", "pr", "preempt_demo",
     "preempt_hog", "printf", "ps", "pwd", "reboot", "rev", "rm",
