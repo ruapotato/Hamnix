@@ -48,7 +48,8 @@ from mm.page_alloc import (
 from kernel.printk.printk import printk0, printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 from mm.slab import (
-    kmalloc_live_objects, kmalloc_live_slabs,
+    kmalloc_live_objects, kmalloc_live_slabs, kmalloc, kfree, km_set_site,
+    KM_SITE_SELFTEST, KM_SITE_VFS, KM_SITE_UNKNOWN,
     km_track_enable, km_track_reset, km_track_dump, km_track_mode,
     km_site_live, km_site_bytes, km_site_allocs, km_site_frees,
     km_track_blocks_used, km_track_blocks_exhausted, KM_SITE_MAX,
@@ -59,6 +60,7 @@ from mm.vma import (
 )
 from kernel.sched.core import (
     tasks_spawned_total, tasks_reaped_total, tasks_live_count,
+    mm_orphan_census,
 )
 
 
@@ -491,6 +493,18 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
     if _mi_wmatch(line, n, "track dump") != 0:
         page_alloc_track_dump()
         return cast[int64](count)
+    # ORPHAN CENSUS — mark-and-sweep reachability over every live address
+    # space (kernel/sched/core.ad::mm_orphan_census). This is the verb that
+    # separates "a free path is missing" from "the process genuinely maps
+    # more than it did last cycle" — the distinction ten leak passes could
+    # not measure, and the reason two attempted fixes freed reachable frames
+    # and wedged the desktop. Needs `track full` first (it reports the
+    # recorded fault VA of each orphan, which names the leaking SPAN).
+    #
+    # O(page tables + frames), hence a ctl verb and NEVER a meminfo field.
+    if _mi_wmatch(line, n, "track census") != 0:
+        mm_orphan_census()
+        return cast[int64](count)
     # Kernel-heap (kmalloc/slab) per-site attribution — mm/slab.ad. Armed
     # independently of page tracking: the two answer different questions
     # and a soak usually wants both, but a kmalloc-only hunt should not
@@ -547,14 +561,17 @@ def _trk_find(hay: Ptr[uint8], hlen: uint64, needle: Ptr[uint8]) -> int32:
 
 
 def track_allocs_selftest() -> int32:
-    scratch: Array[4096, uint8]
+    # 8 KiB, matching devmeminfo_read_at: this selftest arms BOTH trackers,
+    # and the combined blob exceeds 4 KiB. A short scratch here would
+    # silently truncate the very lines the kmtrack legs assert on.
+    scratch: Array[8192, uint8]
     ok: int32 = 1
 
     # (1) DEFAULT-OFF: no tracker bytes in the blob, at all.
     if page_alloc_track_mode() != 0:
         printk0("[TRKALLOC] FAIL: tracking was already armed at boot\n")
         ok = 0
-    n0: uint64 = _build_meminfo(&scratch[0], 4096)
+    n0: uint64 = _build_meminfo(&scratch[0], 8192)
     if _trk_find(&scratch[0], n0, "PgSite") != 0:
         printk0("[TRKALLOC] FAIL: default-off blob contains PgSite lines\n")
         ok = 0
@@ -591,7 +608,7 @@ def track_allocs_selftest() -> int32:
                 page_alloc_track_mode())
         ok = 0
 
-    n1: uint64 = _build_meminfo(&scratch[0], 4096)
+    n1: uint64 = _build_meminfo(&scratch[0], 8192)
     if _trk_find(&scratch[0], n1, "PgSite11: ") == 0:
         printk0("[TRKALLOC] FAIL: armed blob has no PgSite11 line\n")
         ok = 0
@@ -683,14 +700,160 @@ def track_allocs_selftest() -> int32:
             printk0("[TRKALLOC] FAIL: cumulative allocs moved with tracking OFF\n")
             ok = 0
         free_pages(r, 1)
-    n2: uint64 = _build_meminfo(&scratch[0], 4096)
+    n2: uint64 = _build_meminfo(&scratch[0], 8192)
     if n2 != n0:
         printk2("[TRKALLOC] FAIL: disarmed blob is %d bytes, was %d\n",
                 n2, n0)
         ok = 0
 
+    # --- KERNEL-HEAP TRACKER (mm/slab.ad kmtrack) ---------------------
+    #
+    # Same claims as above, for the half of memory the page tracker cannot
+    # see. The legs that matter most are (k1) default-off leaves the blob
+    # byte-identical, (k5) a freed object DRAINS its site — because a
+    # tracker whose live count only ever rises would report every site as
+    # leaking and be worse than no tracker at all — and (k6) an object
+    # allocated at one site is not attributed to another.
+    if km_track_mode() != 0:
+        printk0("[TRKALLOC] FAIL: kmtrack was already armed at boot\n")
+        ok = 0
+    kn0: uint64 = _build_meminfo(&scratch[0], 8192)
+    if _trk_find(&scratch[0], kn0, "KmSite") != 0:
+        printk0("[TRKALLOC] FAIL: default-off blob contains KmSite lines\n")
+        ok = 0
+
+    # (k2) Arm word-at-a-time, exactly as hamsh delivers `echo kmtrack on`.
+    devmeminfo_write("kmtrack", 7)
+    devmeminfo_write(" ", 1)
+    devmeminfo_write("on", 2)
+    if devmeminfo_write("\n", 1) <= 0:
+        printk0("[TRKALLOC] FAIL: word-at-a-time `kmtrack on` rejected\n")
+        return 0
+    if km_track_mode() != 1:
+        printk1("[TRKALLOC] FAIL: kmtrack mode is %d after `kmtrack on`\n",
+                km_track_mode())
+        ok = 0
+    kn1: uint64 = _build_meminfo(&scratch[0], 8192)
+    if _trk_find(&scratch[0], kn1, "KmSite1: ") == 0:
+        printk0("[TRKALLOC] FAIL: armed blob has no KmSite1 line\n")
+        ok = 0
+    if kn1 <= kn0:
+        printk2("[TRKALLOC] FAIL: kmtrack blob did not grow (%d -> %d)\n",
+                kn0, kn1)
+        ok = 0
+
+    # (k3) STAMP: a tagged kmalloc lands on ITS site, in objects AND bytes.
+    kl_before: uint64 = km_site_live(KM_SITE_SELFTEST)
+    kb_before: uint64 = km_site_bytes(KM_SITE_SELFTEST)
+    ka_before: uint64 = km_site_allocs(KM_SITE_SELFTEST)
+    kvfs_before: uint64 = km_site_allocs(KM_SITE_VFS)
+    km_set_site(KM_SITE_SELFTEST)
+    kobj: uint64 = kmalloc(200)                 # -> the 256-byte cache
+    if kobj == 0:
+        printk0("[TRKALLOC] FAIL: kmalloc(200) returned 0\n")
+        return 0
+    if km_site_live(KM_SITE_SELFTEST) != kl_before + 1:
+        printk2("[TRKALLOC] FAIL: kmtrack live %d -> %d, wanted +1\n",
+                kl_before, km_site_live(KM_SITE_SELFTEST))
+        ok = 0
+    if km_site_bytes(KM_SITE_SELFTEST) != kb_before + 256:
+        printk2("[TRKALLOC] FAIL: kmtrack bytes %d -> %d, wanted +256\n",
+                kb_before, km_site_bytes(KM_SITE_SELFTEST))
+        ok = 0
+    if km_site_allocs(KM_SITE_SELFTEST) != ka_before + 1:
+        printk0("[TRKALLOC] FAIL: kmtrack cumulative allocs did not move\n")
+        ok = 0
+    # (k6) ...and NOWHERE else. A tracker that smears one site's objects
+    # over another cannot exonerate anything, which is most of its value.
+    if km_site_allocs(KM_SITE_VFS) != kvfs_before:
+        printk0("[TRKALLOC] FAIL: an unrelated kmtrack site moved\n")
+        ok = 0
+
+    # (k4) The pending site is ONE-SHOT: the next, untagged kmalloc must be
+    # booked to UNKNOWN, not inherit the previous caller's attribution.
+    ku_before: uint64 = km_site_allocs(KM_SITE_UNKNOWN)
+    kobj2: uint64 = kmalloc(100)
+    if kobj2 == 0:
+        printk0("[TRKALLOC] FAIL: kmalloc(100) returned 0\n")
+        return 0
+    if km_site_allocs(KM_SITE_UNKNOWN) != ku_before + 1:
+        printk0("[TRKALLOC] FAIL: untagged kmalloc was not booked to site 0\n")
+        ok = 0
+    if km_site_allocs(KM_SITE_SELFTEST) != ka_before + 1:
+        printk0("[TRKALLOC] FAIL: untagged kmalloc inherited the last site\n")
+        ok = 0
+    kfree(kobj2)
+
+    # (k5) DRAIN: kfree recovers the ALLOCATING site from the pointer alone
+    # and returns both counters. Without this a live histogram only rises.
+    kf_before: uint64 = km_site_frees(KM_SITE_SELFTEST)
+    kfree(kobj)
+    if km_site_live(KM_SITE_SELFTEST) != kl_before:
+        printk2("[TRKALLOC] FAIL: kmtrack live did not drain (%d vs %d)\n",
+                km_site_live(KM_SITE_SELFTEST), kl_before)
+        ok = 0
+    if km_site_bytes(KM_SITE_SELFTEST) != kb_before:
+        printk2("[TRKALLOC] FAIL: kmtrack bytes did not drain (%d vs %d)\n",
+                km_site_bytes(KM_SITE_SELFTEST), kb_before)
+        ok = 0
+    if km_site_frees(KM_SITE_SELFTEST) != kf_before + 1:
+        printk0("[TRKALLOC] FAIL: kmtrack frees did not move by 1\n")
+        ok = 0
+
+    # (k7) The LARGE path (> 2048 B) has no slab page — its site rides in
+    # the header word. Prove the round trip, since a botched mask there
+    # would corrupt the ORDER and free the wrong number of pages.
+    kll: uint64 = km_site_live(KM_SITE_SELFTEST)
+    klb: uint64 = km_site_bytes(KM_SITE_SELFTEST)
+    km_set_site(KM_SITE_SELFTEST)
+    kbig: uint64 = kmalloc(9000)                # 3 pages -> order 2, 16 KiB
+    if kbig == 0:
+        printk0("[TRKALLOC] FAIL: large kmalloc(9000) returned 0\n")
+        return 0
+    if km_site_live(KM_SITE_SELFTEST) != kll + 1:
+        printk0("[TRKALLOC] FAIL: large kmalloc was not attributed\n")
+        ok = 0
+    if km_site_bytes(KM_SITE_SELFTEST) != klb + 16384:
+        printk2("[TRKALLOC] FAIL: large kmalloc bytes %d -> %d, wanted +16384\n",
+                klb, km_site_bytes(KM_SITE_SELFTEST))
+        ok = 0
+    kfree(kbig)
+    if km_site_live(KM_SITE_SELFTEST) != kll:
+        printk0("[TRKALLOC] FAIL: large kfree did not drain its site\n")
+        ok = 0
+    if km_site_bytes(KM_SITE_SELFTEST) != klb:
+        printk0("[TRKALLOC] FAIL: large kfree did not drain its bytes\n")
+        ok = 0
+
+    # (k8) DISARM and prove the default-off guarantee by measurement: no
+    # counter moves, and the blob returns to byte-identical.
+    if devmeminfo_write("kmtrack off\n", 12) <= 0:
+        printk0("[TRKALLOC] FAIL: `kmtrack off` ctl write rejected\n")
+        ok = 0
+    if km_track_mode() != 0:
+        printk0("[TRKALLOC] FAIL: still armed after `kmtrack off`\n")
+        ok = 0
+    kq_live: uint64 = km_site_live(KM_SITE_SELFTEST)
+    kq_alloc: uint64 = km_site_allocs(KM_SITE_SELFTEST)
+    km_set_site(KM_SITE_SELFTEST)
+    kquiet: uint64 = kmalloc(64)
+    if kquiet != 0:
+        if km_site_live(KM_SITE_SELFTEST) != kq_live:
+            printk0("[TRKALLOC] FAIL: a kmtrack counter moved while OFF\n")
+            ok = 0
+        if km_site_allocs(KM_SITE_SELFTEST) != kq_alloc:
+            printk0("[TRKALLOC] FAIL: kmtrack allocs moved while OFF\n")
+            ok = 0
+        kfree(kquiet)
+    kn2: uint64 = _build_meminfo(&scratch[0], 8192)
+    if kn2 != kn0:
+        printk2("[TRKALLOC] FAIL: disarmed kmtrack blob is %d bytes, was %d\n",
+                kn2, kn0)
+        ok = 0
+
     if ok == 1:
         printk2("[TRKALLOC] PASS blob_off=%d blob_on=%d\n", n0, n1)
+        printk2("[TRKALLOC] PASS kmtrack blob_off=%d blob_on=%d\n", kn0, kn1)
         return 1
     printk0("[TRKALLOC] FAIL\n")
     return 0

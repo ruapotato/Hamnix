@@ -630,6 +630,196 @@ def page_alloc_site_owner(site: uint64) -> uint64:
     return 0
 
 
+# --- ORPHAN CENSUS (reachability) -------------------------------------
+#
+# WHY THIS IS THE MISSING INSTRUMENT
+# ==================================
+# --track-allocs answers "which site is HOLDING pages?". It cannot answer
+# the question that actually distinguishes a leak from ordinary growth:
+#
+#     is this frame still mapped by ANYBODY?
+#
+# Ten leak-hunting passes chased the cow_resolve_pte residual and every one
+# of them had its briefed hypothesis overturned, because every one was
+# reasoning about which free path *ought* to have covered a frame instead of
+# measuring whether the frame was still reachable. Those are different
+# questions with different answers:
+#
+#   * site holds N pages, all UNREACHABLE  -> a real leak. Some free path
+#     is missing, and the tagged VAs say exactly which span to look at.
+#   * site holds N pages, all REACHABLE    -> NOT a leak at all. The
+#     process genuinely maps more memory than it did a cycle ago, and the
+#     honest fix is upstream of the allocator (or it is working set, and
+#     "PagesInUse grew" is the wrong metric).
+#   * a mix -> the orphan count IS the leak rate, separated from the noise
+#     of real growth, which is what makes a small residual measurable at
+#     all.
+#
+# Nothing in the tree could tell these apart, so a "+7.4 pages/cycle on
+# cow_resolve_pte" verdict was compatible with both a free-path bug and a
+# DE that simply keeps more heap live. That ambiguity is why the residual
+# survived ten passes, and it is also why two attempted fixes were FATAL:
+# both freed frames at a site the census would have shown to be reachable.
+#
+# HOW: mark-and-sweep, exactly like a GC tracer.
+#   1. Zero a per-PFN reachable bit.
+#   2. Walk EVERY live task's page tables and set the bit for every present
+#      leaf frame (kernel/sched/core.ad::mm_orphan_census drives this — it
+#      owns task_table and already has the hardened walk).
+#   3. Sweep the tracker's per-frame site bytes: a frame with a live site
+#      tag and NO reachable bit is an ORPHAN. Tally per site, and report a
+#      few of their recorded tags (the faulting VA) so the leaking SPAN is
+#      named, not just the site.
+#
+# COST AND WHERE IT MAY RUN: O(page tables + frames). That makes it
+# strictly a `track census` ctl operation — the SAME rule as
+# page_alloc_site_sample. It must NEVER be called from _build_meminfo,
+# which is re-rendered once per 128-byte read chunk (~20x per `cat`) and
+# would wedge the guest; two soak runs were already lost to exactly that.
+# Default-off cost is zero: the bitmap is carved on first census.
+
+_pa_reach_bm:     uint64 = 0
+_pa_reach_frames: uint64 = 0
+_pa_orphans:      Array[32, uint64]
+
+
+def page_alloc_census_begin() -> int32:
+    # Carve (once) and clear the reachable bitmap. Returns 1 when the
+    # census can proceed, 0 if there is no per-frame site table to sweep
+    # (tracking was never armed, so there is nothing to attribute) or
+    # memblock could not supply the bitmap. Returning 0 rather than
+    # reporting an empty census matters: "0 orphans" and "could not look"
+    # must never print the same way.
+    if _pa_trk_site == 0:
+        return 0
+    if _pa_reach_bm == 0:
+        top: uint64 = memblock_region_top()
+        if top == 0:
+            return 0
+        frames: uint64 = top >> 12
+        nbytes: uint64 = (frames + 7) >> 3
+        b: uint64 = memblock_alloc(nbytes, 8)
+        if b == 0:
+            return 0
+        _pa_reach_frames = frames
+        _pa_reach_bm = b
+    nb: uint64 = (_pa_reach_frames + 7) >> 3
+    i: uint64 = 0
+    while i < nb:
+        cast[Ptr[uint8]](_pa_reach_bm + i)[0] = 0
+        i = i + 1
+    j: uint64 = 0
+    while j < PA_SITE_MAX:
+        _pa_orphans[j] = 0
+        j = j + 1
+    return 1
+
+
+def page_alloc_census_mark(phys: uint64, npages: uint64):
+    # Mark a run of frames REACHABLE. Called once per present leaf found by
+    # the page-table walk; npages > 1 for a 2 MiB / 1 GiB huge leaf.
+    if _pa_reach_bm == 0:
+        return
+    p: uint64 = phys >> 12
+    i: uint64 = 0
+    while i < npages:
+        q: uint64 = p + i
+        if q < _pa_reach_frames:
+            byte_at: uint64 = _pa_reach_bm + (q >> 3)
+            cast[Ptr[uint8]](byte_at)[0] = cast[uint8](
+                cast[uint64](cast[Ptr[uint8]](byte_at)[0])
+                | (cast[uint64](1) << (q & 7)))
+        i = i + 1
+
+
+def page_alloc_census_sweep() -> uint64:
+    # Sweep the per-frame site table against the reachable bitmap and
+    # tally orphans per site. Returns the total orphan count.
+    #
+    # Frames the buddy allocator does not own are skipped: a region-backed
+    # image frame is reclaimed wholesale by its owner and is not expected
+    # to appear in any page table once the owner is gone, so counting it
+    # here would manufacture orphans that no free path is missing.
+    if _pa_trk_site == 0 or _pa_reach_bm == 0:
+        return 0
+    total: uint64 = 0
+    p: uint64 = 0
+    while p < _pa_trk_frames:
+        s: uint64 = cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0])
+        if s != 0 and s < PA_SITE_MAX:
+            reach: uint64 = 0
+            if p < _pa_reach_frames:
+                reach = cast[uint64](
+                    cast[Ptr[uint8]](_pa_reach_bm + (p >> 3))[0]) \
+                    & (cast[uint64](1) << (p & 7))
+            if reach == 0 and page_alloc_owns(p << 12) != 0:
+                _pa_orphans[s] = _pa_orphans[s] + 1
+                total = total + 1
+        p = p + 1
+    return total
+
+
+def page_alloc_census_orphans(site: uint64) -> uint64:
+    if site >= PA_SITE_MAX:
+        return 0
+    return _pa_orphans[site]
+
+
+def page_alloc_orphan_sample(site: uint64, k: uint64) -> uint64:
+    # The k'th ORPHANED frame's recorded tag (the faulting VA in `full`
+    # mode) for `site`. This is the payoff: it names the VA SPAN that is
+    # leaking, which is what turns "cow_resolve_pte leaks" into "the leak
+    # is in [brk_base, brk_max)" — a statement a free path can be checked
+    # against. O(frames); `track census` only.
+    if _pa_trk_site == 0 or _pa_trk_tag == 0 or _pa_reach_bm == 0:
+        return 0
+    if site >= PA_SITE_MAX:
+        return 0
+    hit: uint64 = 0
+    p: uint64 = 0
+    while p < _pa_trk_frames:
+        if cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0]) == site:
+            reach: uint64 = 0
+            if p < _pa_reach_frames:
+                reach = cast[uint64](
+                    cast[Ptr[uint8]](_pa_reach_bm + (p >> 3))[0]) \
+                    & (cast[uint64](1) << (p & 7))
+            if reach == 0 and page_alloc_owns(p << 12) != 0:
+                if hit == k:
+                    return cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0]
+                hit = hit + 1
+        p = p + 1
+    return 0
+
+
+def page_alloc_census_report(total: uint64):
+    # EMERG report — INFO is suppressed once the shell prompt is up
+    # (console_set_interactive), and printk_set_level arms exactly ONE
+    # message, so the level is re-armed per line. Same two constraints
+    # page_alloc_track_dump documents; a pass already lost a run to a
+    # "silent" probe that was working perfectly and being swallowed.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[census] orphaned frames: %d (of %d live)\n",
+            total, nr_pages_live)
+    i: uint64 = 0
+    while i < PA_SITE_MAX:
+        if _pa_orphans[i] != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[census] site %d: %d orphans, live %d\n",
+                    i, _pa_orphans[i], _pa_trk_live[i])
+            # Name the leaking SPAN, not just the site: four sample VAs is
+            # enough to tell "scattered across the heap" from "one span".
+            k: uint64 = 0
+            while k < 4:
+                t: uint64 = page_alloc_orphan_sample(i, k)
+                if t != 0:
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk3("[census] site %d orphan[%d] tag_va=%p\n",
+                            i, k, t)
+                k = k + 1
+        i = i + 1
+
+
 def page_alloc_track_dump():
     # One-shot console report. TWO hard-won constraints are encoded here:
     #

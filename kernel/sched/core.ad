@@ -26,6 +26,8 @@ from mm.page_alloc import (
     alloc_page, alloc_pages, free_page, free_pages,
     region_free, region_free_cow_safe, pa_set_site,
     PA_SITE_KSTACK, PA_SITE_USTACK, PA_SITE_PML4, PA_SITE_SELFTEST,
+    page_alloc_census_begin, page_alloc_census_mark,
+    page_alloc_census_sweep, page_alloc_census_report,
 )
 from mm.slab import kfree
 from mm.cow import cow_boot_cr3
@@ -7286,6 +7288,124 @@ def _free_task_user_pagetables(su: uint64):
         li = li + 1
     load_cr3(_ftp_live_cr3)
     local_irq_restore(_ftp_irq)
+
+
+def _mm_census_walk_task(su: uint64):
+    # Mark every frame reachable from task `su`'s USER address space.
+    #
+    # Structurally this is _free_task_user_pagetables' walk with the frees
+    # replaced by marks, and with ONE deliberate difference: that function
+    # descends only into PRIVATE sub-tables (entry != the boot PML4's), which
+    # is right when the goal is to free the task's own table pages. For
+    # REACHABILITY the opposite is required — a leaked frame installed behind
+    # a still-SHARED boot table is exactly as reachable as one behind a
+    # private clone, and skipping it would report it as an orphan. Freeing on
+    # that false orphan is precisely how two earlier fix attempts wedged the
+    # desktop, so this walk follows every present entry.
+    #
+    # It also marks LEAF frames (which that function never touches) AND the
+    # intermediate table pages themselves: a PDPT/PD/PT page is a real buddy
+    # frame tagged PA_SITE_PGTABLE, and leaving it unmarked would report the
+    # entire live page-table population as leaked.
+    if task_table[su].cr3 == 0:
+        return
+    boot_cr3: uint64 = cow_boot_cr3()
+    if boot_cr3 == 0:
+        return
+    PT_ADDR: uint64 = 0x000FFFFFFFFFF000
+    PT_PS:   uint64 = 0x80
+    PT_P:    uint64 = 0x1
+    # UEFI-high-RAM guard, identical in kind to _free_task_user_pagetables':
+    # this dereferences another task's PDPT/PD/PT pages by RAW PHYSICAL
+    # address while the CALLER's (cracked) CR3 is live, and on a UEFI boot
+    # those table pages can land high enough that the live CR3 has dropped
+    # the identity entry for them (an observed #PF cr2=0x3e63a000 in exactly
+    # this shape). The pristine boot CR3 identity-maps ALL of RAM by
+    # construction, so run the pure-physical walk under it. IRQs are masked
+    # so a same-CPU fault/timer cannot run under the borrowed CR3.
+    live_cr3: uint64 = read_cr3()
+    irq: uint64 = local_irq_save()
+    load_cr3(boot_cr3)
+    pml4: Ptr[uint64] = cast[Ptr[uint64]](task_table[su].cr3 & PT_ADDR)
+    li: uint64 = 0
+    while li < 256:                          # USER half only
+        e: uint64 = pml4[li]
+        if (e & PT_P) != 0 and _pt_subtable_phys_ok(e & PT_ADDR) != 0:
+            pdpt_phys: uint64 = e & PT_ADDR
+            page_alloc_census_mark(pdpt_phys, 1)
+            pdpt: Ptr[uint64] = cast[Ptr[uint64]](pdpt_phys)
+            pi: uint64 = 0
+            while pi < 512:
+                pe: uint64 = pdpt[pi]
+                if (pe & PT_P) != 0:
+                    if (pe & PT_PS) != 0:
+                        # 1 GiB leaf = 262144 frames.
+                        page_alloc_census_mark(pe & PT_ADDR, 262144)
+                    elif _pt_subtable_phys_ok(pe & PT_ADDR) != 0:
+                        pd_phys: uint64 = pe & PT_ADDR
+                        page_alloc_census_mark(pd_phys, 1)
+                        pd: Ptr[uint64] = cast[Ptr[uint64]](pd_phys)
+                        di: uint64 = 0
+                        while di < 512:
+                            de: uint64 = pd[di]
+                            if (de & PT_P) != 0:
+                                if (de & PT_PS) != 0:
+                                    # 2 MiB leaf = 512 frames.
+                                    page_alloc_census_mark(de & PT_ADDR, 512)
+                                elif _pt_subtable_phys_ok(de & PT_ADDR) != 0:
+                                    pt_phys: uint64 = de & PT_ADDR
+                                    page_alloc_census_mark(pt_phys, 1)
+                                    pt: Ptr[uint64] = cast[Ptr[uint64]](pt_phys)
+                                    ti: uint64 = 0
+                                    while ti < 512:
+                                        te: uint64 = pt[ti]
+                                        if (te & PT_P) != 0:
+                                            page_alloc_census_mark(
+                                                te & PT_ADDR, 1)
+                                        ti = ti + 1
+                            di = di + 1
+                pi = pi + 1
+        li = li + 1
+    load_cr3(live_cr3)
+    local_irq_restore(irq)
+
+
+def mm_orphan_census() -> uint64:
+    # Mark-and-sweep reachability census over the WHOLE system: which
+    # tracked frames are no longer mapped by any live task?
+    #
+    # This is the instrument ten leak passes lacked. Each of them argued
+    # about which free path should have covered a frame; none could measure
+    # whether the frame was still reachable, so "+7.4 pages/cycle on
+    # cow_resolve_pte" stayed compatible BOTH with a missing free and with a
+    # desktop that simply keeps more memory live. See the header comment on
+    # page_alloc_census_begin for why that ambiguity is the whole problem.
+    #
+    # O(page tables + frames), so it is reachable ONLY from the `track
+    # census` ctl — never from _build_meminfo, which is re-rendered per
+    # 128-byte read chunk and would wedge the guest (two soak runs were lost
+    # to that mistake). Returns the orphan total; 0 is also what a REFUSED
+    # census returns, so the report distinguishes them in words.
+    if page_alloc_census_begin() == 0:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] REFUSED: arm `track full` first (no site table)\n")
+        return 0
+    # Every slot that still owns an address space, INCLUDING exiting and
+    # zombie ones: a frame still mapped by a not-yet-reaped task is not
+    # leaked, it is pending reclaim, and counting it as an orphan would
+    # invent a leak that a later reap closes.
+    su: uint64 = 0
+    walked: uint64 = 0
+    while su < NTASKS:
+        if task_table[su].state != STATE_FREE and task_table[su].cr3 != 0:
+            _mm_census_walk_task(su)
+            walked = walked + 1
+        su = su + 1
+    total: uint64 = page_alloc_census_sweep()
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[census] walked %d address spaces\n", walked)
+    page_alloc_census_report(total)
+    return total
 
 
 def _task_slot_rcu_free(head: uint64):
