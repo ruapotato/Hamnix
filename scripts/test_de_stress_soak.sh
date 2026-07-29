@@ -177,6 +177,21 @@ printf 'echo MARK_SOAK_READY\n' >&3
 sleep 1
 wait_for MARK_SOAK_READY 12 || { printf 'echo MARK_SOAK_READY\n' >&3; sleep 2; }
 
+# ALLOCATION TRACKING (opt-in). HAMNIX_TRACK_ALLOCS=1 arms the page
+# allocator's per-frame call-site tagger (mm/page_alloc.ad) right here —
+# AFTER boot has settled, so boot-time allocations land in the UNKNOWN
+# bucket and drain out instead of polluting every site's baseline. Every
+# subsequent `sample` then carries PgSite<N>: <live> <allocs> <frees>
+# lines, and scripts/leakprobe_slopes.py slopes them per site. This is the
+# whole point of the tracker being first-class: a leak hunt now starts with
+# one env var instead of a day of hand-rolled instrumentation.
+#   HAMNIX_TRACK_ALLOCS=full  also records a per-frame tag word (the
+#   faulting VA), readable via `echo 'track dump' > /proc/meminfo`.
+case "${HAMNIX_TRACK_ALLOCS:-0}" in
+    1|on)   printf "echo 'track on' > /proc/meminfo\n"   >&3; sleep 2 ;;
+    full)   printf "echo 'track full' > /proc/meminfo\n" >&3; sleep 2 ;;
+esac
+
 fail=0
 say_fail() { echo "$TAG FAIL $*" >&2; fail=1; }
 alive_n=0
