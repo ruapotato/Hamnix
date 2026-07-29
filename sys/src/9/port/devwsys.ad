@@ -221,6 +221,14 @@ from lib.browserfonts import browserfonts_load
 # HZ=100 jiffy counter (1 jiffy = 10 ms). Used to time the titlebar
 # double-click window for the MATE-style maximize/restore toggle.
 from arch.x86.kernel.time import get_jiffies, tsc_monotonic_ns
+# Pointer-service gap instrument (see arch/x86/kernel/time.ad::ptrlat_sample).
+# The `ptrlat` ctl verb below renders it; the numbers are collected in the
+# timer IRQ, which is where the cursor is actually composited.
+from arch.x86.kernel.time import (
+    ptrlat_reset, ptrlat_get_n, ptrlat_get_max_us, ptrlat_get_mean_us,
+    ptrlat_get_b15, ptrlat_get_b30, ptrlat_get_b60, ptrlat_get_b120,
+    ptrlat_get_b250, ptrlat_get_over,
+)
 
 
 # --- per-wid table ---------------------------------------------------
@@ -3355,6 +3363,19 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk1(cast[Ptr[char]]("[wsysperf] armed=%d\n"),
                 cast[uint64](wsys_perf_on))
+        return cast[int64](count)
+
+    # `ptrlat [0]` — report the POINTER-SERVICE GAP window, then reset it.
+    # `ptrlat 0` resets without reporting (arm a measurement window).
+    # Parsed before the hostowner gate for the same reason as `perf`: the
+    # session you need to measure is the live NOBODY-uid desktop session.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "ptrlat") == 1:
+        lv: int64 = 1
+        if _wsys_scene_next_int(buf, &p0, count, &lv) == 0:
+            lv = 1
+        if lv != 0:
+            _wsys_ptrlat_report()
+        ptrlat_reset()
         return cast[int64](count)
 
     # `desktop` — the rl5 flip: latch the scene compositor as the SOLE
@@ -8955,6 +8976,24 @@ def _wsys_perf_reset():
     wsys_perf_px = 0
 
 
+def _wsys_ptrlat_report():
+    # Render the pointer-service gap window collected in the timer IRQ.
+    # max_us is the headline: the longest wall-clock interval during which
+    # NO mouse packet could move a pixel, i.e. the worst pointer freeze the
+    # user could have felt in this window. Every line re-arms EMERG because
+    # printk_set_level arms exactly ONE message and a live desktop has
+    # already called console_set_interactive() (INFO is swallowed).
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[ptrlat] n=%d max_us=%d mean_us=%d\n"),
+            ptrlat_get_n(), ptrlat_get_max_us(), ptrlat_get_mean_us())
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[ptrlat] le15ms=%d le30ms=%d le60ms=%d\n"),
+            ptrlat_get_b15(), ptrlat_get_b30(), ptrlat_get_b60())
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3(cast[Ptr[char]]("[ptrlat] le120ms=%d le250ms=%d over250ms=%d\n"),
+            ptrlat_get_b120(), ptrlat_get_b250(), ptrlat_get_over())
+
+
 def _wsys_perf_report():
     # One EMERG line per WSYS_PERF_WINDOW presents. All times are MICROSECONDS
     # per present (mean over the window) so a 3 fps frame reads as ~330000.
@@ -10259,6 +10298,25 @@ wsys_root_b: uint8 = 96
 # router. Take this lock around any full present / cursor present so the
 # two contexts never interleave and corrupt the shared scratch.
 wsys_present_lock: uint32 = 0
+
+
+def wsys_present_busy() -> int32:
+    # 1 iff the present lock is currently HELD.
+    #
+    # Re-entrancy test for pointer_service_poll() (sys/.../devmouse.ad), which
+    # long IRQ-off kernel regions call to keep the cursor alive. Those regions
+    # include the virtio used-ring spin — and a COMPOSITOR present reaches that
+    # same spin through virtio-gpu while holding this lock. Servicing the
+    # pointer from inside a present would re-enter _wsys_present_cursor and
+    # self-deadlock on a non-recursive spinlock.
+    #
+    # On UP with interrupts masked (which is every caller's situation: SYSCALL
+    # entry clears IF) a HELD lock can only have been taken by THIS context, so
+    # this is an exact re-entrancy test. On SMP a peer CPU's present makes it
+    # conservative — we skip one pointer service, never deadlock.
+    if wsys_present_lock != 0:
+        return 1
+    return 0
 
 # REAL-HW DIAGNOSTIC (blank-green debug). The DE renders correctly in
 # QEMU/OVMF at every resolution we can test, but a real-HW boot (NUC GOP)

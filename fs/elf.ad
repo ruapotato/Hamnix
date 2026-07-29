@@ -74,6 +74,9 @@ from mm.uaccess import _ua_stac, _ua_clac
 # reads elf_last_was_linux and applies it to the correct task slot.
 
 extern def memcpy(dst: Ptr[uint8], src: Ptr[uint8], n: uint64) -> Ptr[uint8]
+# Pointer-service seam for long IRQ-off waits. `extern` rather than imported:
+# fs/elf.ad must not take an import edge on the Plan 9 device layer.
+extern def pointer_service_poll()
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
 extern def load_cr3(value: uint64)
 extern def get_bsp_cr3() -> uint64
@@ -623,9 +626,7 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # the COW-copy path (elf.ad:3436) and the coredump snapshot; the writes
     # are the loader populating memory it owns, so this is correct, not a
     # policy hole. No-op with SMAP off.
-    _ua_stac()
-    memset(cast[Ptr[uint8]](region), 0, file_hi_rel)
-    _ua_clac()
+    _elf_memset_serviced(region, file_hi_rel)
 
     i = 0
     while i < e_phnum:
@@ -639,10 +640,7 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
             p_memsz:  uint64 = _read_u64(cast[Ptr[uint8]](ph + 40))
             dst: uint64 = region + (p_vaddr - lowest_v)
             src: uint64 = cast[uint64](blob) + p_offset
-            _ua_stac()
-            memcpy(cast[Ptr[uint8]](dst),
-                   cast[Ptr[uint8]](src), p_filesz)
-            _ua_clac()
+            _elf_memcpy_serviced(dst, src, p_filesz)
             printk2("elf64:   PT_LOAD vaddr=0x%x size=%d\n",
                     p_vaddr, p_memsz)
         i = i + 1
@@ -1095,6 +1093,52 @@ def elf_eager_region_bytes(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     return span32
 
 
+# --- POINTER-LATENCY SERVICE FOR THE LOADER'S BULK COPIES ------------------
+#
+# execve loads an image by zero-filling its whole span and then memcpy'ing each
+# PT_LOAD segment. Those are single multi-megabyte calls, and the whole syscall
+# runs with EFLAGS.IF clear (IA32_FMASK = 0x0200, and nothing in
+# arch/x86/kernel/syscall_64.S re-enables it) — so the timer IRQ, the ONLY
+# thing that services the mouse and moves the cursor, cannot fire until the
+# image is fully loaded. Measured on the shipped image (ptrlat instrument,
+# TCG boot): SYS_EXECVE = 241,000-305,000 us of completely dead pointer, once
+# per app or command launch. That is the "mouse freezes when something is busy"
+# the user reported.
+#
+# Fix: do the same bytes in bounded chunks and service the pointer between
+# them (sys/src/9/port/devmouse.ad::pointer_service_poll — itself rate-limited
+# to <=125 Hz, so a small image pays one predicted branch per chunk and nothing
+# else). STAC/CLAC is re-taken per chunk so the SMAP bracket still covers
+# exactly the loader's own writes and the service call runs outside it.
+ELF_LOAD_SERVICE_CHUNK: uint64 = 262144          # 256 KiB
+
+
+def _elf_memset_serviced(dst: uint64, n: uint64):
+    off: uint64 = 0
+    while off < n:
+        c: uint64 = n - off
+        if c > ELF_LOAD_SERVICE_CHUNK:
+            c = ELF_LOAD_SERVICE_CHUNK
+        _ua_stac()
+        memset(cast[Ptr[uint8]](dst + off), 0, c)
+        _ua_clac()
+        off = off + c
+        pointer_service_poll()
+
+
+def _elf_memcpy_serviced(dst: uint64, src: uint64, n: uint64):
+    off: uint64 = 0
+    while off < n:
+        c: uint64 = n - off
+        if c > ELF_LOAD_SERVICE_CHUNK:
+            c = ELF_LOAD_SERVICE_CHUNK
+        _ua_stac()
+        memcpy(cast[Ptr[uint8]](dst + off), cast[Ptr[uint8]](src + off), c)
+        _ua_clac()
+        off = off + c
+        pointer_service_poll()
+
+
 def elf_load_blob(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # Returns the entry virtual address (= allocated base + entry
     # offset), or 0 on parse error / OOM.
@@ -1205,9 +1249,7 @@ def elf_load_blob(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # is the loader site the crash-sweep pinned (memset+0x8 called from
     # elf_load_blob, pte …027 = P|RW|US). Bracket the write with STAC/CLAC
     # so a region that aliases a US=1 page does not #PF under CR4.SMAP.
-    _ua_stac()
-    memset(cast[Ptr[uint8]](region), 0, span)
-    _ua_clac()
+    _elf_memset_serviced(region, span)
 
     # Second pass: copy each PT_LOAD segment.
     i = 0
@@ -1223,11 +1265,7 @@ def elf_load_blob(blob: Ptr[uint8], blob_size: uint64) -> uint64:
             p_memsz:  uint32 = _read_u32(cast[Ptr[uint8]](ph + 20))
             dst: uint64 = region + cast[uint64](p_vaddr - lowest_v)
             src: uint64 = cast[uint64](blob) + cast[uint64](p_offset)
-            _ua_stac()
-            memcpy(cast[Ptr[uint8]](dst),
-                   cast[Ptr[uint8]](src),
-                   cast[uint64](p_filesz))
-            _ua_clac()
+            _elf_memcpy_serviced(dst, src, cast[uint64](p_filesz))
             printk2("elf:   PT_LOAD vaddr=0x%x size=%d (copied + zero-pad)\n",
                     cast[uint64](p_vaddr), cast[uint64](p_memsz))
         i = i + 1

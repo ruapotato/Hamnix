@@ -35,6 +35,11 @@ from drivers.virtio.virtio_pci import (
 from arch.x86.mm.pgtable import virt_to_phys, phys_to_hhdm
 
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
+# Pointer-service seam for long IRQ-off waits (sys/src/9/port/devmouse.ad).
+# Declared `extern` rather than imported: a low-level virtio ring must not take
+# an import edge on the Plan 9 device layer (devmouse -> devwsys -> ... -> the
+# virtio GPU driver would cycle). Resolved at link.
+extern def pointer_service_poll()
 
 VIRTQ_DESC_F_NEXT:     uint16 = 1
 VIRTQ_DESC_F_WRITE:    uint16 = 2
@@ -259,6 +264,19 @@ def virtq_kick_and_wait(iobase: uint32, qidx: uint32,
         if cur != vq[0].used_idx_seen:
             vq[0].used_idx_seen = cur
             return 0
+        # POINTER LATENCY. This spin runs inside a syscall, and SYSCALL entry
+        # clears EFLAGS.IF (IA32_FMASK = 0x0200) — so the timer IRQ, the ONLY
+        # thing that services the mouse and moves the cursor, cannot fire for
+        # the whole wait. Every block read/write funnels through here, which is
+        # why SYS_EXECVE measured 241,000-305,000 us and one SYS_WRITE measured
+        # 13,925,578 us of dead pointer on the shipped image. We are doing
+        # nothing but waiting on the device, so service the pointer inline. See
+        # sys/src/9/port/devmouse.ad::pointer_service_poll — rate-limited to
+        # <=125 Hz, a no-op before the rl5 flip, and a no-op when a compositor
+        # present already holds the present lock (virtio-gpu reaches this same
+        # spin from inside one). Costs one RDTSC per iteration and zero device
+        # throughput.
+        pointer_service_poll()
         deadline = deadline + 1
         if deadline > 100000000:
             printk0("virtio: timeout waiting for used-ring bump\n")

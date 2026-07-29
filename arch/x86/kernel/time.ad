@@ -19,7 +19,8 @@
 
 from arch.x86.kernel.i8259 import i8259_send_eoi, i8259_unmask_irq
 from arch.x86.kernel.apic import lapic_send_eoi, lapic_timer_set_oneshot_ns
-from kernel.printk.printk import printk1
+from kernel.printk.printk import printk1, printk2, printk3, printk_set_level
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 from kernel.sched.core import (
     schedule, signal_post_to_foreground, SIGINT, SIGTSTP, preempt_tick,
     current_task_account_tick, console_input_wake,
@@ -238,6 +239,168 @@ def time_init():
 # quantum aging is uniform across cores. See timer_interrupt's AP re-arm.
 AP_PREEMPT_TICK_NS: uint64 = 10000000            # 10 ms == 100 Hz
 
+
+# --- POINTER-SERVICE GAP INSTRUMENT (user: "the mouse must keep working
+# --- even when a process is taking 100% CPU") ------------------------------
+#
+# On a live rl5 desktop the cursor is composited ENTIRELY in the kernel from
+# THIS interrupt handler: timer_interrupt -> mouse_pump_to_compositor() ->
+# wsys_route_mouse_rel/abs -> _wsys_route_common -> _wsys_present_cursor().
+# No userland thread is in the loop at all. Therefore the pointer's worst-case
+# staleness is EXACTLY the wall-clock gap between two consecutive pump calls:
+# a mouse packet that lands just after one pump cannot move a pixel until the
+# next one. "Pointer latency" and "inter-pump gap" are the same number, and
+# measuring the gap needs no mouse injection at all (which is historically
+# flaky here) — it is a property of the tick, not of the input.
+#
+# At the nominal 100 Hz tick the gap is 10 ms. It grows only when the timer
+# IRQ cannot be DELIVERED, i.e. when some other code is running with
+# EFLAGS.IF clear. Two such regions exist and both are on the hot path of a
+# busy system:
+#   * IA32_FMASK = 0x0200, so SYSCALL entry clears IF and the ENTIRE syscall
+#     runs interrupts-off (arch/x86/kernel/syscall_64.S has no sti).
+#   * wsys_scene_present / _wsys_present_commit_impl wrap the whole
+#     rasterize+recompose+flush in local_irq_save() (they must: the pump
+#     re-enters the same lock from IRQ context).
+# So every long syscall — above all a full-screen present by a busy client —
+# is a hard pointer freeze of exactly its own duration.
+#
+# The instrument is always compiled in (never #ifdef'd out) and costs one
+# RDTSC + a handful of compares per tick. Buckets are cumulative counts;
+# ptrlat_max_ns is the number the user actually feels.
+ptrlat_last_ns:  uint64 = 0
+ptrlat_n:        uint64 = 0        # gaps sampled
+ptrlat_sum_ns:   uint64 = 0
+ptrlat_max_ns:   uint64 = 0
+ptrlat_b15:      uint64 = 0        # <= 15 ms  (a healthy 100 Hz tick)
+ptrlat_b30:      uint64 = 0        # <= 30 ms
+ptrlat_b60:      uint64 = 0        # <= 60 ms
+ptrlat_b120:     uint64 = 0        # <= 120 ms
+ptrlat_b250:     uint64 = 0        # <= 250 ms
+ptrlat_over:     uint64 = 0        # >  250 ms — a visible freeze
+
+
+def ptrlat_reset():
+    # Zero the window. ptrlat_last_ns is cleared too so the first gap after a
+    # reset is DISCARDED rather than being measured from the pre-reset tick.
+    ptrlat_last_ns = 0
+    ptrlat_n = 0
+    ptrlat_sum_ns = 0
+    ptrlat_max_ns = 0
+    ptrlat_b15 = 0
+    ptrlat_b30 = 0
+    ptrlat_b60 = 0
+    ptrlat_b120 = 0
+    ptrlat_b250 = 0
+    ptrlat_over = 0
+
+
+# Attribution aid: when a gap exceeds PTRLAT_TRACE_NS, print it together with
+# the RIP the timer finally caught. The offending region ran with IF clear, so
+# the first instruction to execute after IF comes back is at (or just past) the
+# end of that region — enough to name the culprit with `nm` on the kernel ELF.
+# Rate-limited so a pathological boot can't drown the console.
+PTRLAT_TRACE_NS:   uint64 = 100000000        # 100 ms
+ptrlat_trace_left: uint64 = 24
+ptrlat_trace_on:   int32  = 1
+# Last syscall ENTERED, stamped by do_syscall. During an IF=0 stall no other
+# syscall can start, so on a long gap this names the syscall that was running.
+ptrlat_last_sysnr: uint64 = 0
+ptrlat_last_sysns: uint64 = 0
+
+
+def ptrlat_note_syscall(nr: uint64, now_ns: uint64):
+    ptrlat_last_sysnr = nr
+    ptrlat_last_sysns = now_ns
+
+
+def ptrlat_trace_enable(on: int32):
+    ptrlat_trace_on = on
+    if on != 0:
+        ptrlat_trace_left = 24
+
+
+def ptrlat_sample(interrupted_rip: uint64, interrupted_cs: uint64):
+    # Called from timer_interrupt on the BSP immediately before the mouse
+    # pump. BSP-only: APs are tickless and their backstop cadence is not the
+    # pointer's service rate.
+    now: uint64 = tsc_monotonic_ns()
+    if ptrlat_last_ns == 0:
+        ptrlat_last_ns = now
+        return
+    if now <= ptrlat_last_ns:
+        return
+    gap: uint64 = now - ptrlat_last_ns
+    ptrlat_last_ns = now
+    if ptrlat_trace_on != 0 and gap > PTRLAT_TRACE_NS and ptrlat_trace_left > 0:
+        ptrlat_trace_left = ptrlat_trace_left - 1
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[ptrlat-trace] gap_us=%d rip=%x cs=%x\n",
+                gap / 1000, interrupted_rip, interrupted_cs)
+        insys: uint64 = 0
+        if now > ptrlat_last_sysns:
+            insys = (now - ptrlat_last_sysns) / 1000
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[ptrlat-trace]   last_sysnr=%d in_syscall_us=%d\n",
+                ptrlat_last_sysnr, insys)
+    ptrlat_n = ptrlat_n + 1
+    ptrlat_sum_ns = ptrlat_sum_ns + gap
+    if gap > ptrlat_max_ns:
+        ptrlat_max_ns = gap
+    if gap <= 15000000:
+        ptrlat_b15 = ptrlat_b15 + 1
+    elif gap <= 30000000:
+        ptrlat_b30 = ptrlat_b30 + 1
+    elif gap <= 60000000:
+        ptrlat_b60 = ptrlat_b60 + 1
+    elif gap <= 120000000:
+        ptrlat_b120 = ptrlat_b120 + 1
+    elif gap <= 250000000:
+        ptrlat_b250 = ptrlat_b250 + 1
+    else:
+        ptrlat_over = ptrlat_over + 1
+
+
+# Accessors so port code (sys/src/9/port/devwsys.ad) can render the report
+# without importing arch globals directly.
+def ptrlat_get_n() -> uint64:
+    return ptrlat_n
+
+
+def ptrlat_get_max_us() -> uint64:
+    return ptrlat_max_ns / 1000
+
+
+def ptrlat_get_mean_us() -> uint64:
+    if ptrlat_n == 0:
+        return 0
+    return (ptrlat_sum_ns / ptrlat_n) / 1000
+
+
+def ptrlat_get_b15() -> uint64:
+    return ptrlat_b15
+
+
+def ptrlat_get_b30() -> uint64:
+    return ptrlat_b30
+
+
+def ptrlat_get_b60() -> uint64:
+    return ptrlat_b60
+
+
+def ptrlat_get_b120() -> uint64:
+    return ptrlat_b120
+
+
+def ptrlat_get_b250() -> uint64:
+    return ptrlat_b250
+
+
+def ptrlat_get_over() -> uint64:
+    return ptrlat_over
+
+
 def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
                     interrupted_rsp: uint64):
     # Called from do_irq() when vector 32 fires.  Since M16.22 the
@@ -328,6 +491,12 @@ def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
     # the scene compositor (cursor move + hit-test + window-local forward).
     # No-op until the DE owns the screen (wsys_de_is_live), so a userspace
     # /dev/mouse reader still owns the ring before the rl5 flip.
+    #
+    # POINTER-SERVICE GAP: sample the wall-clock interval between successive
+    # pumps right here. This IS the pointer's worst-case staleness (see the
+    # ptrlat_sample banner) and it is the number the latency gate asserts on.
+    if get_cpu_id() == 0:
+        ptrlat_sample(interrupted_rip, interrupted_cs)
     mouse_pump_to_compositor()
     # BUG 1 FIX: keyboard twin of the mouse pump. Drain the PS/2 keyboard
     # FIFO + UART RX ring and route each byte to the focused scene window's

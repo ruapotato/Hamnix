@@ -29,6 +29,7 @@ from drivers.tty.serial.early_8250 import PRINTK_LEVEL_ERR
 # §6: classic-BPF seccomp filter inheritance hook.
 from kernel.seccomp_bpf import bpf_inherit_to_child
 from arch.x86.kernel.time import get_jiffies, tsc_monotonic_ns, read_tsc
+from arch.x86.kernel.time import ptrlat_note_syscall
 from kernel.sched.core import (
     TaskStruct, current_task,
     create_user_task, create_user_task_argv, create_user_thread,
@@ -4357,6 +4358,13 @@ def do_syscall(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
     # runs. Catches Ctrl-C arrivals between user-mode bursts and any
     # other async post (SYS_KILL on self, etc.). Mid-syscall yields
     # check their own pending state in yield_to_others.
+    # POINTER-LATENCY ATTRIBUTION. The whole syscall runs with EFLAGS.IF
+    # clear (IA32_FMASK = 0x0200 and nothing re-enables it), so the timer
+    # IRQ — the ONLY thing that services the mouse and moves the cursor —
+    # cannot fire until this call returns. Stamp which syscall we entered and
+    # when, so a long inter-tick gap can name the culprit. Two stores + one
+    # RDTSC per syscall.
+    ptrlat_note_syscall(nr, tsc_monotonic_ns())
     signal_check_and_handle()
     # §3 deferred note-delivery drain. When notes_enabled is armed (off
     # by default; see sys/src/9/port/sysnote.ad), a cross-task note

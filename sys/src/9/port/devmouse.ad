@@ -36,8 +36,11 @@ from drivers.input.auxmouse import mouse_rx_pop, mouse_rx_has, mouse_rx_push, \
 from sys.src.port9.port.devwsys import (
     wsys_route_mouse_abs, wsys_route_mouse_rel, wsys_de_is_live,
     wsys_cursor_get_x, wsys_cursor_get_y, wsys_test_force_live,
-    wsys_test_reset_cursor_uninit,
+    wsys_test_reset_cursor_uninit, wsys_present_busy,
 )
+# tsc_monotonic_ns() is valid with EFLAGS.IF masked (RDTSC ignores IF), which
+# is precisely the situation pointer_service_poll() below has to rate-limit in.
+from arch.x86.kernel.time import tsc_monotonic_ns
 from drivers.video.console.fb_text import fb_get_initialized
 # Control Center Mouse capplet live sink: a `cfg <speed> <primary> <natural>`
 # line written to /dev/mouse updates these globals; the /dev/mouse router
@@ -474,6 +477,87 @@ def mouse_pump_to_compositor():
             btn_r: uint32 = _decode_buttons(encoded)
             wsys_route_mouse_rel(dx, dy, btn_r, dz)
         n = n + 1
+
+
+# --- POINTER SERVICE POINT FOR LONG IRQ-OFF KERNEL REGIONS -------------
+#
+# THE BUG THIS FIXES (user: "things that take up a lot of CPU make the mouse
+# studder or freze; it would be nice if the mouse would keep working even if a
+# process is taking up 100% cpu").
+#
+# On a live rl5 desktop the cursor is composited ENTIRELY in the kernel, and
+# the ONLY thing that services it is mouse_pump_to_compositor() above, called
+# once per timer interrupt. No userland thread is in the loop. So the pointer's
+# worst-case staleness is exactly the interval between two timer IRQs.
+#
+# IA32_FMASK = 0x0200, so SYSCALL entry clears EFLAGS.IF and NOTHING in
+# arch/x86/kernel/syscall_64.S turns it back on: the whole syscall runs with
+# interrupts masked. The timer IRQ therefore cannot fire until the syscall
+# returns, and pointer latency degenerates to "the duration of the longest
+# syscall in flight". Measured on the shipped image (arch/x86/kernel/time.ad's
+# ptrlat instrument, TCG boot = slow-machine proxy):
+#
+#     SYS_EXECVE (10)   241,000 - 305,000 us   per app/command launch
+#     SYS_RFORK  (256)  105,000 - 162,000 us   per fork
+#     SYS_WRITE  (8)  13,925,578 us            once, at boot
+#
+# — i.e. a quarter-second pointer freeze every time anything is launched, and
+# a FOURTEEN SECOND freeze at boot. Interestingly a pure ring-3 CPU hog
+# (user/preempt_hog.ad, zero syscalls) costs NOTHING: IF stays set in ring 3,
+# the tick keeps firing, max gap stayed at 10.3 ms with four hogs running.
+# So this was never a SCHEDULING problem and never a compositor-THROUGHPUT
+# problem — it is interrupt latency in the syscall path.
+#
+# THE FIX. A long kernel region calls pointer_service_poll() from its loop
+# body. We do NOT re-enable interrupts (that would expose every driver ring
+# and device FIFO to reentrancy from the tick's pollers); we simply run the
+# mouse pump INLINE, which is the same work the tick would have done. The
+# cursor keeps moving at the service rate no matter how long the syscall runs.
+#
+# Bounded cost. Rate-limited to PTR_SERVICE_MIN_NS so a hot loop pays only one
+# RDTSC + one compare per iteration; the pump itself runs at most ~125 Hz,
+# which is already faster than the 100 Hz tick it stands in for.
+#
+# Safety.
+#   * ptr_service_busy is a hard re-entrancy guard (the pump routes into
+#     devwsys, which must never re-enter itself).
+#   * wsys_present_busy() rejects the call when the present lock is held —
+#     a compositor present reaches the virtio used-ring spin through
+#     virtio-gpu, and servicing the pointer from there would self-deadlock.
+#   * wsys_de_is_live() keeps it a no-op before the rl5 flip and after logout,
+#     exactly like the tick pump, so a /dev/mouse reader still owns the ring.
+#   * It never schedules and never enables interrupts, so it is legal inside
+#     do_rfork's create+COW critical section (which masks IRQs precisely so
+#     the child cannot be DISPATCHED early — a pump does not dispatch).
+PTR_SERVICE_MIN_NS: uint64 = 8000000        # 8 ms => <= 125 Hz service rate
+ptr_service_last_ns: uint64 = 0
+ptr_service_busy:    int32  = 0
+# Diagnostic: how many times a long kernel region kept the cursor alive that
+# the timer IRQ could not. A non-zero count on a busy boot is the proof the
+# seam is load-bearing; the latency gate reads it to reject a build where the
+# service points were silently removed.
+ptr_service_runs:    uint64 = 0
+
+
+def pointer_service_runs() -> uint64:
+    return ptr_service_runs
+
+
+def pointer_service_poll():
+    if ptr_service_busy != 0:
+        return
+    if wsys_de_is_live() == 0:
+        return
+    if wsys_present_busy() != 0:
+        return
+    now: uint64 = tsc_monotonic_ns()
+    if now < ptr_service_last_ns + PTR_SERVICE_MIN_NS:
+        return
+    ptr_service_last_ns = now
+    ptr_service_busy = 1
+    ptr_service_runs = ptr_service_runs + 1
+    mouse_pump_to_compositor()
+    ptr_service_busy = 0
 
 
 # --- Boot self-test (write -> read loopback, no file opens) ------------
