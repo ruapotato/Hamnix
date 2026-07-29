@@ -1344,6 +1344,12 @@ def ssa_load_elem(addr: uint32, es: uint32, sgn: uint32, fw: uint32) -> uint32:
 # pre-alloca scan) so the alloca never lands after a terminator.
 def ssa_ensure_slot(nid: uint32, total: uint32) -> uint32:
     if ssa_mem_addr[nid] != 0:
+        # A same-name redeclaration that changed type category (array<->scalar)
+        # shares this ONE slot (union semantics; the declarations live in disjoint
+        # block scopes).  Grow the slot to the WIDEST declaration so neither the
+        # array nor the scalar overruns it.
+        if cast[uint64](total) > sv_imm[ssa_mem_addr[nid]]:
+            sv_imm[ssa_mem_addr[nid]] = cast[uint64](total)
         return ssa_mem_addr[nid]
     a: uint32 = sv_new(SVO_ALLOCA)
     if a == 0:
@@ -3868,8 +3874,36 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
     # A redeclaration under the same name may need MORE room than the first one
     # got, though — grow the shared slot rather than silently under-allocate it.
     if ssa_ismem[nid] != 0:
-        ssa_widen_mem_local(nid, tnode)
-        return nid
+        # A redeclaration under the same FUNCTION-scoped name whose type CATEGORY
+        # differs from the existing memory local (array vs scalar/struct/float)
+        # cannot share the slot's ACCESS classification.  E.g. hamsheet's
+        # `_eval_scalar_fn` declares `acc: Array[128,uint8]` in the FN_CONCAT
+        # branch and `acc: int32` in the disjoint FN_AND branch: reusing the array
+        # classification makes the scalar `acc = acc + 1` bail SBR_MEMORY (the
+        # whole function then falls back to the native lane).  These are logically
+        # DISTINCT variables (disjoint block scopes) that merely share a name, and
+        # the earlier declaration's branch is already fully lowered by now, so
+        # re-classify the redeclaration's ACCESS shape (they still union onto the
+        # one shared slot, grown to the widest decl) rather than forcing the stale
+        # array classification.  Same-category redeclaration still widens in place.
+        # Native path is unaffected: with ssa_mem_model == 0 every memory
+        # classification bails BEFORE setting ssa_ismem, so ssa_ismem is never 1
+        # and this whole guard is dead code for native codegen.
+        new_is_arr: uint32 = 0
+        if nd_kind[tnode] == ND_ARRAY_TYPE:
+            new_is_arr = 1
+        if ssa_mem_isarr[nid] == new_is_arr:
+            ssa_widen_mem_local(nid, tnode)
+            return nid
+        # Category mismatch: drop the ACCESS classification so the code below
+        # re-classifies the new declaration's shape (array vs scalar element size
+        # / signedness).  Keep ssa_mem_addr so both declarations SHARE the single
+        # stack slot (union storage; ssa_ensure_slot grows it to the widest decl)
+        # — this both preserves the pre-alloca-scan slot and avoids appending a
+        # second alloca to the already-terminated entry block during lowering.
+        ssa_ismem[nid] = 0
+        ssa_mem_isarr[nid] = 0
+        ssa_islocal[nid] = 0
     # A pointer local/param records its pointee width so `*p` picks a load size;
     # this is orthogonal to promotability (a plain pointer scalar stays SSA).
     ssa_record_ptr_info(nid, tnode)
