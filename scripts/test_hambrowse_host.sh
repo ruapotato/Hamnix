@@ -1175,9 +1175,24 @@ assert_grepP '^SEG 2 16 #101010 b0 u0 s0 l-1 bg- \|Card body text line one here\
 # down. Same x as the body text proves left:0 maps to the containing-block left.
 assert_grepP '^SEG 2 16 #ffffff b0 u0 s0 l-1 bg#ff0000 \|TL\|' \
     "position:absolute top:0 left:0 -> card top-left, out of flow (row 2, x=16)"
-# ABSOLUTE top-right: the .tr badge is pinned to the card's RIGHT edge (x=328)
+# ABSOLUTE top-right: the .tr badge is pinned to the card's RIGHT edge (x=320)
 # on the SAME top row.
-assert_grepP '^SEG 2 328 #ffffff b0 u0 s0 l-1 bg#00aa00 \|TR\|' \
+#
+# UPDATED 2026-07-29 (box-model round): x was 328, which put the badge's right
+# edge 8px PAST the card's own drawn right border -- the containing block's
+# padding-box right edge was recorded with a monospace +CELL_W bleed that the
+# background fill had already stopped using, so `right:0` anchored to an edge
+# that is not painted anywhere. Chromium on this same fixture
+# (.card{position:relative;border:1px solid;width:320px}):
+#     card  8..330   (322 = 320 + 2*1px border)
+#     .tr   308.55..329   -- right edge 329 = the card's PADDING-box right,
+#                            i.e. flush INSIDE the border, not beyond it.
+# Ours now pins .tr's right edge to rx (336 = indent_x 16 + width 320), where the
+# right border bar is drawn, so the 2-cell "TR" label starts at 320. Same
+# relationship as Chrome: flush inside the card's border rather than 8px outside
+# it. (Our card is 328 wide vs Chrome's 322 because a border still consumes a
+# whole 8px CELL_W instead of 1px -- a separate, untouched defect.)
+assert_grepP '^SEG 2 320 #ffffff b0 u0 s0 l-1 bg#00aa00 \|TR\|' \
     "position:absolute top:0 right:0 -> card top-right, right-anchored (row 2, x=328)"
 # Out of flow means the card stays COMPACT, so the trailing plain paragraph is at
 # row 7 — NOT shoved far down by in-flow badges.

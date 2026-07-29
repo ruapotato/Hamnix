@@ -3004,6 +3004,16 @@ def _block_box_close():
             lkx0 = lx + CELL_W - lkxp
             if box_float_stack[box_sp] != 0:
                 lkx1 = rx + lkxp
+            elif exw != 0:
+                # EXPLICITLY SIZED blockified <a>: mirror the fill (below), which
+                # dropped the monospace right bleed. The live area MUST stop where
+                # the card is painted -- a hit rect 8px wider than its own visible
+                # box is exactly the drift test_hambrowse_hitcoord_host.sh exists
+                # to catch, and it caught this. Chromium on
+                # tests/fixtures/hambrowse_hitbox.html: `a.c1{display:block;
+                # width:300px;padding:14px 30px}` has border box 48..408 and
+                # document.elementFromPoint(408+8, mid) returns BODY, not the link.
+                lkx1 = rx + lkxp
             else:
                 lkx1 = rx + CELL_W + lkxp
             if bake_pad == 0:
