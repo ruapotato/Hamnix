@@ -3326,6 +3326,14 @@ bash scripts/test_hambrowse_layoutread_host.sh
 # value is node/V8's. Implementation: lib/web/js/builtins/r8_ta.ad.
 bash scripts/test_hambrowse_bindata_host.sh
 
+# test_hambrowse_jsthrow_host: PINS the JS exception model — engine-raised
+# ReferenceError/TypeError are catchable first-class Errors that unwind to the
+# nearest try/catch (real .name/.message + instanceof), and an UNCAUGHT one
+# aborts ONLY the current <script>, never the rest of the page. Guards the
+# 2026-07-25 real-web review §6.3 fix (one missing global no longer detonates a
+# whole bundle). Expected values are node/V8's. Engine: lib/web/js/interp.ad.
+bash scripts/test_hambrowse_jsthrow_host.sh
+
 # test_de_term_child_reap: the DE terminal must not strand its child shell.
 # The soak below found that closing a hamtermscene window left its inner
 # `/bin/hamsh` RUNNING FOREVER — the window close is a Plan 9 terminate note,

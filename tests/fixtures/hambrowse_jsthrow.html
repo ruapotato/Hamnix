@@ -1,0 +1,27 @@
+<!doctype html><html><body>
+<!-- Script A: engine-raised ReferenceError must be a catchable, first-class Error. -->
+<script>
+try { someUndefinedGlobal(); }
+catch (e) { console.log('A_REF ' + e.name + ' | ' + e.message + ' | ' + (e instanceof Error) + ' | ' + (e instanceof ReferenceError)); }
+console.log('A_AFTER');
+</script>
+<!-- Script B: engine-raised TypeError (property of null) — name AND instanceof TypeError. -->
+<script>
+try { var z = null; z.x; }
+catch (e) { console.log('B_TYPE ' + e.name + ' | ' + (e instanceof TypeError) + ' | ' + (e instanceof Error)); }
+console.log('B_AFTER');
+</script>
+<!-- Script C: UNCAUGHT engine error must abort ONLY this script. -->
+<script>
+console.log('C_BEFORE');
+thisGlobalDoesNotExist();
+console.log('C_SHOULD_NOT_PRINT');
+</script>
+<!-- Script D: proves the engine kept running after C's uncaught error. -->
+<script>
+console.log('D_RAN');
+try { throw new TypeError('boom'); }
+catch (e) { console.log('D_CUSTOM ' + e.name + ' | ' + e.message + ' | ' + (e instanceof TypeError)); }
+console.log('D_AFTER');
+</script>
+</body></html>
