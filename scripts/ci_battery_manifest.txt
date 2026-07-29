@@ -4271,3 +4271,14 @@ bash scripts/test_jsengine_gc_obj_host.sh
 # surviving 5,000 slot recycles) and no live-free under HAMNIX_JS_GC_STRESS=1.
 # ~2 min, QEMU-free.
 bash scripts/test_jsengine_asyncpools_host.sh
+# POINTER LATENCY UNDER LOAD (user: "things that take up a lot of CPU make the
+# mouse studder or freze"). Boots the shipped installer .img under UEFI/OVMF to
+# runlevel 5 and asserts a MEASURED latency bound: the longest interval with no
+# cursor update must stay under PTRLAT_MAX_US while syscall-heavy load runs.
+# Behaviour-over-time under stress is what this suite historically missed — a
+# reachability check cannot catch it, because every function on the pointer path
+# was always reached, just too late. Three arms in ONE boot: a pure-CPU control
+# (syscall-free ring-3 hogs, which must NOT stall the pointer — that arm guards
+# the tick/preemption), plus a fix-OFF/fix-ON A/B via the `ptrsvc` ctl verb that
+# doubles as the gate's built-in mutation test. ~6 min incl. image build.
+bash scripts/ci_run_gate.sh scripts/test_pointer_latency_under_load.sh
