@@ -422,16 +422,51 @@ to an unchecked one.
 
 ## Triage of the sites found so far
 
-| site | verdict | note |
-|---|---|---|
-| `codegen.ad layout_emit_field`: `cg_layout_offset & cast[uint32](0 - align)` | **intentional wrap** | two's-complement alignment mask. Wants an `unsafe:` block; not applied because `codegen.ad` is frozen for this increment. |
-| `elf_emit.ad`: `eb64(cast[uint64](0) - cast[uint64](4))  # r_addend = -4` | **intentional wrap** | constructing `-4` as a `uint64`. Wants an `unsafe:` block. |
+Two runs, both with `--check-arith-warn` (report each site once, continue):
 
-Both were found by running the compiler *itself* built with
-`--check-arith-warn` over a full bare-metal kernel compile (1813 instrumented
-sites, ~1.7 M tokens of input); the instrumented compiler produced a kernel
-object **byte-identical** to the unchecked one, which is independent evidence
-that the instrumentation is semantics-preserving.
+**A. The compiler itself**, built through the LLVM lane with 1813 guards, then
+run over a full bare-metal kernel compile (~1.7 M tokens of input). **2 sites**:
+
+| site | verdict |
+|---|---|
+| `codegen.ad layout_emit_field`: `cg_layout_offset & cast[uint32](0 - align)` | intentional wrap — two's-complement alignment mask |
+| `elf_emit.ad`: `eb64(cast[uint64](0) - cast[uint64](4))  # r_addend = -4` | intentional wrap — building `-4` as a `uint64` |
+
+The instrumented compiler produced a kernel object **byte-identical** to the
+unchecked one — independent evidence that the instrumentation is
+semantics-preserving.
+
+**B. The kernel**, 24,677 guards, booted under OVMF/QEMU all the way to the
+desktop (`[visual_gate] done`). **10 sites, 8 distinct functions, ZERO real
+bugs** — every one is a hash/PRNG/diffusion mixer where wrapping IS the
+algorithm:
+
+| file / function | site | verdict |
+|---|---|---|
+| `kernel/stack_protect.ad` | `seed * 0x9E3779B97F4A7C15` | intentional — golden-ratio diffusion |
+| `sys/src/9/port/devrandom.ad` `_tsc_jitter64` | `(acc<<7)|(acc>>57)`, `acc + 0x9E37...` | intentional — rotate-mix |
+| `sys/src/9/port/devrandom.ad` `_hw_entropy64` | two rotates | intentional |
+| `fs/fcache.ad` `dc_strhash` | `h * 1099511628211` | intentional — FNV-1a 64 |
+| `arch/x86/kernel/syscall.ad` splitmix64 | `* 0xBF58476D1CE4E5B9`, `* 0x94D049BB133111EB` | intentional |
+| `arch/x86/kernel/syscall.ad` `_aslr_stream` | `+ 0x9E3779B97F4A7C15` | intentional — Weyl sequence |
+| `kernel/block/blk.ad` `_bcache_hash` | `k * 11400714819323198485` | intentional — Fibonacci hashing |
+| `drivers/block/partition.ad` | `idx * 0xBF58476D1CE4E5B9` | intentional — splitmix constant |
+
+The first six are now annotated with `unsafe:` blocks (24,677 → 24,665 guards).
+The default, unflagged kernel object is **byte-identical** after the
+annotations — verified with `cmp` against a pre-annotation object.
+
+The last two are deliberately **left unannotated**: at those sites an `unsafe:`
+block would have to hoist a variable declaration out of the wrapped statement
+(`k: uint64 = ...` becomes `k: uint64 = 0` plus an assignment inside the block),
+and that restructuring **does** change default codegen. Annotating them is not
+worth perturbing the byte-identical baseline; a future `unsafe:` *expression*
+form, or declaration-in-`unsafe:` scoping, would close the gap.
+
+Note what the boot run did **not** find: the clock wrap itself. It manifests
+only past 1099 s of uptime and a boot-to-desktop run is ~25 s. Catching it needs
+`HAMNIX_CHECK_ARITH=1` plus a >18-minute soak — which is exactly the
+`test_de_panel_taskbar_soak` shape that surfaced the original wedge.
 
 ## Cost
 
