@@ -2872,21 +2872,12 @@ def _block_box_close():
         if natrows < 0:
             natrows = 0
         tgtpx: int32 = natrows * LINE_H
-        # Which constraint the resolved height actually came from, so the pixel pin
-        # below is one-sided where CSS is one-sided: 0 exact, 1 floor, 2 ceiling.
-        hkind: int32 = 0
         if ehc >= 0:
             tgtpx = ehc
-        else:
-            hkind = -1                                # nothing bound yet
         if eminh >= 0 and tgtpx < eminh:
             tgtpx = eminh
-            if ehc < 0:
-                hkind = 1
         if emaxh >= 0 and tgtpx > emaxh:
             tgtpx = emaxh
-            if ehc < 0:
-                hkind = 2
         tgtrows: int32 = (tgtpx + LINE_H / 2) / LINE_H
         if tgtrows < 1 and tgtpx > 0:
             tgtrows = 1
@@ -2915,12 +2906,38 @@ def _block_box_close():
         # both rounded-up AND scaled by 18/16. Record the span and the height it
         # must total, and let lib/htmlpage.ad reconcile them (it is the first place
         # a row's true pitch is known).
-        if newbot > srow and hkind >= 0 and n_hpins < HPIN_MAX:
-            hpin_r0[n_hpins]   = srow
-            hpin_r1[n_hpins]   = newbot
-            hpin_px[n_hpins]   = tgtpx
-            hpin_kind[n_hpins] = hkind
-            n_hpins = n_hpins + 1
+        #
+        # min-/max-height are recorded UNCONDITIONALLY, not only when the row-grid
+        # arithmetic above thought they bound. `natrows * LINE_H` is a 16px-grid
+        # ESTIMATE of the natural height and is systematically ~12% short of the
+        # real pitch, so the grid routinely decides a floor/ceiling is slack when
+        # in pixels it binds: WPT's max-height-separates-margin has a 51px child in
+        # a `max-height:50px` parent that the grid measured as 48px and left
+        # unclamped, painting the parent 51px instead of 50. A one-sided pin is a
+        # no-op when it does not bind, so handing BOTH to the pixel pass — the only
+        # place the real natural height exists — is strictly more correct.
+        # Emission order is CSS resolution order: `height` first, then the
+        # `max-height` ceiling, then the `min-height` floor (min wins over max).
+        if newbot > srow:
+            if ehc >= 0 and n_hpins < HPIN_MAX:
+                hpin_r0[n_hpins]   = srow
+                hpin_r1[n_hpins]   = newbot
+                hpin_px[n_hpins]   = tgtpx
+                hpin_kind[n_hpins] = 0
+                n_hpins = n_hpins + 1
+            else:
+                if emaxh >= 0 and n_hpins < HPIN_MAX:
+                    hpin_r0[n_hpins]   = srow
+                    hpin_r1[n_hpins]   = newbot
+                    hpin_px[n_hpins]   = emaxh
+                    hpin_kind[n_hpins] = 2
+                    n_hpins = n_hpins + 1
+                if eminh >= 0 and n_hpins < HPIN_MAX:
+                    hpin_r0[n_hpins]   = srow
+                    hpin_r1[n_hpins]   = newbot
+                    hpin_px[n_hpins]   = eminh
+                    hpin_kind[n_hpins] = 1
+                    n_hpins = n_hpins + 1
     # CSS overflow clip: if this box clips either axis, remove/truncate the
     # descendant segments/fills/borders that fall outside its padding edge. The
     # clip bottom is the box's final row span; the x-range matches the box's own
