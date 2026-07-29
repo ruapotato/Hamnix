@@ -89,6 +89,32 @@ NOISE_FLOOR = 1.5
 # minute divergence above. The soak samples twice per cycle.
 SHORT_SOAK_CYCLES = 40
 
+# Measured DE stress-soak cycle length. Used ONLY to turn a pages/cycle
+# slope into the units the uptime requirement is actually stated in.
+CYCLE_SECONDS = 28.0
+PAGE_BYTES = 4096
+
+
+def horizon(pages_per_cycle):
+    """A pages/cycle slope in the units 'runs for months' is stated in.
+
+    THE POINT. The soak gate's tolerance is 1.0 pg/cycle, and it is easy to
+    read a passing verdict as "no leak". Do the arithmetic: 1 pg/cycle at
+    ~28 s/cycle is ~500 kB/hour, ~12 MB/day, ~4 GB/YEAR. That is a gate
+    threshold, not a target — for the stated goal of months-to-years of
+    uptime without a reboot it is a failure that happens to pass. Printing
+    the yearly figure next to every slope makes that impossible to misread,
+    and makes the difference between 0.0 and 0.3 pg/cycle feel like what it
+    is (0 vs 1.2 GB/year) instead of "both basically zero".
+
+    Returns (bytes_per_hour, mib_per_day, gib_per_year).
+    """
+    per_cycle_bytes = pages_per_cycle * PAGE_BYTES
+    cycles_per_hour = 3600.0 / CYCLE_SECONDS
+    bph = per_cycle_bytes * cycles_per_hour
+    return (bph, bph * 24.0 / (1024.0 * 1024.0),
+            bph * 24.0 * 365.0 / (1024.0 * 1024.0 * 1024.0))
+
 # A first-difference is called a LEVEL SHIFT when it exceeds the typical
 # difference by this many robust sigma. 6 is deliberately conservative:
 # missing a step corrupts the answer, flagging one extra difference costs
@@ -340,6 +366,29 @@ def report(samples, label, warmup, show_all, as_json):
               % (k[:34], r["first"], r["last"], r["steady"], r["ls"],
                  r["ts"], "; ".join(bits)))
     print("\n%d counter(s) moving above the noise floor." % moved)
+
+    # EXTRAPOLATION TO THE STATED REQUIREMENT. A pages/cycle number does not
+    # communicate "this box reboots itself every N months", which is the
+    # actual acceptance criterion. Anchor on PagesInUse when present (the
+    # system-wide figure), else on the largest non-noise page counter.
+    pin = None
+    for cand in ("PagesInUse", "PagesInUse.c0"):
+        if cand in results:
+            pin = results[cand]
+            break
+    if pin is not None:
+        bph, mibd, giby = horizon(pin["steady"])
+        print("PagesInUse steady=%+.2f pg/cycle  ->  %+.0f B/h  %+.1f MiB/day"
+              "  %+.2f GiB/year" % (pin["steady"], bph, mibd, giby))
+        if pin["noise"]:
+            print("  (at or under the %.1f pg/cycle run-to-run noise floor: "
+                  "this run cannot distinguish it from zero — which is NOT "
+                  "the same as having measured zero)" % NOISE_FLOOR)
+        else:
+            print("  NOT zero. The soak gate's 1.0 pg/cycle tolerance is a "
+                  "GATE THRESHOLD, not the target: 1.0 pg/cycle is ~4 GB/year, "
+                  "a reboot-every-few-months leak that passes. A measured "
+                  "non-zero slope is an OPEN BUG regardless of the verdict.")
     return 0
 
 
@@ -419,6 +468,20 @@ def selftest():
           abs(r4["steady"]) < 1.0, "steady=%.2f" % r4["steady"])
     check("pure step, no trend: ls absorbs the step",
           r4["ls"] > 40, "ls=%.2f" % r4["ls"])
+
+    # 4b. THE HORIZON ARITHMETIC. The gate tolerance is 1.0 pg/cycle and it
+    #     is easy to read a pass as "no leak"; these numbers are what make
+    #     that unreadable. Pinned to the brief's own figures so a change to
+    #     CYCLE_SECONDS cannot silently rescale the requirement.
+    bph, mibd, giby = horizon(1.0)
+    check("horizon: 1.0 pg/cycle is ~500 kB/hour",
+          abs(bph - 500000) < 60000, "%.0f B/h" % bph)
+    check("horizon: 1.0 pg/cycle is ~12 MB/day",
+          abs(mibd - 12.0) < 1.5, "%.1f MiB/day" % mibd)
+    check("horizon: 1.0 pg/cycle is ~4 GB/year (a gate PASS that still "
+          "reboots the box)", abs(giby - 4.3) < 0.6, "%.2f GiB/yr" % giby)
+    check("horizon: zero slope extrapolates to zero",
+          horizon(0.0) == (0.0, 0.0, 0.0), "%s" % (horizon(0.0),))
 
     # 5. End-to-end through the log parser, including a PgSite line.
     body = []
