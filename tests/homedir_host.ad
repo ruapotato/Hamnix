@@ -21,7 +21,7 @@
 
 extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 
-from lib.homedir import hd_parse_passwd_home
+from lib.homedir import hd_parse_passwd_home, hd_parse_regular_home
 
 
 # ---- stdout helpers ------------------------------------------------------
@@ -105,6 +105,41 @@ def _case(label: Ptr[uint8], uid: uint64):
     _o_flush()
 
 
+# The REGULAR-account enumeration hamdesktop walks to find the account whose
+# ~/Desktop actually exists. The running uid is NOT the desktop's user (the
+# scene DE runs as hostowner, uid 1), so this is the list it searches.
+def _reg(label: Ptr[uint8], idx: uint64):
+    out[0] = 0
+    n: uint64 = hd_parse_regular_home(&pw[0], pw_n, 1000, idx, &out[0], 128)
+    _o_str(label)
+    _o_str(cast[Ptr[uint8]](" idx="))
+    _o_dec(idx)
+    _o_str(cast[Ptr[uint8]](" len="))
+    _o_dec(n)
+    _o_str(cast[Ptr[uint8]](" home="))
+    if n > 0:
+        _o_str(&out[0])
+    else:
+        _o_str(cast[Ptr[uint8]]("<none>"))
+    _o_ch(10)
+    _o_flush()
+
+
+# An INSTALLED /etc/passwd: exactly what user/install.ad::prov_compose_passwd
+# writes — system accounts plus ONE regular user at uid 1000, and no `live`.
+ipw: Array[512, uint8]
+ipw_n: uint64 = 0
+
+def _ipw_line(s: Ptr[uint8]):
+    i: uint64 = 0
+    while s[i] != 0:
+        ipw[ipw_n] = s[i]
+        ipw_n = ipw_n + 1
+        i = i + 1
+    ipw[ipw_n] = 10
+    ipw_n = ipw_n + 1
+
+
 def main() -> int32:
     _build_pw()
     # The live image's user — the ONLY case the old hardcode got right.
@@ -122,6 +157,36 @@ def main() -> int32:
     # `nobody`'s home is absolute but the account is not a real user; the
     # parser is uid-exact, so asking for it returns exactly its own field.
     _case(cast[Ptr[uint8]]("NOBODY"), 65534)
+    # Regular-account enumeration on the LIVE table: uid>=1000 in file order
+    # is dave, live, and nothing else. hostowner (uid 1) is NOT a candidate
+    # even though it is the identity the DE runs as, and `nobody` (65534) is
+    # excluded because its home is /nonexistent... it IS >= 1000, so it comes
+    # last and the caller's exists-check rejects it. Order is what matters.
+    _reg(cast[Ptr[uint8]]("REG0"), 0)
+    _reg(cast[Ptr[uint8]]("REG1"), 1)
+    _reg(cast[Ptr[uint8]]("REG2"), 2)
+    _reg(cast[Ptr[uint8]]("REG3"), 3)
+    _reg(cast[Ptr[uint8]]("REG4"), 4)
+    # The INSTALLED table: one regular user and no `live` anywhere, so the
+    # enumeration's FIRST candidate is the wizard's account. This is the
+    # user-reported system.
+    ipw_n = 0
+    _ipw_line(cast[Ptr[uint8]]("hostowner:x:1:1::/home/hostowner:/bin/hamsh"))
+    _ipw_line(cast[Ptr[uint8]]("sshd:x:2:2::/var/empty:/bin/false"))
+    _ipw_line(cast[Ptr[uint8]]("hamsh-svc:x:3:3::/var/empty:/bin/false"))
+    _ipw_line(cast[Ptr[uint8]]("gizmo:x:1000:1000::/home/gizmo:/bin/hamsh"))
+    _ipw_line(cast[Ptr[uint8]]("nobody:x:65534:65534::/nonexistent:/bin/false"))
+    out[0] = 0
+    rn: uint64 = hd_parse_regular_home(&ipw[0], ipw_n, 1000, 0, &out[0], 128)
+    _o_str(cast[Ptr[uint8]]("INSTALLED_REG0 len="))
+    _o_dec(rn)
+    _o_str(cast[Ptr[uint8]](" home="))
+    if rn > 0:
+        _o_str(&out[0])
+    else:
+        _o_str(cast[Ptr[uint8]]("<none>"))
+    _o_ch(10)
+    _o_flush()
     _o_str(cast[Ptr[uint8]]("HOMEDIR_HOST_DONE\n"))
     _o_flush()
     return 0

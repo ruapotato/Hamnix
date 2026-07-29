@@ -149,11 +149,36 @@ CAT_ROW = (78, 58)          # "Accessories" row in the menu box
 APP_ROW = (300, 58)         # "Calculator" row in the open fly-out
 
 
-def drag_from_menu(tx, ty, label):
-    mv(*MENU_BTN, 0); time.sleep(0.3)
-    mv(*MENU_BTN, 1); time.sleep(0.3)
-    mv(*MENU_BTN, 0); time.sleep(2.0)
+def menu_window_open():
+    """True when a DECORATED window (the Applications menu) is mapped."""
+    for n in range(1, 9):
+        t = run_cmd(f"cat /dev/wsys/{n}/ctl", settle=0.15, tries=1)
+        m = re.search(r"^\s*(-?\d+) (-?\d+) (\d+) (\d+).*dec=(\d+)", t, re.M)
+        if m and m.group(5) != "0" and int(m.group(4)) > 100:
+            return True
+    return False
+
+
+def open_app_menu(label):
+    """Click Applications until its window is actually mapped. The FIRST
+    spawn is cold and can take several seconds; a single click + fixed sleep
+    silently drives the rest of the gesture onto the bare desktop."""
+    for attempt in range(4):
+        mv(*MENU_BTN, 0); time.sleep(0.3)
+        mv(*MENU_BTN, 1); time.sleep(0.3)
+        mv(*MENU_BTN, 0)
+        for _ in range(6):
+            time.sleep(1.0)
+            if menu_window_open():
+                shot(label + "_menu")
+                return True
     shot(label + "_menu")
+    return False
+
+
+def drag_from_menu(tx, ty, label):
+    opened = open_app_menu(label)
+    emit("MENU_OPENED_" + label.split("_")[-1].upper(), "1" if opened else "0")
     mv(*CAT_ROW, 0); time.sleep(1.2)          # hover -> fly-out opens
     shot(label + "_flyout")
     mv(*APP_ROW, 0); time.sleep(0.4)
@@ -188,6 +213,7 @@ try:
     if not src or not src.startswith("/"):
         emit("SRC_BAD", "1")
         raise SystemExit(2)
+    emit("SHIPPED_LAUNCHERS", len(re.findall(r"\.desktop", run_cmd(f"ls {src}"))))
     run_cmd(f"echo probe > {src}/GateLiveProbe.txt")
     emit("PROBE_WRITTEN", "1" if "GateLiveProbe" in
          run_cmd(f"ls {src}") else "0")
@@ -214,9 +240,12 @@ try:
          len(re.findall(r"widget launcher ", after)))
     emit("PANEL_DROPPED_CALC",
          "1" if re.search(r"widget launcher \S*hamcalc", after) else "0")
-    emit("SIDECAR_AFTER_PANEL",
-         "EMPTY" if not run_cmd("cat /tmp/hamnix-panel-drop").strip()
-         .replace("[runtime:cat] _start", "").strip() else "NONEMPTY")
+    # The sidecar must be EMPTY afterwards (consumed exactly once). Read it
+    # with a marker that only appears when the file has bytes, so the kernel's
+    # own console chatter cannot be mistaken for content.
+    sc = run_cmd("cat /tmp/hamnix-panel-drop | wc -c")
+    m = re.search(r"^\s*(\d+)\s*$", sc, re.M)
+    emit("SIDECAR_BYTES_AFTER_PANEL", m.group(1) if m else "UNREADABLE")
 
     # ============ ITEM 2: drag an app from the menu ONTO THE DESKTOP ======
     src3, n3 = icon_count()

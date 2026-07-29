@@ -85,7 +85,8 @@ from lib.hamfmcore import fmc_set_cur_path, fmc_mkdir, \
 from lib.desktopentry import desktop_parse, desktop_name_ptr, \
     desktop_name_len, desktop_prog_ptr, desktop_prog_len, \
     desktop_liveonly, desktop_name_is_entry, desktop_icon_ptr
-from lib.homedir import hd_resolve_home
+from lib.homedir import hd_env_home, hd_home_from_passwd, hd_regular_home, \
+    hd_fallback_home, hd_resolve_home
 from lib.hamscene import hamscene_length, hamscene_bufptr, hamscene_image
 
 
@@ -2027,19 +2028,57 @@ def _desk_set_default():
     DESK_DIR[i] = 0
 
 
-# The GUI desktop IS a view of ~/Desktop, so if the session user has no
-# Desktop directory yet we CREATE it rather than silently degrade to the
-# built-in three-icon fallback (or, worse, to another account's home). A user
-# who then drops a file in there sees it on the next ~1s re-scan — which is
-# the whole point of the model.
+# Try <home>/Desktop; adopt it only if the directory REALLY EXISTS.
+def _desk_try(home: Ptr[uint8], hl: uint64) -> int32:
+    if _desk_build_from_home(home, hl) == 0:
+        return 0
+    return _desk_dir_exists(&DESK_DIR[0])
+
+
+# WHICH home? "The session user's" — and the running uid is NOT it. Measured
+# on a real UEFI/OVMF boot: the scene DE is spawned down the boot path and
+# runs as the HOSTOWNER identity (uid 1) while the session belongs to the
+# regular account (`live` on the live image, the wizard's account on an
+# installed one). Resolving strictly by sys_getuid() therefore pointed the
+# desktop at /home/hostowner/Desktop and EMPTIED the icon grid — the same
+# class of bug as the old /home/live hardcode, just aimed elsewhere.
+#
+# So: ask the system, do not assume.
+#   1. $HOME, when the ambient env actually carries one.
+#   2. this uid's passwd home, IF it really has a Desktop.
+#   3. each REGULAR account (uid >= 1000) in /etc/passwd, first one whose
+#      ~/Desktop exists. This is what picks `live` on the live medium and the
+#      wizard's account on an installed system, with nothing hardcoded.
+#   4. nothing has a Desktop yet -> take the first regular account's home and
+#      CREATE ~/Desktop there. The GUI desktop IS a view of that directory, so
+#      a user who then drops a file in sees it on the next ~1s re-scan; the
+#      old code degraded to the built-in three-icon fallback instead.
+#   5. absolute last resort: /home/live/Desktop.
+DESK_REG_MAX: uint64 = 8
 def _desk_dir() -> Ptr[uint8]:
     if DESK_DIR[0] == 47:                        # cached + still absolute
         return &DESK_DIR[0]
     hbuf: Array[128, uint8]
-    hl: uint64 = hd_resolve_home(&hbuf[0], DESK_DIR_CAP)
+    hl: uint64 = hd_env_home(&hbuf[0], DESK_DIR_CAP)
+    if hl > 1 and hbuf[0] == 47 and _desk_try(&hbuf[0], hl) != 0:
+        return &DESK_DIR[0]
+    hl = hd_home_from_passwd(&hbuf[0], DESK_DIR_CAP)
+    if hl > 1 and _desk_try(&hbuf[0], hl) != 0:
+        return &DESK_DIR[0]
+    r: uint64 = 0
+    while r < DESK_REG_MAX:
+        hl = hd_regular_home(r, &hbuf[0], DESK_DIR_CAP)
+        if hl == 0:
+            break
+        if _desk_try(&hbuf[0], hl) != 0:
+            return &DESK_DIR[0]
+        r = r + 1
+    # No account has a ~/Desktop yet: create one for the first regular user.
+    hl = hd_regular_home(0, &hbuf[0], DESK_DIR_CAP)
+    if hl == 0:
+        hl = hd_fallback_home(&hbuf[0], DESK_DIR_CAP)
     if hl > 1 and _desk_build_from_home(&hbuf[0], hl) != 0:
-        if _desk_dir_exists(&DESK_DIR[0]) == 0:
-            sys_mkdir(cast[Ptr[char]](&DESK_DIR[0]))
+        sys_mkdir(cast[Ptr[char]](&DESK_DIR[0]))
         return &DESK_DIR[0]
     _desk_set_default()                          # /home/live/Desktop
     return &DESK_DIR[0]

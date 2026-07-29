@@ -131,6 +131,87 @@ def hd_home_from_passwd(out: Ptr[uint8], cap: uint64) -> uint64:
                                 cast[uint64](uid), out, cap)
 
 
+# PURE: the `idx`-th (0-based, file order) passwd line whose uid is >= minuid
+# and whose home is absolute — i.e. enumerate the REGULAR user accounts.
+#
+# WHY A DESKTOP NEEDS THIS. The running uid is NOT always the desktop's user.
+# The scene DE is spawned down the boot path and runs as the hostowner
+# identity (uid 1) even though the session belongs to a regular account
+# (`live` on the live image, the wizard's account on an installed one) —
+# measured on a real boot: resolving strictly by sys_getuid() pointed the
+# desktop at /home/hostowner/Desktop and emptied the icon grid. So a client
+# that wants "the desktop user's home" enumerates the regular accounts and
+# picks the one whose home is really there.
+# Returns the length written (0 = no such entry / does not fit).
+def hd_parse_regular_home(buf: Ptr[uint8], blen: uint64, minuid: uint64,
+                          idx: uint64, out: Ptr[uint8], cap: uint64) -> uint64:
+    seen: uint64 = 0
+    p: uint64 = 0
+    while p < blen:
+        q: uint64 = p
+        while q < blen and buf[q] != 10:
+            q = q + 1
+        f: uint64 = 0
+        fs: uint64 = p
+        uid_val: uint64 = 0
+        have_uid: int32 = 0
+        home_s: uint64 = 0
+        home_e: uint64 = 0
+        i: uint64 = p
+        while i <= q:
+            if i == q or buf[i] == 58:
+                if f == 2:
+                    v: uint64 = 0
+                    k: uint64 = fs
+                    ok: int32 = 1
+                    while k < i:
+                        if buf[k] < 48 or buf[k] > 57:
+                            ok = 0
+                        else:
+                            v = v * 10 + cast[uint64](buf[k] - 48)
+                        k = k + 1
+                    if ok != 0 and i > fs:
+                        uid_val = v
+                        have_uid = 1
+                elif f == 5:
+                    home_s = fs
+                    home_e = i
+                f = f + 1
+                fs = i + 1
+            i = i + 1
+        if have_uid != 0 and uid_val >= minuid \
+                and home_e > home_s + 1 and buf[home_s] == 47:
+            if seen == idx:
+                hl: uint64 = home_e - home_s
+                if hl + 1 < cap:
+                    j: uint64 = 0
+                    while j < hl:
+                        out[j] = buf[home_s + j]
+                        j = j + 1
+                    out[hl] = 0
+                    return hl
+                return 0
+            seen = seen + 1
+        p = q
+        if p < blen and buf[p] == 10:
+            p = p + 1
+    return 0
+
+
+# The `idx`-th regular account's home, read from /etc/passwd.
+HD_REGULAR_MIN_UID: uint64 = 1000
+def hd_regular_home(idx: uint64, out: Ptr[uint8], cap: uint64) -> uint64:
+    fd: int32 = sys_open(cast[Ptr[char]]("/etc/passwd"))
+    if fd < 0:
+        return 0
+    n: int64 = sys_read(fd, &hd_pw_scratch[0], 4095)
+    sys_close(fd)
+    if n <= 0:
+        return 0
+    return hd_parse_regular_home(&hd_pw_scratch[0], cast[uint64](n),
+                                 HD_REGULAR_MIN_UID, idx, out, cap)
+
+
 # The full chain: $HOME -> /etc/passwd(uid) -> /home/live.
 # Returns the length written, 0 only if `cap` is too small for even the
 # fallback.
@@ -141,6 +222,10 @@ def hd_resolve_home(out: Ptr[uint8], cap: uint64) -> uint64:
     pl: uint64 = hd_home_from_passwd(out, cap)
     if pl > 1:
         return pl
+    return hd_fallback_home(out, cap)
+
+
+def hd_fallback_home(out: Ptr[uint8], cap: uint64) -> uint64:
     fb: Ptr[uint8] = cast[Ptr[uint8]]("/home/live")
     k: uint64 = 0
     while fb[k] != 0 and k + 1 < cap:

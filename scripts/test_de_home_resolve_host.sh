@@ -85,6 +85,26 @@ assert_grep '^UNKNOWN uid=4242 len=0 home=<none>$' \
     "an unknown uid resolves to nothing (caller falls back)"
 assert_grep '^NOBODY uid=65534 len=12 home=/nonexistent$' \
     "the parser is uid-exact (nobody returns its own field)"
+
+# The DE does NOT run as the desktop's user: the scene DE is spawned down the
+# boot path as hostowner (uid 1), so hamdesktop enumerates the REGULAR
+# accounts and takes the first whose ~/Desktop is really there. Prove the
+# enumeration's order and membership.
+assert_grep '^REG0 idx=0 len=10 home=/home/dave$' \
+    "regular-account enumeration starts at uid 1000 (dave), skipping hostowner"
+assert_grep '^REG1 idx=1 len=10 home=/home/live$' \
+    "…then the live image's user, which is where its ~/Desktop actually is"
+assert_grep '^REG2 idx=2 len=11 home=/home/bobby$' \
+    "…then the installed-style account"
+assert_grep '^REG3 idx=3 len=12 home=/nonexistent$' \
+    "…then nobody, which the caller's exists-check rejects"
+assert_grep '^REG4 idx=4 len=0 home=<none>$' \
+    "the enumeration terminates (no phantom accounts)"
+# THE USER'S SYSTEM: an installed /etc/passwd has ONE regular user and no
+# `live` at all, so the first candidate is the wizard's account.
+assert_grep '^INSTALLED_REG0 len=11 home=/home/gizmo$' \
+    "KEYSTONE: on an INSTALLED passwd the first regular account is the wizard's user"
+
 assert_grep '^HOMEDIR_HOST_DONE$' "the harness ran to completion"
 
 # --- 3. no stray /home/live hardcode left in the desktop's resolution -----
@@ -94,7 +114,7 @@ assert_grep '^HOMEDIR_HOST_DONE$' "the harness ran to completion"
 body=$(sed -n '/^def hd_resolve_home/,/^$/p' lib/homedir.ad)
 l_env=$(printf '%s\n' "$body" | grep -n 'hd_env_home(' | head -1 | cut -d: -f1)
 l_pw=$(printf '%s\n' "$body"  | grep -n 'hd_home_from_passwd(' | head -1 | cut -d: -f1)
-l_fb=$(printf '%s\n' "$body"  | grep -n '"/home/live"' | head -1 | cut -d: -f1)
+l_fb=$(printf '%s\n' "$body"  | grep -n 'hd_fallback_home(' | head -1 | cut -d: -f1)
 if [ -n "$l_env" ] && [ -n "$l_pw" ] && [ -n "$l_fb" ] \
         && [ "$l_env" -lt "$l_pw" ] && [ "$l_pw" -lt "$l_fb" ]; then
     pass "hd_resolve_home order is \$HOME -> /etc/passwd(uid) -> /home/live"

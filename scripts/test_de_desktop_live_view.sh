@@ -116,6 +116,12 @@ case "$SRC" in
     *)         bad "icon source is not a Desktop directory: '$SRC'" ;;
 esac
 N0="$(val N0)"; N1="$(val N1)"; N2="$(val N2)"
+SL="$(val SHIPPED_LAUNCHERS)"
+if [ -n "$SL" ] && [ "$SL" -ge 4 ]; then
+    ok "the resolved desktop dir carries the shipped launcher set ($SL .desktop files)"
+else
+    bad "the resolved desktop dir has almost nothing in it ($SL .desktop files) — wrong home?"
+fi
 [ "$(val PROBE_WRITTEN)" = "1" ] \
     && ok "the probe file was created in $SRC" \
     || bad "could not create a probe file in $SRC"
@@ -143,9 +149,13 @@ elif [ "$(val PANEL_DROPPED_CALC)" = "1" ]; then
 else
     bad "KEYSTONE: a menu->panel drag pinned NOTHING (launchers $PB -> $PA) — the user's report"
 fi
-[ "$(val SIDECAR_AFTER_PANEL)" = "EMPTY" ] \
-    && ok "the drop offer was consumed exactly once" \
-    || bad "the drop offer was left pending after the panel commit"
+SCB="$(val SIDECAR_BYTES_AFTER_PANEL)"
+[ "$SCB" = "0" ] \
+    && ok "the drop offer was consumed exactly once (sidecar 0 bytes)" \
+    || bad "the drop offer was left pending after the panel commit ($SCB bytes)"
+[ "$(val MENU_OPENED_PANEL)" = "1" ] \
+    && ok "the Applications menu opened for the panel drag" \
+    || bad "the Applications menu never opened — the panel gesture is untested"
 
 # ---- item 2: drag from the Applications menu ONTO THE DESKTOP -----------
 N3="$(val N3)"; N4="$(val N4)"
@@ -164,6 +174,9 @@ if [ -n "$N3" ] && [ -n "$N4" ] && [ "$N4" -gt "$N3" ]; then
 else
     bad "the dropped launcher never showed up in the icon grid ($N3 -> $N4)"
 fi
+[ "$(val MENU_OPENED_DESKTOP)" = "1" ] \
+    && ok "the Applications menu opened for the desktop drag" \
+    || bad "the Applications menu never opened — the desktop gesture is untested"
 
 [ "$(val ALIVE)" = "1" ] \
     && ok "the guest stayed alive through every gesture" \
