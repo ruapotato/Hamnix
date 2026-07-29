@@ -2850,6 +2850,27 @@ def _js_host_dispatch(id: int32) -> int32:
         g_stop_prop = 1
         g_stop_immediate = 1
         return js_undefined()
+    if rel == NID_CREATEEVENT:
+        return _create_event()
+    if rel == NID_INITEVENT:
+        return _init_event(0)
+    if rel == NID_INITCUSTOMEV:
+        return _init_event(1)
+    if rel == NID_DOMEXC_CTOR:
+        # new DOMException(message, name) -- name defaults to "Error".
+        dmn: int32 = 0
+        if js_arg_count() >= 1:
+            dmn = _arg_bytes(0, &dom_txtbuf[0], 1024)
+            if _is_undef_str(&dom_txtbuf[0], dmn) != 0:
+                dmn = 0
+        dnn: int32 = 0
+        if js_arg_count() >= 2:
+            dnn = _arg_bytes(1, &dom_idtmp[0], 256)
+            if _is_undef_str(&dom_idtmp[0], dnn) != 0:
+                dnn = 0
+        if dnn == 0:
+            return _new_domexc(cast[Ptr[uint8]]("Error"), 5, &dom_txtbuf[0], dmn)
+        return _new_domexc(&dom_idtmp[0], dnn, &dom_txtbuf[0], dmn)
     if rel == NID_EVENT_CTOR:
         return _make_event(0)
     if rel == NID_CUSTOMEVENT:
@@ -4259,6 +4280,11 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_CREATE))
     js_set_prop(doc, cast[Ptr[uint8]]("createTextNode"), 14, \
                 js_new_native_fn(js_hbase + NID_CTEXT))
+    # document.createEvent(iface) -- the legacy event factory. Still ubiquitous
+    # in the wild (and in WPT), and an unknown interface must throw
+    # NotSupportedError rather than be silently tolerated.
+    js_set_prop(doc, cast[Ptr[uint8]]("createEvent"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATEEVENT))
     # The rest of the node-factory surface a framework renderer calls. React
     # creates SVG/MathML hosts through createElementNS, marks Suspense/portal
     # boundaries with createComment, and batches offscreen subtrees into a
@@ -4364,6 +4390,15 @@ def _js_build_document():
     # a fresh event object usable with dispatchEvent (which reads ev.type).
     js_global_set(cast[Ptr[uint8]]("Event"), 5, \
                   js_new_native_fn(js_hbase + NID_EVENT_CTOR))
+    # Event.NONE / CAPTURING_PHASE / AT_TARGET / BUBBLING_PHASE live on the
+    # interface object as well as on instances.
+    _event_constants(js_global_get(cast[Ptr[uint8]]("Event"), 5))
+    # window.DOMException. Needed as a real constructor, not just a name: a
+    # thrown DOMException must satisfy `e.constructor === self.DOMException`,
+    # which is the last thing testharness's assert_throws_dom checks.
+    g_domexc_ctor = js_new_native_fn(js_hbase + NID_DOMEXC_CTOR)
+    js_global_set(cast[Ptr[uint8]]("DOMException"), 12, g_domexc_ctor)
+    g_proto_domexc = js_fn_prototype(g_domexc_ctor)
     js_global_set(cast[Ptr[uint8]]("CustomEvent"), 11, \
                   js_new_native_fn(js_hbase + NID_CUSTOMEVENT))
     js_global_set(cast[Ptr[uint8]]("MouseEvent"), 10, \
@@ -6905,6 +6940,206 @@ def _new_event_obj() -> int32:
 # Reads the type string (arg0) and an options object (arg1): bubbles / cancelable
 # (all), detail (CustomEvent), plus a few basic MouseEvent/KeyboardEvent fields.
 # Returns a fresh object usable as an event (dispatchEvent reads .type).
+# ---- DOMException + document.createEvent -----------------------------------
+#
+# The legacy DOM name -> code table (DOMException "legacy code"). Names minted
+# after the legacy list -- SyntaxError as a DOMException, and everything newer
+# -- carry code 0, which is correct and is what the spec says.
+def _domexc_code(nm: Ptr[uint8], n: int32) -> int32:
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("IndexSizeError"), 14) != 0:
+        return 1
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("HierarchyRequestError"), 21) != 0:
+        return 3
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("WrongDocumentError"), 18) != 0:
+        return 4
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InvalidCharacterError"), 21) != 0:
+        return 5
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("NoModificationAllowedError"), 26) != 0:
+        return 7
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("NotFoundError"), 13) != 0:
+        return 8
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("NotSupportedError"), 17) != 0:
+        return 9
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InUseAttributeError"), 19) != 0:
+        return 10
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InvalidStateError"), 17) != 0:
+        return 11
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("SyntaxError"), 11) != 0:
+        return 12
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InvalidModificationError"), 24) != 0:
+        return 13
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("NamespaceError"), 14) != 0:
+        return 14
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InvalidAccessError"), 18) != 0:
+        return 15
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("TypeMismatchError"), 17) != 0:
+        return 17
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("SecurityError"), 13) != 0:
+        return 18
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("NetworkError"), 12) != 0:
+        return 19
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("AbortError"), 10) != 0:
+        return 20
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("URLMismatchError"), 16) != 0:
+        return 21
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("QuotaExceededError"), 18) != 0:
+        return 22
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("TimeoutError"), 12) != 0:
+        return 23
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("InvalidNodeTypeError"), 20) != 0:
+        return 24
+    if _bytes_eq(nm, n, cast[Ptr[uint8]]("DataCloneError"), 14) != 0:
+        return 25
+    return 0
+
+
+# Build a DOMException object: name / message / legacy code, branded with
+# DOMException.prototype and carrying `constructor` so assert_throws_dom's
+# final "is this from the right global" check passes.
+def _new_domexc(nm: Ptr[uint8], n: int32, msg: Ptr[uint8], mn: int32) -> int32:
+    ev: int32 = js_new_object_v()
+    if g_proto_domexc != 0:
+        js_set_proto_v(ev, g_proto_domexc)
+    js_set_prop(ev, cast[Ptr[uint8]]("name"), 4, js_new_string(nm, cast[uint64](n)))
+    js_set_prop(ev, cast[Ptr[uint8]]("message"), 7, js_new_string(msg, cast[uint64](mn)))
+    js_set_prop(ev, cast[Ptr[uint8]]("code"), 4, \
+                js_number(cast[float64](_domexc_code(nm, n))))
+    if g_domexc_ctor != 0:
+        js_set_prop(ev, cast[Ptr[uint8]]("constructor"), 11, g_domexc_ctor)
+    return ev
+
+
+# Raise a DOMException from inside a host native, the way a browser binding
+# does. Unwinds through the interpreter's normal CTL_THROW path, so a page's
+# try/catch (and testharness's assert_throws_dom) sees it.
+def _throw_domexc(nm: Ptr[uint8], n: int32, msg: Ptr[uint8], mn: int32) -> int32:
+    js_throw_value(_new_domexc(nm, n, msg, mn))
+    return js_undefined()
+
+
+# document.createEvent(interface) -- the legacy event factory. Returns an
+# UNINITIALISED event (type "", bubbles/cancelable false) which the caller then
+# fills in with initEvent / initCustomEvent. An unrecognised interface name must
+# throw NotSupportedError, and whole WPT files assert exactly that.
+#
+# Interface names are matched ASCII-case-INSENSITIVELY, which is what the spec
+# requires here (createEvent("mouseevents") is legal and used in the wild).
+def _create_event() -> int32:
+    n: int32 = 0
+    if js_arg_count() >= 1:
+        n = _arg_bytes(0, &dom_idtmp[0], 256)
+    flavor: int32 = -1
+    if _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("event"), 5) != 0 or \
+       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("events"), 6) != 0 or \
+       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("htmlevents"), 10) != 0 or \
+       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("svgevents"), 9) != 0:
+        flavor = 0
+    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("customevent"), 11) != 0:
+        flavor = 1
+    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("mouseevent"), 10) != 0 or \
+         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("mouseevents"), 11) != 0:
+        flavor = 2
+    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("keyboardevent"), 13) != 0 or \
+         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("keyevents"), 9) != 0:
+        flavor = 3
+    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("uievent"), 7) != 0 or \
+         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("uievents"), 8) != 0:
+        flavor = 4
+    if flavor < 0:
+        return _throw_domexc(cast[Ptr[uint8]]("NotSupportedError"), 17, \
+                             cast[Ptr[uint8]]("createEvent: unsupported interface"), 34)
+    ev: int32 = _blank_event(flavor)
+    return ev
+
+
+# A created-but-uninitialised event, plus the legacy init* methods that fill it
+# in. Shares the shape _make_event produces so dispatch treats both alike.
+def _blank_event(flavor: int32) -> int32:
+    ev: int32 = js_new_object_v()
+    js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, js_new_string(&dom_txtbuf[0], 0))
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("target"), 6, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("srcElement"), 10, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("eventPhase"), 10, js_number(cast[float64](0)))
+    js_set_prop(ev, cast[Ptr[uint8]]("isTrusted"), 9, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("composed"), 8, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("timeStamp"), 9, js_number(cast[float64](0)))
+    js_set_prop(ev, cast[Ptr[uint8]]("preventDefault"), 14, \
+                js_new_native_fn(js_hbase + NID_PREVENT))
+    js_set_prop(ev, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                js_new_native_fn(js_hbase + NID_STOPPROP))
+    js_set_prop(ev, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
+                js_new_native_fn(js_hbase + NID_STOPIMMED))
+    js_set_prop(ev, cast[Ptr[uint8]]("initEvent"), 9, \
+                js_new_native_fn(js_hbase + NID_INITEVENT))
+    if flavor == 1:
+        js_set_prop(ev, cast[Ptr[uint8]]("initCustomEvent"), 15, \
+                    js_new_native_fn(js_hbase + NID_INITCUSTOMEV))
+    _event_constants(ev)
+    return ev
+
+
+# event.initEvent(type, bubbles, cancelable) / initCustomEvent(..., detail).
+def _init_event(with_detail: int32) -> int32:
+    ev: int32 = js_this()
+    if js_type_of(ev) != 5:
+        return js_undefined()
+    tn: int32 = 0
+    if js_arg_count() >= 1:
+        tn = _arg_bytes(0, &dom_idtmp[0], 256)
+        if _is_undef_str(&dom_idtmp[0], tn) != 0:
+            tn = 0
+    js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
+                js_new_string(&dom_idtmp[0], cast[uint64](tn)))
+    b: int32 = 0
+    if js_arg_count() >= 2 and js_to_bool(js_arg(1)) != 0:
+        b = 1
+    c: int32 = 0
+    if js_arg_count() >= 3 and js_to_bool(js_arg(2)) != 0:
+        c = 1
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(b))
+    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(c))
+    if with_detail != 0:
+        dv: int32 = js_null()
+        if js_arg_count() >= 4:
+            dv = js_arg(3)
+        js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, dv)
+    return js_undefined()
+
+
+# The Event phase constants, which the spec puts on both the interface object
+# and every instance.
+def _event_constants(target: int32):
+    js_set_prop(target, cast[Ptr[uint8]]("NONE"), 4, js_number(cast[float64](0)))
+    js_set_prop(target, cast[Ptr[uint8]]("CAPTURING_PHASE"), 15, \
+                js_number(cast[float64](1)))
+    js_set_prop(target, cast[Ptr[uint8]]("AT_TARGET"), 9, js_number(cast[float64](2)))
+    js_set_prop(target, cast[Ptr[uint8]]("BUBBLING_PHASE"), 14, \
+                js_number(cast[float64](3)))
+
+
+# ASCII case-insensitive byte compare.
+def _ascii_ci_eq(a: Ptr[uint8], an: int32, b: Ptr[uint8], bn: int32) -> int32:
+    if an != bn:
+        return 0
+    i: int32 = 0
+    while i < an:
+        ca: uint8 = a[i]
+        cb: uint8 = b[i]
+        if ca >= 65 and ca <= 90:
+            ca = ca + 32
+        if cb >= 65 and cb <= 90:
+            cb = cb + 32
+        if ca != cb:
+            return 0
+        i = i + 1
+    return 1
+
+
 def _make_event(flavor: int32) -> int32:
     ev: int32 = js_new_object_v()
     # type (arg0) — copied into a stable buffer first (js_str_ptr shares scratch).
@@ -6928,6 +7163,7 @@ def _make_event(flavor: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_STOPPROP))
     js_set_prop(ev, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
                 js_new_native_fn(js_hbase + NID_STOPIMMED))
+    _event_constants(ev)
     if flavor == 2:
         # basic MouseEvent geometry (defaults 0)
         js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, js_number(cast[float64](0)))

@@ -536,6 +536,18 @@ def js_to_number(val: int32) -> float64:
     return to_number(val)
 
 
+# Raise `v` as a JS exception from inside a host native, unwinding through the
+# interpreter's normal CTL_THROW path so a page's try/catch sees it. This is how
+# a browser binding reports a DOMException; without it a host native could only
+# return a value, so `document.createEvent("bogus")` had no way to throw
+# NotSupportedError the way the DOM spec requires.
+def js_throw_value(v: int32):
+    if ctl == CTL_THROW or err_flag != 0:
+        return                                # an unwind is already in flight
+    throw_val = v
+    ctl = CTL_THROW
+
+
 def js_to_bool(val: int32) -> int32:
     return to_bool(val)
 

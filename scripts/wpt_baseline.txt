@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 425
+#!PASS_FLOOR 632
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -368,9 +368,7 @@ dom/collections/namednodemap-supported-property-names.html	Object.getOwnProperty
 dom/collections/namednodemap-supported-property-names.html	Object.getOwnPropertyNames on NamedNodeMap of input
 dom/eventPathRemoved.html	Event.prototype should not have property named 'path'
 dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onblur
-dom/events/CustomEvent.html	CustomEvent dispatching.
 dom/events/CustomEvent.html	First parameter to initCustomEvent should be mandatory.
-dom/events/CustomEvent.html	initCustomEvent's default parameter values.
 dom/events/Event-cancelBubble.html	Event.cancelBubble=false must have no effect during event propagation.
 dom/events/Event-cancelBubble.html	Event.cancelBubble=false must have no effect.
 dom/events/Event-cancelBubble.html	Event.cancelBubble=true must set the stop propagation flag.
@@ -379,17 +377,11 @@ dom/events/Event-cancelBubble.html	cancelBubble must be false after an event has
 dom/events/Event-cancelBubble.html	cancelBubble must be false when an event is initially created.
 dom/events/Event-cancelBubble.html	stopImmediatePropagation() must set cancelBubble to true.
 dom/events/Event-cancelBubble.html	stopPropagation() must set cancelBubble to true.
-dom/events/Event-constants.html	<FILE PRODUCED NO RESULTS>
+dom/events/Event-constants.html	Constants for eventPhase on Event prototype object.
 dom/events/Event-defaultPrevented-after-dispatch.html	Default prevention via preventDefault
 dom/events/Event-defaultPrevented-after-dispatch.html	Default prevention via returnValue
-dom/events/Event-defaultPrevented.html	When an event is created, defaultPrevented should be initialized to false.
-dom/events/Event-defaultPrevented.html	initEvent should unset defaultPrevented.
-dom/events/Event-defaultPrevented.html	initEvent should work correctly (cancelable).
-dom/events/Event-defaultPrevented.html	initEvent should work correctly (not cancelable).
 dom/events/Event-defaultPrevented.html	preventDefault() should change defaultPrevented if cancelable is true.
-dom/events/Event-defaultPrevented.html	preventDefault() should not change defaultPrevented if cancelable is false.
 dom/events/Event-defaultPrevented.html	returnValue should change defaultPrevented if cancelable is true.
-dom/events/Event-defaultPrevented.html	returnValue should not change defaultPrevented if cancelable is false.
 dom/events/Event-dispatch-bubble-canceled.html	Untitled
 dom/events/Event-dispatch-bubbles-false.html	In DOMImplementation.createHTMLDocument()
 dom/events/Event-dispatch-bubbles-false.html	In new Document()
@@ -421,7 +413,7 @@ dom/events/Event-dispatch-click.html	look at parents only when event bubbles
 dom/events/Event-dispatch-click.html	look at parents when event bubbles
 dom/events/Event-dispatch-click.html	pick the first with activation behavior <input type=checkbox>
 dom/events/Event-dispatch-click.html	pick the first with activation behavior <input type=radio>
-dom/events/Event-dispatch-detached-click.html	Untitled
+dom/events/Event-dispatch-detached-click.html	Click event can be dispatched to an element that is not in the document.
 dom/events/Event-dispatch-detached-input-and-change.html	attached checkbox should emit input and change events on click().
 dom/events/Event-dispatch-detached-input-and-change.html	attached checkbox should emit input and change events on dispatchEvent(new MouseEvent('click')).
 dom/events/Event-dispatch-detached-input-and-change.html	attached radio should emit input and change events on click().
@@ -450,18 +442,16 @@ dom/events/Event-init-while-dispatching.html	Calling initKeyboardEvent while dis
 dom/events/Event-init-while-dispatching.html	Calling initMouseEvent while dispatching.
 dom/events/Event-init-while-dispatching.html	Calling initUIEvent while dispatching.
 dom/events/Event-initEvent.html	Calling initEvent during propagation.
-dom/events/Event-initEvent.html	Calling initEvent multiple times (getting type).
-dom/events/Event-initEvent.html	Calling initEvent multiple times (not getting type).
 dom/events/Event-initEvent.html	Calling initEvent must not have an effect during dispatching.
-dom/events/Event-initEvent.html	Calling initEvent must unset the stop immediate propagation flag.
 dom/events/Event-initEvent.html	Calling initEvent must unset the stop propagation flag.
 dom/events/Event-initEvent.html	First parameter to initEvent should be mandatory.
 dom/events/Event-initEvent.html	Properties of initEvent(type, false, false)
 dom/events/Event-initEvent.html	Properties of initEvent(type, false, true)
 dom/events/Event-initEvent.html	Properties of initEvent(type, true, false)
 dom/events/Event-initEvent.html	Properties of initEvent(type, true, true)
-dom/events/Event-initEvent.html	Tests initEvent's default parameter values.
-dom/events/Event-propagation.html	<FILE PRODUCED NO RESULTS>
+dom/events/Event-propagation.html	After cancelBubble=true
+dom/events/Event-propagation.html	After stopImmediatePropagation()
+dom/events/Event-propagation.html	After stopPropagation()
 dom/events/Event-returnValue.html	When an event is created, returnValue should be initialized to true.
 dom/events/Event-returnValue.html	initEvent should unset returnValue.
 dom/events/Event-returnValue.html	preventDefault() should change returnValue if cancelable is true.
@@ -526,9 +516,6 @@ dom/events/Event-timestamp-high-resolution.html	Constructed MouseEvent timestamp
 dom/events/Event-timestamp-high-resolution.html	Constructed WheelEvent timestamp should be high resolution and have the same time origin as performance.now()
 dom/events/Event-timestamp-high-resolution.https.html	Constructed GamepadEvent timestamp should be high resolution and have the same time origin as performance.now()
 dom/events/Event-timestamp-safe-resolution.html	Event timestamp should not have a resolution better than 5 microseconds
-dom/events/Event-type-empty.html	initEvent
-dom/events/Event-type.html	Event.type should be initialized by initEvent
-dom/events/Event-type.html	Event.type should initially be the empty string
 dom/events/EventListener-handleEvent-cross-realm.html	EventListener is cross-realm callable revoked Proxy
 dom/events/EventListener-handleEvent-cross-realm.html	EventListener is cross-realm non-callable revoked Proxy
 dom/events/EventListener-handleEvent-cross-realm.html	EventListener is cross-realm plain object with non-callable 'handleEvent' property
@@ -545,39 +532,13 @@ dom/events/EventListenerOptions-capture.html	Equivalence of option values
 dom/events/EventListenerOptions-capture.html	Supports capture option
 dom/events/EventTarget-add-listener-platform-object.html	<FILE PRODUCED NO RESULTS>
 dom/events/EventTarget-dispatchEvent-returnvalue.html	Return value of EventTarget.dispatchEvent() affected by preventDefault().
-dom/events/EventTarget-dispatchEvent-returnvalue.html	Return value of EventTarget.dispatchEvent() affected by returnValue.
-dom/events/EventTarget-dispatchEvent.html	Calling dispatchEvent(null).
-dom/events/EventTarget-dispatchEvent.html	Capturing event listeners should be called before non-capturing ones
-dom/events/EventTarget-dispatchEvent.html	Event listeners added during dispatch should be called
-dom/events/EventTarget-dispatchEvent.html	Exceptions from event listeners must not be propagated.
-dom/events/EventTarget-dispatchEvent.html	If the event's dispatch flag is set, an InvalidStateError must be thrown.
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (BeforeUnloadEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (CompositionEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (CustomEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (DeviceMotionEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (DeviceOrientationEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (DragEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (Event).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (Events).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (FocusEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (HTMLEvents).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (HashChangeEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (KeyboardEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (MessageEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (MouseEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (MouseEvents).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (SVGEvents).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (StorageEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (TextEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (UIEvent).
-dom/events/EventTarget-dispatchEvent.html	If the event's initialized flag is not set, an InvalidStateError must be thrown (UIEvents).
+dom/events/EventTarget-dispatchEvent.html	<FILE PRODUCED NO RESULTS>
 dom/events/EventTarget-this-of-listener.html	addEventListener should not require handleEvent to be defined on object listeners
 dom/events/EventTarget-this-of-listener.html	dispatchEvent should invoke the current handleEvent method of the object
 dom/events/EventTarget-this-of-listener.html	handleEvent properties added to a function after addEventListener are not reached
 dom/events/EventTarget-this-of-listener.html	handleEvent properties added to a function before addEventListener are not reached
 dom/events/EventTarget-this-of-listener.html	the this value inside the event listener callback should be the node
 dom/events/EventTarget-this-of-listener.html	the this value inside the event listener object handleEvent should be the object
-dom/events/KeyEvent-initKeyEvent.html	KeyboardEvent.initKeyEvent shouldn't be defined (created by createEvent("KeyboardEvent")
 dom/events/KeyEvent-initKeyEvent.html	KeyboardEvent.prototype.initKeyEvent shouldn't be defined
 dom/events/event-global-is-still-set-when-coercing-beforeunload-result.html	Untitled
 dom/events/event-global-is-still-set-when-reporting-exception-onerror.html	Untitled
@@ -1224,140 +1185,7 @@ dom/nodes/Document-createEvent.https.html	MouseEvents should be an alias for Mou
 dom/nodes/Document-createEvent.https.html	STORAGEEVENT should be an alias for StorageEvent.
 dom/nodes/Document-createEvent.https.html	SVGEVENTS should be an alias for Event.
 dom/nodes/Document-createEvent.https.html	SVGEvents should be an alias for Event.
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationPlaybackEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationPlayerEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ApplicationCacheErrorEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AudioProcessingEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AutocompleteErrorEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "BeforeInstallPromptEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "BlobEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ClipboardEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "CloseEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "CommandEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "DataContainerEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ErrorEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ExtendableEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ExtendableMessageEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "FetchEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "FontFaceSetLoadEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "GamepadEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "GeofencingEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "IDBVersionChangeEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "InstallEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "KeyEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MIDIConnectionEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MIDIMessageEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaEncryptedEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaKeyEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaKeyMessageEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaQueryListEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaStreamEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaStreamTrackEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MouseScrollEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MutationEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "NotificationEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "NotifyPaintEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "OfflineAudioCompletionEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "OrientationEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PageTransition"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PageTransitionEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PointerEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PopStateEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PopUpEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PresentationConnectionAvailableEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PresentationConnectionCloseEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ProgressEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PromiseRejectionEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PushEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCDTMFToneChangeEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCDataChannelEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCIceCandidateEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RelatedEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ResourceProgressEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SVGEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SVGZoomEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ScrollAreaEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SecurityPolicyViolationEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ServicePortConnectEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ServiceWorkerMessageEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SimpleGestureEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechRecognitionError"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechRecognitionEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechSynthesisEvent"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "BeforeUnloadEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "CompositionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "CustomEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DeviceMotionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DeviceOrientationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DragEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "FocusEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "HashChangeEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "KeyboardEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "MessageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "StorageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "TextEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "TouchEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationPlaybackEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationPlayerEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ApplicationCacheErrorEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AudioProcessingEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AutocompleteErrorEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "BeforeInstallPromptEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "BlobEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ClipboardEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "CloseEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "CommandEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "DataContainerEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ErrorEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ExtendableEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ExtendableMessageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "FetchEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "FontFaceSetLoadEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "GamepadEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "GeofencingEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "IDBVersionChangeEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "InstallEvents"
 dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "KeyEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MIDIConnectionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MIDIMessageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaEncryptedEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaKeyEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaKeyMessageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaQueryListEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaStreamEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaStreamTrackEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MouseScrollEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MutationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "NotificationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "NotifyPaintEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "OfflineAudioCompletionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "OrientationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PageTransitionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PageTransitions"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PointerEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PopStateEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PopUpEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PresentationConnectionAvailableEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PresentationConnectionCloseEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ProgressEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PromiseRejectionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PushEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCDTMFToneChangeEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCDataChannelEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCIceCandidateEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RelatedEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ResourceProgressEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SVGZoomEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ScrollAreaEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SecurityPolicyViolationEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ServicePortConnectEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ServiceWorkerMessageEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SimpleGestureEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SpeechRecognitionErrors"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SpeechRecognitionEvents"
-dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for unrecognized arguments
 dom/nodes/Document-createEvent.https.html	StorageEvent should be an alias for StorageEvent.
 dom/nodes/Document-createEvent.https.html	TEXTEVENT should be an alias for TextEvent.
 dom/nodes/Document-createEvent.https.html	TOUCHEVENT should be an alias for TouchEvent.
@@ -1372,66 +1200,36 @@ dom/nodes/Document-createEvent.https.html	compositionevent should be an alias fo
 dom/nodes/Document-createEvent.https.html	createEvent('BEFOREUNLOADEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('BeforeUnloadEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('COMPOSITIONEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('CUSTOMEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('CompositionEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('CustomEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DEVICEMOTIONEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DEVICEORIENTATIONEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DRAGEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DeviceMotionEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DeviceOrientationEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('DragEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('EVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('EVENTS') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('Event') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('Events') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('FOCUSEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('FocusEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('HASHCHANGEEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('HTMLEVENTS') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('HTMLEvents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('HashChangeEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('KEYBOARDEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('KeyboardEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('MESSAGEEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('MOUSEEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('MOUSEEVENTS') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('MessageEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('MouseEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('MouseEvents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('STORAGEEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('SVGEVENTS') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('SVGEvents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('StorageEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('TEXTEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('TOUCHEVENT') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('TextEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('TouchEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('UIEVENT') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('UIEVENTS') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('UIEvent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('UIEvents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('beforeunloadevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('compositionevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('customevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('devicemotionevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('deviceorientationevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('dragevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('event') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('events') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('focusevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('hashchangeevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('htmlevents') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('keyboardevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('messageevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('mouseevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('mouseevents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('storageevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('svgevents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('textevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('touchevent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('uievent') should be initialized correctly.
-dom/nodes/Document-createEvent.https.html	createEvent('uievents') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	customevent should be an alias for CustomEvent.
 dom/nodes/Document-createEvent.https.html	devicemotionevent should be an alias for DeviceMotionEvent.
 dom/nodes/Document-createEvent.https.html	deviceorientationevent should be an alias for DeviceOrientationEvent.
@@ -3798,23 +3596,48 @@ url/failure.html	Loading data…
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, data attribute trailing hyphen
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, empty data attribute
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, multiple data attributes
++dom/events/CustomEvent.html	CustomEvent dispatching.
++dom/events/CustomEvent.html	initCustomEvent's default parameter values.
++dom/events/Event-constants.html	Constants for eventPhase on CustomEvent object.
++dom/events/Event-constants.html	Constants for eventPhase on Event interface object.
++dom/events/Event-constants.html	Constants for eventPhase on Event object.
++dom/events/Event-defaultPrevented.html	When an event is created, defaultPrevented should be initialized to false.
++dom/events/Event-defaultPrevented.html	initEvent should unset defaultPrevented.
++dom/events/Event-defaultPrevented.html	initEvent should work correctly (cancelable).
++dom/events/Event-defaultPrevented.html	initEvent should work correctly (not cancelable).
++dom/events/Event-defaultPrevented.html	preventDefault() should not change defaultPrevented if cancelable is false.
++dom/events/Event-defaultPrevented.html	returnValue should not change defaultPrevented if cancelable is false.
 +dom/events/Event-dispatch-click.html	disabled checkbox should fire onclick
 +dom/events/Event-dispatch-click.html	disabled radio should fire onclick
 +dom/events/Event-dispatch-click.html	disabled submit button should not activate
 +dom/events/Event-dispatch-click.html	disconnected form should not submit
 +dom/events/Event-dispatch-click.html	submit button should not activate if the event listener disables it
 +dom/events/Event-dispatch-click.html	submit button that morphed from checkbox should not activate
++dom/events/Event-dispatch-detached-click.html	Untitled
 +dom/events/Event-dispatch-detached-input-and-change.html	detached checkbox should not emit input or change events on click().
 +dom/events/Event-dispatch-detached-input-and-change.html	detached checkbox should not emit input or change events on dispatchEvent(new MouseEvent('click')).
 +dom/events/Event-dispatch-detached-input-and-change.html	detached radio should not emit input or change events on click().
 +dom/events/Event-dispatch-detached-input-and-change.html	detached radio should not emit input or change events on dispatchEvent(new MouseEvent('click')).
 +dom/events/Event-dispatch-order.html	Event phases order
++dom/events/Event-initEvent.html	Calling initEvent multiple times (getting type).
++dom/events/Event-initEvent.html	Calling initEvent multiple times (not getting type).
++dom/events/Event-initEvent.html	Calling initEvent must unset the stop immediate propagation flag.
++dom/events/Event-initEvent.html	Tests initEvent's default parameter values.
++dom/events/Event-propagation.html	Newly-created Event
++dom/events/Event-propagation.html	Reinitialized after cancelBubble=true
++dom/events/Event-propagation.html	Reinitialized after stopImmediatePropagation()
++dom/events/Event-propagation.html	Reinitialized after stopPropagation()
 +dom/events/Event-returnValue.html	returnValue should change returnValue if cancelable is true.
 +dom/events/Event-type-empty.html	Constructor
++dom/events/Event-type-empty.html	initEvent
++dom/events/Event-type.html	Event.type should be initialized by initEvent
 +dom/events/Event-type.html	Event.type should be initialized by the constructor
++dom/events/Event-type.html	Event.type should initially be the empty string
 +dom/events/EventListener-handleEvent.html	calls `handleEvent` method of `EventListener`
 +dom/events/EventListener-handleEvent.html	doesn't call `handleEvent` method on callable `EventListener`
++dom/events/EventTarget-dispatchEvent-returnvalue.html	Return value of EventTarget.dispatchEvent() affected by returnValue.
 +dom/events/KeyEvent-initKeyEvent.html	KeyboardEvent.initKeyEvent shouldn't be defined (created by constructor)
++dom/events/KeyEvent-initKeyEvent.html	KeyboardEvent.initKeyEvent shouldn't be defined (created by createEvent("KeyboardEvent")
 +dom/events/event-disabled-dynamic.html	disabled is honored properly in presence of dynamic changes
 +dom/events/event-global.html	window.event is only defined during dispatch
 +dom/events/event-global.html	window.event is set to the current event, which is the event passed to dispatch
@@ -3905,6 +3728,188 @@ url/failure.html	Loading data…
 +dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/2000/svg namespace should be undefined.
 +dom/nodes/DOMImplementation-hasFeature.html	Untitled
 +dom/nodes/Document-createElement-namespace.html	Created element's namespace in current document
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationPlaybackEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AnimationPlayerEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ApplicationCacheErrorEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AudioProcessingEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "AutocompleteErrorEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "BeforeInstallPromptEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "BlobEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ClipboardEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "CloseEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "CommandEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "DataContainerEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ErrorEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ExtendableEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ExtendableMessageEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "FetchEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "FontFaceSetLoadEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "GamepadEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "GeofencingEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "IDBVersionChangeEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "InstallEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "KeyEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MIDIConnectionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MIDIMessageEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaEncryptedEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaKeyEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaKeyMessageEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaQueryListEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaStreamEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MediaStreamTrackEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MouseScrollEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "MutationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "NotificationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "NotifyPaintEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "OfflineAudioCompletionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "OrientationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PageTransition"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PageTransitionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PointerEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PopStateEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PopUpEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PresentationConnectionAvailableEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PresentationConnectionCloseEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ProgressEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PromiseRejectionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "PushEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCDTMFToneChangeEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCDataChannelEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RTCIceCandidateEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "RelatedEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ResourceProgressEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SVGEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SVGZoomEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ScrollAreaEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SecurityPolicyViolationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ServicePortConnectEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "ServiceWorkerMessageEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SimpleGestureEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechRecognitionError"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechRecognitionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SpeechSynthesisEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "SyncEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "TimeEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "TrackEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "TransitionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "WebGLContextEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "WebKitAnimationEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "WebKitTransitionEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "WheelEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for non-legacy event interface "XULCommandEvent"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "BeforeUnloadEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "CompositionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "CustomEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DeviceMotionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DeviceOrientationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "DragEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "FocusEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "HashChangeEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "KeyboardEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "MessageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "StorageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "TextEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized legacy event interface "TouchEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationPlaybackEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AnimationPlayerEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ApplicationCacheErrorEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AudioProcessingEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "AutocompleteErrorEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "BeforeInstallPromptEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "BlobEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ClipboardEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "CloseEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "CommandEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "DataContainerEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ErrorEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ExtendableEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ExtendableMessageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "FetchEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "FontFaceSetLoadEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "GamepadEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "GeofencingEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "IDBVersionChangeEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "InstallEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MIDIConnectionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MIDIMessageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaEncryptedEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaKeyEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaKeyMessageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaQueryListEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaStreamEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MediaStreamTrackEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MouseScrollEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "MutationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "NotificationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "NotifyPaintEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "OfflineAudioCompletionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "OrientationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PageTransitionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PageTransitions"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PointerEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PopStateEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PopUpEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PresentationConnectionAvailableEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PresentationConnectionCloseEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ProgressEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PromiseRejectionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "PushEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCDTMFToneChangeEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCDataChannelEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RTCIceCandidateEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "RelatedEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ResourceProgressEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SVGZoomEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ScrollAreaEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SecurityPolicyViolationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ServicePortConnectEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "ServiceWorkerMessageEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SimpleGestureEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SpeechRecognitionErrors"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SpeechRecognitionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SpeechSynthesisEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "SyncEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "TimeEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "TrackEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "TransitionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "WebGLContextEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "WebKitAnimationEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "WebKitTransitionEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "WheelEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for pluralized non-legacy event interface "XULCommandEvents"
++dom/nodes/Document-createEvent.https.html	Should throw NOT_SUPPORTED_ERR for unrecognized arguments
++dom/nodes/Document-createEvent.https.html	createEvent('CUSTOMEVENT') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('CustomEvent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('EVENT') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('EVENTS') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('Event') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('Events') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('HTMLEVENTS') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('HTMLEvents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('KEYBOARDEVENT') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('KeyboardEvent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('MOUSEEVENT') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('MOUSEEVENTS') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('MouseEvent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('MouseEvents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('SVGEVENTS') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('SVGEvents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('UIEVENT') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('UIEVENTS') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('UIEvent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('UIEvents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('customevent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('event') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('events') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('htmlevents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('keyboardevent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('mouseevent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('mouseevents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('svgevents') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('uievent') should be initialized correctly.
++dom/nodes/Document-createEvent.https.html	createEvent('uievents') should be initialized correctly.
 +dom/nodes/Document-createProcessingInstruction.html	Untitled
 +dom/nodes/Document-getElementById.html	Calling document.getElementById with a null argument.
 +dom/nodes/Document-getElementById.html	Ensure that the id attribute only affects elements present in a document

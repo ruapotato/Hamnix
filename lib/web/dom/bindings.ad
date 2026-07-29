@@ -964,6 +964,10 @@ NID_KIDS_ACC:     int32 = 144        # get el.children   (wire the tree on deman
 NID_KIDS_ACC_SET: int32 = 145        # set el.children
 NID_NODES_ACC:    int32 = 146        # get el.childNodes (wire the tree on demand)
 NID_NODES_ACC_SET: int32 = 147       # set el.childNodes
+NID_DOMEXC_CTOR:  int32 = 148        # new DOMException(message, name)
+NID_CREATEEVENT:  int32 = 149        # document.createEvent(interface) -> uninitialised event
+NID_INITEVENT:    int32 = 150        # event.initEvent(type, bubbles, cancelable)
+NID_INITCUSTOMEV: int32 = 151        # event.initCustomEvent(type, bubbles, cancelable, detail)
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every
@@ -1030,6 +1034,12 @@ g_proto_text:  int32 = 0             # Text.prototype
 g_proto_comm:  int32 = 0             # Comment.prototype
 g_proto_frag:  int32 = 0             # DocumentFragment.prototype
 g_proto_doc:   int32 = 0             # Document.prototype
+g_proto_domexc: int32 = 0            # DOMException.prototype
+g_domexc_ctor: int32 = 0             # the DOMException constructor VALUE. Kept so a
+                                     # thrown exception can carry `constructor`:
+                                     # testharness's assert_throws_dom ends by
+                                     # checking `e.constructor === self.DOMException`
+                                     # to prove the error came from this global.
 
 # close-tag scan results
 g_close_lt:  uint64 = 0
@@ -1099,6 +1109,8 @@ def _dom_reset():
     g_proto_comm = 0
     g_proto_frag = 0
     g_proto_doc = 0
+    g_proto_domexc = 0
+    g_domexc_ctor = 0
     _cssom_reset()
     htmlcanvas_reset()
 
