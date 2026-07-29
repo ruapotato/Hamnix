@@ -8211,6 +8211,30 @@ def he_row_mgap(r: uint64) -> int32:
     return row_mgap[r]
 
 
+# ---- explicit-height pixel pins (see hpin_* in lib/web/layout/box.ad) -----
+# A sized box's grid-row span plus the PIXEL height that span must total. The
+# pixel renderer reconciles the two, because only it knows a row's real pitch.
+def he_n_hpins() -> int32:
+    return n_hpins
+
+
+def he_hpin_r0(i: int32) -> int32:
+    return hpin_r0[i]
+
+
+def he_hpin_r1(i: int32) -> int32:
+    return hpin_r1[i]
+
+
+def he_hpin_px(i: int32) -> int32:
+    return hpin_px[i]
+
+
+# 0 = exact (`height`), 1 = at least (`min-height`), 2 = at most (`max-height`).
+def he_hpin_kind(i: int32) -> int32:
+    return hpin_kind[i]
+
+
 # ---- <img> segment + src-registry accessors -------------------------
 # he_seg_img: decoded-image slot for segment si, -1 = text seg, -2 = broken.
 def he_seg_img(si: uint64) -> int32:

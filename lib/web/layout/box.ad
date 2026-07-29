@@ -511,6 +511,33 @@ row_rule: Array[12000, uint8]    # 0 none, 1 heading rule on this row
 # (a global shrink regressed position:sticky / grid-auto-rows). Only ever set on
 # a lone heading-margin row; multi-row margins keep the uniform pitch.
 row_mgap: Array[12000, int32]
+
+# ---- EXPLICIT-HEIGHT PIXEL PINS ------------------------------------------
+# The engine flows on a LINE_H (16px) CHARACTER GRID, but the pixel renderer
+# draws each row at its real `line-height: normal` pitch (18px at the 16px body
+# size). A CSS `height`/`min-height`/`max-height` therefore used to be quantised
+# to whole grid rows and then MULTIPLIED by that 18/16 mismatch, so an explicit
+# height was both rounded UP and scaled ~1.125x: measured on a bare
+# `div{height:Npx}`, Chrome paints 50/100/200/300 and we painted 54/108/234/342
+# ((N + 8)/16 rows at 18px each).
+#
+# A grid-row count cannot express a pixel height, so the constraint is carried
+# to the pixel pass instead: each sized box records the row span it owns plus
+# the pixel height that span must total. lib/htmlpage.ad's row-height pass
+# (which is where a row's real pitch is finally known) reconciles them by
+# absorbing the difference into the span's LAST rows, so the box ends up
+# EXACTLY its used height and every following row shifts with it — no drift.
+#
+# kind 0 = exact (`height`), 1 = at least (`min-height`), 2 = at most
+# (`max-height`). min/max are one-sided because the natural content height is a
+# pixel quantity the engine cannot see: only the pixel pass can tell whether the
+# floor/ceiling actually binds.
+HPIN_MAX: int32 = 512
+hpin_r0:   Array[512, int32]      # first row of the span (inclusive)
+hpin_r1:   Array[512, int32]      # one past the last row (exclusive)
+hpin_px:   Array[512, int32]      # pixel height the span must total
+hpin_kind: Array[512, int32]      # 0 exact / 1 min / 2 max
+n_hpins:   int32 = 0
 total_rows: uint64 = 0
 top_line:   uint64 = 0
 
@@ -837,6 +864,10 @@ box_pady_stack: Array[64, int32]      # top+bottom padding sum
 box_bord_stack: Array[64, int32]
 box_lx_stack:   Array[64, int32]
 box_rx_stack:   Array[64, int32]
+# 1 when an EXPLICIT CSS `width` actually pinned this box's right edge (rx ==
+# indent_x + used width). The paint-time fill/border rect must then be exactly
+# the used width — no monospace right bleed. See _block_box_close.
+box_exw_stack:  Array[64, int32]
 box_srow_stack: Array[64, int32]
 box_bg_stack:   Array[64, int32]      # element background-color (0xRRGGBB) or -1
 box_bordc_stack: Array[64, int32]     # border colour (0xRRGGBB) or -1 (=> black)
@@ -2423,6 +2454,12 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         rmax = _content_right()
     if new_right > rmax:
         new_right = rmax
+    # Did an explicit CSS `width` actually END UP pinning the right edge? Only
+    # then is `new_right - indent_x` the USED width, and only then may the paint
+    # rect drop the monospace right bleed (see _block_box_close).
+    exw: int32 = 0
+    if wd >= 0 and new_right == indent_x + wd:
+        exw = 1
     if blk_right_sp < 64:
         blk_right_stack[blk_right_sp] = parent_right
         blk_right_sp = blk_right_sp + 1
@@ -2466,6 +2503,7 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
         box_bord_stack[box_sp] = bord
         box_lx_stack[box_sp]   = lx
         box_rx_stack[box_sp]   = rx
+        box_exw_stack[box_sp]  = exw
         box_srow_stack[box_sp] = cast[int32](cur_row)
         box_bg_stack[box_sp]   = bgc
         # border colour + radius: resolve the cascade winner (inline d_* over the
@@ -2769,6 +2807,7 @@ def _block_box_close():
     bord: int32 = 0
     lx: int32 = 0
     rx: int32 = 0
+    exw: int32 = 0
     srow: int32 = 0
     bgc: int32 = -1
     bordc: int32 = -1
@@ -2799,6 +2838,7 @@ def _block_box_close():
         bord = box_bord_stack[box_sp]
         lx   = box_lx_stack[box_sp]
         rx   = box_rx_stack[box_sp]
+        exw  = box_exw_stack[box_sp]
         srow = box_srow_stack[box_sp]
         bgc  = box_bg_stack[box_sp]
         bordc = box_bordc_stack[box_sp]
@@ -2860,6 +2900,44 @@ def _block_box_close():
         else:
             cur_row = cast[uint64](newbot)
             row_dirty = 0
+        # Carry the PIXEL constraint to the pixel pass. tgtrows is only how many
+        # 16px grid rows the flow reserves; the renderer draws each of them at its
+        # real ~18px `line-height: normal` pitch, so without this the box renders
+        # both rounded-up AND scaled by 18/16. Record the span and the height it
+        # must total, and let lib/htmlpage.ad reconcile them (it is the first place
+        # a row's true pitch is known).
+        #
+        # min-/max-height are recorded UNCONDITIONALLY, not only when the row-grid
+        # arithmetic above thought they bound. `natrows * LINE_H` is a 16px-grid
+        # ESTIMATE of the natural height and is systematically ~12% short of the
+        # real pitch, so the grid routinely decides a floor/ceiling is slack when
+        # in pixels it binds: WPT's max-height-separates-margin has a 51px child in
+        # a `max-height:50px` parent that the grid measured as 48px and left
+        # unclamped, painting the parent 51px instead of 50. A one-sided pin is a
+        # no-op when it does not bind, so handing BOTH to the pixel pass — the only
+        # place the real natural height exists — is strictly more correct.
+        # Emission order is CSS resolution order: `height` first, then the
+        # `max-height` ceiling, then the `min-height` floor (min wins over max).
+        if newbot > srow:
+            if ehc >= 0 and n_hpins < HPIN_MAX:
+                hpin_r0[n_hpins]   = srow
+                hpin_r1[n_hpins]   = newbot
+                hpin_px[n_hpins]   = tgtpx
+                hpin_kind[n_hpins] = 0
+                n_hpins = n_hpins + 1
+            else:
+                if emaxh >= 0 and n_hpins < HPIN_MAX:
+                    hpin_r0[n_hpins]   = srow
+                    hpin_r1[n_hpins]   = newbot
+                    hpin_px[n_hpins]   = emaxh
+                    hpin_kind[n_hpins] = 2
+                    n_hpins = n_hpins + 1
+                if eminh >= 0 and n_hpins < HPIN_MAX:
+                    hpin_r0[n_hpins]   = srow
+                    hpin_r1[n_hpins]   = newbot
+                    hpin_px[n_hpins]   = eminh
+                    hpin_kind[n_hpins] = 1
+                    n_hpins = n_hpins + 1
     # CSS overflow clip: if this box clips either axis, remove/truncate the
     # descendant segments/fills/borders that fall outside its padding edge. The
     # clip bottom is the box's final row span; the x-range matches the box's own
@@ -2980,9 +3058,22 @@ def _block_box_close():
                     # to the content bbox, that fixes the trim anchor and re-registers
                     # ALL prose horizontally (article SSIM 0.527 -> 0.582).
                     frx = rx + xpad
+                elif exw != 0:
+                    # EXPLICITLY SIZED box (`width: Npx/%` actually pinned the right
+                    # edge): its painted width must be EXACTLY the used width. rx is
+                    # indent_x + used width and fplx is indent_x - xpad, so the
+                    # padding-box right edge is rx + xpad — with NO +CELL_W. That
+                    # bleed made every sized box 8px too wide at EVERY size, a
+                    # constant size-independent error: measured against
+                    # /usr/bin/chromium --headless on `div{width:Npx;height:Npx}`,
+                    # Chrome reports used width 50/100/200/300 where we painted
+                    # 58/108/208/308. It survived because it is invisible on a
+                    # width:auto band (where it usefully cancels the canvas
+                    # `maxx + LEFT_PAD` right gutter) — that case is kept below.
+                    frx = rx + xpad
                 else:
-                    # Non-float borderless box (full-bleed band, sized/centred panel):
-                    # KEEP the +CELL_W right bleed. It cancels the canvas
+                    # AUTO-width borderless box (full-bleed band, shrink-wrapped
+                    # chip): KEEP the +CELL_W right bleed. It cancels the canvas
                     # `maxx + LEFT_PAD` right-gutter so a full-bleed nav/hero band
                     # reaches the viewport edge the reference fills, and it
                     # compensates for the monospace under-measure of a shrink-wrapped
