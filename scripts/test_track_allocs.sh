@@ -28,7 +28,7 @@
 #     no counter. This is the measured half of the zero-cost claim (the
 #     other half is scripts/test_native_vs_seed_kobjdiff.sh plus a soak).
 #   * THE CTL PATH IS REAL. Arming happens through devmeminfo_write, the
-#     same code an `echo 'track on' > /proc/meminfo` reaches, trailing
+#     same code an `echo track on > /proc/meminfo` reaches, trailing
 #     newline and all — and a non-`track` write is still rejected, so
 #     /dev/meminfo stays read-only for everything else.
 #   * ATTRIBUTION IS EXACT. A tagged alloc_pages(2) puts exactly 4 frames

@@ -377,11 +377,11 @@ def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
     # the eleven passes), and a soak can arm tracking AFTER boot settles so
     # boot allocations do not pollute the baseline.
     #
-    #   echo 'track on'    > /proc/meminfo   site + order/owner metadata
-    #   echo 'track full'  > /proc/meminfo   ... plus per-frame tag words
-    #   echo 'track reset' > /proc/meminfo   re-baseline the counters
-    #   echo 'track dump'  > /proc/meminfo   EMERG report to the console
-    #   echo 'track off'   > /proc/meminfo
+    #   echo track on    > /proc/meminfo   site + order/owner metadata
+    #   echo track full  > /proc/meminfo   ... plus per-frame tag words
+    #   echo track reset > /proc/meminfo   re-baseline the counters
+    #   echo track dump  > /proc/meminfo   EMERG report to the console
+    #   echo track off   > /proc/meminfo
     #
     # Anything else still returns -1, so every pre-existing "meminfo is
     # read-only" expectation holds.

@@ -315,11 +315,11 @@ def page_alloc_owns(phys: uint64) -> int32:
 # at RUNTIME by a ctl-file write — Plan 9 shape, per the project's
 # "control = ctl-file writes, not syscalls" invariant:
 #
-#     echo 'track on'    > /proc/meminfo   # site + order/owner metadata
-#     echo 'track full'  > /proc/meminfo   # ... plus a per-frame tag word
-#     echo 'track reset' > /proc/meminfo   # re-baseline the counters
-#     echo 'track dump'  > /proc/meminfo   # one-shot EMERG report to console
-#     echo 'track off'   > /proc/meminfo
+#     echo track on    > /proc/meminfo   # site + order/owner metadata
+#     echo track full  > /proc/meminfo   # ... plus a per-frame tag word
+#     echo track reset > /proc/meminfo   # re-baseline the counters
+#     echo track dump  > /proc/meminfo   # one-shot EMERG report to console
+#     echo track off   > /proc/meminfo
 #
 # ONE binary serves CI, the soak, and the debug session; a soak can arm
 # tracking after boot has settled so boot-time allocations do not pollute

@@ -186,10 +186,10 @@ wait_for MARK_SOAK_READY 12 || { printf 'echo MARK_SOAK_READY\n' >&3; sleep 2; }
 # whole point of the tracker being first-class: a leak hunt now starts with
 # one env var instead of a day of hand-rolled instrumentation.
 #   HAMNIX_TRACK_ALLOCS=full  also records a per-frame tag word (the
-#   faulting VA), readable via `echo 'track dump' > /proc/meminfo`.
+#   faulting VA), readable via `echo track dump > /proc/meminfo`.
 case "${HAMNIX_TRACK_ALLOCS:-0}" in
-    1|on)   printf "echo 'track on' > /proc/meminfo\n"   >&3; sleep 2 ;;
-    full)   printf "echo 'track full' > /proc/meminfo\n" >&3; sleep 2 ;;
+    1|on)   printf "echo track on > /proc/meminfo\n"   >&3; sleep 2 ;;
+    full)   printf "echo track full > /proc/meminfo\n" >&3; sleep 2 ;;
 esac
 
 fail=0
