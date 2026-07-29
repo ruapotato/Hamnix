@@ -6930,20 +6930,59 @@ def _make_image() -> int32:
 # id, then fire its oninput + onchange handlers and re-lay-out so the change
 # renders. The pointer-free equivalent of a user typing into a field. Returns 1
 # on success (JS context live + element found).
+# The live JS object backing an EVENT-TARGET index (he_dom_evt_index): the
+# dom_obj slot of a source-anchored element, or the cre_obj slot of a
+# script-created node (CRE_IDX_BASE + cre id). -1 when the index names nothing
+# live. Lets a valued interaction (setval/check) reach a node React CREATED, the
+# same way he_dom_click_index does — _lookup_or_register only sees source markup,
+# so a React-rendered <input> (every input in a real SPA) was invisible to it.
+def _evt_target_obj(idx: int32) -> int32:
+    if idx < 0:
+        return -1
+    if idx >= CRE_IDX_BASE:
+        cid: int32 = idx - CRE_IDX_BASE
+        if cid >= cre_n or cre_gone[cid] != 0:
+            return -1
+        return cre_obj[cid]
+    if idx >= dom_n:
+        return -1
+    return dom_obj[idx]
+
+
+# Dispatch a BUBBLING value-change event (type typep[0..typen)) at an event-target
+# index — created node OR source element — through the full three-phase core, so
+# a delegated ancestor listener fires. React attaches its 'input'/'change'
+# listeners on the ROOT CONTAINER (not the target input), reachable ONLY by
+# bubbling; firing target-phase-only left React's onChange dead for every
+# controlled input. Mirrors he_dom_click_index's created-vs-source branch.
+def _fire_value_evt(idx: int32, typep: Ptr[uint8], typen: int32) -> int32:
+    ev: int32 = _new_event_obj()
+    js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, js_new_string(typep, \
+                cast[uint64](typen)))
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(1))
+    if idx >= CRE_IDX_BASE:
+        cid: int32 = idx - CRE_IDX_BASE
+        if cid >= cre_n or cre_gone[cid] != 0:
+            return 0
+        return _obj_dispatch(cre_obj[cid], typep, typen, ev, 1)
+    if idx < 0 or idx >= dom_n:
+        return 0
+    return _dispatch_event(idx, _evt_std_kind(typep, typen), ev)
+
+
 def he_dom_set_value(idp: Ptr[uint8], idn: int32, valp: Ptr[uint8], \
                      valn: int32) -> int32:
     if js_ctx_live == 0:
         return 0
-    idx: int32 = _lookup_or_register(idp, idn)
-    if idx < 0:
+    idx: int32 = he_dom_evt_index(idp, idn)
+    obj: int32 = _evt_target_obj(idx)
+    if obj < 0:
         return 0
-    js_set_prop(dom_obj[idx], cast[Ptr[uint8]]("value"), 5, \
+    js_set_prop(obj, cast[Ptr[uint8]]("value"), 5, \
                 js_new_string(valp, cast[uint64](valn)))
-    _fire_handler(idx, 1, -1, EPHASE_TARGET)                             # oninput
-    _fire_handler(idx, 2, -1, EPHASE_TARGET)                             # onchange
-    _dom_readback()
-    _js_capture_console()
-    _relayout()
+    _fire_value_evt(idx, cast[Ptr[uint8]]("input"), 5)                   # oninput
+    _fire_value_evt(idx, cast[Ptr[uint8]]("change"), 6)                 # onchange
+    _after_event_settle()
     return 1
 
 
@@ -6997,17 +7036,16 @@ def _radio_enforce_group(keep: int32):
 def he_dom_set_checked(idp: Ptr[uint8], idn: int32, checked: int32) -> int32:
     if js_ctx_live == 0:
         return 0
-    idx: int32 = _lookup_or_register(idp, idn)
-    if idx < 0:
+    idx: int32 = he_dom_evt_index(idp, idn)
+    obj: int32 = _evt_target_obj(idx)
+    if obj < 0:
         return 0
-    js_set_prop(dom_obj[idx], cast[Ptr[uint8]]("checked"), 7, js_bool(checked))
-    if checked != 0:
+    js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(checked))
+    if checked != 0 and idx < CRE_IDX_BASE:
         _radio_enforce_group(idx)
-    _fire_handler(idx, 1, -1, EPHASE_TARGET)
-    _fire_handler(idx, 2, -1, EPHASE_TARGET)
-    _dom_readback()
-    _js_capture_console()
-    _relayout()
+    _fire_value_evt(idx, cast[Ptr[uint8]]("input"), 5)
+    _fire_value_evt(idx, cast[Ptr[uint8]]("change"), 6)
+    _after_event_settle()
     return 1
 
 
