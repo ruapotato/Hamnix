@@ -1,0 +1,131 @@
+# scripts/wpt_reftest_baseline.txt -- SHRINK-ONLY record of the WPT
+# REFTEST lane (tests/wpt/REFTEST_MANIFEST.txt): a test document
+# compared PIXEL-EXACTLY against its <link rel="match"> reference,
+# both rendered by our own engine.
+#
+# Regenerate with:  bash scripts/test_wpt_reftest_ratchet_host.sh --regen
+#
+# Rows (TAB-separated):
+#   <test>\t<verdict>   did NOT pass at baseline
+#   +<test>\tPASS      DID pass at baseline (the regression set)
+#
+# Verdicts: PASS / FAIL / NONDISCRIMINATING (a null engine with no CSS
+# at all would also satisfy the relationship, so a pass there is not
+# evidence -- excluded from the scored denominator) / ERROR (a document
+# did not render).
+#
+# #!PASS_FLOOR guards the ABSOLUTE pass count, not a ratio: the
+# denominator grows when the engine improves (a NONDISCRIMINATING pair
+# becomes discriminating) or when an exclusion is lifted, so a real fix
+# can LOWER the ratio. See scripts/wpt_reftest_score.py.
+#
+# #!ERROR_CEILING is the second ratchet, and on a lane whose PASS
+# floor is still 0 it is the one with teeth: every vendored document
+# must keep RENDERING. A change that makes the engine bail on a page
+# turns FAILs into ERRORs, which no pass-floor can see. It may only
+# shrink.
+#
+#!PASS_FLOOR 0
+#!ERROR_CEILING 0
+css/CSS2/box-display/block-in-inline-large-margin-bottom.html	NONDISCRIMINATING
+css/CSS2/box-display/block-in-inline-margin-collapses-through-intervening-float.html	NONDISCRIMINATING
+css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html	NONDISCRIMINATING
+css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html	NONDISCRIMINATING
+css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html	NONDISCRIMINATING
+css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html	NONDISCRIMINATING
+css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html	NONDISCRIMINATING
+css/CSS2/box-display/three-block-in-inlines-cascading-margins.html	NONDISCRIMINATING
+css/CSS2/floats-clear/adjoining-float-nested-forced-clearance-002.html	FAIL
+css/CSS2/floats-clear/adjoining-float-nested-forced-clearance-004.html	FAIL
+css/CSS2/floats-clear/clear-after-top-margin.html	FAIL
+css/CSS2/floats-clear/clear-on-child-with-margins-2.html	FAIL
+css/CSS2/floats-clear/clear-on-child-with-margins.html	FAIL
+css/CSS2/floats-clear/clear-on-parent-and-child.html	FAIL
+css/CSS2/floats-clear/clear-on-parent-with-margins-no-clearance.html	FAIL
+css/CSS2/floats-clear/clear-on-parent-with-margins.html	FAIL
+css/CSS2/floats-clear/clear-on-parent.html	FAIL
+css/CSS2/floats-clear/clear-with-top-margin-after-cleared-empty-block.html	FAIL
+css/CSS2/floats-clear/floats-clear-multicol-000.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-001.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-002.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-003.html	FAIL
+css/CSS2/floats-clear/floats-clear-multicol-balancing-000.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-balancing-001.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-balancing-002.html	NONDISCRIMINATING
+css/CSS2/floats-clear/floats-clear-multicol-balancing-003.html	FAIL
+css/CSS2/floats-clear/negative-clearance-after-bottom-margin.html	FAIL
+css/CSS2/floats-clear/nested-clearance-new-formatting-context.html	FAIL
+css/CSS2/floats-clear/no-clearance-adjoining-opposite-float.html	FAIL
+css/CSS2/floats-clear/second-float-inside-empty-cleared-block-after-margin.html	FAIL
+css/CSS2/floats-clear/second-float-inside-empty-cleared-block.html	FAIL
+css/CSS2/floats-clear/table-among-floats-001.html	FAIL
+css/CSS2/floats/float-after-block-with-collapsed-margin-inside-inline.html	FAIL
+css/CSS2/floats/float-in-inline-001.html	FAIL
+css/CSS2/floats/float-in-inline-002.html	FAIL
+css/CSS2/floats/float-in-nested-multicol-001.html	NONDISCRIMINATING
+css/CSS2/floats/float-nowrap-1.html	FAIL
+css/CSS2/floats/float-nowrap-2.html	FAIL
+css/CSS2/floats/float-nowrap-3.html	FAIL
+css/CSS2/floats/float-nowrap-4.html	NONDISCRIMINATING
+css/CSS2/floats/float-nowrap-5.html	FAIL
+css/CSS2/floats/float-nowrap-6.html	NONDISCRIMINATING
+css/CSS2/floats/float-nowrap-7.html	FAIL
+css/CSS2/floats/float-nowrap-8.html	FAIL
+css/CSS2/floats/float-nowrap-9.html	FAIL
+css/CSS2/floats/float-nowrap-hyphen-rewind-1.html	FAIL
+css/CSS2/floats/float-root.html	NONDISCRIMINATING
+css/CSS2/floats/float-table-align-left-quirk.html	NONDISCRIMINATING
+css/CSS2/floats/float-with-absolutely-positioned-child-with-static-inset.html	FAIL
+css/CSS2/floats/floated-table-wider-than-specified.html	FAIL
+css/CSS2/floats/floats-in-table-caption-001.html	FAIL
+css/CSS2/floats/floats-line-wrap-shifted-001.html	FAIL
+css/CSS2/floats/floats-placement-005.html	FAIL
+css/CSS2/floats/floats-wrap-bfc-with-margin-001.html	NONDISCRIMINATING
+css/CSS2/floats/floats-wrap-bfc-with-margin-010.html	FAIL
+css/CSS2/floats/intrinsic-size-float-and-line.html	FAIL
+css/CSS2/floats/negative-block-margin-pushing-float-out-of-block-formatting-context.html	FAIL
+css/CSS2/floats/negative-margin-float-positioning.html	FAIL
+css/CSS2/floats/new-fc-beside-adjoining-float-2.html	FAIL
+css/CSS2/floats/new-fc-beside-adjoining-float.html	FAIL
+css/CSS2/floats/new-fc-relayout.html	FAIL
+css/CSS2/floats/new-fc-separates-from-float-2.html	FAIL
+css/CSS2/floats/new-fc-separates-from-float-4.html	FAIL
+css/CSS2/floats/new-fc-separates-from-float.html	FAIL
+css/CSS2/floats/overflow-scroll-float-paint-order.html	FAIL
+css/CSS2/floats/overhanging-float-paint-order.html	FAIL
+css/CSS2/floats/remove-block-between-inline-and-float.html	FAIL
+css/CSS2/floats/zero-available-space-float-positioning.html	FAIL
+css/CSS2/floats/zero-width-floats.html	FAIL
+css/CSS2/normal-flow/block-in-inline-after-block-in-inline-with-margin-collapse.html	FAIL
+css/CSS2/normal-flow/block-in-inline-align-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-align-justify-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-align-last-001.html	FAIL
+css/CSS2/normal-flow/block-in-inline-baseline-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-first-line-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-first-line-002.html	FAIL
+css/CSS2/normal-flow/block-in-inline-float-in-layer-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-margins-003.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-margins-004.html	NONDISCRIMINATING
+css/CSS2/normal-flow/block-in-inline-margins-005.html	FAIL
+css/CSS2/normal-flow/canvas-paint-order.html	NONDISCRIMINATING
+css/CSS2/normal-flow/float-percentage-resolution-quirks-mode.html	FAIL
+css/CSS2/normal-flow/intrinsic-size-with-negative-margins.html	FAIL
+css/CSS2/normal-flow/margin-collapse-min-height-001.html	FAIL
+css/CSS2/normal-flow/margin-collapse-min-height-002.html	NONDISCRIMINATING
+css/CSS2/normal-flow/margin-collapse-min-height-003.html	FAIL
+css/CSS2/normal-flow/margin-collapse-through-percentage-height-block-inside-table-cell.html	FAIL
+css/CSS2/normal-flow/margin-collapse-through-percentage-height-block.html	FAIL
+css/CSS2/normal-flow/margin-collapse-through-percentage-padding.html	FAIL
+css/CSS2/normal-flow/margin-collapse-through-zero-height-block.html	FAIL
+css/CSS2/normal-flow/margin-collapsing-in-table-caption-001.html	FAIL
+css/CSS2/normal-flow/margin-collapsing-in-table-caption-002.html	FAIL
+css/CSS2/normal-flow/max-height-applies-to-018.html	FAIL
+css/CSS2/normal-flow/max-height-separates-margin.html	NONDISCRIMINATING
+css/CSS2/normal-flow/max-width-applies-to-018.html	FAIL
+css/CSS2/normal-flow/min-height-separates-margin.html	NONDISCRIMINATING
+css/CSS2/normal-flow/negative-margin-001.html	NONDISCRIMINATING
+css/CSS2/normal-flow/negative-margin-shrinking-container-size-001.html	FAIL
+css/CSS2/normal-flow/negative-margin-shrinking-container-size-002.html	FAIL
+css/CSS2/normal-flow/overflow-scroll-paint-order.html	FAIL
+css/CSS2/normal-flow/video-controls-paint-order.html	NONDISCRIMINATING
+css/CSS2/normal-flow/video-paint-order.html	NONDISCRIMINATING
