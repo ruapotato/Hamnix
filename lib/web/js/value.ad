@@ -1316,15 +1316,39 @@ def objid_of(h: int32) -> int32:
 # OBJECTS.
 # ====================================================================
 def obj_new(kind: int32) -> int32:
-    # Guard the object pool. Phase-1 GC reclaims only the VALUE arena, so an
-    # allocation-heavy run can now reach this bump limit; without a check,
-    # obj_new wrote past the obj_* arrays into adjacent BSS (corrupting env /
-    # string tables — surfacing as spurious "x is not defined"). Fail cleanly,
-    # reusing the last slot so callers get a valid (if meaningless) id.
-    if n_objs >= MAX_OBJ:
-        set_error(cast[Ptr[uint8]]("object pool exhausted"))
-        return MAX_OBJ - 1
-    o: int32 = n_objs
+    # Phase-5 GC trigger: when the arena reaches its high-water mark and no
+    # reclaimed slot is waiting, run a stop-the-world tracing OBJECT collection
+    # to repopulate the free list. Default obj_hi_water is 80% of MAX_OBJ, so a
+    # program that fit the object arena before never reaches here and stays
+    # byte-for-byte identical.
+    #
+    # GATED on gc_disabled — unlike the env trigger, and deliberately: every
+    # string/array/object builtin holds RAW OBJECT IDS in Adder locals that no
+    # root covers, so freeing an object under one corrupts. Un-audited builtins
+    # therefore suppress the collection exactly as they do for the value arena.
+    # This costs nothing for the case that matters: the per-turn garbage of a
+    # render loop is allocated by the INTERPRETER (object/array literals,
+    # closures), never inside a builtin.
+    if obj_free_head < 0 and obj_gc_armed != 0 and gc_disabled == 0 and n_objs >= obj_hi_water:
+        gc_collect_objs()
+    o: int32 = -1
+    if obj_free_head >= 0:
+        o = obj_free_head
+        obj_free_head = obj_head[o]      # the free link lives in obj_head
+        obj_freed[o] = cast[uint8](0)
+    else:
+        # Guard the object pool: without a check, obj_new wrote past the obj_*
+        # arrays into adjacent BSS (corrupting env / string tables — surfacing
+        # as spurious "x is not defined"). Fail cleanly, reusing the last slot
+        # so callers get a valid (if meaningless) id.
+        if n_objs >= MAX_OBJ:
+            set_error(cast[Ptr[uint8]]("object pool exhausted"))
+            return MAX_OBJ - 1
+        o = n_objs
+        n_objs = n_objs + 1
+    obj_mark[o] = cast[uint8](0)
+    obj_pin[o] = cast[uint8](0)
+    obj_freed[o] = cast[uint8](0)
     obj_kind[o] = cast[uint8](kind)
     obj_head[o] = -1
     obj_fn_node[o] = -1
@@ -1362,7 +1386,22 @@ def obj_new(kind: int32) -> int32:
     obj_ta_buf[o] = -1
     obj_ta_off[o] = 0
     obj_ta_len[o] = 0
-    n_objs = n_objs + 1
+    # Fields owned by other modules that a recycled slot must not inherit.
+    obj_is_gen[o] = cast[uint8](0)
+    gen_buf[o] = -1
+    gen_idx[o] = 0
+    gen_done[o] = cast[uint8](0)
+    gen_ret[o] = 0
+    prom_state[o] = cast[uint8](0)
+    prom_result[o] = 0
+    prom_react[o] = -1
+    obj_p_a[o] = 0
+    obj_p_b[o] = 0
+    obj_re_ncap[o] = 0
+    obj_re_flags[o] = 0
+    obj_re_gnstart[o] = 0
+    obj_re_gncount[o] = 0
+    obj_ab_len[o] = 0
     return o
 
 
@@ -1603,6 +1642,22 @@ def obj_mark_flags(o: int32, key: int32, flags: int32):
         p_flags[p] = cast[uint8](flags)
 
 
+# Allocate a property slot: pop the Phase-5 free list (slots reclaimed with a
+# dead object) before bumping n_props. Returns -1 (with the error set) when the
+# pool is genuinely exhausted, so callers bail exactly as they did before.
+def prop_alloc() -> int32:
+    if prop_free_head >= 0:
+        p: int32 = prop_free_head
+        prop_free_head = p_next[p]
+        return p
+    if n_props >= MAX_PROP:
+        set_error(cast[Ptr[uint8]]("property pool exhausted"))
+        return -1
+    np: int32 = n_props
+    n_props = n_props + 1
+    return np
+
+
 def obj_set(o: int32, key: int32, val: int32):
     if obj_frozen[o] != 0:             # Object.freeze: writes and additions are no-ops
         return
@@ -1617,10 +1672,9 @@ def obj_set(o: int32, key: int32, val: int32):
         return
     if obj_nonext[o] != 0:             # preventExtensions/seal: existing-prop writes OK, new props dropped
         return
-    if n_props >= MAX_PROP:            # bump limit (Phase-1 GC doesn't reclaim props)
-        set_error(cast[Ptr[uint8]]("property pool exhausted"))
+    np: int32 = prop_alloc()           # free list (Phase-5) before bumping
+    if np < 0:
         return
-    np: int32 = n_props
     p_key[np] = key
     p_val[np] = val
     p_acc[np] = cast[uint8](0)
@@ -1629,7 +1683,6 @@ def obj_set(o: int32, key: int32, val: int32):
     p_flags[np] = cast[uint8](PF_ALL)
     p_next[np] = obj_head[o]
     obj_head[o] = np
-    n_props = n_props + 1
 
 
 # Define an accessor property (getter/setter) on object `o`. A -1 fn leaves that
@@ -1640,10 +1693,9 @@ def obj_define_accessor(o: int32, key: int32, getter: int32, setter: int32):
         return
     p: int32 = obj_find_prop(o, key)
     if p < 0:
-        if n_props >= MAX_PROP:
-            set_error(cast[Ptr[uint8]]("property pool exhausted"))
+        p = prop_alloc()               # free list (Phase-5) before bumping
+        if p < 0:
             return
-        p = n_props
         p_key[p] = key
         p_val[p] = v_undef()
         p_get[p] = -1
@@ -1651,7 +1703,6 @@ def obj_define_accessor(o: int32, key: int32, getter: int32, setter: int32):
         p_flags[p] = cast[uint8](PF_ALL)
         p_next[p] = obj_head[o]
         obj_head[o] = p
-        n_props = n_props + 1
     elif p_acc[p] == 0:                 # was a data property: convert
         p_get[p] = -1
         p_set[p] = -1
@@ -1765,12 +1816,21 @@ def arr_grow(o: int32, need: int32):
         arr_cap[o] = ncap
         return
     # Slow path: the array is not on top of the bump (something was allocated
-    # after it), so it must move — allocate a fresh chunk and copy.
-    if ax_top + ncap > MAX_AX:
-        set_error(cast[Ptr[uint8]]("array storage exhausted"))
-        return
-    nbase: int32 = ax_top
-    ax_top = ax_top + ncap
+    # after it), so it must move — take a chunk and copy. Prefer a block the
+    # Phase-5 object collector reclaimed from a DEAD array of the same capacity
+    # (ax_val is otherwise bump-only: without this, reclaiming objects would
+    # just move the render-loop ceiling from MAX_OBJ to MAX_AX).
+    nbase: int32 = -1
+    c: int32 = ax_class(ncap)
+    if c >= 0 and ax_free[c] >= 0:
+        nbase = ax_free[c]
+        ax_free[c] = ax_val[nbase]     # the link lives in the block's first slot
+    else:
+        if ax_top + ncap > MAX_AX:
+            set_error(cast[Ptr[uint8]]("array storage exhausted"))
+            return
+        nbase = ax_top
+        ax_top = ax_top + ncap
     # copy old elements
     i: int32 = 0
     while i < arr_len[o]:

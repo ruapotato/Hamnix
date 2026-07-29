@@ -312,6 +312,94 @@ obj_ta_off:  Array[40000, int32]    # byte offset of element 0 within the buffer
 obj_ta_len:  Array[40000, int32]    # element count
 n_objs: int32 = 0
 
+# ====================================================================
+# GARBAGE COLLECTOR (Phase 5: TRACING mark-sweep of the OBJECT arena).
+# ====================================================================
+# The object arena was bump-only. MEASURED on the ordinary render-loop shape
+# (one closure + one object literal + one array per turn, O(1) live set):
+#
+#     60000-turn loop -> "object pool exhausted" at 13,086 turns
+#     ARENA objs=40000 objmax=40000
+#
+# so MAX_OBJ was the binding constraint for any long-running page — and unlike
+# the value/env/string arenas NO trigger tweak could help, because the value
+# collector's roots are WHOLESALE (it marks p_val/ax_val/b_val over the entire
+# arena regardless of who owns the slot) and therefore carry no reachability
+# information at all: every object ever allocated stays "reachable".
+#
+# Phase 5 is the first collector in this engine that actually TRACES. Its
+# soundness model differs from Phases 1/3/4 in exactly one way — it must be
+# PRECISE about ownership (props / array slots / Map entries are reached only
+# FROM a live owner object) or it reclaims nothing — so the root set has to be
+# provably complete rather than conservatively wholesale:
+#
+#   * NON-MOVING mark-sweep, never mark-compact. Object IDS are stable raw
+#     handles stored where a compactor could not fix them up: obj_proto /
+#     obj_fn_home / curfn_stack / home_stack / native_self / gen_collect /
+#     join_stack / sc_src / pr_source hold bare ids, every builtin holds ids in
+#     Adder locals across nested calls, and the embedder (the DOM) holds value
+#     handles whose v_ref is an id. The same constraint that keeps the string
+#     pool non-moving (raw sp_buf pointers) binds here, harder. Slots are
+#     recycled through a free list; nothing ever moves.
+#   * ROOTS — the complete set of places an object can be named WITHOUT going
+#     through another live object (enumerated in gc_collect_objs): the gc_root
+#     pin stack, every binding value (b_val, conservative over env liveness — a
+#     freed binding's b_val is CLEARED so it cannot pin), the call-arg / this /
+#     new.target stacks, ctl_val / throw_val / mset_*, Map-Set entries, promise
+#     reaction + combinator cells, the timer queue, module namespaces, every g_*
+#     builtin global, the raw-id stacks (curfn / home / native_self /
+#     gen_collect / join_stack / sc_src / pr_source), and EXTERNAL handles.
+#   * EXTERNAL HANDLES ARE PINNED, NOT TRACKED. Every object value handle that
+#     crosses the public js_* API boundary — in either direction — sets
+#     obj_pin[id] permanently (api.ad ext_pin). That is what makes the collector
+#     safe for the BROWSER without auditing the ~33 embedder call sites that
+#     hold a JS handle in an Adder local across a js_call_fn / js_eval: such a
+#     handle is immortal by construction, so a collection triggered deep inside
+#     the callback it is held across cannot free it. The cost is a LEAK of
+#     embedder-touched objects (DOM wrappers, event objects) — exactly the
+#     status quo ante, never a corruption — while objects created and dropped
+#     purely inside JS (the render-loop shape) are reclaimed.
+#   * SUPPRESSION. The trigger sits at obj_new entry and is gated on
+#     gc_disabled == 0, so a collection can never fire while an un-audited
+#     builtin holds a raw object id in an Adder local. (Unlike the ENV arena,
+#     which has no such exposure, objects are handled by every builtin.)
+#   * CYCLES terminate: marking is a worklist trace (obj_work), never recursion,
+#     and an object is pushed at most once (marked on push).
+obj_mark:  Array[40000, uint8]    # per-object mark bit (GC scratch)
+obj_freed: Array[40000, uint8]    # 1 while the slot sits on the object free list
+obj_pin:   Array[40000, uint8]    # 1 = permanently rooted (handle crossed the js_* API)
+obj_free_head: int32 = -1         # free-slot list head; chained through obj_head (-1 = empty)
+OBJ_WORK_CAP: int32 = 40000
+obj_work: Array[40000, int32]     # mark worklist (bounded by MAX_OBJ: each id enters once)
+obj_work_n: int32 = 0
+OBJ_STRESS_GAP: int32 = 64        # stress: collect every ~this-many new objects
+OBJ_MIN_FREE:  int32 = 4096       # a collection freeing fewer slots "did not free enough"
+OBJ_GROW:      int32 = 4000       # then raise the object water mark by this before retrying
+obj_base_water: int32 = 32000     # normal object high-water (80% of MAX_OBJ)
+obj_hi_water:  int32 = 32000      # current object high-water (raised on low-yield collections)
+obj_last_freed: int32 = 0         # slots reclaimed by the most recent object collection
+obj_collections: int32 = 0        # total object collections this run (stats/debug)
+# Object collection is DISARMED until js_init has finished installing the
+# builtins: setup.ad builds hundreds of prototype objects whose value handles
+# live only in Adder locals until they are stored into a g_* global, and those
+# locals are not on the gc_root pin stack. Nothing collectable exists that early
+# anyway, so arming at the end of js_init costs nothing and closes the window.
+obj_gc_armed: int32 = 0
+# Reclaimed PROPERTY slots (freed with their owner object) — a free list that
+# obj_set / obj_define_accessor pop before bumping n_props. Chained through
+# p_next; a slot on the list has p_key = -1 and p_val / p_get / p_set cleared so
+# neither the wholesale value scan nor the string scan can pin through it.
+prop_free_head: int32 = -1
+# Reclaimed ARRAY-STORAGE blocks, bucketed by capacity (always 4 << k: arr_grow
+# only ever allocates a power of two >= 4). ax_val[base] of a free block links
+# to the next free block of the same class. ONLY blocks freed by the collector
+# (i.e. belonging to a DEAD object) are recycled — a block abandoned by
+# arr_grow's move path belongs to a LIVE array whose base a caller may still
+# hold in a local, so recycling THAT would turn a stale-base read into a
+# live-data corruption instead of a harmless read of abandoned bytes.
+AX_CLASSES: int32 = 24
+ax_free: Array[24, int32]
+
 # ---- typed-array byte backing store (bump; freed only at js_init) ----
 TA_BYTES_CAP: int32 = 8388608       # 8 MiB shared across all ArrayBuffers
 ta_bytes: Array[8388608, uint8]

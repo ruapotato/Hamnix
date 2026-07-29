@@ -269,6 +269,12 @@ def _dump_arena_stats():
     n = _ap_stat(n, cast[Ptr[uint8]]("strs="), 6)
     n = _ap_stat(n, cast[Ptr[uint8]]("objs="), 9)
     n = _ap_stat(n, cast[Ptr[uint8]]("objmax="), 10)
+    n = _ap_stat(n, cast[Ptr[uint8]]("objcolls="), 12)
+    n = _ap_stat(n, cast[Ptr[uint8]]("objfreed="), 13)
+    n = _ap_stat(n, cast[Ptr[uint8]]("props="), 14)
+    n = _ap_stat(n, cast[Ptr[uint8]]("propmax="), 15)
+    n = _ap_stat(n, cast[Ptr[uint8]]("ax="), 16)
+    n = _ap_stat(n, cast[Ptr[uint8]]("axmax="), 17)
     stat_buf[n] = 10
     stat_buf[n + 1] = 0
     sys_write(2, &stat_buf[0], cast[uint64](n + 1))

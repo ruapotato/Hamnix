@@ -49,6 +49,23 @@ def js_init():
     n_toks = 0
     n_objs = 0
     n_props = 0
+    # Phase-5 object-arena GC: fresh free lists + disarmed until the builtins
+    # are installed. gc_stress persists (the embedder sets it once, after
+    # js_init), so obj_hi_water resets to the stress gap or the 80% water mark.
+    obj_gc_armed = 0
+    obj_free_head = -1
+    prop_free_head = -1
+    obj_work_n = 0
+    obj_last_freed = 0
+    obj_collections = 0
+    if gc_stress != 0:
+        obj_hi_water = OBJ_STRESS_GAP
+    else:
+        obj_hi_water = obj_base_water
+    axc: int32 = 0
+    while axc < AX_CLASSES:
+        ax_free[axc] = -1
+        axc = axc + 1
     mse_n = 0
     n_envs = 0
     n_binds = 0
@@ -124,6 +141,12 @@ def js_init():
     g_env = env_new(-1, 1)
     g_global_obj = v_new_object()
     install_builtins()
+    # ARM the Phase-5 object collector only now: install_builtins holds each
+    # prototype object it is constructing in an Adder local (not on the gc_root
+    # pin stack) until it lands in a g_* global, so a collection fired mid-setup
+    # could free a half-installed prototype. Nothing is collectable before this
+    # point anyway — the whole builtin set is permanently reachable.
+    obj_gc_armed = 1
 
 
 # Run a program. Returns a pointer to the NUL-terminated output buffer
@@ -372,6 +395,36 @@ def js_error_msg() -> Ptr[uint8]:
     return &err_str[0]
 
 
+# ---- EXTERNAL HANDLE PIN (Phase-5 object GC) ------------------------------
+# Every object value handle that crosses this API boundary is pinned FOREVER
+# (obj_pin[id] = 1), and pins its whole subgraph via the trace.
+#
+# WHY A PIN AND NOT A TRACKED ROOT SET. The embedder (the DOM bindings, the
+# browser front end) holds JS handles in Adder locals ACROSS calls back into the
+# engine — `ev = js_new_object_v(); ...; js_call_fn(handler, ev)` is the shape of
+# every event dispatch. A collection triggered deep inside that callback has no
+# way to see `ev`: it lives in a native frame this engine cannot scan (Adder has
+# no stack maps and the tree-walker has no shadow stack for embedder frames).
+# Auditing the ~33 such call sites and hand-pinning each is possible but lives
+# in another module's files and any MISS is a silent live-free — the one failure
+# mode this collector must not have. Pinning at the boundary makes the property
+# structural instead: an embedder-visible object is unreachable-from-GC by
+# construction, so no audit can be wrong.
+#
+# COST: embedder-touched objects (DOM element wrappers, event objects) are never
+# reclaimed — exactly the pre-Phase-5 status quo, a leak and never a corruption.
+# Objects created and dropped purely inside JS — the render-loop shape this
+# phase exists for — never cross the boundary and ARE reclaimed.
+# Returns its argument so it can wrap a return expression.
+def ext_pin(h: int32) -> int32:
+    if h >= 0 and h < n_vals:
+        if cast[int32](v_tag[h]) == TAG_OBJ:
+            o: int32 = v_ref[h]
+            if o >= 0 and o < n_objs:
+                obj_pin[o] = cast[uint8](1)
+    return h
+
+
 # ---- value constructors for embedders ----
 def js_undefined() -> int32:
     return v_undef()
@@ -394,15 +447,15 @@ def js_new_string(p: Ptr[uint8], n: uint64) -> int32:
 
 
 def js_new_object_v() -> int32:
-    return v_new_object()
+    return ext_pin(v_new_object())
 
 
 def js_new_array_v() -> int32:
-    return v_new_array()
+    return ext_pin(v_new_array())
 
 
 def js_new_native_fn(native_id: int32) -> int32:
-    return v_new_native(native_id)
+    return ext_pin(v_new_native(native_id))
 
 
 # ---- prototype wiring (host classes) --------------------------------------
@@ -414,9 +467,10 @@ def js_new_native_fn(native_id: int32) -> int32:
 # or another prototype — to it. Enumeration (for-in / Object.keys / spread) walks
 # OWN properties only (see v_new_object), so nothing on a prototype leaks into it.
 def js_fn_prototype(fnv: int32) -> int32:
+    ext_pin(fnv)
     p: int32 = ensure_fn_prototype(fnv)
     if tag_of(p) == TAG_OBJ:
-        return p
+        return ext_pin(p)
     # ensure_fn_prototype only auto-creates for ORDINARY function declarations —
     # a native function (which is what every host interface object is) is not
     # constructable, so it never gets one. Mint it here; instance_of() then finds
@@ -426,10 +480,12 @@ def js_fn_prototype(fnv: int32) -> int32:
     proto: int32 = v_new_object()
     obj_set(objid_of(proto), str_from_cstr(cast[Ptr[uint8]]("constructor")), fnv)
     obj_set(objid_of(fnv), str_from_cstr(cast[Ptr[uint8]]("prototype")), proto)
-    return proto
+    return ext_pin(proto)
 
 
 def js_set_proto_v(objv: int32, protov: int32):
+    ext_pin(objv)
+    ext_pin(protov)
     if tag_of(objv) != TAG_OBJ:
         return
     if tag_of(protov) != TAG_OBJ:
@@ -439,11 +495,14 @@ def js_set_proto_v(objv: int32, protov: int32):
 
 # ---- object / global manipulation ----
 def js_set_prop(objv: int32, name: Ptr[uint8], n: uint64, val: int32):
+    ext_pin(objv)
+    ext_pin(val)
     member_set(objv, str_new(name, cast[int32](n)), val)
 
 
 def js_get_prop(objv: int32, name: Ptr[uint8], n: uint64) -> int32:
-    return member_get(objv, str_new(name, cast[int32](n)))
+    ext_pin(objv)
+    return ext_pin(member_get(objv, str_new(name, cast[int32](n))))
 
 
 # Does `objv` carry `name` as its OWN property (not inherited)?
@@ -467,6 +526,8 @@ def js_has_own(objv: int32, name: Ptr[uint8], n: uint64) -> int32:
 # member_get and member_set). Going through js_set_prop would re-enter the very
 # setter that is running.
 def js_set_own(objv: int32, name: Ptr[uint8], n: uint64, val: int32):
+    ext_pin(objv)
+    ext_pin(val)
     if tag_of(objv) != TAG_OBJ:
         return
     obj_set(objid_of(objv), str_new(name, cast[int32](n)), val)
@@ -501,6 +562,9 @@ def js_str_bytelen(val: int32) -> int32:
 # property cannot do. Pass -1 for a half you do not want.
 def js_define_accessor(objv: int32, name: Ptr[uint8], n: uint64, \
                        getter: int32, setter: int32):
+    ext_pin(objv)
+    ext_pin(getter)
+    ext_pin(setter)
     if tag_of(objv) != TAG_OBJ:
         return
     obj_define_accessor(objid_of(objv), str_new(name, cast[int32](n)), \
@@ -508,11 +572,14 @@ def js_define_accessor(objv: int32, name: Ptr[uint8], n: uint64, \
 
 
 def js_array_push(arrv: int32, val: int32):
+    ext_pin(arrv)
+    ext_pin(val)
     if is_array(arrv) != 0:
         arr_push(objid_of(arrv), val)
 
 
 def js_global_set(name: Ptr[uint8], n: uint64, val: int32):
+    ext_pin(val)
     env_define(g_env, str_new(name, cast[int32](n)), val, 0)
 
 
@@ -524,7 +591,7 @@ def js_global_get(name: Ptr[uint8], n: uint64) -> int32:
     b: int32 = env_lookup_bind(g_env, str_new(name, cast[int32](n)))
     if b < 0:
         return v_undef()
-    return b_val[b]
+    return ext_pin(b_val[b])
 
 
 # ---- value inspection (for host dispatch) ----
@@ -563,8 +630,9 @@ def js_array_len(val: int32) -> int32:
 
 
 def js_array_get(val: int32, i: int32) -> int32:
+    ext_pin(val)
     if is_array(val) != 0:
-        return arr_get(objid_of(val), i)
+        return ext_pin(arr_get(objid_of(val), i))
     return v_undef()
 
 
@@ -616,15 +684,15 @@ def js_set_member_hook(fn: Fn[int32, int32]):
 
 
 def js_mset_this() -> int32:
-    return mset_this_v
+    return ext_pin(mset_this_v)
 
 
 def js_mset_key() -> int32:
-    return mset_key_v
+    return ext_pin(mset_key_v)
 
 
 def js_mset_val() -> int32:
-    return mset_val_v
+    return ext_pin(mset_val_v)
 
 
 def js_arg_count() -> int32:
@@ -633,7 +701,7 @@ def js_arg_count() -> int32:
 
 def js_arg(i: int32) -> int32:
     if i < hostcall_argc:
-        return call_args[hostcall_base + i]
+        return ext_pin(call_args[hostcall_base + i])
     return v_undef()
 
 
@@ -645,7 +713,7 @@ def js_host_base() -> int32:
 # host method like element.addEventListener / element.appendChild can identify
 # which host object it was invoked on. Valid only inside the dispatch fn.
 def js_this() -> int32:
-    return hostcall_this
+    return ext_pin(hostcall_this)
 
 
 # Is `val` a callable JS function value? (For an embedder deciding whether a
@@ -661,17 +729,20 @@ def js_is_callable(val: int32) -> int32:
 # initial js_eval has returned — the JS context persists until the next
 # js_init(), so handler function values stay live across a page's lifetime.
 def js_call_fn(fnval: int32, thisval: int32, argv: Ptr[int32], argc: int32) -> int32:
+    ext_pin(fnval)
+    ext_pin(thisval)
     if is_callable(fnval) == 0:
         return v_undef()
     base: int32 = call_top
     i: int32 = 0
     while i < argc:
+        ext_pin(argv[i])
         call_args[call_top] = argv[i]
         call_top = call_top + 1
         i = i + 1
     r: int32 = invoke(fnval, thisval, base, argc)
     call_top = base
-    return r
+    return ext_pin(r)
 
 
 # Drain the deferred-callback task queue on demand. js_eval already drains at
