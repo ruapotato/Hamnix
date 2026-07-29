@@ -65,7 +65,7 @@ Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree.
 
 ## `glob:*.tentative.html` -- 8 file(s)
 
-Tentative: tests a spec proposal that has not stabilised. Scoring against it would make the number move for reasons unrelated to our engine.
+SCORE STABILITY, NOT A RUNNER LIMITATION -- flagged as such because it is the one exclusion here that is a policy choice, and the only one a future maintainer could grow in order to hide failures. A .tentative test encodes a spec PROPOSAL that has not stabilised, so the pair can move under us for reasons that are not our engine, and upstream may change or delete it at the next pin bump. Our runner CAN observe these files perfectly well, and the ones excluded here are not passing: the sibling non-tentative floats-wrap-bfc-with-margin-001.html and -010.html ARE vendored and DO fail. Same rationale as wpt_import.py's encoding/legacy-mb-* exclusions. If this list ever grows, check that it grew for this reason.
 
 - `css/CSS2/floats/floats-wrap-bfc-with-margin-001a.tentative.html`
 - `css/CSS2/floats/floats-wrap-bfc-with-margin-002.tentative.html`
@@ -76,15 +76,22 @@ Tentative: tests a spec proposal that has not stabilised. Scoring against it wou
 - `css/CSS2/floats/floats-wrap-bfc-with-margin-009.tentative.html`
 - `css/CSS2/floats/zero-width-floats-positioning.tentative.html`
 
+## `ref:<video` -- 2 file(s)
+
+Uses a <video> element. The engine has no media element, so a <video> occupies no space and paints nothing -- both documents lose the very box the test is about, and the resulting pixels are not an observation of the test. Measured: with these vendored, the Chromium cross-check found video-controls-paint-order.html holding for us and violated in Chromium -- i.e. it would have been a false pass but for the discrimination control. Re-import when media elements land.
+
+- `css/CSS2/normal-flow/video-controls-paint-order.html`
+- `css/CSS2/normal-flow/video-paint-order.html`
+
 ## `glob:*.sub.html` -- 1 file(s)
 
 Server-side substitution (.sub) -- the {{host}}/{{ports}} placeholders are expanded by the wptserve HTTP server, which we do not run. The file on disk is not a valid test.
 
 - `css/CSS2/normal-flow/cross-domain-iframe-paint-order.sub.html`
 
-## `ref:/common/` -- 1 file(s)
+## `ref:reftest-wait.js` -- 1 file(s)
 
-Pulls shared fixtures from WPT's /common/ tree, which frequently assume the wptserve HTTP origin (cross-origin frames, redirects, headers).
+Uses WPT's reftest-wait protocol: the test carries class="reftest-wait" on <html> and the runner must NOT screenshot until the test itself removes that class (it signals "my dynamic setup is finished"). Our harness renders once, synchronously, with no such handshake, so it would photograph the page mid-setup -- a picture of the wrong moment is not an observation of the test. Re-import when the renderer can be driven to a quiescent state and re-shot.
 
 - `css/CSS2/normal-flow/dynamic-percentage-height.html`
 

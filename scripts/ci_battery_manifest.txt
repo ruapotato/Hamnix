@@ -4210,13 +4210,23 @@ bash scripts/test_wpt_ratchet_host.sh
 # screenshots — a PARITY instrument, not a conformance suite — so css/CSS2's
 # ~6,265 reftests, the largest body of external evidence about layout
 # correctness that exists, had no gate at all. tests/wpt/REFTEST_MANIFEST.txt
-# vendors 102 CSS2 normal-flow/floats/floats-clear/box-display reftests; each is
+# vendors 100 CSS2 normal-flow/floats/floats-clear/box-display reftests; each is
 # rendered with its <link rel="match"> reference by OUR pixel backend and
 # compared EXACTLY (both sides same renderer => no cross-engine AA question, so
-# zero fuzz). Baseline at registration: 0 PASS / 68 discriminating / 34
-# NONDISCRIMINATING / 0 ERROR. Harness validated against headless chromium at
-# the same viewport with the same comparator: chromium 98/102, 0 false passes
-# (scripts/wpt_reftest_chromium_check.py). ~40 s, QEMU-free.
+# zero fuzz). Baseline at registration: 0 PASS / 68 discriminating FAIL / 32
+# NONDISCRIMINATING (a null engine with no CSS would satisfy them too, so they
+# are kept OUT of the scored denominator) / 0 ERROR.
+#
+# With PASS_FLOOR still 0 the pass clause is vacuous; what gives this gate teeth
+# today is #!ND_CEILING 32 (pairs may not MOVE INTO the nondiscriminating
+# bucket, which is what a loss of float/margin layout would look like),
+# #!ERROR_CEILING 0 (every document must keep rendering; breaching it reports
+# 125, not FAIL) and #!TREE_SHA256 (a vendored test/reference may not be edited,
+# and manifest rows may not be deleted to launder a failure out of the lane).
+#
+# Harness validated against headless chromium at the same viewport with the same
+# comparator (scripts/wpt_reftest_chromium_check.py, on-demand): chromium passes
+# 98/102 of the pre-exclusion set, 0 strict false passes. ~40 s, QEMU-free.
 bash scripts/test_wpt_reftest_ratchet_host.sh
 # DESKTOP = A LIVE VIEW OF ~/Desktop (2026-07-29). Three USER-reported DE
 # failures, one root cause each. (a) A ~1 s host gate on the shared home

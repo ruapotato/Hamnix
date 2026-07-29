@@ -58,17 +58,37 @@ runners do not have to worry about, and it produces FALSE PASSES:
     an engine that IGNORES CSS ENTIRELY renders both as the same bare
     paragraph of prose -- identical -- and the pair reads as PASS.
 
-So for every pair we also render a NEGATIVE CONTROL: the same two documents
-with all CSS removed (<style> blocks, style="" attributes, inlined external
-stylesheets) and all scripts removed -- i.e. what an engine with no CSS support
-at all would see. If those two renders are already identical, then a match
-cannot be evidence of anything about CSS, and the pair is reported
-NONDISCRIMINATING instead of PASS. Discriminating pairs are the only ones that
-enter the score.
+So whenever the relationship HOLDS we render a NEGATIVE CONTROL: the same two
+documents with all CSS removed (<style> blocks, style="" attributes, inlined
+external stylesheets) and all scripts removed -- i.e. what an engine with no CSS
+support at all would see. If the relationship holds for THOSE renders too, our
+pass is not evidence about CSS, and the pair is reported NONDISCRIMINATING.
+Discriminating pairs are the only ones that enter the score. (The control runs
+only on holding pairs: a FAIL needs no qualifying, and skipping it there saves
+two renders per failing pair.)
 
-This is a NECESSARY condition, not a sufficient one; the Chromium cross-check
-(scripts/wpt_reftest_chromium_check.py) is what bounds the residual false-pass
-rate empirically.
+If the control itself cannot be rendered the verdict is ERROR, never PASS.
+Falling through to PASS would convert "the anti-soft-green control could not be
+run" into an unqualified success -- precisely the substitution this exists to
+prevent.
+
+ONE control, not two. An earlier revision also recorded `css_active` ("did our
+output change because of this pair's CSS") and described it as a second,
+independent condition. It was not: `not css_active` means the test and every
+reference render identically with and without CSS, which makes the null-engine
+comparison bit-for-bit the SAME comparison, so the null-engine check is
+necessarily true as well. One guard described as two overstates the guard.
+
+This is a NECESSARY condition, not a sufficient one. What BOUNDS the residual
+false-pass rate is the Chromium cross-check
+(scripts/wpt_reftest_chromium_check.py), and it is an on-demand audit rather
+than part of this gate, so the bound is only as fresh as its last run. Measured
+2026-07-29 over all 102 pairs of the round-1 tranche: 0 strict false passes
+(ours=PASS, chromium=FAIL), and 1 "unearned agreement" -- a pair our comparator
+found HOLDING that Chromium found violated -- which the discrimination control
+had already kept out of the score. That one pair was a <video> test, now
+excluded outright, and it is the concrete evidence that this control earns its
+keep.
 
 PREPROCESSING -- AND WHY IT IS NOT TEST EDITING
 -----------------------------------------------
@@ -85,11 +105,22 @@ test and reference alike:
 
 Nothing changes a declaration, a selector, or an assertion.
 
+MULTIPLE CANDIDATES AND AN UNRENDERABLE ONE
+-------------------------------------------
+For `match` the candidates are ALTERNATIVES, so one that will not render still
+leaves a decidable question -- only losing them ALL is fatal. For `mismatch` the
+test must differ from EVERY candidate, so a candidate we cannot render is a
+comparison we cannot make and the pair is undecidable. (Treating any
+unrenderable candidate as fatal, as an earlier revision did, threw away genuine
+passes on the two multi-candidate chains in the manifest and inflated the ERROR
+count against its ceiling.)
+
 VERDICTS
   PASS              the relationship holds, on a discriminating pair
   FAIL              the relationship does not hold
   NONDISCRIMINATING the pair cannot distinguish a CSS engine from no CSS engine
-  ERROR             a document could not be rendered at all
+  ERROR             a document could not be rendered at all, or the negative
+                    control for a holding pair could not be rendered
 
 NOT SOFT-GREEN. --selftest drives EIGHT controls through the real pipeline and
 exits non-zero unless every one lands on its expected verdict; callers treat
@@ -138,10 +169,20 @@ BG = b"\xff\xff\xff"
 LINK_RE = re.compile(rb"<link\b([^>]*)>", re.IGNORECASE)
 ATTR_RE = re.compile(
     rb"""\b([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
-SCRIPT_EL_RE = re.compile(rb"<script\b([^>]*)>(.*?)</script\s*>",
+# The body may NOT contain another script tag. With a plain `.*?` an unclosed
+# `<script src=x.js>` matched forward to the NEXT `</script>`, so
+# inline_resources()/strip_css() DELETED every element in between from the
+# document that then got scored -- and if that happened to a test but not its
+# reference, it silently changed what was being compared.
+SCRIPT_EL_RE = re.compile(rb"<script\b([^>]*)>((?:(?!</?script\b).)*?)</script\s*>",
                           re.IGNORECASE | re.DOTALL)
-SCRIPT_ANY_RE = re.compile(rb"<script\b[^>]*>.*?</script\s*>",
-                           re.IGNORECASE | re.DOTALL)
+SCRIPT_ANY_RE = re.compile(
+    rb"<script\b[^>]*>(?:(?!</?script\b).)*?</script\s*>",
+    re.IGNORECASE | re.DOTALL)
+# A <script src> or <link rel=stylesheet> still present AFTER inlining is a
+# resource we failed to load; the runner records it rather than scoring the
+# document as if the resource did not exist.
+UNRESOLVED_SCRIPT_RE = re.compile(rb"<script\b[^>]*\bsrc\s*=", re.IGNORECASE)
 SCRIPT_SELF_RE = re.compile(rb"<script\b[^>]*/?>", re.IGNORECASE)
 STYLE_EL_RE = re.compile(rb"<style\b[^>]*>.*?</style\s*>",
                          re.IGNORECASE | re.DOTALL)
@@ -306,6 +347,11 @@ class Renderer:
         self.root = tests_root
         self.n = 0
         self.cache = {}
+        # documents where a <script src>/<link rel=stylesheet> survived
+        # inlining, i.e. a resource we did NOT load. Scoring such a document
+        # measures the engine as if the resource did not exist, which reads as
+        # an engine bug; it has to be visible, not silent.
+        self.unresolved = set()
 
     def render(self, doc_rel, css=True):
         """Normalized viewport bytes for `doc_rel`, or None on failure."""
@@ -319,6 +365,10 @@ class Renderer:
             self.cache[key] = None
             return None
         data = inline_resources(doc_rel, data, self.root)
+        if UNRESOLVED_SCRIPT_RE.search(data) or any(
+                "stylesheet" in (_attrs(m.group(1)).get("rel") or "").lower()
+                for m in LINK_RE.finditer(data)):
+            self.unresolved.add(doc_rel)
         if not css:
             data = strip_css(data)
         self.n += 1
@@ -353,43 +403,99 @@ def run_one(rend, test, kind, refs):
     if t is None:
         rec.update(verdict="ERROR", detail="test document did not render")
         return rec
-    rendered = {}
-    for r in refs:
-        rendered[r] = rend.render(r)
-        if rendered[r] is None:
-            rec.update(verdict="ERROR", detail="reference did not render: " + r)
-            return rec
+    rendered = {r: rend.render(r) for r in refs}
+    usable = [r for r in refs if rendered[r] is not None]
+    dead = [r for r in refs if rendered[r] is None]
+    if dead:
+        rec["unrenderable_refs"] = dead
 
-    equal = [r for r in refs if rendered[r] == t]
+    # An unrenderable CANDIDATE is not automatically fatal, and which way it
+    # falls depends on the relationship. For `match` the candidates are
+    # ALTERNATIVES (any one matching is a pass), so losing one still leaves a
+    # decidable question -- only losing them ALL is fatal. For `mismatch` the
+    # test must differ from EVERY candidate, so a candidate we cannot render is
+    # a comparison we cannot make, and the pair is undecidable.
+    if not usable or (kind == "mismatch" and dead):
+        rec.update(verdict="ERROR",
+                   detail="reference did not render: " + ", ".join(dead))
+        return rec
+
+    equal = [r for r in usable if rendered[r] == t]
     holds = bool(equal) if kind == "match" else not equal
     rec["equal_refs"] = equal
 
-    # ---- negative controls (see DISCRIMINATION CONTROL in the docstring) ----
-    # (1) null_holds: would an engine with NO CSS support at all also see the
-    #     relationship hold? If so, a pass proves nothing about CSS.
-    # (2) css_active: did OUR engine's output actually change because of the
-    #     CSS in this pair? If not, we passed without applying the CSS.
-    t0 = rend.render(test, css=False)
-    r0 = [rend.render(r, css=False) for r in refs]
-    if t0 is not None and all(x is not None for x in r0):
-        eq0 = [refs[i] for i, x in enumerate(r0) if x == t0]
-        null_holds = bool(eq0) if kind == "match" else not eq0
-        css_active = (t != t0) or any(rendered[r] != r0[i]
-                                      for i, r in enumerate(refs))
-        rec["null_holds"] = null_holds
-        rec["css_active"] = css_active
-        if holds and (null_holds or not css_active):
-            rec.update(
-                verdict="NONDISCRIMINATING",
-                detail=("a null engine would also pass" if null_holds
-                        else "our render is unchanged by this pair's CSS"))
-            return rec
-    else:
-        rec["null_holds"] = None
-        rec["css_active"] = None
+    if not holds:
+        rec["verdict"] = "FAIL"
+        return rec
 
-    rec["verdict"] = "PASS" if holds else "FAIL"
+    # ---- the negative control (see DISCRIMINATION CONTROL in the docstring) --
+    # Only a PASS needs qualifying, so this runs only when the relationship
+    # already holds: would an engine with NO CSS support at all ALSO see it
+    # hold? If yes, our pass is not evidence about CSS.
+    #
+    # An earlier revision also recorded a second condition, `css_active` ("did
+    # our output change because of this pair's CSS"). It was not a second
+    # control: `not css_active` means the test and every reference render
+    # identically with and without CSS, which makes the null-engine comparison
+    # bit-for-bit the same comparison, so null_holds is necessarily true too.
+    # One control described as two overstates the guard, so it is gone.
+    t0 = rend.render(test, css=False)
+    r0 = {r: rend.render(r, css=False) for r in usable}
+    if t0 is None or any(v is None for v in r0.values()):
+        # Refusing to credit an unqualified pass. Falling through to PASS here
+        # would convert "the anti-soft-green control could not be run" into an
+        # unqualified success -- the exact substitution this lane exists to
+        # prevent.
+        rec.update(verdict="ERROR",
+                   detail="the CSS-stripped negative control did not render, "
+                          "so this pass could not be qualified")
+        return rec
+
+    eq0 = [r for r in usable if r0[r] == t0]
+    null_holds = bool(eq0) if kind == "match" else not eq0
+    rec["null_holds"] = null_holds
+    if null_holds:
+        rec.update(verdict="NONDISCRIMINATING",
+                   detail="an engine with no CSS support at all would also "
+                          "satisfy this relationship")
+        return rec
+
+    rec["verdict"] = "PASS"
     return rec
+
+
+def tree_digest():
+    """SHA-256 over the manifest and every document it names.
+
+    ENFORCES THE NON-NEGOTIABLE. "Never edit a vendored test or reference" was,
+    until this existed, only a comment: editing a `-ref.html` to match our
+    buggy output flips FAIL->PASS, and `--regen` then banks it into the floor.
+    Covering the MANIFEST too closes the other half -- deleting rows from it
+    shrinks the lane, which laundered any FAIL or ERROR out of existence
+    (the coverage check derives its expected count from that same mutable
+    file, so it could not notice).
+
+    A legitimate re-import changes this digest, which is exactly right: it
+    forces a deliberate --regen that shows up in the diff.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        h.update(open(MANIFEST, "rb").read())
+    except OSError:
+        return None
+    docs = set()
+    for test, _kind, refs in load_manifest():
+        docs.add(test)
+        docs.update(refs)
+    for rel in sorted(docs):
+        h.update(rel.encode())
+        try:
+            h.update(hashlib.sha256(
+                open(os.path.join(TESTS, rel), "rb").read()).digest())
+        except OSError:
+            h.update(b"<MISSING>")
+    return h.hexdigest()
 
 
 def load_manifest():
@@ -602,6 +708,14 @@ def main():
     nerr = counts.get("ERROR", 0)
     scored = npass + nfail
     print("[reftest-run] %d reftests, %d renders" % (len(records), rend.n))
+    if rend.unresolved:
+        print("[reftest-run] WARNING: %d document(s) still reference an "
+              "unloaded resource" % len(rend.unresolved))
+        for d in sorted(rend.unresolved):
+            print("[reftest-run]   %s" % d)
+        print("[reftest-run]   These were scored as if the resource did not "
+              "exist. Fix the\n[reftest-run]   inliner or exclude them; do not "
+              "read their verdict as an engine result.")
     print("[reftest-run] PASS %d  FAIL %d  NONDISCRIMINATING %d  ERROR %d"
           % (npass, nfail, nnd, nerr))
     if scored:

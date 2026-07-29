@@ -4,6 +4,8 @@
 # both rendered by our own engine.
 #
 # Regenerate with:  bash scripts/test_wpt_reftest_ratchet_host.sh --regen
+# Regeneration REFUSES to loosen any marker below without
+# --allow-loosen, so banking a fix cannot silently bank a regression.
 #
 # Rows (TAB-separated):
 #   <test>\t<verdict>   did NOT pass at baseline
@@ -14,19 +16,35 @@
 # evidence -- excluded from the scored denominator) / ERROR (a document
 # did not render).
 #
+# THE FOUR MARKERS. All are required: a baseline missing one is treated
+# as unusable rather than defaulting to a value that guards nothing.
+#
 # #!PASS_FLOOR guards the ABSOLUTE pass count, not a ratio: the
 # denominator grows when the engine improves (a NONDISCRIMINATING pair
 # becomes discriminating) or when an exclusion is lifted, so a real fix
-# can LOWER the ratio. See scripts/wpt_reftest_score.py.
+# can LOWER the ratio.
 #
-# #!ERROR_CEILING is the second ratchet, and on a lane whose PASS
-# floor is still 0 it is the one with teeth: every vendored document
-# must keep RENDERING. A change that makes the engine bail on a page
-# turns FAILs into ERRORs, which no pass-floor can see. It may only
-# shrink.
+# #!ERROR_CEILING -- every vendored document must keep RENDERING. A
+# change that makes the engine bail turns FAILs into ERRORs, which no
+# pass floor can see.
+#
+# #!ND_CEILING -- the ratchet with teeth while PASS_FLOOR is 0. A pair
+# goes NONDISCRIMINATING when a null engine with no CSS would satisfy it
+# too, so pairs MOVING INTO that bucket means the engine stopped applying
+# the CSS they are about: the pairs leave the scored denominator and both
+# other markers stay happy. That is the silent capability loss this lane
+# exists to catch, and only this ceiling catches it.
+#
+# #!TREE_SHA256 -- over REFTEST_MANIFEST.txt and every document it
+# names. Makes "never edit a vendored test or reference" enforced rather
+# than merely stated, and stops rows being deleted from the manifest to
+# launder a FAIL out of the lane. A real re-import changes it, which is
+# the point: it forces a deliberate --regen that shows in the diff.
 #
 #!PASS_FLOOR 0
 #!ERROR_CEILING 0
+#!ND_CEILING 32
+#!TREE_SHA256 b5446838262ae65818d9b4f4c5422940b96d54d372b094c0075f28f46c58683a
 css/CSS2/box-display/block-in-inline-large-margin-bottom.html	NONDISCRIMINATING
 css/CSS2/box-display/block-in-inline-margin-collapses-through-intervening-float.html	NONDISCRIMINATING
 css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html	NONDISCRIMINATING
@@ -127,5 +145,3 @@ css/CSS2/normal-flow/negative-margin-001.html	NONDISCRIMINATING
 css/CSS2/normal-flow/negative-margin-shrinking-container-size-001.html	FAIL
 css/CSS2/normal-flow/negative-margin-shrinking-container-size-002.html	FAIL
 css/CSS2/normal-flow/overflow-scroll-paint-order.html	FAIL
-css/CSS2/normal-flow/video-controls-paint-order.html	NONDISCRIMINATING
-css/CSS2/normal-flow/video-paint-order.html	NONDISCRIMINATING

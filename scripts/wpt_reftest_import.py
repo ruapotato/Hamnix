@@ -145,9 +145,17 @@ AHEM_REASON = (
 
 EXCLUDE_GLOBS = [
     ("*.tentative.html",
-     "Tentative: tests a spec proposal that has not stabilised. Scoring "
-     "against it would make the number move for reasons unrelated to our "
-     "engine."),
+     "SCORE STABILITY, NOT A RUNNER LIMITATION -- flagged as such because it is "
+     "the one exclusion here that is a policy choice, and the only one a future "
+     "maintainer could grow in order to hide failures. A .tentative test "
+     "encodes a spec PROPOSAL that has not stabilised, so the pair can move "
+     "under us for reasons that are not our engine, and upstream may change or "
+     "delete it at the next pin bump. Our runner CAN observe these files "
+     "perfectly well, and the ones excluded here are not passing: the sibling "
+     "non-tentative floats-wrap-bfc-with-margin-001.html and -010.html ARE "
+     "vendored and DO fail. Same rationale as wpt_import.py's "
+     "encoding/legacy-mb-* exclusions. If this list ever grows, check that it "
+     "grew for this reason."),
     ("*-manual.html", "Requires a human to perform the interaction."),
     ("*.optional-manual.html", "Requires a human to perform the interaction."),
     ("*.sub.html",
@@ -182,9 +190,22 @@ NOT_A_TEST_GLOBS = [
 ]
 
 EXCLUDE_IF_REFERENCES = [
+    ("reftest-wait.js",
+     "Uses WPT's reftest-wait protocol: the test carries class=\"reftest-wait\" "
+     "on <html> and the runner must NOT screenshot until the test itself "
+     "removes that class (it signals \"my dynamic setup is finished\"). Our "
+     "harness renders once, synchronously, with no such handshake, so it would "
+     "photograph the page mid-setup -- a picture of the wrong moment is not an "
+     "observation of the test. Re-import when the renderer can be driven to a "
+     "quiescent state and re-shot."),
     ("/common/",
-     "Pulls shared fixtures from WPT's /common/ tree, which frequently assume "
-     "the wptserve HTTP origin (cross-origin frames, redirects, headers)."),
+     "Pulls a shared fixture from WPT's /common/ tree other than "
+     "reftest-wait.js. Those fixtures generally assume the wptserve HTTP origin "
+     "(cross-origin frames, redirects, headers), which we do not serve. This "
+     "entry is a CATCH-ALL: if it ever matches a file, name the specific "
+     "fixture and say what about it we cannot drive, the way the reftest-wait.js "
+     "entry above does -- a reason that describes a directory rather than the "
+     "file is not yet a reason."),
     ("testdriver.js",
      "testdriver.js injects trusted input events through the browser's "
      "automation protocol. Our headless host harness has no driver back-end, "
@@ -193,6 +214,16 @@ EXCLUDE_IF_REFERENCES = [
     ("<iframe",
      "Nested browsing context: the engine has one document per render and no "
      "frame tree, so the sub-document never renders at all."),
+    ("<video",
+     "Uses a <video> element. The engine has no media element, so a <video> "
+     "occupies no space and paints nothing -- both documents lose the very box "
+     "the test is about, and the resulting pixels are not an observation of "
+     "the test. Measured: with these vendored, the Chromium cross-check found "
+     "video-controls-paint-order.html holding for us and violated in Chromium "
+     "-- i.e. it would have been a false pass but for the discrimination "
+     "control. Re-import when media elements land."),
+    ("<audio",
+     "Uses an <audio> element; as <video>, the engine has no media element."),
     ("<object",
      "<object> embeds an external resource through a plugin-style fallback "
      "chain the engine does not implement."),

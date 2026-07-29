@@ -25,7 +25,13 @@ READING THE TABLE
   ours=FAIL chromium=PASS   -> a real engine bug. This is what we want to see.
   ours=PASS chromium=FAIL   -> FALSE PASS: our comparator or renderer is
                               coincidentally agreeing. Any nonzero count here
-                              is a harness defect, not a score.
+                              is a harness defect, not a score. Exits non-zero.
+  ours=NONDISCRIMINATING,
+      chromium=FAIL         -> a pair that WOULD have been a false pass, caught
+                              by the discrimination control. Reported as
+                              "unearned agreement", not as a failure: this is the
+                              control working. Read it as the empirical measure
+                              of how much work that control is doing.
   ours=PASS chromium=PASS   -> earned pass.
   ours=FAIL chromium=FAIL   -> the pair does not hold even in Chromium at our
                               viewport: an upstream-fragile pair, or a
@@ -61,15 +67,20 @@ def shoot(tmp, rel, n):
     """Chromium screenshot of a vendored document, as normalized viewport bytes."""
     out = os.path.join(tmp, "c%d.png" % n)
     src = os.path.join(R.TESTS, rel)
-    subprocess.run(
-        [CHROMIUM, "--headless", "--no-sandbox", "--disable-gpu",
-         "--hide-scrollbars", "--force-device-scale-factor=1",
-         "--default-background-color=FFFFFFFF",
-         "--virtual-time-budget=2000",
-         "--screenshot=" + out,
-         "--window-size=%d,%d" % (R.VIEW_W, R.VIEW_H),
-         "file://" + os.path.abspath(src)],
-        capture_output=True, timeout=90)
+    try:
+        subprocess.run(
+            [CHROMIUM, "--headless", "--no-sandbox", "--disable-gpu",
+             "--hide-scrollbars", "--force-device-scale-factor=1",
+             "--default-background-color=FFFFFFFF",
+             "--virtual-time-budget=2000",
+             "--screenshot=" + out,
+             "--window-size=%d,%d" % (R.VIEW_W, R.VIEW_H),
+             "file://" + os.path.abspath(src)],
+            capture_output=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        # One hung chromium used to raise TimeoutExpired straight out of here,
+        # abort the audit mid-manifest and skip the JSONL write entirely.
+        return None
     if not os.path.isfile(out) or os.path.getsize(out) == 0:
         return None
     try:
@@ -126,8 +137,7 @@ def main():
             tab[(ov, cver)] += 1
             recs.append({"test": test, "kind": kind, "ours": ov,
                          "chromium": cver,
-                         "null_holds": ours.get("null_holds"),
-                         "css_active": ours.get("css_active")})
+                         "null_holds": ours.get("null_holds")})
             print("%-18s chromium=%-6s %s" % (ov, cver, test))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -147,15 +157,45 @@ def main():
         print("%-16s  " % ("ours=" + o) + "".join(
             "%-8d" % tab[(o, c)] for c in chr_v))
 
-    falsepass = sum(v for (o, c), v in tab.items()
-                    if o == "PASS" and c in ("FAIL",))
+    # An instrument that took no measurement must not print an all-clear.
+    measured = sum(v for (_o, c), v in tab.items() if c != "ERROR")
+    if measured < max(1, len(recs) // 2):
+        print("\n[reftest-xcheck] INCONCLUSIVE: chromium produced a usable "
+              "screenshot for only %d of %d pairs." % (measured, len(recs)))
+        print("[reftest-xcheck]   (PIL missing? chromium refusing --headless? "
+              "sandbox denied?)\n[reftest-xcheck]   With nothing to compare "
+              "against, '0 false passes' would be an\n[reftest-xcheck]   "
+              "all-clear from an instrument that measured nothing.")
+        return 125
+
+    # Our PASS against chromium FAIL is the textbook false pass -- but with our
+    # PASS count at 0 that number is 0 by ARITHMETIC, not by evidence. The pairs
+    # actually at risk are the ones where OUR comparator found the relationship
+    # HOLDING, which includes every NONDISCRIMINATING record. So both are
+    # reported, and the second is the one to read.
+    strict = sum(v for (o, c), v in tab.items() if o == "PASS" and c == "FAIL")
+    unearned = sum(v for (o, c), v in tab.items()
+                   if o in ("PASS", "NONDISCRIMINATING") and c == "FAIL")
     print("\n[reftest-xcheck] FALSE PASSES (ours=PASS, chromium=FAIL): %d"
-          % falsepass)
+          % strict)
+    print("[reftest-xcheck]   ours=PASS total is %d, so read the next line too."
+          % sum(v for (o, _c), v in tab.items() if o == "PASS"))
+    print("[reftest-xcheck] UNEARNED AGREEMENT (our comparator found the "
+          "relationship\n[reftest-xcheck]   holding -- PASS or "
+          "NONDISCRIMINATING -- where chromium found it\n"
+          "[reftest-xcheck]   violated): %d" % unearned)
     print("[reftest-xcheck] real engine bugs (ours=FAIL, chromium=PASS): %d"
           % tab[("FAIL", "PASS")])
     print("[reftest-xcheck] both FAIL -- pair not stable even in chromium at "
           "this viewport: %d" % tab[("FAIL", "FAIL")])
-    return 1 if falsepass else 0
+    print("[reftest-xcheck] chromium ERROR (no usable screenshot): %d"
+          % sum(v for (_o, c), v in tab.items() if c == "ERROR"))
+    # Exit non-zero ONLY on a strict false pass, which is unambiguously a
+    # harness defect. An unearned agreement sitting in the NONDISCRIMINATING
+    # bucket is the discrimination control DOING ITS JOB -- it is the pair being
+    # kept out of the score -- so failing on it would punish the mechanism that
+    # prevented the false pass.
+    return 1 if strict else 0
 
 
 if __name__ == "__main__":

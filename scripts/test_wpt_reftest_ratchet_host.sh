@@ -25,8 +25,23 @@
 # reftest the engine does not pass today, plus the set that DOES pass. This gate
 # re-runs the lane and fails if:
 #
-#   * a reftest that PASSED at baseline no longer passes, or
-#   * the total PASS count drops below the baseline's #!PASS_FLOOR.
+#   * a reftest that PASSED at baseline no longer passes,
+#   * the PASS count drops below #!PASS_FLOOR,
+#   * the NONDISCRIMINATING count rises above #!ND_CEILING,
+#   * a test in the baseline produces no record at all (coverage shrank), or
+#   * #!TREE_SHA256 stops matching -- a vendored test/reference was edited, or a
+#     row was deleted from the manifest to launder a failure out of the lane.
+#
+# and reports INCONCLUSIVE (125), not FAIL, when a document that used to RENDER
+# no longer does (#!ERROR_CEILING): that is the absence of an observation, not a
+# conformance result.
+#
+# #!ND_CEILING is the clause that actually has teeth while #!PASS_FLOOR is 0. A
+# pair goes NONDISCRIMINATING when an engine with NO CSS at all would satisfy it
+# too. So if the engine stops applying float placement or margin collapsing,
+# those pairs LEAVE the scored denominator, the pass floor is still met (0 >= 0)
+# and the error ceiling is still met -- a total loss of the tranche's subject
+# matter would otherwise exit 0.
 #
 # The floor guards an ABSOLUTE count, never a ratio. The scored denominator is
 # PASS+FAIL and it MOVES: a pair excluded as NONDISCRIMINATING (a null engine
@@ -37,6 +52,11 @@
 #
 #   bash scripts/test_wpt_reftest_ratchet_host.sh            # gate
 #   bash scripts/test_wpt_reftest_ratchet_host.sh --regen    # bank fixes
+#   ... --regen --allow-loosen   # ONLY when the lane itself changed (a new area
+#                                # imported, an exclusion lifted). Without it,
+#                                # regeneration REFUSES to relax any marker, so
+#                                # the documented way to bank a fix cannot also
+#                                # bank a regression.
 #
 # NOT SOFT-GREEN
 # ==============
@@ -70,7 +90,13 @@ BIN="$OUT/hambrowse_gfx"
 BASELINE="scripts/wpt_reftest_baseline.txt"
 JSONL="$OUT/wpt_reftest.jsonl"
 REGEN=0
-[ "${1:-}" = "--regen" ] && REGEN=1
+ALLOW_LOOSEN=""
+for a in "$@"; do
+    case "$a" in
+        --regen)        REGEN=1 ;;
+        --allow-loosen) ALLOW_LOOSEN=1 ;;
+    esac
+done
 mkdir -p "$OUT"
 
 command -v python3 >/dev/null 2>&1 || {
@@ -112,11 +138,17 @@ elif [ "$rc" != 0 ]; then
 fi
 tail -4 "$OUT/wpt_reftest_run.log"
 
-expected="$(grep -vc '^#' tests/wpt/REFTEST_MANIFEST.txt)"
+# Count manifest rows with the SAME parser the runner uses. `grep -vc '^#'`
+# counted blank lines, indented comments and malformed rows that load_manifest()
+# drops, so a single stray newline in the manifest wedged the gate at
+# INCONCLUSIVE with a misleading "did not cover the lane" forever.
+expected="$(python3 -c '
+import sys; sys.path.insert(0, "scripts")
+import wpt_reftest_run as R; print(len(R.load_manifest()))' 2>/dev/null)"
 lines="$(wc -l < "$JSONL")"
-if [ "$lines" -lt "$expected" ]; then
+if [ -z "$expected" ] || [ "$lines" -ne "$expected" ]; then
     echo "$TAG INCONCLUSIVE: $lines records produced but the manifest lists"
-    echo "$TAG   $expected reftests; the run did not cover the lane, so the"
+    echo "$TAG   ${expected:-?} reftests; the run did not cover the lane, so the"
     echo "$TAG   score is not comparable to the baseline."
     exit 125
 fi
@@ -136,9 +168,10 @@ then
 fi
 
 if [ "$REGEN" = 1 ]; then
-    python3 scripts/wpt_reftest_score.py "$JSONL" --baseline "$BASELINE" || exit 1
+    python3 scripts/wpt_reftest_score.py "$JSONL" --baseline "$BASELINE" \
+        ${ALLOW_LOOSEN:+--allow-loosen} || exit 1
     echo "$TAG regenerated $BASELINE"
-    grep '^#!PASS_FLOOR' "$BASELINE"
+    grep '^#!' "$BASELINE"
     exit 0
 fi
 
@@ -146,7 +179,15 @@ fi
     echo "$TAG INCONCLUSIVE: $BASELINE absent; run --regen to establish it."
     exit 125; }
 
-if ! python3 scripts/wpt_reftest_score.py "$JSONL" --check-baseline "$BASELINE"; then
+python3 scripts/wpt_reftest_score.py "$JSONL" --check-baseline "$BASELINE"
+src=$?
+if [ "$src" = 125 ]; then
+    # An un-observation is not a conformance verdict. A document that stopped
+    # rendering, or an unreadable baseline, means the assertion could not be
+    # evaluated -- report the absence of evidence, do not call it a regression.
+    echo "$TAG INCONCLUSIVE: the lane could not be scored against the baseline."
+    exit 125
+elif [ "$src" != 0 ]; then
     echo "$TAG RESULT: FAIL — CSS reftest conformance regressed."
     echo "$TAG   The score may only go up. Do NOT edit a vendored test or"
     echo "$TAG   reference, and do NOT append to the baseline to silence a"
