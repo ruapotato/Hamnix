@@ -30,11 +30,17 @@
 # the target_path and mkdir -p's any missing parent dirs.
 #
 # Usage:
-#   install_rootfs_from_manifest <devpath> <manifest_path>
+#   install_rootfs_from_manifest <devpath> <manifest_path> [<username>]
 #
 # Arguments:
 #   argv[1]   target partition cdev (e.g. /dev/blk/vdbp2)
 #   argv[2]   manifest file (e.g. /etc/install/rootfs.manifest)
+#   argv[3]   optional install-user name. When given, every literal
+#             `%USER%` in a manifest TARGET path is replaced with it, so
+#             one build-time manifest can lay a per-user home skeleton
+#             down at `home/<user>/...` for the name the wizard collected
+#             at install time. Source paths are never substituted (they
+#             are read off the live medium, e.g. /etc/skel/Desktop/x).
 #
 # Exit status:
 #   0  every manifest entry was either installed OK or absent at
@@ -70,6 +76,15 @@ manifest_buf: Array[65536, uint8]
 target_path_buf: Array[1024, uint8]
 source_path_buf: Array[1024, uint8]
 ctl_path_buf:    Array[128,  uint8]
+
+# `%USER%` substitution (argv[3]). Empty when no user name was passed —
+# a manifest carrying `%USER%` then installs nothing for those rows
+# (expand_user_token leaves the token in place and the caller's target
+# path is still well-formed, so the entry lands under a literal
+# "%USER%" dir; the installer only ever passes the token-bearing
+# manifest together with a name).
+subst_user:      Array[64,   uint8]
+expand_buf:      Array[1024, uint8]
 
 
 def strlen_u8(s: Ptr[uint8]) -> uint64:
@@ -206,6 +221,44 @@ def install_one(ctl_fd: int32, target_path: Ptr[uint8],
     return 0
 
 
+def expand_user_token():
+    # Rewrite target_path_buf in place, replacing every literal `%USER%`
+    # with subst_user. No-op when no user name was supplied or the
+    # token is absent — so a manifest with no token costs one scan.
+    if subst_user[0] == 0:
+        return
+    tl: uint64 = strlen_u8(&target_path_buf[0])
+    ul: uint64 = strlen_u8(&subst_user[0])
+    out: uint64 = 0
+    i: uint64 = 0
+    changed: int32 = 0
+    while i < tl:
+        hit: int32 = 0
+        if target_path_buf[i] == 37 and i + 6 <= tl:      # '%'
+            if target_path_buf[i + 1] == 85 \
+                    and target_path_buf[i + 2] == 83 \
+                    and target_path_buf[i + 3] == 69 \
+                    and target_path_buf[i + 4] == 82 \
+                    and target_path_buf[i + 5] == 37:     # "USER%"
+                hit = 1
+        if hit != 0:
+            j: uint64 = 0
+            while j < ul and out + 1 < 1024:
+                expand_buf[out] = subst_user[j]
+                out = out + 1
+                j = j + 1
+            i = i + 6
+            changed = 1
+        else:
+            if out + 1 < 1024:
+                expand_buf[out] = target_path_buf[i]
+                out = out + 1
+            i = i + 1
+    expand_buf[out] = 0
+    if changed != 0:
+        strcpy(&target_path_buf[0], &expand_buf[0])
+
+
 # parse one manifest line into target_path_buf + source_path_buf.
 # Returns:
 #   1   parsed an entry — caller proceeds to install.
@@ -256,16 +309,26 @@ def parse_line(line: Ptr[uint8], llen: uint64) -> int32:
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if argc < 3:
         write_str(2,
-            "usage: install_rootfs_from_manifest <devpath> <manifest>\n")
+            "usage: install_rootfs_from_manifest <devpath> <manifest> "
+            "[<username>]\n")
         return 1
     devpath:       Ptr[uint8] = cast[Ptr[uint8]](argv[1])
     manifest_path: Ptr[uint8] = cast[Ptr[uint8]](argv[2])
+
+    subst_user[0] = 0
+    if argc >= 4:
+        un: Ptr[uint8] = cast[Ptr[uint8]](argv[3])
+        if strlen_u8(un) < 63:
+            strcpy(&subst_user[0], un)
 
     write_str(1,
         "install_rootfs_from_manifest: target=")
     write_str(1, devpath)
     write_str(1, " manifest=")
     write_str(1, manifest_path)
+    if subst_user[0] != 0:
+        write_str(1, " user=")
+        write_str(1, &subst_user[0])
     write_str(1, "\n")
 
     # Read the manifest into manifest_buf.
@@ -314,6 +377,8 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             sys_close(ctl_fd)
             return 1
         if pr == 1:
+            # Per-user target expansion (`home/%USER%/...`).
+            expand_user_token()
             # Try to read the source file.
             body_len: uint64 = 0
             rc: int32 = slurp_file(

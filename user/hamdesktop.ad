@@ -988,8 +988,12 @@ def _load_defaults():
     _add_icon(cast[Ptr[uint8]]("Terminal"), 8, 0,
               cast[Ptr[uint8]]("/bin/hamtermscene"), 17, -1, -1,
               hamscene_icon_code(cast[Ptr[uint8]]("terminal")))
+    # "~" — the session user's home, resolved at launch time. A literal
+    # "/" here made the Home icon open the file manager at the
+    # filesystem root on any box whose desktop dir came from the
+    # fallback set (i.e. every freshly installed system).
     _add_icon(cast[Ptr[uint8]]("Home"), 4, 1,
-              cast[Ptr[uint8]]("/"), 1, -1, -1,
+              cast[Ptr[uint8]]("~"), 1, -1, -1,
               hamscene_icon_code(cast[Ptr[uint8]]("system-file-manager")))
 
 
@@ -1533,14 +1537,58 @@ def _run_action(i: uint64):
             _writeall(1, &launch_path[0])
             _writeall(1, cast[Ptr[uint8]]("\n"))
     else:
-        # A directory: open it in the file manager. (The FM lists '/'
-        # today; this still brings up a browseable window.)
+        # A directory: open it in the file manager AT THAT PATH. The
+        # action used to be DROPPED here — hamfmscene was spawned with a
+        # bare argv, so every folder icon opened whatever the FM's own
+        # default was (on an installed system, "/"). That is the "home
+        # folder icon opens the file browser at /" report.
+        #
+        # A leading "~" (or the bare "~") expands to the session's home,
+        # so /etc/desktop.icons can ship one Home row that is correct for
+        # `live` on the live image and for the wizard's account on an
+        # installed one.
+        k2: uint64 = 0
+        if src[0] == 126:                                 # '~'
+            hb: Array[64, uint8]
+            hn: uint64 = _desk_read_home(&hb[0], 64)
+            if hn <= 1 or hb[0] != 47:
+                # Ambient HOME is absent or the bare "/" placeholder;
+                # _desk_dir() has already resolved a real desktop dir, so
+                # take its parent as the home.
+                dd: Ptr[uint8] = _desk_dir()
+                hn = 0
+                while dd[hn] != 0 and hn < 63:
+                    hb[hn] = dd[hn]
+                    hn = hn + 1
+                # Strip the trailing "/Desktop".
+                while hn > 1 and hb[hn - 1] != 47:
+                    hn = hn - 1
+                if hn > 1:
+                    hn = hn - 1                           # drop the '/'
+                hb[hn] = 0
+            while k2 < hn and k2 < 159:
+                launch_path[k2] = hb[k2]
+                k2 = k2 + 1
+            # Append whatever followed the '~' (e.g. "~/Documents").
+            j2: uint64 = 1
+            while src[j2] != 0 and k2 < 159:
+                launch_path[k2] = src[j2]
+                k2 = k2 + 1
+                j2 = j2 + 1
+        else:
+            while src[k2] != 0 and k2 < 159:
+                launch_path[k2] = src[k2]
+                k2 = k2 + 1
+        launch_path[k2] = 0
         launch_argv[0] = cast[uint64](cast[Ptr[uint8]]("/bin/hamfmscene"))
-        launch_argv[1] = 0
+        launch_argv[1] = cast[uint64](&launch_path[0])
+        launch_argv[2] = 0
         pid2: int32 = spawn_detached(cast[Ptr[char]]("/bin/hamfmscene"),
                             &launch_argv[0], -2, -2, cast[Ptr[uint64]](0))
         if pid2 >= 0:
-            _writeall(1, cast[Ptr[uint8]]("[hamdesktop] opened dir in FM\n"))
+            _writeall(1, cast[Ptr[uint8]]("[hamdesktop] opened dir in FM: "))
+            _writeall(1, &launch_path[0])
+            _writeall(1, cast[Ptr[uint8]]("\n"))
 
 
 # Append a decimal int32 (with leading '-' if negative) to out at p; ret new p.

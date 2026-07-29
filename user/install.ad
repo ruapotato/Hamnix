@@ -59,6 +59,15 @@ extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 extern def sys_waitpid(pid: int32) -> int64
 extern def sys_get_jiffies() -> uint64
+# Plan 9 bind (mountpoint, source, flag). Used to mount the live
+# medium's `#distro` at /n/distros for THIS installer process only —
+# the boot rc deliberately keeps the distro tree out of the ambient
+# namespace (etc/rc.boot.full "isolation invariant"), and an install is
+# the one explicit, deliberate "copy the source medium to the target"
+# operation, exactly as etc/install.hamsh does the same bind for its
+# own hamsh session.
+extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char],
+                    flag: int32) -> int32
 
 
 # --- string helpers -------------------------------------------------
@@ -585,6 +594,30 @@ part_mode:    Array[16, uint8]             # "guided" (default) | "manual"
 # (The multi-subtree `sysroot sysroot` layout that build_rootfs_img.py
 # stages is the other supported shape; a package install produces the
 # flat one, which the kernel supports via the "." whole-partition case.)
+#
+# SECOND NAMED ROOT — `distro distro` (the Linux namespace).
+#
+# The sentinel used to be the single line `sysroot .`, so the installed
+# disk had NO `#distro` named root and `enter linux { sh }` failed with
+# "sh not found" — the Linux userland was simply not on the box. On the
+# LIVE medium `#distro` is served from RAM (rc.boot runs
+# `live_distro_up /rootfs.sqfs /live-distro.ext4`); the installed boot
+# takes the other rc.boot branch and never runs it.
+#
+# A second ext4 PARTITION is not an option: fs/ext4.ad holds a SINGLE
+# global mount and mount_rootfs_partition is explicitly "last one wins",
+# so two live ext4 partitions would cross-resolve. The supported shape
+# is the multiroot one from docs/rootfs_partition.md — ONE partition,
+# several named-root SUBTREES — so we install the Debian/Linux tree
+# under `distro/` (see install_distro_tree below) and name it here:
+#
+#     sysroot .
+#     distro  distro
+#
+# `_freeze_named_source` prepends the "distro" relpath for `#distro`
+# exactly as it does for the build_rootfs_img.py-staged image, so
+# `bind '#distro' /` inside the `linux` / `debian` `ns clean { }`
+# recipes resolves to that subtree and nothing else.
 sentinel_ctl_buf: Array[96, uint8]
 sentinel_wire_buf: Array[128, uint8]
 
@@ -615,10 +648,11 @@ def write_hamnix_roots(p2: Ptr[uint8]) -> int32:
         write_str(2, "\n")
         return -1
 
-    # Body = "sysroot .\n" (10 bytes). Wire = "install_file .hamnix-roots
-    # 10\n" + body, one write (the kernel parses the header then reads
-    # <len> body bytes from the same buffer, matching hpm's format).
-    body: Ptr[uint8] = cast[Ptr[uint8]]("sysroot .\n")
+    # Body = "sysroot .\ndistro distro\n". Wire = "install_file
+    # .hamnix-roots <len>\n" + body, one write (the kernel parses the
+    # header then reads <len> body bytes from the same buffer, matching
+    # hpm's format).
+    body: Ptr[uint8] = cast[Ptr[uint8]]("sysroot .\ndistro distro\n")
     body_len: uint64 = strlen_u8(body)
     hdr: Ptr[uint8] = cast[Ptr[uint8]]("install_file .hamnix-roots ")
     pos: uint64 = 0
@@ -655,6 +689,90 @@ def write_hamnix_roots(p2: Ptr[uint8]) -> int32:
     sys_close(fd)
     if wn < 0:
         write_str(2, "[install] FAIL: sentinel install_file write rejected\n")
+        return -1
+    return 0
+
+
+# --- the Linux namespace (`#distro`) on the installed disk -----------
+#
+# Lay the live medium's Debian/Linux userland down under `distro/` on
+# the target partition, so `enter linux { sh }` works on the installed
+# system exactly as it does on the live one.
+#
+# Source: the live medium's `#distro` — the RAM ext4 that
+# `live_distro_up` extracted out of /rootfs.sqfs at boot. We bind it at
+# /n/distros for THIS process only (the boot rc keeps it out of the
+# ambient namespace; an install is the explicit exception, the same one
+# etc/install.hamsh takes).
+#
+# Transport: /bin/install_rootfs_from_manifest walks
+# /etc/install/distro.manifest and pushes each file through the kernel's
+# install_file ctl verb on the TARGET partition. ext4's mount state is
+# save/restored per install_file (fs/ext4.ad::ext4_install_file_to_slot),
+# so reading the source ext4 and writing the target ext4 interleave
+# safely despite the single global mount.
+#
+# Best-effort: a missing source row is skipped by the tool, and an
+# absent #distro (a medium built with no live-distro payload) leaves the
+# installed system exactly as it was before this step existed. Neither
+# aborts the install — a box with no Linux namespace is degraded, not
+# unbootable.
+def install_distro_tree(p2: Ptr[uint8]) -> int32:
+    write_str(1, "[install] (6/7) install Linux namespace tree (#distro) "
+                 "-> distro/ on ")
+    write_str(1, p2)
+    write_str(1, "\n")
+    if sys_bind(cast[Ptr[char]]("/n/distros"),
+                cast[Ptr[char]]("#distro"), 0) < 0:
+        write_str(2, "[install] WARN: no #distro on this medium — the "
+                     "installed system will have no Linux namespace\n")
+        return -1
+    rc: int32 = run_tool4(
+        cast[Ptr[uint8]]("install_rootfs_from_manifest"), p2,
+        cast[Ptr[uint8]]("/etc/install/distro.manifest"),
+        cast[Ptr[uint8]](0), cast[Ptr[uint8]](0))
+    if rc != 0:
+        write_str(2, "[install] WARN: distro manifest install returned "
+                     "non-zero\n")
+        return -1
+    write_str(1, "[install] (6/7) Linux namespace installed "
+                 "(enter linux { sh } will resolve)\n")
+    return 0
+
+
+# --- the install user's home skeleton --------------------------------
+#
+# Populate /home/<user> from /etc/skel — critically ~/Desktop, whose ~20
+# `.desktop` launchers ARE the desktop's icon set. provision_target used
+# to create ~/Desktop and leave it EMPTY, so on the installed system
+# /bin/hamdesktop found no desktop directory content and fell back to
+# the generic built-in/-etc/desktop.icons list — which is where the
+# "home folder icon opens the file browser at /" report comes from. The
+# live image gets these files from the cpio at /home/live/Desktop; the
+# installed one now gets the same bytes from the same source tree.
+#
+# Runs on EVERY install, not just the wizard path: the unattended
+# `install --auto` used by the keyboard-less NUC (etc/install_nvme.hamsh)
+# supplies no --user, and it must still produce a populated desktop. The
+# default name matches the live image's regular user so an unattended
+# install is a faithful copy of what the live medium shows.
+INSTALL_USER_DEFAULT: Array[5, uint8] = "live"
+
+
+def install_home_skeleton(p2: Ptr[uint8]) -> int32:
+    user: Ptr[uint8] = &INSTALL_USER_DEFAULT[0]
+    if have_user != 0 and prov_user[0] != 0:
+        user = &prov_user[0]
+    write_str(1, "[install] (6/7) install home skeleton -> home/")
+    write_str(1, user)
+    write_str(1, "/ (+ /etc/skel)\n")
+    rc: int32 = run_tool4(
+        cast[Ptr[uint8]]("install_rootfs_from_manifest"), p2,
+        cast[Ptr[uint8]]("/etc/install/live.manifest"), user,
+        cast[Ptr[uint8]](0))
+    if rc != 0:
+        write_str(2, "[install] WARN: home skeleton install returned "
+                     "non-zero\n")
         return -1
     return 0
 
@@ -1166,11 +1284,23 @@ def do_install(esp_mb: uint64) -> int32:
         write_str(2, "[install] FAIL: hpm base package install non-zero\n")
         return 1
 
-    # 6/6: plant the `.hamnix-roots` sentinel so the kernel binds the
+    # 6/7: lay the Linux-namespace tree down under distro/ so the
+    # installed system's `enter linux { ... }` has a real Debian root.
+    # Best-effort — see install_distro_tree.
+    install_distro_tree(&target_p2[0])
+
+    # 6/7: populate the install user's home from /etc/skel (the desktop
+    # launcher set lives in ~/Desktop). Best-effort.
+    install_home_skeleton(&target_p2[0])
+
+    # 7/7: plant the `.hamnix-roots` sentinel so the kernel binds the
     # installed root at `/` and ELF-loads `/init` off ext4 on next boot.
     # Without it the partition is anonymous, `bind '#sysroot' /` fails,
     # and boot degrades to the baked user_demo_entry (SMEP exec-fault).
-    write_str(1, "[install] (6/6) plant .hamnix-roots (sysroot .) on ")
+    # It also names the `distro` subtree written just above, which is
+    # what makes `#distro` exist on the installed box at all.
+    write_str(1, "[install] (7/7) plant .hamnix-roots "
+                 "(sysroot . + distro distro) on ")
     write_str(1, &target_p2[0])
     write_str(1, "\n")
     if write_hamnix_roots(&target_p2[0]) != 0:

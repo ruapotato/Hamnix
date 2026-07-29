@@ -9,7 +9,11 @@
 #   type   : "folder" -> folder glyph; anything else -> document glyph
 #   action : an absolute path. A /bin/* path is SPAWNed (its own window);
 #            any other path is treated as a directory and opened in the
-#            file manager.
+#            file manager AT THAT PATH. A leading `~` expands to the
+#            session user's home (resolved from $HOME, else the desktop
+#            dir's parent) — so this file is correct both on the live
+#            image (`live`) and on an installed system whose regular
+#            account the installer wizard named.
 #
 # If this file is absent or empty, hamdesktop falls back to a built-in
 # default set (Files / Terminal / Home).
@@ -27,4 +31,4 @@ Log Viewer|file|/bin/hamlogscene
 Word Processor|file|/bin/hamwrite
 Spreadsheet|file|/bin/hamsheet
 Presentation|file|/bin/hamslides
-Home|folder|/
+Home|folder|~

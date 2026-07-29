@@ -257,6 +257,20 @@ HAMNIX_ROOTFS_OUT="$ROOTFS_IMG" python3 scripts/build_rootfs_img.py
 # decouples the package build from build_iso.sh (which produces
 # build/hamnix-kernel.elf); this installer pipeline builds its own
 # kernels in Stages 3/6 and never invokes build_iso.sh.
+# Refresh the install manifests (etc/install/*.manifest) BEFORE any
+# initramfs build — build_initramfs.py's one-level etc/ walker stages
+# them into the cpio at /etc/install/*, and `install` reads them there
+# at install time. Three manifests:
+#   rootfs.manifest  the legacy etc/install.hamsh whole-rootfs list
+#   distro.manifest  the Linux-namespace tree -> distro/ on the target
+#                    (this is what makes `enter linux { sh }` work on an
+#                    INSTALLED system; see gen_install_manifest.py)
+#   live.manifest    everything sourced from the live cpio — the
+#                    /etc/skel home skeleton (incl. ~/Desktop's launcher
+#                    set) and the man pages
+echo "[build_installer_img] Stage 0: regenerate etc/install/*.manifest."
+python3 scripts/gen_install_manifest.py
+
 echo "[build_installer_img] Stage 1: build native package repo (build/packages/main)."
 HAMNIX_BOOTLOADER_SLIM=1 python3 scripts/build_packages.py
 [ -f "build/packages/main/index.json" ] || {

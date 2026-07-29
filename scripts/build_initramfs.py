@@ -81,6 +81,21 @@ for _home_sub in ("Documents", "Downloads", "Pictures", "Notes"):
 # useradd) at /home/live/Desktop/*.desktop. If the template is absent the
 # desktop dir is left implicit-empty and hamdesktop falls back to its
 # built-in default icon set.
+# The install manifests (etc/install/*.manifest) are GENERATED, and
+# etc/install/ is gitignored — so regenerate them here, before the etc/
+# walker below stages them into the cpio at /etc/install/*. Doing it in
+# THIS script (rather than only in build_installer_img.sh) means every
+# cpio build carries a manifest set that matches the tree it was built
+# from: `install` reads /etc/install/distro.manifest + live.manifest at
+# install time, and a stale or missing manifest silently degrades the
+# installed system (no Linux namespace, no home skeleton, no man pages).
+try:
+    import gen_install_manifest as _gim           # same scripts/ dir
+    _gim.main()
+except Exception as _e:                           # never block a build
+    print(f"  [install-manifest] WARN: could not regenerate "
+          f"etc/install/*.manifest ({_e})")
+
 _skel_desktop = Path(__file__).resolve().parent.parent / "etc" / "skel" / "Desktop"
 _planted_desktop = 0
 if _skel_desktop.is_dir():

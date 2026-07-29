@@ -31,6 +31,7 @@ extern def sys_get_jiffies() -> uint64
 extern def sys_yield() -> int32
 extern def sys_waitfds(fds: Ptr[int32], nfds: uint64, timeout_ms: int64) -> int64
 extern def sys_bind(new_path: Ptr[char], old_path: Ptr[char], flag: int32) -> int32
+extern def sys_getuid() -> uint32
 from lib.p9 import spawn, spawn_detached
 from lib.hamui import hamscene_begin, hamscene_commit, hamscene_glyphs, \
     hamscene_glyphs_bold, hamscene_fill, hamscene_rect, hamscene_line
@@ -96,10 +97,101 @@ def _fm_read_home(out: Ptr[uint8], cap: uint64) -> uint64:
     return ln
 
 
+# An explicit start directory handed over as argv[1] (empty = none).
+# The desktop's folder icons pass their target path here.
+fm_start_dir: Array[520, uint8]
+
+pw_scratch: Array[4096, uint8]
+
+
+# Resolve the CURRENT account's home from /etc/passwd (field 6 of the
+# line whose uid field matches sys_getuid()). This step was missing:
+# /home/live is the LIVE image's user, and an INSTALLED system names its
+# regular user whatever the installer wizard collected. With an ambient
+# HOME of "/" (the compositor's placeholder) and no /home/live on disk,
+# the old chain fell straight through to "/" — which is exactly the
+# "home folder icon opens the file browser at /" report on an installed
+# box. Returns the length written, 0 if not resolvable.
+def _fm_home_from_passwd(out: Ptr[uint8], cap: uint64) -> uint64:
+    uid: uint32 = sys_getuid()
+    fd: int32 = sys_open(cast[Ptr[char]]("/etc/passwd"))
+    if fd < 0:
+        return 0
+    n: int64 = sys_read(fd, &pw_scratch[0], 4095)
+    sys_close(fd)
+    if n <= 0:
+        return 0
+    pl: uint64 = cast[uint64](n)
+    p: uint64 = 0
+    while p < pl:
+        q: uint64 = p
+        while q < pl and pw_scratch[q] != 10:
+            q = q + 1
+        # Walk the colon-separated fields:
+        #   name:passwd:uid:gid:gecos:home:shell
+        f: uint64 = 0
+        fs: uint64 = p
+        uid_val: uint64 = 0
+        have_uid: int32 = 0
+        home_s: uint64 = 0
+        home_e: uint64 = 0
+        i: uint64 = p
+        while i <= q:
+            if i == q or pw_scratch[i] == 58:              # ':' or EOL
+                if f == 2:
+                    v: uint64 = 0
+                    k: uint64 = fs
+                    ok: int32 = 1
+                    while k < i:
+                        if pw_scratch[k] < 48 or pw_scratch[k] > 57:
+                            ok = 0
+                        else:
+                            v = v * 10 + cast[uint64](pw_scratch[k] - 48)
+                        k = k + 1
+                    if ok != 0:
+                        uid_val = v
+                        have_uid = 1
+                elif f == 5:
+                    home_s = fs
+                    home_e = i
+                f = f + 1
+                fs = i + 1
+            i = i + 1
+        if have_uid != 0 and uid_val == cast[uint64](uid) \
+                and home_e > home_s + 1 and pw_scratch[home_s] == 47:
+            hl2: uint64 = home_e - home_s
+            if hl2 + 1 < cap:
+                j: uint64 = 0
+                while j < hl2:
+                    out[j] = pw_scratch[home_s + j]
+                    j = j + 1
+                out[hl2] = 0
+                return hl2
+        p = q
+        if p < pl and pw_scratch[p] == 10:
+            p = p + 1
+    return 0
+
+
 def _fm_apply_start_dir():
+    # An explicit start directory (argv[1]) wins — that is how the
+    # desktop's folder icons hand a target path over. hamdesktop's
+    # _run_action used to DROP the icon's action entirely and always
+    # spawn a bare hamfmscene, so every folder icon opened the same
+    # default directory no matter what it pointed at.
+    if fm_start_dir[0] == 47 and _fm_dir_exists(&fm_start_dir[0]) != 0:
+        fmc_set_cur_path(&fm_start_dir[0])
+        return
     hbuf: Array[520, uint8]
     hl: uint64 = _fm_read_home(&hbuf[0], 520)
     if hl > 1 and hbuf[0] == 47 and _fm_dir_exists(&hbuf[0]) != 0:
+        fmc_set_cur_path(&hbuf[0])
+        return
+    # $HOME was absent or the bare "/" placeholder: ask /etc/passwd what
+    # THIS uid's home is. On an installed system that is the wizard's
+    # account, not the live image's `live`.
+    ppl: uint64 = _fm_home_from_passwd(&hbuf[0], 520)
+    if ppl > 1 and _fm_dir_exists(&hbuf[0]) != 0:
         fmc_set_cur_path(&hbuf[0])
         return
     if _fm_dir_exists(cast[Ptr[uint8]]("/home/live")) != 0:
@@ -1100,6 +1192,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             return _run_refreshtest()
         if a[0] == 45 and a[1] == 45 and a[2] == 104:    # "--h"(omedirtest)
             return _run_homedirtest()
+        # A bare ABSOLUTE path opens the file manager there (the desktop
+        # folder-icon action). Anything relative or flag-shaped is
+        # ignored so the existing --demo/--opentest/... arms are unchanged.
+        if a[0] == 47:
+            sdi: uint64 = 0
+            while a[sdi] != 0 and sdi < 519:
+                fm_start_dir[sdi] = a[sdi]
+                sdi = sdi + 1
+            fm_start_dir[sdi] = 0
     sys_bind(cast[Ptr[char]]("/dev"), cast[Ptr[char]]("#c"), 0)
     wid: int32 = _newwindow()
     if wid < 0:
