@@ -7294,19 +7294,28 @@ def _mm_census_walk_task(su: uint64):
     # Mark every frame reachable from task `su`'s USER address space.
     #
     # Structurally this is _free_task_user_pagetables' walk with the frees
-    # replaced by marks, and with ONE deliberate difference: that function
-    # descends only into PRIVATE sub-tables (entry != the boot PML4's), which
-    # is right when the goal is to free the task's own table pages. For
-    # REACHABILITY the opposite is required — a leaked frame installed behind
-    # a still-SHARED boot table is exactly as reachable as one behind a
-    # private clone, and skipping it would report it as an orphan. Freeing on
-    # that false orphan is precisely how two earlier fix attempts wedged the
-    # desktop, so this walk follows every present entry.
+    # replaced by marks, and it keeps that function's rule of descending ONLY
+    # into PRIVATE sub-tables (entry != the boot table's entry at the same
+    # index). That rule is not an optimisation here, it is what makes the
+    # census mean anything:
     #
-    # It also marks LEAF frames (which that function never touches) AND the
-    # intermediate table pages themselves: a PDPT/PD/PT page is a real buddy
-    # frame tagged PA_SITE_PGTABLE, and leaving it unmarked would report the
-    # entire live page-table population as leaked.
+    #   * The shared boot tables IDENTITY-MAP ALL OF RAM, largely through
+    #     2 MiB leaves. Following them would mark every frame in the machine
+    #     reachable from the very first task walked, so the census would
+    #     report zero orphans forever and silently exonerate everything. A
+    #     vacuous instrument that always says "clean" is the worst possible
+    #     outcome for a leak hunt.
+    #   * A still-shared entry is shared by EVERY task and therefore cannot
+    #     hold task-private data. Every frame this census is asked to judge —
+    #     a cow_resolve_pte copy, a demand-faulted anon page — is installed
+    #     through a CRACKED, private table (_cow_resolve_pte_slot and
+    #     elf_install_user_mapping both crack before writing), so the private
+    #     path is the only place such a frame can be found.
+    #
+    # It marks LEAF frames, which that function never touches, and also the
+    # intermediate table pages: those are real buddy frames, and although
+    # PA_SITE_PGTABLE is excluded from the sweep as a kernel site, marking
+    # them keeps the bitmap honest if that allowlist ever widens.
     if task_table[su].cr3 == 0:
         return
     boot_cr3: uint64 = cow_boot_cr3()
@@ -7327,17 +7336,26 @@ def _mm_census_walk_task(su: uint64):
     irq: uint64 = local_irq_save()
     load_cr3(boot_cr3)
     pml4: Ptr[uint64] = cast[Ptr[uint64]](task_table[su].cr3 & PT_ADDR)
+    bpml4: Ptr[uint64] = cast[Ptr[uint64]](boot_cr3 & PT_ADDR)
     li: uint64 = 0
     while li < 256:                          # USER half only
         e: uint64 = pml4[li]
-        if (e & PT_P) != 0 and _pt_subtable_phys_ok(e & PT_ADDR) != 0:
+        be: uint64 = bpml4[li]
+        # Private PDPT only — see the header on why following the shared boot
+        # entry would mark all of RAM and make the census vacuous.
+        if (e & PT_P) != 0 and e != be \
+                and _pt_subtable_phys_ok(e & PT_ADDR) != 0:
             pdpt_phys: uint64 = e & PT_ADDR
             page_alloc_census_mark(pdpt_phys, 1)
             pdpt: Ptr[uint64] = cast[Ptr[uint64]](pdpt_phys)
+            bpdpt: Ptr[uint64] = cast[Ptr[uint64]](be & PT_ADDR)
             pi: uint64 = 0
             while pi < 512:
                 pe: uint64 = pdpt[pi]
-                if (pe & PT_P) != 0:
+                bpe: uint64 = 0
+                if (be & PT_P) != 0:
+                    bpe = bpdpt[pi]
+                if (pe & PT_P) != 0 and pe != bpe:
                     if (pe & PT_PS) != 0:
                         # 1 GiB leaf = 262144 frames.
                         page_alloc_census_mark(pe & PT_ADDR, 262144)
@@ -7345,10 +7363,14 @@ def _mm_census_walk_task(su: uint64):
                         pd_phys: uint64 = pe & PT_ADDR
                         page_alloc_census_mark(pd_phys, 1)
                         pd: Ptr[uint64] = cast[Ptr[uint64]](pd_phys)
+                        bpd: Ptr[uint64] = cast[Ptr[uint64]](bpe & PT_ADDR)
                         di: uint64 = 0
                         while di < 512:
                             de: uint64 = pd[di]
-                            if (de & PT_P) != 0:
+                            bde: uint64 = 0
+                            if (bpe & PT_P) != 0 and (bpe & PT_PS) == 0:
+                                bde = bpd[di]
+                            if (de & PT_P) != 0 and de != bde:
                                 if (de & PT_PS) != 0:
                                     # 2 MiB leaf = 512 frames.
                                     page_alloc_census_mark(de & PT_ADDR, 512)

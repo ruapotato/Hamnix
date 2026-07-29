@@ -732,21 +732,61 @@ def page_alloc_census_mark(phys: uint64, npages: uint64):
         i = i + 1
 
 
+def page_alloc_site_is_user_mapped(s: uint64) -> int32:
+    # 1 iff frames tagged `s` are supposed to be reachable through a USER
+    # page-table entry, so that "absent from every page table" is evidence
+    # of a leak.
+    #
+    # WHY THIS ALLOWLIST IS LOAD-BEARING, AND NOT A CONVENIENCE. A page-table
+    # walk is the wrong oracle for a KERNEL frame: a kernel stack, a slab
+    # page, a PML4, a wsys framebuffer and a tmpfs chunk are owned by kernel
+    # data structures and have NO user PTE anywhere, by design. Sweeping them
+    # against page-table reachability would report the ENTIRE live kernel
+    # population as orphaned — a census that flags thousands of false leaks
+    # is worse than no census, because the one real leak is then invisible in
+    # the noise, and acting on a false orphan is exactly how two earlier fix
+    # attempts freed a live frame and wedged the desktop.
+    #
+    # So kernel sites are reported as NOT APPLICABLE rather than as clean or
+    # as leaking, and the census makes a claim only where it has a real
+    # oracle. Auditing kernel-side reachability needs a different instrument
+    # (kmtrack for the heap; a per-owner sweep for kstack/pml4/wsys), which
+    # is named honestly in the report as still missing.
+    if s == PA_SITE_VMA_LARGE or s == PA_SITE_VMA_FIXED:
+        return 1
+    if s == PA_SITE_VMA_PREFAULT or s == PA_SITE_VMA_FILE:
+        return 1
+    if s == PA_SITE_VMA_HUGE or s == PA_SITE_VMA_ANON:
+        return 1
+    if s == PA_SITE_VMA_SWAPIN or s == PA_SITE_VMA_GROW:
+        return 1
+    if s == PA_SITE_FORK_COPY or s == PA_SITE_COW_RESOLVE:
+        return 1
+    if s == PA_SITE_USTACK or s == PA_SITE_EXECVE:
+        return 1
+    return 0
+
+
 def page_alloc_census_sweep() -> uint64:
     # Sweep the per-frame site table against the reachable bitmap and
     # tally orphans per site. Returns the total orphan count.
     #
-    # Frames the buddy allocator does not own are skipped: a region-backed
-    # image frame is reclaimed wholesale by its owner and is not expected
-    # to appear in any page table once the owner is gone, so counting it
-    # here would manufacture orphans that no free path is missing.
+    # Two exclusions, both there to stop the census manufacturing leaks:
+    #
+    #   * sites that are not user-mapped (see above) — a page-table walk
+    #     cannot judge a kernel frame;
+    #   * frames the buddy allocator does not own — a region-backed image
+    #     frame is reclaimed wholesale by its owner and is not expected to
+    #     appear in any page table once the owner is gone, so counting it
+    #     would name a leak no free path is missing.
     if _pa_trk_site == 0 or _pa_reach_bm == 0:
         return 0
     total: uint64 = 0
     p: uint64 = 0
     while p < _pa_trk_frames:
         s: uint64 = cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0])
-        if s != 0 and s < PA_SITE_MAX:
+        if s != 0 and s < PA_SITE_MAX \
+                and page_alloc_site_is_user_mapped(s) != 0:
             reach: uint64 = 0
             if p < _pa_reach_frames:
                 reach = cast[uint64](
@@ -801,8 +841,25 @@ def page_alloc_census_report(total: uint64):
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[census] orphaned frames: %d (of %d live)\n",
             total, nr_pages_live)
+    # State the SCOPE in the output, every time. A reader who does not know
+    # the census only judges user-mapped sites could read "0 orphans" as
+    # "nothing leaks anywhere", which is exactly the false exoneration this
+    # whole exercise exists to avoid.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk0("[census] scope: USER-MAPPED sites only. kernel sites"
+            " (pgtable/slab/kstack/pml4/wsys/tmpfs) have no user PTE by"
+            " design and are NOT judged here — use kmtrack for the heap.\n")
     i: uint64 = 0
     while i < PA_SITE_MAX:
+        # Report every user-mapped site with live frames, INCLUDING the ones
+        # at zero orphans: "site holds 412 frames, 0 unreachable" is a real
+        # exoneration and is more informative than silence, which is
+        # indistinguishable from "not measured".
+        if page_alloc_site_is_user_mapped(i) != 0 and _pa_trk_live[i] != 0 \
+                and _pa_orphans[i] == 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[census] site %d: 0 orphans, live %d (all reachable)\n",
+                    i, _pa_trk_live[i])
         if _pa_orphans[i] != 0:
             printk_set_level(PRINTK_LEVEL_EMERG)
             printk3("[census] site %d: %d orphans, live %d\n",
