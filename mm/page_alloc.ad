@@ -832,6 +832,61 @@ def page_alloc_orphan_sample(site: uint64, k: uint64) -> uint64:
     return 0
 
 
+# Positive-control frame: a deliberately UNMAPPED, tagged allocation.
+_pa_planted: uint64 = 0
+PA_PLANT_TAG: uint64 = 0xC0FFEE00
+
+
+def page_alloc_census_plant() -> uint64:
+    # THE CENSUS'S POSITIVE CONTROL, and it is not optional.
+    #
+    # "0 orphans" has TWO possible causes: nothing is orphaned, or the census
+    # cannot see. Those are indistinguishable from the output alone, and the
+    # second is a FALSE EXONERATION — the most expensive failure mode in this
+    # whole effort, because an over-broad reachability mark reports every site
+    # clean forever and ends the hunt with a wrong answer that looks like a
+    # right one. My own first draft of this census had exactly that bug: it
+    # followed the shared boot tables, which identity-map ALL of RAM, so the
+    # first task walked marked every frame in the machine reachable.
+    #
+    # So: allocate ONE order-0 frame at a user-mapped site, map it NOWHERE,
+    # and give it a recognisable tag. A census run while this frame is
+    # outstanding MUST report at least one orphan at PA_SITE_VMA_ANON and
+    # MUST show PA_PLANT_TAG among that site's sample tags. If it reports
+    # zero, the census is broken and every "clean" verdict it gave is void.
+    #
+    # It runs under the REAL workload (the soak's 19 live address spaces,
+    # private tables everywhere), not only at boot, so it exercises the
+    # actual walk rather than a degenerate empty-address-space case.
+    if _pa_planted != 0:
+        return _pa_planted
+    pa_set_site(PA_SITE_VMA_ANON)
+    pa_set_tag(PA_PLANT_TAG)
+    p: uint64 = alloc_page()
+    if p == 0:
+        return 0
+    _pa_planted = p
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[census] planted control orphan phys=%p tag=%p\n",
+            p, PA_PLANT_TAG)
+    return p
+
+
+def page_alloc_census_unplant():
+    # Return the control frame. Deliberately a separate verb from plant, so
+    # the census runs while the frame is genuinely outstanding.
+    if _pa_planted == 0:
+        return
+    free_page(_pa_planted)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[census] control orphan phys=%p returned\n", _pa_planted)
+    _pa_planted = 0
+
+
+def page_alloc_census_planted() -> uint64:
+    return _pa_planted
+
+
 def page_alloc_census_report(total: uint64):
     # EMERG report — INFO is suppressed once the shell prompt is up
     # (console_set_interactive), and printk_set_level arms exactly ONE
@@ -849,6 +904,25 @@ def page_alloc_census_report(total: uint64):
     printk0("[census] scope: USER-MAPPED sites only. kernel sites"
             " (pgtable/slab/kstack/pml4/wsys/tmpfs) have no user PTE by"
             " design and are NOT judged here — use kmtrack for the heap.\n")
+    # SELF-VALIDATION. If a control orphan is outstanding, the census MUST
+    # have found it. Saying so in the census's own output is the difference
+    # between a measurement and a hope: a reader must never have to take
+    # "0 orphans" on faith, because an over-broad reachability mark produces
+    # exactly that output while seeing nothing at all.
+    if _pa_planted != 0:
+        if total == 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk0("[census] CONTROL FAILED: a planted UNMAPPED frame was"
+                    " NOT detected. This census is BLIND and every clean"
+                    " verdict from it is VOID.\n")
+        else:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk1("[census] control OK: planted orphan detected"
+                    " (%d orphan(s) total, control included)\n", total)
+    else:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] NO CONTROL PLANTED: a 0-orphan result here is"
+                " UNVALIDATED — write `track plant` before `track census`.\n")
     i: uint64 = 0
     while i < PA_SITE_MAX:
         # Report every user-mapped site with live frames, INCLUDING the ones

@@ -40,6 +40,8 @@ from mm.page_alloc import (
     region_pool_free_bytes, region_carved_bytes, region_leaked_bytes,
     region_quarantine_bytes, region_recovered_bytes,
     page_alloc_track_enable, page_alloc_track_reset, page_alloc_track_dump,
+    page_alloc_census_plant, page_alloc_census_unplant,
+    page_alloc_census_orphans, PA_SITE_VMA_ANON,
     page_alloc_track_mode, page_alloc_site_live, page_alloc_site_allocs,
     page_alloc_site_frees, PA_SITE_MAX,
     alloc_pages, free_pages, pa_set_site,
@@ -505,6 +507,18 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
     if _mi_wmatch(line, n, "track census") != 0:
         mm_orphan_census()
         return cast[int64](count)
+    # POSITIVE CONTROL for the census. `track plant` allocates one order-0
+    # frame at a user-mapped site and maps it NOWHERE; a census run while it
+    # is outstanding MUST report it. Without this, "0 orphans" cannot be
+    # distinguished from a blind census — the false-exoneration failure the
+    # first draft of the walk actually had. `track unplant` returns it.
+    if _mi_wmatch(line, n, "track plant") != 0:
+        if page_alloc_census_plant() == 0:
+            return -1
+        return cast[int64](count)
+    if _mi_wmatch(line, n, "track unplant") != 0:
+        page_alloc_census_unplant()
+        return cast[int64](count)
     # Kernel-heap (kmalloc/slab) per-site attribution — mm/slab.ad. Armed
     # independently of page tracking: the two answer different questions
     # and a soak usually wants both, but a kmalloc-only hunt should not
@@ -705,6 +719,34 @@ def track_allocs_selftest() -> int32:
         printk2("[TRKALLOC] FAIL: disarmed blob is %d bytes, was %d\n",
                 n2, n0)
         ok = 0
+
+    # (10) THE CENSUS'S POSITIVE CONTROL, wired as a boot regression. At boot
+    #      there is little or no user address space, so this is a WEAK test of
+    #      the page-table walk itself — its job is to prove the plant -> tag ->
+    #      sweep -> count chain is connected at all, so that a refactor cannot
+    #      silently turn the census blind. The strong version runs in the soak
+    #      under 19 live address spaces (test_de_stress_soak.sh plants before
+    #      `track census`). A census that cannot see a frame it was just handed
+    #      would otherwise report "0 orphans" forever and end a leak hunt with
+    #      a confident wrong answer.
+    if devmeminfo_write("track full\n", 11) <= 0:
+        printk0("[TRKALLOC] FAIL: `track full` ctl write rejected\n")
+        ok = 0
+    if page_alloc_census_plant() == 0:
+        printk0("[TRKALLOC] FAIL: could not plant a control orphan\n")
+        ok = 0
+    else:
+        cens: uint64 = mm_orphan_census()
+        if cens == 0:
+            printk0("[TRKALLOC] FAIL: census is BLIND — it did not detect a"
+                    " planted UNMAPPED frame\n")
+            ok = 0
+        if page_alloc_census_orphans(PA_SITE_VMA_ANON) == 0:
+            printk0("[TRKALLOC] FAIL: planted orphan not attributed to"
+                    " its site\n")
+            ok = 0
+        page_alloc_census_unplant()
+    page_alloc_track_enable(0)
 
     # --- KERNEL-HEAP TRACKER (mm/slab.ad kmtrack) ---------------------
     #

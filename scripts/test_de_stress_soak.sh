@@ -572,8 +572,19 @@ assert_alive final
 # Emitted at EMERG so console_set_interactive cannot swallow it — a pass
 # already lost a run to a probe that worked perfectly and was suppressed.
 if [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ]; then
+    # PLANT THE POSITIVE CONTROL FIRST. A census that reports "0 orphans"
+    # because it cannot see is indistinguishable, from the output alone, from
+    # one that reports it because nothing is orphaned — and the first draft of
+    # the walk had exactly that bug (it followed the shared boot tables, which
+    # identity-map all of RAM, marking every frame reachable). So plant one
+    # deliberately UNMAPPED frame, census with it outstanding, then return it.
+    # The census prints "control OK" or "CONTROL FAILED ... verdict is VOID".
+    printf 'echo track plant > /proc/meminfo\n' >&3
+    sleep 2
     printf 'echo track census > /proc/meminfo\n' >&3
     sleep 6
+    printf 'echo track unplant > /proc/meminfo\n' >&3
+    sleep 2
 fi
 sleep 2
 
