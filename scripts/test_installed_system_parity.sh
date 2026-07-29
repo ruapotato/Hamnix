@@ -104,7 +104,32 @@ if [ -z "$OVMF_FD" ]; then
         [ -f "$c" ] && { OVMF_FD="$c"; break; }
     done
 fi
-[ -n "$OVMF_FD" ] || { say "SKIP: no OVMF firmware found." ; exit 0; }
+[ -n "$OVMF_FD" ] || { say "INCONCLUSIVE: no OVMF firmware found — NOTHING WAS ASSERTED." >&2; exit 125; }
+
+# The `enter linux { sh }` keystone needs the musl busybox fixture INSTALLED onto
+# the target. tests/u-binary/u_* is gitignored (.gitignore:147) and
+# gen_install_manifest.py SKIPS those manifest entries when the fixture is
+# absent — so on a fresh checkout the install would legitimately ship no Linux
+# shell and this gate would go RED for an environmental reason, not a code one.
+#
+# Report that as INCONCLUSIVE (125), never as PASS and never as FAIL. Note the
+# shared helper ensure_ubin_or_skip() exits 0 here, which is a SOFT GREEN — the
+# class scripts/test_gate_softgreen.sh exists to forbid — so we deliberately do
+# not use it.
+if [ ! -f tests/u-binary/u_busybox_musl ]; then
+    if [ -f scripts/_ensure_ubin.sh ]; then
+        # shellcheck disable=SC1091
+        . scripts/_ensure_ubin.sh
+        ensure_ubin u_busybox_musl musl_busybox >/dev/null 2>&1 || true
+    fi
+fi
+if [ ! -f tests/u-binary/u_busybox_musl ]; then
+    say "INCONCLUSIVE: tests/u-binary/u_busybox_musl absent and not buildable here." >&2
+    say "             The install ships no Linux shell without it, so the" >&2
+    say "             'enter linux { sh }' keystone cannot be observed." >&2
+    say "             NOTHING WAS ASSERTED — this is not a pass and not a regression." >&2
+    exit 125
+fi
 
 rm -f "$NVME_IMG"
 qemu-img create -f qcow2 "$NVME_IMG" "$NVME_SIZE" >/dev/null
