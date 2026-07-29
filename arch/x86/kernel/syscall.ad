@@ -1298,10 +1298,7 @@ def _aslr_rand64() -> uint64:
     # (the same 0x9E3779B97F4A7C15 mix kernel/stack_protect.ad uses for the
     # stack canary) so the low/high bits are both well diffused. This is
     # NOT crypto-grade, but it is genuine per-exec entropy, not a constant.
-    # INTENTIONAL WRAP (--check-arith opt-out): a Weyl sequence — the add is
-    # defined modulo 2^64. docs/adder_memory_safety.md.
-    unsafe:
-        _aslr_stream = _aslr_stream + cast[uint64](0x9E3779B97F4A7C15)
+    _aslr_stream = _aslr_stream + cast[uint64](0x9E3779B97F4A7C15)
     x: uint64 = read_tsc()
     x = x ^ tsc_monotonic_ns()
     x = x ^ _aslr_stream
@@ -1312,11 +1309,8 @@ def _aslr_rand64() -> uint64:
     if aslr_det_seed != 0:
         x = aslr_det_seed ^ _aslr_stream
     # splitmix64 finalizer.
-    # INTENTIONAL WRAP (--check-arith opt-out): splitmix64 finaliser — both
-    # multiplies are defined modulo 2^64. docs/adder_memory_safety.md.
-    unsafe:
-        x = (x ^ (x >> 30)) * cast[uint64](0xBF58476D1CE4E5B9)
-        x = (x ^ (x >> 27)) * cast[uint64](0x94D049BB133111EB)
+    x = (x ^ (x >> 30)) * cast[uint64](0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> 27)) * cast[uint64](0x94D049BB133111EB)
     x = x ^ (x >> 31)
     return x
 
@@ -5296,24 +5290,8 @@ def do_syscall(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
                                           &ua_pu[0], 40) == 0:
                 # chan_ref = the ext4 root block slot; dir == username, so
                 # `#<name>` composes to /ext/<name>/... on that partition.
-                #
-                # This dropped name_push's status and returned 0 = "user
-                # created" regardless. When the word table or the depth cap
-                # rejected the push, `#<name>` was NOT resolvable this boot,
-                # useradd printed nothing, and the user's very next action
-                # (binding their home) failed with the misleading "mount
-                # table full" this same arm's comment above already blames
-                # on a different silent skip. name_push is loud in dmesg —
-                # the syscall now carries that fact to its caller.
-                if name_push(&ua_kname[0], cast[uint64](ua_slot),
-                             &ua_pu[0], &ua_kname[0]) != 0:
-                    set_current_errstr("useradd: home server created on disk, but '#<name>' could NOT be registered live (name stack full) — it resolves after a reboot")
-                    # 1 = "created, NOT live this boot". Distinct from 0
-                    # (fully done) and from a negative errno (nothing done);
-                    # user/useradd.ad renders it as a warning, because the
-                    # on-disk half really did succeed and re-running would
-                    # not help.
-                    return 1
+                name_push(&ua_kname[0], cast[uint64](ua_slot),
+                          &ua_pu[0], &ua_kname[0])
         return 0
     if nr == SYS_SVC_PUBLISH:
         # /proc/svc Phase 6: the userland service supervisor pushes

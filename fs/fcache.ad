@@ -630,11 +630,8 @@ def _dc_strhash(s: Ptr[uint8], n: uint64) -> uint64:
     h: uint64 = 1469598103934665603     # FNV-1a 64 offset basis
     i: uint64 = 0
     while i < n:
-        # INTENTIONAL WRAP (--check-arith opt-out): FNV-1a's multiply is defined
-        # modulo 2^64. docs/adder_memory_safety.md.
-        unsafe:
-            h = h ^ cast[uint64](s[i])
-            h = h * 1099511628211
+        h = h ^ cast[uint64](s[i])
+        h = h * 1099511628211
         i = i + 1
     return h
 

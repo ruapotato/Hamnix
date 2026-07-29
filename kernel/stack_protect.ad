@@ -117,10 +117,7 @@ def __stack_chk_init():
         # constant so the post-init guard still differs from the
         # pre-init magic (avoids "did init even run?" ambiguity).
         seed = 0x9E3779B97F4A7C15
-    # INTENTIONAL WRAP (--check-arith opt-out): the golden-ratio multiply is a
-    # diffusion step; wrapping past 2^64 is the point. docs/adder_memory_safety.md.
-    unsafe:
-        __stack_chk_guard = 0xC0FFEE00_00000000 ^ (seed * 0x9E3779B97F4A7C15)
+    __stack_chk_guard = 0xC0FFEE00_00000000 ^ (seed * 0x9E3779B97F4A7C15)
 
 
 def __stack_chk_fail():

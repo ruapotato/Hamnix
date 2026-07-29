@@ -220,12 +220,9 @@ def _tsc_jitter64() -> uint64:
         prev = cur
         # Rotate-mix the delta into the accumulator (a cheap diffusion
         # step so each sample's low bits scatter across the word).
-        # INTENTIONAL WRAP (--check-arith opt-out): rotate-mix diffusion — the
-        # shift out of the word and the add past 2^64 ARE the mixing.
-        unsafe:
-            acc = acc ^ delta
-            acc = ((acc << 7) | (acc >> 57)) & 0xFFFFFFFFFFFFFFFF
-            acc = (acc + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+        acc = acc ^ delta
+        acc = ((acc << 7) | (acc >> 57)) & 0xFFFFFFFFFFFFFFFF
+        acc = (acc + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
         i = i + 1
     return acc
 
@@ -243,13 +240,9 @@ def _hw_entropy64(counter: uint64) -> uint64:
     r: uint64 = _rdrand64()
     if r != 0:
         # Rotate so RDRAND lands in different bit positions than RDSEED.
-        # INTENTIONAL WRAP (--check-arith opt-out): rotate, not a shift result.
-        unsafe:
-            v = v ^ (((r << 23) | (r >> 41)) & 0xFFFFFFFFFFFFFFFF)
+        v = v ^ (((r << 23) | (r >> 41)) & 0xFFFFFFFFFFFFFFFF)
     j: uint64 = _tsc_jitter64()
-    # INTENTIONAL WRAP (--check-arith opt-out): rotate, not a shift result.
-    unsafe:
-        v = v ^ (((j << 41) | (j >> 23)) & 0xFFFFFFFFFFFFFFFF)
+    v = v ^ (((j << 41) | (j >> 23)) & 0xFFFFFFFFFFFFFFFF)
     v = v ^ get_jiffies() ^ counter ^ 0x9E3779B97F4A7C15
     return v
 
