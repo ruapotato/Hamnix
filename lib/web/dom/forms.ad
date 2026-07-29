@@ -1696,7 +1696,10 @@ def _handle_tag(ts: uint64, te: uint64):
                 apadr: int32 = 0
                 if aidx >= 0:
                     apadr = box_padx_stack[aidx] / 2
-                _posctx_push(indent_x, blk_right_cur, cast[int32](cur_row), apadr)
+                aexw: int32 = 0
+                if aidx >= 0:
+                    aexw = box_exw_stack[aidx]
+                _posctx_push(indent_x, blk_right_cur, cast[int32](cur_row), apadr, aexw)
                 if fdisp == 2 or fdisp == 6:
                     if _flex_container_open(te + 1, el_sp) != 0:
                         idxa: int32 = box_sp - 1
@@ -2032,7 +2035,8 @@ def _handle_tag(ts: uint64, te: uint64):
                         box_pushedctx_stack[ridx] = 1
                         _posctx_push(indent_x, blk_right_cur, \
                                      box_srow_stack[ridx], \
-                                     box_padx_stack[ridx] / 2)
+                                     box_padx_stack[ridx] / 2, \
+                                     box_exw_stack[ridx])
             # A <p> is now open — remember it so a following block start tag with
             # an omitted </p> synthesises the close (_hx_implicit_close_p).
             if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("p")) != 0:
