@@ -29,7 +29,7 @@
 from kernel.printk.printk import printk0, printk1
 from drivers.audio.hda import (
     hda_is_initialized, hda_set_rate, hda_set_channels, hda_set_bits,
-    hda_write_pcm, hda_start, hda_stop, hda_reset_buffer,
+    hda_write_pcm, hda_dev_write, hda_start, hda_stop, hda_reset_buffer,
     hda_pcm_capacity, hda_pcm_loaded,
     hda_stream_open, hda_stream_is_open, hda_stream_write, hda_stream_drain,
     hda_stream_space, hda_stream_position, hda_stream_set_nonblock,
@@ -283,7 +283,14 @@ def devaudio_write(off: uint64, buf: Ptr[uint8], count: uint64) -> int64:
     # codec's OUTPUT AMPLIFIER (hda_set_output_amp), not a software PCM
     # scale, so this direct path needs no per-sample scaling — the amp gain
     # governs the analog level for playtone/aplay just as for the mixer.
-    return hda_write_pcm(buf, count, off)
+    #
+    # hda_dev_write, NOT hda_write_pcm: the staged buffer belongs to the
+    # PROCESS that filled it. A write at offset 0 starts a NEW clip (so a
+    # short effect cannot inherit a previous clip's length and play its tail),
+    # a second LIVE writer is summed into the clip rather than overwriting it,
+    # and a writer arriving after the owner has exited takes the device over
+    # instead of appending to a dead stream.
+    return hda_dev_write(buf, count, off)
 
 
 # --- /dev/audioctl --------------------------------------------------

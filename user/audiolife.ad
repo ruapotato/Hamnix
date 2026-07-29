@@ -1,0 +1,405 @@
+# user/audiolife.ad — AUDIO STREAM LIFETIME scenario driver.
+#
+# This program exists to make three user-reported audio bugs OBSERVABLE in the
+# one place that cannot lie: the PCM the codec actually emitted. It is run as
+# /init by scripts/test_audio_stream_lifetime.sh with QEMU's `-audiodev wav`
+# backend capturing the codec output to a host WAV; the gate then reads that WAV
+# back and asserts on the SAMPLES, not on an exit status.
+#
+# THE THREE REPORTS (shipped image, real hands-on)
+#   1. "on the first sound effect it played the end of the boot jingle"
+#   2. "on close it played the last sound effect over and over"
+#   3. "two apps playing audio ... 1/2 the sounds don't play while the music
+#      is playing"
+#
+# THE SCENARIO — each phase is a SEPARATE PROCESS, because the whole defect
+# class is about a buffer outliving the process that owns it. Running the
+# phases as function calls inside one pid would hide exactly the bug.
+#
+#   phase D  "clip"    reset + stage + start, then the pid EXITS
+#                                             (= lib/hamsdl_audio_dev.ad SFX)
+#   phase E  "raw"     ONE raw /dev/audio write, no ctl at all, pid EXITS
+#                                       (= lib/hamgame_dev.ad game_dev_play_pcm)
+#   phase B  "sfx"     six raw writes, no drain, then the pid EXITS
+#                                                          (= hamgame snake)
+#   phase C  "music"   a long streamopen + nonblock producer  (= the DE player)
+#   phase A  "jingle"  streamopen/drain clip, pid exits         (= /bin/aplay)
+#
+#   TIMELINE (jiffies are 10 ms; the gate maps WAV time to these windows by
+#   tone frequency, and every boundary is announced on /dev/cons so a human
+#   reading the serial log can line the two up):
+#
+#     t=0.0s   D: `reset` + 3.0 s of 1000 Hz + `start`, then the pid EXITS
+#     t=9.0s   E: ONE raw 150 ms 300 Hz effect (no reset, no start), pid EXITS
+#     t=11.0s  (nothing runs, 3 s)
+#     t=14.0s  C: 1500 Hz for 4.0 s (detached)
+#     t=14.5s  B: six 300 Hz bursts over C's music
+#     t=21.0s  done marker, spin forever (the gate kills QEMU on timeout)
+#
+# WHY A's CLIP IS 7 SECONDS AND NOT 1
+# ===================================
+# The streaming ring is 1 MiB = 5.46 s of 48 kHz stereo s16le. A clip SHORTER
+# than the ring leaves the unwritten remainder holding the zeroes streamopen put
+# there, so a following stream that inherits the ring hears silence and the bug
+# hides. The REAL boot jingle is /usr/share/sounds/boot-jingle.wav — 1 428 480
+# PCM bytes, 7.4 s, comfortably MORE than one ring — so what a following stream
+# inherits is a full lap of REAL AUDIO: the END of the boot jingle, which is
+# exactly what the user heard. 7.0 s reproduces that geometry. (Measured: with a
+# 1.0 s clip this scenario is clean; with 7.0 s it is not.)
+#
+# MODES (argv[1]); with no argv it is the orchestrator, so it works as /init:
+#   audiolife              run the whole scenario (spawns the phases)
+#   audiolife jingle       phase A
+#   audiolife sfx          phase B
+#   audiolife music        phase C
+#
+# Every tone is a SQUARE wave at a distinct frequency, which is what makes the
+# host-side analysis unambiguous: a Goertzel bin at 300/1000/1500 Hz separates
+# the three sources even when two of them are summed.
+
+extern def sys_open_write(path: Ptr[char]) -> int32
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_close(fd: int32) -> int32
+extern def sys_get_jiffies() -> uint64
+extern def sys_yield() -> int32
+
+from lib.p9 import spawn_detached
+
+
+AL_RATE:  uint64 = 48000                 # ring format: 48 kHz stereo s16le
+AL_CH:    uint64 = 2
+AL_AMP:   int32  = 12000
+
+AL_JINGLE_HZ:  uint64 = 1000
+AL_SFX_HZ:     uint64 = 300
+AL_MUSIC_HZ:   uint64 = 1500
+
+AL_SFX_BURSTS:    uint64 = 6
+AL_SFX_BURST_MS:  uint64 = 100
+AL_SFX_GAP_J:     uint64 = 10            # 100 ms between bursts
+
+_al_chunk: Array[4096, uint8]            # 1024 stereo frames
+_al_argv:  Array[4, uint64]
+
+
+def _al_slen(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def _al_say(s: Ptr[uint8]):
+    # Announce a phase boundary on BOTH fd 1 and /dev/cons: as a raw INIT_ELF
+    # program fd 1 may not be the console.
+    n: uint64 = _al_slen(s)
+    sys_write(1, s, n)
+    fd: int32 = sys_open_write("/dev/cons")
+    if fd >= 0:
+        sys_write(fd, s, n)
+        sys_close(fd)
+
+
+def _al_ctl(fd: int32, s: Ptr[uint8]):
+    if fd >= 0:
+        sys_write(fd, s, _al_slen(s))
+
+
+def _al_u64_dec(v: uint64, out: Ptr[uint8]) -> uint64:
+    if v == 0:
+        out[0] = 48
+        return 1
+    d: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    while x != 0:
+        d[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    w: uint64 = n
+    i: uint64 = 0
+    while n > 0:
+        n = n - 1
+        out[i] = d[n]
+        i = i + 1
+    return w
+
+
+def _al_ctl_verb(fd: int32, verb: Ptr[uint8], value: uint64):
+    line: Array[48, uint8]
+    p: uint64 = 0
+    j: uint64 = 0
+    while verb[j] != 0:
+        line[p] = verb[j]
+        p = p + 1
+        j = j + 1
+    line[p] = 32
+    p = p + 1
+    p = p + _al_u64_dec(value, &line[p])
+    line[p] = 10
+    p = p + 1
+    if fd >= 0:
+        sys_write(fd, &line[0], p)
+
+
+def _al_sleep_j(t: uint64):
+    # YIELD, don't spin: a busy-wait here monopolises the cooperative
+    # scheduler and the phase processes we just spawned never get to run.
+    end: uint64 = sys_get_jiffies() + t
+    while sys_get_jiffies() < end:
+        sys_yield()
+
+
+# Fill _al_chunk with `frames` stereo frames of a square wave at `hz`, starting
+# at phase `ph`; returns the updated phase. Bytes written = frames*4.
+def _al_fill(hz: uint64, frames: uint64, ph: uint64) -> uint64:
+    half: uint64 = AL_RATE / (2 * hz)
+    if half == 0:
+        half = 1
+    ci: uint64 = 0
+    f: uint64 = 0
+    phase: uint64 = ph
+    while f < frames:
+        s: int32 = AL_AMP
+        if phase >= half:
+            s = -AL_AMP
+        phase = phase + 1
+        if phase >= half * 2:
+            phase = 0
+        u: uint32 = cast[uint32](s) & 0xFFFF
+        lo: uint8 = cast[uint8](u & 0xFF)
+        hi: uint8 = cast[uint8]((u >> 8) & 0xFF)
+        _al_chunk[ci] = lo
+        _al_chunk[ci + 1] = hi
+        _al_chunk[ci + 2] = lo
+        _al_chunk[ci + 3] = hi
+        ci = ci + 4
+        f = f + 1
+    return phase
+
+
+# ---- phase A: the boot jingle (aplay-shaped: streamopen ... drain) --------
+def _al_phase_jingle() -> int32:
+    ctl: int32 = sys_open_write("/dev/audioctl")
+    if ctl < 0:
+        return 1
+    _al_ctl_verb(ctl, "rate", AL_RATE)
+    _al_ctl_verb(ctl, "channels", AL_CH)
+    _al_ctl(ctl, "format s16le\n")
+    _al_ctl(ctl, "streamopen\n")
+    aud: int32 = sys_open_write("/dev/audio")
+    if aud < 0:
+        sys_close(ctl)
+        return 1
+    _al_say("[audiolife] A jingle 1000 Hz start\n")
+    total: uint64 = AL_RATE * 7                    # 7.0 s: LONGER than the ring
+    done: uint64 = 0
+    ph: uint64 = 0
+    while done < total:
+        n: uint64 = total - done
+        if n > 1024:
+            n = 1024
+        ph = _al_fill(AL_JINGLE_HZ, n, ph)
+        sys_write(aud, &_al_chunk[0], n * 4)
+        done = done + n
+    _al_ctl(ctl, "drain\n")
+    sys_close(aud)
+    sys_close(ctl)
+    _al_say("[audiolife] A jingle done\n")
+    return 0
+
+
+# ---- phase B: the game sound effect (snake-shaped) ------------------------
+#
+# EXACTLY what lib/hamgame_dev.ad::game_dev_play_pcm does: open /dev/audio,
+# write one frame's worth of already-mixed PCM, close. No streamopen, no
+# start, no drain, no ctl at all — and then the process EXITS while the last
+# burst is still in flight.
+def _al_phase_sfx() -> int32:
+    _al_say("[audiolife] B sfx 300 Hz start\n")
+    frames: uint64 = AL_RATE * AL_SFX_BURST_MS / 1000
+    b: uint64 = 0
+    while b < AL_SFX_BURSTS:
+        aud: int32 = sys_open_write("/dev/audio")
+        if aud < 0:
+            return 1
+        done: uint64 = 0
+        ph: uint64 = 0
+        while done < frames:
+            n: uint64 = frames - done
+            if n > 1024:
+                n = 1024
+            ph = _al_fill(AL_SFX_HZ, n, ph)
+            sys_write(aud, &_al_chunk[0], n * 4)
+            done = done + n
+        sys_close(aud)
+        _al_sleep_j(AL_SFX_GAP_J)
+        b = b + 1
+    _al_say("[audiolife] B sfx done (exiting WITHOUT drain)\n")
+    return 0
+
+
+
+# ---- phase D: a staged CLIP on the DIRECT path ---------------------------
+#
+# The lib/hamsdl_audio_dev.ad / lib/hamaudiocore.ad sequence, byte for byte:
+#   `reset` -> write PCM at file offsets 0.. -> `start`
+# and then the process EXITS. It does NOT wait for the clip, does not stop the
+# stream and does not drain: exactly what an app that plays a notification and
+# returns to its event loop does.
+def _al_phase_clip() -> int32:
+    ctl: int32 = sys_open_write("/dev/audioctl")
+    if ctl < 0:
+        return 1
+    _al_ctl_verb(ctl, "rate", AL_RATE)
+    _al_ctl_verb(ctl, "channels", AL_CH)
+    _al_ctl(ctl, "format s16le\n")
+    _al_ctl(ctl, "reset\n")
+    aud: int32 = sys_open_write("/dev/audio")
+    if aud < 0:
+        sys_close(ctl)
+        return 1
+    _al_say("[audiolife] D clip 1000 Hz (direct staged, 3.0 s) start\n")
+    total: uint64 = AL_RATE * 3
+    done: uint64 = 0
+    ph: uint64 = 0
+    while done < total:
+        n: uint64 = total - done
+        if n > 1024:
+            n = 1024
+        ph = _al_fill(AL_JINGLE_HZ, n, ph)
+        sys_write(aud, &_al_chunk[0], n * 4)
+        done = done + n
+    sys_close(aud)
+    _al_ctl(ctl, "start\n")
+    sys_close(ctl)
+    _al_say("[audiolife] D clip started; process EXITING\n")
+    return 0
+
+
+# ---- phase E: one raw effect, snake-shaped, on the DIRECT path ------------
+#
+# lib/hamgame_dev.ad::game_dev_play_pcm to the letter: open /dev/audio, write
+# the effect's PCM, close. No `reset`, no `start`, no ctl at all — the app
+# assumes the device is a sink it can drop samples into.
+def _al_phase_raw() -> int32:
+    _al_say("[audiolife] E raw effect 300 Hz (no reset, no start) start\n")
+    frames: uint64 = AL_RATE * 150 / 1000               # 150 ms
+    aud: int32 = sys_open_write("/dev/audio")
+    if aud < 0:
+        return 1
+    done: uint64 = 0
+    ph: uint64 = 0
+    while done < frames:
+        n: uint64 = frames - done
+        if n > 1024:
+            n = 1024
+        ph = _al_fill(AL_SFX_HZ, n, ph)
+        sys_write(aud, &_al_chunk[0], n * 4)
+        done = done + n
+    sys_close(aud)
+    _al_say("[audiolife] E raw effect done; process EXITING\n")
+    return 0
+
+
+# ---- phase C: the music player (long streamopen producer) -----------------
+def _al_phase_music() -> int32:
+    ctl: int32 = sys_open_write("/dev/audioctl")
+    if ctl < 0:
+        return 1
+    _al_ctl_verb(ctl, "rate", AL_RATE)
+    _al_ctl_verb(ctl, "channels", AL_CH)
+    _al_ctl(ctl, "format s16le\n")
+    _al_ctl(ctl, "streamopen\n")
+    _al_ctl(ctl, "nonblock 1\n")
+    aud: int32 = sys_open_write("/dev/audio")
+    if aud < 0:
+        sys_close(ctl)
+        return 1
+    _al_say("[audiolife] C music 1500 Hz start\n")
+    total: uint64 = AL_RATE * 4                    # 4.0 s
+    done: uint64 = 0
+    ph: uint64 = 0
+    while done < total:
+        n: uint64 = total - done
+        if n > 1024:
+            n = 1024
+        ph = _al_fill(AL_MUSIC_HZ, n, ph)
+        wr: int64 = sys_write(aud, &_al_chunk[0], n * 4)
+        if wr > 0:
+            # nonblock: a SHORT write is normal. Advance by what was taken,
+            # rounded down to whole frames, and re-offer the rest.
+            done = done + cast[uint64](wr) / 4
+        else:
+            _al_sleep_j(1)
+    _al_ctl(ctl, "drain\n")
+    sys_close(aud)
+    sys_close(ctl)
+    _al_say("[audiolife] C music done\n")
+    return 0
+
+
+def _al_spawn(mode: Ptr[uint8]):
+    _al_argv[0] = cast[uint64](cast[Ptr[char]]("/bin/audiolife"))
+    _al_argv[1] = cast[uint64](mode)
+    _al_argv[2] = 0
+    spawn_detached(cast[Ptr[char]]("/bin/audiolife"), &_al_argv[0], -2, -2,
+                   cast[Ptr[uint64]](0))
+
+
+def _al_mode_is(argv: Ptr[uint64], want: Ptr[uint8]) -> int32:
+    s: Ptr[uint8] = cast[Ptr[uint8]](argv[1])
+    i: uint64 = 0
+    while want[i] != 0:
+        if s[i] != want[i]:
+            return 0
+        i = i + 1
+    if s[i] != 0:
+        return 0
+    return 1
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    if argc >= 2:
+        if _al_mode_is(argv, "jingle") == 1:
+            return _al_phase_jingle()
+        if _al_mode_is(argv, "sfx") == 1:
+            return _al_phase_sfx()
+        if _al_mode_is(argv, "music") == 1:
+            return _al_phase_music()
+        if _al_mode_is(argv, "clip") == 1:
+            return _al_phase_clip()
+        if _al_mode_is(argv, "raw") == 1:
+            return _al_phase_raw()
+        return 1
+
+    # ---- orchestrator ----------------------------------------------------
+    _al_say("[audiolife] SCENARIO start\n")
+
+    # PART 1 — the DIRECT staging path (symptoms 1 and 2).
+    _al_spawn("clip")
+    # 9.0 s. D's 3.0 s clip does not start when D is SPAWNED: D first hands
+    # 576 000 bytes over through 141 write syscalls, and on a cooperative
+    # scheduler that staging costs seconds of its own. A shorter wait had E
+    # take the device over while D's clip was legitimately still playing, which
+    # showed up as a phantom 0.4 s "truncation" in the capture.
+    _al_sleep_j(900)
+
+    _al_say("[audiolife] MARK sym2a (D is gone: its 3.0 s clip must NOT repeat)\n")
+    _al_spawn("raw")
+    _al_sleep_j(200)          # E writes one 150 ms effect and exits
+
+    _al_say("[audiolife] MARK sym1 (E must sound as 300 Hz, not as D's tail)\n")
+    _al_sleep_j(300)          # 3.0 s idle: nothing may still be sounding
+
+    # PART 2 — the streaming ring with TWO live producers (symptom 3).
+    _al_say("[audiolife] MARK sym3 (music + effects must MIX)\n")
+    _al_spawn("music")
+    _al_sleep_j(50)
+    _al_spawn("sfx")
+    _al_sleep_j(650)          # let C finish (4 s) + margin
+
+    _al_say("[audiolife] SCENARIO done\n")
+    while True:
+        _al_sleep_j(100)
+    return 0

@@ -276,6 +276,7 @@ build_adder_user echo                 # M16.37: writes argv to stdout
 build_adder_user cat                  # M16.37: streams files to stdout
 build_adder_user aplay                # native HDA: streams a PCM/WAV file to /dev/audio
 build_adder_user playtone             # native HDA: self-contained tone generator -> /dev/audio (no input file)
+build_adder_user audiolife            # native HDA: multi-process stream-lifetime scenario (test_audio_stream_lifetime.sh)
 build_adder_user dup_demo             # M16.41: exercises sys_dup / sys_dup2
 build_adder_user ls                   # M16.46: directory listing
 build_adder_user lsblk                # enumerate /dev/blk devices + sizes (pre-install disk check)

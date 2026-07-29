@@ -101,6 +101,26 @@ hrtimer_tick_hook: Fn[None]
 def register_hrtimer_tick_hook(hook: Fn[None]):
     hrtimer_tick_hook = hook
 
+# Audio service tick hook. drivers/audio/hda.ad registers hda_service_tick()
+# here at hda_init().
+#
+# WHY THE AUDIO DRIVER NEEDS A TICK AT ALL. Every other guard in the HDA
+# driver — the underrun silencer, the play-cursor repair, the write-cursor
+# resync — runs from a PRODUCER CALL. But an HDA stream buffer is CYCLIC: once
+# RUN is set the engine walks it and wraps, forever, and there is no
+# "stop at the end" bit. So a process that stages a clip, starts it and exits
+# leaves the hardware replaying that clip with nobody left to call into the
+# driver and stop it (measured: a 3.000 s clip emitted for 7.272 s). The tick
+# is the only code that still runs after the owner is gone, so it is where an
+# audio stream's lifetime actually ends. Same leaf-inversion discipline as
+# vdso_tick_hook: hda.ad imports get_jiffies from here, so a static import
+# back would cycle. Null = no-op (no audio hardware / pre-init).
+audio_tick_hook: Fn[None]
+
+
+def register_audio_tick_hook(hook: Fn[None]):
+    audio_tick_hook = hook
+
 # Linux-ABI no-syscall watchdog tick hook. When a Linux-ABI (is_linux_
 # userspace) task spins in userspace without issuing a syscall for N
 # seconds, the running instruction never traps — the only kernel entry
@@ -297,6 +317,12 @@ def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
     # V1 USB 2.0 HID: drain the EHCI interrupt-IN qTD the same way.
     # ehci_poll() is a no-op if EHCI V1 didn't arm a keyboard.
     ehci_poll()
+    # Audio stream lifetime: stop a staged clip after exactly one lap of the
+    # cyclic buffer, and stop a streaming ring whose owning process has
+    # exited. Nothing else runs once the producer is gone. See
+    # register_audio_tick_hook and drivers/audio/hda.ad::hda_service_tick.
+    if audio_tick_hook != cast[Fn[None]](0):
+        audio_tick_hook()
     # LIVE-MOUSE FIX: drain whatever the PS/2 (IRQ12) and USB-HID producers
     # pushed onto the shared mouse ring this tick and route each event to
     # the scene compositor (cursor move + hit-test + window-local forward).

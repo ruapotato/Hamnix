@@ -45,9 +45,10 @@ from drivers.pci.pci import (
     PCI_BDF_NONE,
 )
 from mm.page_alloc import alloc_pages
-from arch.x86.kernel.time import get_jiffies
+from arch.x86.kernel.time import get_jiffies, register_audio_tick_hook
 from kernel.sched.core import (
     WaitQueue, wq_init, wq_wait_prepare, wq_wait_commit_timeout,
+    current_task_pid, task_lookup_by_pid,
 )
 
 
@@ -271,6 +272,103 @@ hda_arm_j:       uint64 = 0          # jiffies at the first append (0 == none)
 hda_underruns:   uint64 = 0          # producer-fell-behind events (telemetry)
 hda_wq:          WaitQueue           # timed-sleep parking spot for producers
 hda_wq_ready:    int32  = 0
+
+
+# --- STREAM LIFETIME: a buffer belongs to the process that filled it -----
+#
+# THE BUG THIS SECTION EXISTS FOR (user report, shipped image, 2026-07-28):
+#   "on the first sound effect it played the end of the boot jingle"
+#   "on close it played the last sound effect over and over"
+#
+# Both are ONE defect, and it is a LIFETIME defect: the DMA buffer and the DMA
+# engine outlived the stream that owned them. MEASURED on the pre-fix build
+# (scripts/test_audio_stream_lifetime.sh, QEMU `-audiodev wav` capture):
+#
+#   * a process staged a 3.000 s clip, sent `start`, and exited. The codec
+#     emitted 7.272 s of it — the cyclic BDL replayed the buffer 2.42 times and
+#     only stopped because an UNRELATED later `streamopen` reprogrammed the
+#     descriptor. Nothing in the driver ever cleared RUN. That is "over and
+#     over", exactly.
+#   * a second process then wrote ONE 150 ms effect at offset 0, snake-style
+#     (no `reset`, no `start`). The codec emitted that effect TWICE, 3.000 s
+#     apart — one lap of the still-looping buffer — and each time followed it
+#     with the REST of the first process's clip, because hda_pcm_len only ever
+#     GREW so the new short clip inherited the old one's length and tail. That
+#     is "the first sound effect played the end of the boot jingle", exactly.
+#
+# So: an output stream now has an OWNER (a pid) and a staged clip is a ONE-SHOT.
+#
+#   hda_owner        the pid whose audio the hardware is currently playing.
+#   claim            a write by a different pid takes the device over WHEN the
+#                    old owner is gone (halt DMA, drop the stale length); while
+#                    the old owner is still ALIVE the newcomer is MIXED IN
+#                    instead (see hda_stream_mix / hda_dev_write) — that is the
+#                    "two apps, half the sounds don't play" report.
+#   one-shot         hda_start() on the staged path arms lap accounting; the
+#                    timer service tick clears RUN after EXACTLY one lap, so a
+#                    clip plays once and the device goes quiet.
+#   reap             the service tick also stops a streaming ring whose owner
+#                    has exited, so an abandoned stream cannot keep sounding.
+#
+# The service tick is the load-bearing piece for a DEAD producer: every other
+# guard in this driver runs from a producer call, and a process that has exited
+# makes no calls. It is registered on the arch timer hook at hda_init().
+hda_owner:        uint64 = 0     # pid owning the output stream (0 == nobody)
+hda_takeovers:    uint64 = 0     # times a new pid took a stale stream over
+hda_reaped:       uint64 = 0     # streams stopped because their owner exited
+hda_mixed_in:     uint64 = 0     # writes SUMMED into a live stream
+hda_mix_clipped:  uint64 = 0     # mix-ins truncated for want of room (LOUD)
+# Where the NEXT mixed-in byte goes, as a monotonic ring position. A mix-in
+# arrives in chunks (a 100 ms effect is a dozen 4 KiB writes), and the play
+# cursor barely moves while those chunks are handed over — so placing every
+# chunk at "play + guard" stacks them all on top of each other and all but the
+# last ~25 ms of the effect is lost. Measured: 0.075 s of a 0.600 s effect
+# stream survived. This cursor advances with the bytes mixed, so successive
+# chunks lay down end to end, and it is re-anchored to the live edge whenever
+# the hardware has caught up with it.
+hda_mixw:         uint64 = 0     # monotonic write position for mixed-in audio
+
+# One-shot lap accounting for a staged (non-ring) clip.
+hda_oneshot:      int32  = 0     # 1 == a staged clip is playing
+hda_oneshot_cbl:  uint64 = 0     # cyclic length (clip + silence pad)
+hda_oneshot_clip: uint64 = 0     # the AUDIO length inside that cyclic length
+hda_oneshot_stop_j: uint64 = 0   # jiffies at which RUN is cleared (0 == unset)
+hda_oneshot_done: uint64 = 0     # bytes the engine has walked since start
+hda_oneshot_lpib: uint32 = 0     # previous LPIB sample, for the lap sum
+hda_stage_arm_j:  uint64 = 0     # jiffies of the MOST RECENT staged byte (0 == none)
+
+# Grace before an exited owner's ring is cut off: let what was already written
+# play out (2 s) rather than clipping the tail of the last effect.
+HDA_REAP_GRACE_J: uint64 = 200
+hda_reap_j:       uint64 = 0     # jiffies when the owner was first seen gone
+
+# A staged clip that nobody `start`ed (lib/hamgame_dev.ad's game_dev_play_pcm
+# writes PCM and closes — no ctl verbs at all) is started by the service tick
+# after this deadline. Before this, such an app was SILENT unless some other
+# program happened to have armed the stream first.
+HDA_STAGE_DEADLINE_J: uint64 = 10        # 100 ms at HZ = 100
+
+# SILENCE PAD appended to every staged clip's cyclic length.
+#
+# LPIB counts bytes the controller has FETCHED, not bytes the listener has
+# heard: an emulated (or real) controller pulls a period at a time into its
+# FIFO and the codec plays it out afterwards. Clearing RUN the instant LPIB
+# completes one lap therefore throws away everything still in flight — measured
+# as 2.524 s of a 3.000 s clip, a 16 % truncation you can hear as a clipped
+# ending. So the cyclic length is the clip PLUS a pad of zeroes: the engine
+# plays the clip, then plays silence while the in-flight audio drains, and only
+# then does the lap complete and RUN get cleared. It is also the fail-safe —
+# if the service tick were ever late, what repeats is SILENCE, not the clip.
+# 256 KiB is 1.36 s at 48 kHz stereo.
+HDA_ONESHOT_PAD: uint64 = 262144
+
+# How long after the CLIP's last byte has been fetched we keep RUN set, letting
+# the pad's silence carry the in-flight audio out to the codec. LPIB is a FETCH
+# counter, so this is the only honest way to know the listener has heard the
+# end: measured, stopping at the fetch mark alone cost 0.40 s of a 3.00 s clip.
+# 1.0 s is padded by HDA_ONESHOT_PAD's 1.36 s of silence, so the engine is
+# always playing zeroes during the wait, never a repeat.
+HDA_ONESHOT_DRAIN_J: uint64 = 100
 
 
 # --- CAPTURE (record / input) state ---------------------------------
@@ -852,6 +950,14 @@ def hda_init() -> int32:
 
     hda_initialized = 1
 
+    # Publish the service tick. This is the ONLY driver code that still runs
+    # once a producer has exited, and it is what ends an abandoned stream: it
+    # clears RUN after one lap of a staged clip (so a clip plays ONCE) and
+    # stops a streaming ring whose owner is gone. Hook-pointer indirection —
+    # arch/x86/kernel/time.ad must not import a drivers/ symbol (we import
+    # get_jiffies from it, which would cycle).
+    register_audio_tick_hook(hda_service_tick)
+
     # Prepare the capture (input) stream descriptor + ring as well. A
     # failure here doesn't void playback; we log and continue.
     if hda_capture_init() == 0:
@@ -894,6 +1000,17 @@ def hda_stop():
         # a paused transport keeps showing where it actually got to (and a
         # resume restarts from there) instead of snapping back to the start.
         _hda_play_total()
+    ctl: uint32 = _sd_r8(HDA_SD_CTL)
+    _sd_w8(HDA_SD_CTL, ctl & ~HDA_SDCTL_RUN)
+    hda_running = 0
+
+
+def _hda_clear_run():
+    # Clear RUN and nothing else. Unlike hda_stop() this does NOT sample the
+    # ring play cursor, so it is safe on the staged path (no ring armed) and in
+    # interrupt context.
+    if hda_initialized == 0:
+        return
     ctl: uint32 = _sd_r8(HDA_SD_CTL)
     _sd_w8(HDA_SD_CTL, ctl & ~HDA_SDCTL_RUN)
     hda_running = 0
@@ -951,7 +1068,16 @@ def hda_write_pcm(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
 def hda_start() -> int32:
     # Program the BDL for the currently-staged PCM length, set the stream
     # number in SD_CTL, and set the RUN bit. DMA cycles the buffer to the
-    # codec, producing sound. Returns 0 on success.
+    # codec, producing sound.
+    #
+    # THE BUFFER IS CYCLIC IN HARDWARE, SO THIS IS A ONE-SHOT IN SOFTWARE.
+    # There is no "stop at the end of the BDL" bit in the HDA stream
+    # descriptor: once RUN is set the engine walks the buffer and wraps,
+    # forever. That is why a staged clip used to repeat until some unrelated
+    # program reprogrammed the descriptor ("on close it played the last sound
+    # effect over and over" — measured at 2.42 laps of a 3 s clip). So we arm
+    # lap accounting here and hda_service_tick() clears RUN after EXACTLY one
+    # lap. Returns 0 on success.
     if hda_initialized == 0:
         return -1
     if hda_pcm_len == 0:
@@ -964,12 +1090,26 @@ def hda_start() -> int32:
     if pcm_len == 0:
         return -1
 
+    # Append a silence pad (see HDA_ONESHOT_PAD) and zero it, so what follows
+    # the clip in the cyclic buffer is guaranteed quiet. Done here, in syscall
+    # context, because the service tick must not memset in an interrupt.
+    pad: uint64 = HDA_ONESHOT_PAD
+    if pcm_len + pad > hda_pcm_cap:
+        pad = hda_pcm_cap - pcm_len
+    if frame > 0:
+        pad = (pad / frame) * frame
+    z: uint64 = 0
+    while z < pad:
+        cast[Ptr[uint8]](hda_pcm_buf + pcm_len + z)[0] = 0
+        z = z + 1
+    cyclic: uint64 = pcm_len + pad
+
     # The descriptor MUST be stopped + reset before its BDL/CBL change.
     # (Without this a `start` issued while a previous stream was running
     # reprogrammed a live DMA engine and it simply stopped producing.)
     _hda_stream_halt()
     hda_stream_mode = 0
-    _hda_program_bdl(pcm_len)
+    _hda_program_bdl(cyclic)
     _hda_connect_codec_path()
 
     # Clear stream status (write-1-to-clear the latched bits).
@@ -982,12 +1122,23 @@ def hda_start() -> int32:
     ctl: uint32 = _sd_r8(HDA_SD_CTL)
     _sd_w8(HDA_SD_CTL, ctl | HDA_SDCTL_RUN | HDA_SDCTL_IOCE)
     hda_running = 1
+    # Arm the ONE-SHOT lap accounting. _hda_stream_halt() above pulsed SRST so
+    # LPIB restarts at 0; the service tick sums LPIB deltas and clears RUN once
+    # a whole cyclic length (== this clip) has been walked.
+    hda_oneshot = 1
+    hda_oneshot_cbl = cyclic
+    hda_oneshot_clip = pcm_len
+    hda_oneshot_done = 0
+    hda_oneshot_lpib = 0
+    hda_oneshot_stop_j = 0
+    hda_stage_arm_j = 0
     return 0
 
 
 def hda_reset_buffer():
     # Drop the staged PCM so a fresh stream can be loaded from offset 0.
     hda_pcm_len = 0
+    hda_stage_arm_j = 0
 
 
 def hda_link_position() -> uint32:
@@ -1093,6 +1244,11 @@ def hda_stream_open() -> int32:
     hda_zero = hda_ring                # whole ring was just zeroed above
     hda_nonblock = 0                   # blocking by default; opt in per stream
     hda_stream_mode = 1
+    hda_oneshot = 0                    # the staged one-shot is superseded
+    hda_stage_arm_j = 0
+    hda_reap_j = 0
+    hda_owner = current_task_pid()     # this stream belongs to THIS process
+    hda_mixw = 0
     return 0
 
 
@@ -1146,6 +1302,12 @@ def _hda_play_total() -> uint64:
     # is missing whole laps; add them back. This makes a missed wrap
     # self-correcting instead of permanent.
     if hda_running == 0:
+        return hda_play_last
+    # NO RING ARMED. Every line below divides or modulos by hda_ring, and a
+    # staged (non-ring) clip leaves it 0 — a `% 0` here is a #DE inside the
+    # TIMER INTERRUPT, which takes the whole kernel down silently. The ring
+    # cursor is meaningless without a ring, so say so and leave.
+    if hda_ring == 0:
         return hda_play_last
     lp: uint32 = _sd_r32(HDA_SD_LPIB)
     if cast[uint64](lp) >= hda_ring:
@@ -1287,6 +1449,18 @@ def hda_stream_write(buf: Ptr[uint8], count: uint64) -> int64:
         return -1
     if count == 0:
         return 0
+    # OWNERSHIP. The ring belongs to the process that armed it.
+    #   * a DIFFERENT live process is a second source -> SUM it into the ring
+    #     ahead of the play cursor (hda_stream_mix), not APPEND it behind a
+    #     ring-full of the owner's audio where it is inaudible for seconds.
+    #   * a ring whose owner has EXITED is stale: re-arm it for the newcomer so
+    #     the newcomer's first sound is its OWN, never the leftovers.
+    pid: uint64 = current_task_pid()
+    if hda_owner != pid:
+        if _hda_owner_alive() != 0:
+            return hda_stream_mix(buf, count)
+        hda_takeovers = hda_takeovers + 1
+        hda_stream_open()              # zeroes the ring; sets hda_owner = pid
     done: uint64 = 0
     stall: uint64 = 0
     while done < count:
@@ -1337,6 +1511,326 @@ def hda_stream_written() -> uint64:
     return hda_w
 
 
+# ====================================================================
+# STREAM OWNERSHIP, ONE-SHOT LIFETIME AND SOFTWARE MIX-IN
+# ====================================================================
+
+def hda_stream_owner() -> uint64:
+    return hda_owner
+
+
+def hda_stream_takeovers() -> uint64:
+    return hda_takeovers
+
+
+def hda_stream_reaped() -> uint64:
+    return hda_reaped
+
+
+def hda_stream_mixed_in() -> uint64:
+    return hda_mixed_in
+
+
+def hda_stream_mix_clipped() -> uint64:
+    return hda_mix_clipped
+
+
+def _hda_owner_alive() -> int32:
+    # 1 iff the pid that owns the current output stream is still a live task.
+    # pid 0 is the "nobody owns it" sentinel, which is NOT alive.
+    if hda_owner == 0:
+        return 0
+    if task_lookup_by_pid(hda_owner) < 0:
+        return 0
+    return 1
+
+
+def _hda_sat_add_s16(a: int32, b: int32) -> int32:
+    s: int32 = a + b
+    if s > 32767:
+        return 32767
+    if s < 0 - 32768:
+        return 0 - 32768
+    return s
+
+
+def _hda_buf_rd16(byte_off: uint64) -> int32:
+    lo: uint32 = cast[uint32](cast[Ptr[uint8]](hda_pcm_buf + byte_off)[0])
+    hi: uint32 = cast[uint32](cast[Ptr[uint8]](hda_pcm_buf + byte_off + 1)[0])
+    raw: uint32 = lo | (hi << 8)
+    v: int32 = cast[int32](raw)
+    if v >= 32768:
+        v = v - 65536
+    return v
+
+
+def _hda_buf_wr16(byte_off: uint64, s: int32):
+    u: uint32 = cast[uint32](s) & 0xFFFF
+    cast[Ptr[uint8]](hda_pcm_buf + byte_off)[0] = cast[uint8](u & 0xFF)
+    cast[Ptr[uint8]](hda_pcm_buf + byte_off + 1)[0] = cast[uint8]((u >> 8) & 0xFF)
+
+
+def _hda_mix_guard() -> uint64:
+    # How far AHEAD of the hardware play cursor a mixed-in effect is placed.
+    # It must clear the controller's FIFO prefetch (bytes the engine has
+    # already fetched cannot be changed) but every extra byte is latency the
+    # player hears between the game event and the beep. One eighth of a period
+    # is ~42 ms at 48 kHz stereo — past the FIFO, under the ~100 ms at which a
+    # sound stops feeling attached to the action it accompanies.
+    g: uint64 = hda_period / 8
+    frame: uint64 = _hda_frame_bytes()
+    if g < 4096:
+        g = 4096
+    return (g / frame) * frame
+
+
+def hda_stream_mix(buf: Ptr[uint8], count: uint64) -> int64:
+    # SUM `count` bytes of s16le PCM into the ring just ahead of the play
+    # cursor, instead of APPENDING them behind everything the ring's owner has
+    # already queued.
+    #
+    # THIS IS THE "TWO APPS" FIX. Measured on the pre-fix build: with a music
+    # player streaming 4.000 s into the ring, a game's six 100 ms effects came
+    # out AFTER all of the music (the producer had queued up to a full ring —
+    # 5.46 s — ahead of the play cursor, so an appended effect could not be
+    # heard until that drained) and 4 % of them were lost outright. Zero of the
+    # 0.600 s of effects overlapped the music. From the player's seat that is
+    # "half the sounds don't play".
+    #
+    # THERE IS NO VOICE OR SLOT TABLE HERE, AND SO NO CONCURRENCY CEILING: the
+    # mix is done in place into the one ring, so any number of processes can be
+    # summed. The only bound is the ring's remaining span, and when a mix-in
+    # does not fit that is reported LOUDLY (hda_mix_clipped + a printk naming
+    # the byte count) rather than silently truncated.
+    if hda_ring == 0:
+        return -1
+    play: uint64 = _hda_play_total()
+    # Sum in just ahead of the play cursor: if the owner has already queued
+    # audio there this IS the mix; if not, the effect stands alone. Successive
+    # chunks of the SAME effect continue from hda_mixw rather than restacking
+    # at the live edge.
+    edge: uint64 = play + _hda_mix_guard()
+    if hda_mixw < edge:
+        hda_mixw = edge
+    # Never let the mix run more than half a ring ahead of the hardware: past
+    # that the effect is heard so late it is no longer attached to what caused
+    # it. This is a REAL bound and it is reported, not hidden.
+    if hda_mixw > play + hda_ring / 2:
+        hda_mix_clipped = hda_mix_clipped + 1
+        printk2("[hda] mix-in BACKLOG: cursor %d B past play, ring/2 = %d B\n",
+                hda_mixw - play, hda_ring / 2)
+        hda_mixw = edge
+    start: uint64 = hda_mixw
+    # The far end of the writable window is one whole ring past the cursor.
+    limit: uint64 = play + hda_ring
+    take: uint64 = count
+    if start >= limit:
+        take = 0
+    elif start + take > limit:
+        take = limit - start
+    frame: uint64 = _hda_frame_bytes()
+    take = (take / frame) * frame
+    if take < count:
+        hda_mix_clipped = hda_mix_clipped + 1
+        printk2("[hda] mix-in TRUNCATED: ring window holds %d of %d bytes\n",
+                take, count)
+    i: uint64 = 0
+    while i + 1 < take:
+        p: uint64 = (start + i) % hda_ring
+        old: int32 = 0
+        if start + i < hda_w:
+            old = _hda_buf_rd16(p)
+        lo: uint32 = cast[uint32](buf[i])
+        hi: uint32 = cast[uint32](buf[i + 1])
+        raw: uint32 = lo | (hi << 8)
+        add: int32 = cast[int32](raw)
+        if add >= 32768:
+            add = add - 65536
+        _hda_buf_wr16(p, _hda_sat_add_s16(old, add))
+        i = i + 2
+    end: uint64 = start + take
+    hda_mixw = end
+    if end > hda_w:
+        hda_w = end
+        hda_pcm_len = hda_w
+    if hda_zero < hda_w:
+        hda_zero = hda_w                 # do NOT let the silencer erase the mix
+    if hda_running == 0:
+        _hda_stream_go()
+    hda_mixed_in = hda_mixed_in + 1
+    return cast[int64](take)
+
+
+def hda_dev_write(buf: Ptr[uint8], count: uint64, off: uint64) -> int64:
+    # The /dev/audio write path, WITH ownership. This is what the cdev calls;
+    # hda_write_pcm stays the raw staging primitive (the kernel mixer uses it).
+    #
+    #   * a write at offset 0 STARTS A NEW CLIP. hda_pcm_len used to only ever
+    #     GROW, so a short effect staged over a longer previous clip inherited
+    #     that clip's length and its trailing samples were played after the
+    #     effect — the "first sound effect played the end of the boot jingle"
+    #     report, reproduced exactly. Offset 0 means "the beginning", so it
+    #     truncates.
+    #   * a write by a pid that is NOT the owner, while the owner is still
+    #     ALIVE and its clip is still sounding, is SUMMED into the live clip
+    #     rather than overwriting it.
+    #   * a write by a new pid when the owner is gone TAKES THE DEVICE OVER:
+    #     the stale clip is stopped and its length dropped, so nothing of it
+    #     can be replayed.
+    if hda_initialized == 0:
+        return -1
+    pid: uint64 = current_task_pid()
+    if hda_owner != pid:
+        if _hda_owner_alive() != 0 and hda_running != 0 and hda_oneshot != 0:
+            return _hda_stage_mix(buf, count)
+        # Stale or unowned: take over.
+        if hda_running != 0:
+            _hda_clear_run()
+        hda_oneshot = 0
+        hda_pcm_len = 0
+        hda_stage_arm_j = 0
+        if hda_owner != 0:
+            hda_takeovers = hda_takeovers + 1
+        hda_owner = pid
+    if off == 0:
+        hda_pcm_len = 0                  # a new clip, not an extension
+    wr: int64 = hda_write_pcm(buf, count, off)
+    if wr > 0:
+        # Stamp the LAST write, not the first: the auto-start deadline means
+        # "the writer has finished handing the clip over", and a producer
+        # streaming 576 KB through 141 syscalls takes far longer than the
+        # deadline. Stamping the first write let the service tick start a
+        # PARTIAL clip out from under a writer that was still staging.
+        hda_stage_arm_j = get_jiffies()
+        if hda_stage_arm_j == 0:
+            hda_stage_arm_j = 1          # 0 is the "not armed" sentinel
+    return wr
+
+
+def _hda_stage_mix(buf: Ptr[uint8], count: uint64) -> int64:
+    # Sum an effect into a staged clip that is CURRENTLY SOUNDING and belongs
+    # to another live process, placed just ahead of the play cursor.
+    #
+    # The staged path's buffer is exactly one clip long (CBL == the clip), so
+    # unlike the ring there IS a hard bound here: an effect longer than what is
+    # left of the clip cannot be mixed into it. That shortfall is REPORTED, not
+    # swallowed — a silently-dropped tail is the failure mode this whole change
+    # exists to remove.
+    cbl: uint64 = hda_oneshot_cbl
+    if cbl == 0:
+        return -1
+    lp: uint64 = cast[uint64](_sd_r32(HDA_SD_LPIB))
+    if lp >= cbl:
+        lp = lp % cbl
+    start: uint64 = lp + _hda_mix_guard()
+    if start >= cbl:
+        # Nothing of the clip is left to mix into.
+        hda_mix_clipped = hda_mix_clipped + 1
+        printk2("[hda] mix-in DROPPED: %d bytes, staged clip (%d B) has no room\n",
+                count, cbl)
+        return 0
+    take: uint64 = count
+    if start + take > cbl:
+        take = cbl - start
+    frame: uint64 = _hda_frame_bytes()
+    take = (take / frame) * frame
+    if take < count:
+        hda_mix_clipped = hda_mix_clipped + 1
+        printk2("[hda] mix-in TRUNCATED: staged clip holds %d of %d bytes\n",
+                take, count)
+    i: uint64 = 0
+    while i + 1 < take:
+        lo: uint32 = cast[uint32](buf[i])
+        hi: uint32 = cast[uint32](buf[i + 1])
+        raw: uint32 = lo | (hi << 8)
+        add: int32 = cast[int32](raw)
+        if add >= 32768:
+            add = add - 65536
+        _hda_buf_wr16(start + i, _hda_sat_add_s16(_hda_buf_rd16(start + i), add))
+        i = i + 2
+    hda_mixed_in = hda_mixed_in + 1
+    return cast[int64](take)
+
+
+def hda_service_tick():
+    # Driver service run from the arch timer tick (100 Hz). EVERYTHING ELSE in
+    # this driver runs from a producer call, and the two bugs this fixes are
+    # both about a producer that is NO LONGER THERE TO CALL. This is the only
+    # code path that still runs after the process exits, so it is where the
+    # stream's lifetime actually ends.
+    #
+    # Runs in interrupt context: MMIO reads and integer bookkeeping only, no
+    # sleeping, no long memsets, no wait queues.
+    if hda_initialized == 0:
+        return
+
+    # (1) ONE-SHOT: clear RUN after exactly one lap of a staged clip.
+    if hda_oneshot != 0 and hda_running != 0 and hda_oneshot_cbl != 0:
+        lp: uint32 = _sd_r32(HDA_SD_LPIB)
+        cbl: uint64 = hda_oneshot_cbl
+        cur: uint64 = cast[uint64](lp)
+        if cur >= cbl:
+            cur = cur % cbl
+        prev: uint64 = cast[uint64](hda_oneshot_lpib)
+        if prev >= cbl:
+            prev = prev % cbl
+        # Modular delta, so a wrap between two ticks still counts forward.
+        adv: uint64 = (cur + cbl - prev) % cbl
+        hda_oneshot_lpib = cast[uint32](cur)
+        hda_oneshot_done = hda_oneshot_done + adv
+        if hda_oneshot_done >= hda_oneshot_clip and hda_oneshot_stop_j == 0:
+            # The clip's last byte has been FETCHED. Let the silence pad carry
+            # what is still in flight out to the codec before clearing RUN.
+            hda_oneshot_stop_j = get_jiffies() + HDA_ONESHOT_DRAIN_J
+            if hda_oneshot_stop_j == 0:
+                hda_oneshot_stop_j = 1
+        if hda_oneshot_stop_j != 0 and get_jiffies() >= hda_oneshot_stop_j:
+            _hda_clear_run()
+            hda_oneshot = 0
+            hda_oneshot_stop_j = 0
+            hda_pcm_len = 0              # nothing stale is left to inherit
+            hda_stage_arm_j = 0
+            hda_owner = 0
+            return
+    elif hda_stream_mode == 0 and hda_running == 0 and hda_stage_arm_j != 0:
+        # (2) A staged clip nobody `start`ed, and whose writer has gone quiet
+        # for HDA_STAGE_DEADLINE_J. lib/hamgame_dev.ad's game_dev_play_pcm
+        # writes PCM to /dev/audio and closes — no ctl verbs at all — so
+        # without this the effect was staged and never heard unless some other
+        # program happened to have armed the stream first.
+        if hda_pcm_len > 0 and get_jiffies() >= hda_stage_arm_j + HDA_STAGE_DEADLINE_J:
+            hda_start()
+            return
+
+    # (3) REAP a streaming ring whose owner has exited. Grace first: what the
+    # owner already wrote is allowed to play out, so a producer that exits
+    # right after its last write does not get its tail cut off.
+    if hda_stream_mode != 0 and hda_owner != 0:
+        if _hda_owner_alive() == 0:
+            if hda_reap_j == 0:
+                hda_reap_j = get_jiffies()
+                if hda_reap_j == 0:
+                    hda_reap_j = 1
+            played_out: int32 = 0
+            if hda_running == 0:
+                played_out = 1
+            elif _hda_play_total() >= hda_w:
+                played_out = 1
+            elif get_jiffies() >= hda_reap_j + HDA_REAP_GRACE_J:
+                played_out = 1
+            if played_out != 0:
+                hda_stop()
+                hda_stream_mode = 0
+                hda_w = 0
+                hda_zero = 0
+                hda_arm_j = 0
+                hda_owner = 0
+                hda_reap_j = 0
+                hda_reaped = hda_reaped + 1
+        else:
+            hda_reap_j = 0
+
+
 def hda_stream_drain() -> int32:
     # Play out everything written, then STOP the stream. This is what makes
     # a clip END instead of looping: we silence one period past the write
@@ -1370,6 +1864,17 @@ def hda_stream_drain() -> int32:
             break
     hda_draining = 0
     hda_stop()
+    # END OF STREAM = END OF OWNERSHIP. A drained ring is finished audio; the
+    # next process to write must get a stream of its OWN, not inherit this
+    # one's cursors and leftover lap. (Before this, `streamopen` armed a ring
+    # that survived the drain AND the process, so an unrelated later writer
+    # appended into a stranger's stream.)
+    hda_stream_mode = 0
+    hda_w = 0
+    hda_zero = 0
+    hda_arm_j = 0
+    hda_owner = 0
+    hda_reap_j = 0
     return 0
 
 
