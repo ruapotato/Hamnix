@@ -450,23 +450,29 @@ def obj_gc_free(o: int32):
         if c >= 0:
             ax_val[b] = ax_free[c]       # intrusive link through the first slot
             ax_free[c] = b
-    # ---- Map / Set entries (marked dead + cleared; the mse pool is bump-only) ----
+    # ---- Map / Set entries -> the mse free list. Sound because THIS object is
+    # the only thing that could reach them (obj_gc_trace walks a live owner's
+    # list only) and obj_ms_head/tail are cleared below, so nothing can follow
+    # mse_next into the free list. `ne` is read BEFORE mse_next becomes the link.
     e: int32 = obj_ms_head[o]
     while e >= 0:
         ne: int32 = mse_next[e]
         mse_used[e] = cast[uint8](0)
         mse_key[e] = 0
         mse_val[e] = 0
+        mse_next[e] = mse_free_head
+        mse_free_head = e
+        mse_live = mse_live - 1
         e = ne
-    # ---- promise reaction records (cleared; the pr pool is bump-only) ----
+    # ---- promise reaction records -> the pr free list. These are records still
+    # REGISTERED on this promise, and an unreachable promise can never settle, so
+    # they can never be scheduled. A record that WAS scheduled is not in this list
+    # (promise_fulfill/promise_reject detach as they schedule) — that separation
+    # is what keeps this free from racing the run_reaction free.
     r: int32 = prom_react[o]
     while r >= 0:
         nr: int32 = pr_next[r]
-        pr_onful[r] = 0
-        pr_onrej[r] = 0
-        pr_result[r] = 0
-        pr_source[r] = -1
-        pr_next[r] = -1
+        pr_free_slot(r)
         r = nr
     # ---- clear every handle-bearing field ----
     obj_proto[o] = -1
@@ -919,4 +925,55 @@ def js_arena_stat(which: int32) -> int32:
         return n_binds
     if which == 19:
         return MAX_VAL
+    # ---- ASYNC pools: the deferred-callback queue, promise reaction records and
+    # Map/Set entries. All three were bump-only, so "how many did this page make"
+    # WAS the ceiling; now the ceiling is the *_live_hi high-water and the *_overflow
+    # / drain-truncation counters are the only way a page can lose async work.
+    #  20 timer_live      21 timer_live_hi   22 timer_next (extent)
+    #  23 timer_recycled  24 timer_overflow  25 TIMER_CAP
+    #  26 timer_drain_trunc                  27 timer_drain_cap
+    #  28 pr_live         29 pr_live_hi      30 pr_n (extent)
+    #  31 pr_recycled     32 pr_overflow     33 PROM_REACT_CAP
+    #  34 mse_live        35 mse_live_hi     36 mse_n (extent)
+    #  37 mse_recycled    38 mse_overflow    39 MS_CAP
+    if which == 20:
+        return timer_live
+    if which == 21:
+        return timer_live_hi
+    if which == 22:
+        return timer_next
+    if which == 23:
+        return timer_recycled
+    if which == 24:
+        return timer_overflow
+    if which == 25:
+        return TIMER_CAP
+    if which == 26:
+        return timer_drain_trunc
+    if which == 27:
+        return timer_drain_cap
+    if which == 28:
+        return pr_live
+    if which == 29:
+        return pr_live_hi
+    if which == 30:
+        return pr_n
+    if which == 31:
+        return pr_recycled
+    if which == 32:
+        return pr_overflow
+    if which == 33:
+        return PROM_REACT_CAP
+    if which == 34:
+        return mse_live
+    if which == 35:
+        return mse_live_hi
+    if which == 36:
+        return mse_n
+    if which == 37:
+        return mse_recycled
+    if which == 38:
+        return mse_overflow
+    if which == 39:
+        return MS_CAP
     return -1

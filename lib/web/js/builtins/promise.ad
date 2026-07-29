@@ -53,12 +53,54 @@ def is_promise(v: int32) -> int32:
     return cast[int32](obj_is_prom[objid_of(v)])
 
 
-# Enqueue a reaction record as a microtask on the #178 queue.
+# ---- reaction-record allocator (free list; see the RETENTION ARGUMENT in
+# state.ad above the pr_* block) -------------------------------------------
+# Returns a record index, or -1 when PROM_REACT_CAP records are outstanding at
+# once. With reuse that is a real capacity wall, so it REPORTS — the old silent
+# `return result` handed the page a promise that could never settle, and a
+# .then chain simply stopped after PROM_REACT_CAP links with nothing said.
+def pr_alloc() -> int32:
+    rid: int32 = pr_free_head
+    if rid >= 0:
+        pr_free_head = pr_next[rid]           # intrusive link (see state.ad)
+        pr_recycled = pr_recycled + 1
+    else:
+        if pr_n >= PROM_REACT_CAP:
+            pr_overflow = pr_overflow + 1
+            if pr_noted == 0:
+                pr_noted = 1
+                js_out_note(cast[Ptr[uint8]]("[engine] CEILING promise reaction pool full — .then/.catch registrations are being DROPPED (those promises can never settle). simultaneously-outstanding PROM_REACT_CAP="), PROM_REACT_CAP)
+            set_error(cast[Ptr[uint8]]("promise reaction pool full"))
+            return -1
+        rid = pr_n
+        pr_n = pr_n + 1
+    pr_live = pr_live + 1
+    if pr_live > pr_live_hi:
+        pr_live_hi = pr_live
+    return rid
+
+
+# Retire record `rid`. ONLY legal once nothing can reach it: from the end of
+# run_reaction (its single consumer is finished) or from obj_gc_free (the source
+# promise is unreachable, so the record can never be scheduled). pr_source = -1
+# is the freed marker run_reaction validates against.
+def pr_free_slot(rid: int32):
+    pr_onful[rid] = 0
+    pr_onrej[rid] = 0
+    pr_result[rid] = 0
+    pr_source[rid] = -1
+    pr_next[rid] = pr_free_head
+    pr_free_head = rid
+    pr_live = pr_live - 1
+
+
+# Enqueue a reaction record as a microtask on the #178 queue. The record id
+# travels as a NUMBER in the timer's args — invisible to both collectors, which
+# is why the pr free list is driven by run_reaction, not by the GC.
 def schedule_reaction(rid: int32):
-    if timer_next >= TIMER_CAP:
-        return
-    reg: int32 = timer_next
-    timer_next = timer_next + 1
+    reg: int32 = timer_alloc()
+    if reg < 0:
+        return                                # table full — timer_alloc REPORTED it
     timer_fn[reg] = g_promise_job
     timer_delay[reg] = 0.0
     timer_seq[reg] = timer_seq_ctr
@@ -78,11 +120,16 @@ def promise_fulfill(o: int32, val: int32):
         return
     prom_state[o] = cast[uint8](1)
     prom_result[o] = val
+    # DETACH each record as it is scheduled (pr_next = -1), so "scheduled" and
+    # "in a pending list" stay mutually exclusive — the invariant the reaction
+    # free list rests on.
     r: int32 = prom_react[o]
-    while r >= 0:
-        schedule_reaction(r)
-        r = pr_next[r]
     prom_react[o] = -1
+    while r >= 0:
+        nr: int32 = pr_next[r]
+        pr_next[r] = -1
+        schedule_reaction(r)
+        r = nr
 
 
 def promise_reject(o: int32, reason: int32):
@@ -90,11 +137,13 @@ def promise_reject(o: int32, reason: int32):
         return
     prom_state[o] = cast[uint8](2)
     prom_result[o] = reason
-    r: int32 = prom_react[o]
-    while r >= 0:
-        schedule_reaction(r)
-        r = pr_next[r]
+    r: int32 = prom_react[o]                 # detach as scheduled (see promise_fulfill)
     prom_react[o] = -1
+    while r >= 0:
+        nr: int32 = pr_next[r]
+        pr_next[r] = -1
+        schedule_reaction(r)
+        r = nr
 
 
 # The [[Resolve]](promise, x) resolution procedure: assimilate a thenable /
@@ -147,9 +196,25 @@ def make_resolver(o: int32, nat: int32, slot: int32) -> int32:
     return fv
 
 
-# Run one settled reaction (the microtask body). rid indexes the reaction pool;
-# the source promise is already settled, so read its state + value now.
+# Run one settled reaction (the microtask body) and RETIRE its record.
+#
+# Freeing here is what makes an unbounded .then chain possible, and it is sound
+# because a record is scheduled at most once (see state.ad): after this returns
+# nothing — no list, no timer arg, no GC root — names `rid`. The free happens
+# AFTER run_reaction_body, whose resolve_promise() can itself allocate records,
+# so the slot is never handed out while still in use.
 def run_reaction(rid: int32):
+    if rid < 0 or rid >= pr_n or pr_source[rid] < 0:
+        # A record that is already retired: only reachable if some path scheduled
+        # the same rid twice. Silently running a RECYCLED record would corrupt an
+        # unrelated promise chain, so refuse and say so.
+        set_error(cast[Ptr[uint8]]("promise reaction record used after free"))
+        return
+    run_reaction_body(rid)
+    pr_free_slot(rid)
+
+
+def run_reaction_body(rid: int32):
     src: int32 = pr_source[rid]
     st: int32 = cast[int32](prom_state[src])
     val: int32 = prom_result[src]
@@ -183,10 +248,9 @@ def promise_then(src_val: int32, onful: int32, onrej: int32) -> int32:
     if is_promise(src_val) == 0:
         return result             # non-promise receiver: never settles
     o: int32 = objid_of(src_val)
-    if pr_n >= PROM_REACT_CAP:
-        return result
-    rid: int32 = pr_n
-    pr_n = pr_n + 1
+    rid: int32 = pr_alloc()
+    if rid < 0:
+        return result                 # pool full — pr_alloc REPORTED it
     pr_onful[rid] = onful
     pr_onrej[rid] = onrej
     pr_result[rid] = result
