@@ -301,16 +301,22 @@ if grep -aE -q 'PKGINFO not found in tarball|gzip inflate failed|gzip inflate di
 else
     echo "[test_installer_nvme_inram]   OK (KEYSTONE): no package fetch/inflate/tar-walk failure in the install."
 fi
-# The native base install must source bytes ONLY from the local hpm repo —
-# NEVER the Debian distro tree (/n/distros). The legacy manifest path emitted
-# "skip missing source /n/distros/bin/*" when #distro was unbound; the
-# package path must never touch /n/distros. Assert its ABSENCE.
-if grep -aE -q 'skip missing source|/n/distros' "$STAGE_B_LOG"; then
-    echo "[test_installer_nvme_inram]   MISS (KEYSTONE): base install referenced /n/distros / skipped a missing source — it must source from the local hpm repo only:" >&2
-    grep -aE 'skip missing source|/n/distros' "$STAGE_B_LOG" >&2
+# The NATIVE BASE install (hpm) must source bytes ONLY from the local hpm
+# repo — never the Debian distro tree. hpm's own output must therefore never
+# mention /n/distros.
+#
+# SCOPE (2026-07-28): the installer ALSO lays the Linux-namespace tree down
+# under distro/ on the target, and THAT step legitimately reads
+# /n/distros/<rel> through install_rootfs_from_manifest (it is the only place
+# those bytes exist on the medium — no package carries them). So the check is
+# now scoped to hpm's lines: a bare "grep /n/distros" over the whole log would
+# red on the very step that fixes `enter linux { sh }` post-install.
+if grep -aE -q '^hpm:.*(/n/distros)' "$STAGE_B_LOG"; then
+    echo "[test_installer_nvme_inram]   MISS (KEYSTONE): the hpm base install referenced /n/distros — it must source from the local hpm repo only:" >&2
+    grep -aE '^hpm:.*(/n/distros)' "$STAGE_B_LOG" >&2
     stage_b_fail=1
 else
-    echo "[test_installer_nvme_inram]   OK (KEYSTONE): no '/n/distros' / 'skip missing source' — base populated purely from the local hpm repo."
+    echo "[test_installer_nvme_inram]   OK (KEYSTONE): hpm never referenced '/n/distros' — base populated purely from the local hpm repo."
 fi
 # KEYSTONE (in-RAM source): the ESP came from the in-RAM squashfs; the
 # root package repo is the in-RAM /iso-packages — neither is a media read.

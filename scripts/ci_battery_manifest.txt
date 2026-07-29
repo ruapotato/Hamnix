@@ -4092,3 +4092,30 @@ bash scripts/ci_run_gate.sh scripts/test_track_allocs.sh
 # in ~1 s; part 2 asserts no leading-underscore function bails (the unlinkable
 # class) and that the real kernel link resolves.
 bash scripts/test_llvm_kernel_unsafe_link.sh
+
+# test_installed_system_parity (THE INSTALLED-SYSTEM PARITY GATE): the gate
+# above proves the installed disk BOOTS; this one proves it is still the
+# system the user was shown on the live medium. A 2026-07-28 full install per
+# NOTES.md came up degraded with the whole battery green: `enter linux { sh }`
+# said "sh not found" (the target's .hamnix-roots was the single line
+# `sysroot .`, so #distro did not exist at all — on the live medium it is
+# served out of RAM by live_distro_up, and the installed boot takes the other
+# rc.boot branch), /home was EMPTY so the desktop fell back to a generic icon
+# set whose Home row opened the file manager at "/", and there were no man
+# pages. Boot-and-reach-a-shell cannot see any of that.
+#
+# It asserts on the EFFECT, never on a file existing — a file can be present
+# at the wrong root and still be unreachable, which is exactly how the audio
+# assets looked (installed, byte-for-byte correct, and the question was which
+# root the player's absolute path resolved against). Each check runs a command
+# ON THE INSTALLED DISK and reads its output back off the serial log:
+# `enter linux { /bin/busybox echo ... }` and `enter linux { which sh }` for
+# the Linux namespace, `hamfmscene --homedirtest` (the same resolution the
+# desktop Home icon drives, self-failing on bare "/") plus `ls ~/Desktop` for
+# the home skeleton, `cat`+`wc -c` of the player's default track and the boot
+# jingle for the audio asset paths, and `man hamsh` for the pages.
+#
+# Same autorun-medium rule as test_installer_nvme_inram: it builds
+# build/hamnix-installer-autorun.img, never the shared non-autorun path.
+# Heaviest entry in the battery alongside that one — budget it a shard.
+HAMNIX_SKIP_BUILD=1 bash scripts/test_installed_system_parity.sh
