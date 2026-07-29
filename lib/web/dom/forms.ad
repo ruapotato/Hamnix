@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _alnum_at, _attr_int, _attr_width_val, _bg_pop, _bg_push, _blk_indent_pop, _blk_indent_push, _block_box_close, _block_box_open, _bump_row, _emit_vgap, _capture_href, _cascade_match_current, _cell_close, _close_seg, _close_style, _collect_css, _color_pop, _color_push, _compute_cols, _content_right, _deco_pop, _deco_push, _el_pop, _el_pop_lit, _el_push, _enter_skip, _flex_container_close, _flex_container_open, _flex_item_close, _flex_item_col, _float_box_close, _float_box_open, _fontpx_pop, _fontpx_push, _gencontent_close, _gencontent_open, _generic_block_wanted, g_li_pending, g_cell_pending, _grid_find_colmajor, _grid_find_dense, _grid_occupy_rect, _grid_rect_free, _grid_row_h_rows, _grid_row_top_rows, _grid_wrap_row, _handle_img, _handle_inline_svg, _img_cascade, _hx_find_attr, _hx_lower, _hx_name_eq, _inlb_close, _inlb_open, _inlb_tag, _is_display_none, _is_visually_hidden, _left_margin, _li_close_lvl, _mark_button_seg, _mark_button_seg_geo, _mark_button_seg_full, _mark_check_seg, _mark_field_seg, _mark_field_seg_geo, _mark_select_seg, _measure_table, _newline, _open_style, _own_color, _para_break, _parse_inline_wa, _pending_indjump, _pending_marker, _pending_marker_num, _pending_marker_shape, _pending_marker_x, _recompute_indent, _recompute_style, _seg_putc, _seg_putc_dec, _soft_newline, _style_break, _table_natural_width, _table_pop, _table_push, _table_region_end, _tag_align_attr, _tbl_apply_cellpad, _tagname_is, _word_flush, _word_push, _hx_tag_end_p
+from lib.htmlengine import _alnum_at, _attr_int, _attr_width_val, _bg_pop, _bg_push, _blk_dedicated, _blk_indent_pop, _blk_indent_push, _block_box_close, _block_box_open, _bump_row, _emit_vgap, _capture_href, _cascade_match_current, _cell_close, _close_seg, _close_style, _collect_css, _color_pop, _color_push, _compute_cols, _content_right, _deco_pop, _deco_push, _el_pop, _el_pop_lit, _el_push, _enter_skip, _flex_container_close, _flex_container_open, _flex_item_close, _flex_item_col, _float_box_close, _float_box_open, _fontpx_pop, _fontpx_push, _gencontent_close, _gencontent_open, _generic_block_wanted, g_li_pending, g_cell_pending, _grid_find_colmajor, _grid_find_dense, _grid_occupy_rect, _grid_rect_free, _grid_row_h_rows, _grid_row_top_rows, _grid_wrap_row, _handle_img, _handle_inline_svg, _img_cascade, _hx_find_attr, _hx_lower, _hx_name_eq, _inlb_close, _inlb_open, _inlb_tag, _is_display_none, _is_visually_hidden, _left_margin, _li_close_lvl, _mark_button_seg, _mark_button_seg_geo, _mark_button_seg_full, _mark_check_seg, _mark_field_seg, _mark_field_seg_geo, _mark_select_seg, _measure_table, _newline, _open_style, _own_color, _para_break, _parse_inline_wa, _pending_indjump, _pending_marker, _pending_marker_num, _pending_marker_shape, _pending_marker_x, _recompute_indent, _recompute_style, _seg_putc, _seg_putc_dec, _soft_newline, _style_break, _table_natural_width, _table_pop, _table_push, _table_region_end, _tag_align_attr, _tbl_apply_cellpad, _tagname_is, _word_flush, _word_push, _hx_tag_end_p
 
 # ====================================================================
 # FORM CONTROLS — monospace-grid rendering of <input>/<textarea>/<button>/
@@ -1273,6 +1273,23 @@ def _handle_tag(ts: uint64, te: uint64):
             if d_pos != 0:
                 epos_bk = d_pos
             if epos_bk == 2:
+                g_treat_as_block = 1
+                g_inlb = 0
+            # CSS 2.1 §9.7, the SAME rule one line up but for the other
+            # out-of-normal-flow trigger: `float` other than none BLOCKIFIES the
+            # element. A floated `<span>` stayed inline, so its `width`/`height`
+            # were ignored, no float box was ever opened, and it painted NOTHING at
+            # all when it had no text — `<span style="float:right;width:5ch;
+            # height:5ch;background:blue">` (the shape the whole WPT
+            # css/CSS2/floats/float-nowrap-* family is built from) simply vanished.
+            # A floated <div>/<table>/<img> was never affected: those tags reach
+            # their own dedicated handlers, which already open a float box. This
+            # only rescues the inline-default tags, which is exactly the set CSS
+            # says to blockify.
+            efloat_bk: int32 = m_float
+            if d_float != 0:
+                efloat_bk = d_float
+            if efloat_bk != 0 and _blk_dedicated(np, nlen) == 0:
                 g_treat_as_block = 1
                 g_inlb = 0
             # FLEX-ITEM explicit width (danluu date column): an inline-default
