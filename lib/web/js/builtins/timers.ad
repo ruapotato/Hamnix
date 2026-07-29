@@ -70,7 +70,8 @@ def timer_free(reg: int32):
 # ====================================================================
 # Register one pending callback. `base`/`argc` are the native call frame:
 # arg0 = callback, arg1 = delay (skipped for microtasks), rest = captured args.
-# Returns the numeric timer id (reg+1) — non-zero + monotonic while allocating.
+# Returns the numeric timer id (slot + generation, see timer_id_of) — non-zero,
+# and never reused even after the slot is.
 def timer_schedule(base: int32, argc: int32, is_interval: int32, is_micro: int32) -> int32:
     reg: int32 = timer_alloc()
     if reg < 0:
@@ -143,8 +144,9 @@ def timer_clear(idval: int32):
 # the frame it enqueues into — (raf_sched_gen+1)*FRAME_MS_VC — so it drains as a
 # macrotask AFTER any pending microtasks and after earlier-timestamp timers. The
 # callback receives that timestamp (a simulated DOMHighResTimeStamp) at fire
-# time. Returns the numeric request id (reg+1); cancelAnimationFrame reuses
-# timer_clear. NOT wall-clock — the frame counter IS the clock.
+# time. Returns the numeric request id; cancelAnimationFrame reuses
+# timer_clear (its id carries the same slot+generation encoding). NOT wall-clock
+# — the frame counter IS the clock.
 def raf_schedule(base: int32, argc: int32) -> int32:
     reg: int32 = timer_alloc()
     if reg < 0:
@@ -168,7 +170,7 @@ def raf_schedule(base: int32, argc: int32) -> int32:
 # timer_schedule() this needs no native call frame, so a HOST object can defer a
 # JS function it looked up itself — MessageChannel's port.postMessage, which is
 # React 18's scheduler's "yield back to the event loop" primitive. Returns the
-# timer id (reg+1), or 0 when the table is full.
+# timer id, or 0 when the table is full.
 def timer_schedule_fn(fnv: int32, delay: float64) -> int32:
     reg: int32 = timer_alloc()
     if reg < 0:
