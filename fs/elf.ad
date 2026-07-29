@@ -1105,6 +1105,20 @@ def elf_eager_region_bytes(blob: Ptr[uint8], blob_size: uint64) -> uint64:
 # per app or command launch. That is the "mouse freezes when something is busy"
 # the user reported.
 #
+# MEASUREMENT CAVEAT (re-measured 2026-07-29, do not drop this). The
+# 241,000-305,000 us figures above were taken under TCG, which inflates syscall
+# duration by roughly one to two orders of magnitude. Re-measured on the
+# shipped .img under UEFI/OVMF + KVM with four 100%-CPU hogs plus an
+# execve/ELF-load storm, the worst pointer-service gap is ~10-14 ms WITH THIS
+# SERVICE DISABLED -- i.e. one 100 Hz tick period, and indistinguishable from
+# having it enabled. On that path no single IRQ-off region lasts long enough to
+# drop a tick, so this seam is reached (measured ~118 times per storm) but is
+# not what keeps the pointer smooth. It is retained because the MECHANISM is
+# real and does bite elsewhere -- a ~2.3 s SYS_WRITE stall reproduces on every
+# boot, before the rl5 flip -- and because real disks wait far longer in
+# virtq_kick_and_wait than this RAM-backed virtio image does. Its benefit on
+# metal is PLAUSIBLE BUT UNPROVEN. See scripts/test_pointer_latency_under_load.sh.
+#
 # Fix: do the same bytes in bounded chunks and service the pointer between
 # them (sys/src/9/port/devmouse.ad::pointer_service_poll — itself rate-limited
 # to <=125 Hz, so a small image pays one predicted branch per chunk and nothing

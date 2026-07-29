@@ -276,6 +276,11 @@ def virtq_kick_and_wait(iobase: uint32, qidx: uint32,
         # present already holds the present lock (virtio-gpu reaches this same
         # spin from inside one). Costs one RDTSC per iteration and zero device
         # throughput.
+        # CAVEAT: the us figures above are TCG measurements and do NOT transfer
+        # to KVM — re-measured there the worst pointer gap is ~10-14 ms with
+        # this service DISABLED. Retained for real-disk waits and for the
+        # proven mechanism; benefit on metal is unproven. Detail in
+        # sys/src/9/port/devmouse.ad's pointer_service_poll banner.
         pointer_service_poll()
         deadline = deadline + 1
         if deadline > 100000000:
