@@ -1,5 +1,6 @@
-# int32 left shift that walks the sign bit out of the type.
+# int64 left shift that walks bits out of the type (1<<32 shifted 40 more).
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
-    v: int32 = 1000000 + argc
-    s: int32 = 20
-    return v << s
+    v: int64 = 0x100000000 + cast[int64](argc)
+    s: int64 = 40
+    r: int64 = v << s
+    return cast[int32](r)

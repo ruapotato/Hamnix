@@ -1202,8 +1202,16 @@ def drv_src_puts(s: Ptr[uint8]):
 # Every injected symbol is prefixed `__ck_` / `ck_arith_`; checkarith.ad skips
 # instrumenting any function whose name starts with `__ck_`, so the trap can
 # never recurse into itself.
-def drv_emit_ck_runtime(kern: uint32):
+#
+# `warn` selects REPORT-AND-CONTINUE instead of trapping (`--check-arith-warn`).
+# That mode exists for TRIAGE: a fatal first hit tells you about exactly one
+# site per run, which makes surveying a whole tree for intentional-wrap sites
+# (hashes, alignment masks, ring arithmetic) impossibly slow. Reports are capped
+# at 64 per process so a hot loop cannot drown the log.
+def drv_emit_ck_runtime(kern: uint32, warn: uint32):
     drv_src_put(10)
+    drv_src_puts("__ck_nrep: uint32 = 0\n")
+    drv_src_puts("__ck_seen: Array[512, uint64]\n")
     drv_src_puts("ck_arith_code: uint64 = 0\n")
     drv_src_puts("ck_arith_lhs: uint64 = 0\n")
     drv_src_puts("ck_arith_rhs: uint64 = 0\n")
@@ -1267,10 +1275,28 @@ def drv_emit_ck_runtime(kern: uint32):
     drv_src_puts("    __ck_putu(line)\n")
     drv_src_puts("    __ck_put(10)\n")
     drv_src_puts("    __ck_put(0)\n")
-    if kern != 0:
+    if warn != 0:
+        # Report each SITE (source line) once. A raw per-report cap is useless
+        # for a survey: one hot site in a loop exhausts it and hides every other
+        # site in the tree. 512 distinct sites is far more than any single run
+        # has produced.
+        drv_src_puts("    si: uint32 = 0\n")
+        drv_src_puts("    while si < __ck_nrep:\n")
+        drv_src_puts("        if __ck_seen[si] == line:\n")
+        drv_src_puts("            return\n")
+        drv_src_puts("        si = si + 1\n")
+        drv_src_puts("    if __ck_nrep >= 512:\n")
+        drv_src_puts("        return\n")
+        drv_src_puts("    __ck_seen[__ck_nrep] = line\n")
+        drv_src_puts("    __ck_nrep = __ck_nrep + 1\n")
+        if kern != 0:
+            drv_src_puts("    printk0(cast[Ptr[char]](&__ck_msg[0]))\n")
+        else:
+            drv_src_puts("    __syscall3(1, 2, cast[uint64](&__ck_msg[0]), cast[uint64](__ck_mp - 1))\n")
+    elif kern != 0:
         drv_src_puts("    panic(cast[Ptr[char]](&__ck_msg[0]))\n")
     else:
-        drv_src_puts("    __syscall3(1, 2, cast[uint64](&__ck_msg[0]), cast[uint64](__ck_mp))\n")
+        drv_src_puts("    __syscall3(1, 2, cast[uint64](&__ck_msg[0]), cast[uint64](__ck_mp - 1))\n")
         drv_src_puts("    __syscall1(60, 134)\n")
     drv_src_put(10)
 
@@ -1302,6 +1328,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     elf_target: uint32 = ELF_FMT_USER
     want_bounds: uint32 = 0                 # --check-bounds (opt-in; userspace)
     want_arith: uint32 = 0                  # --check-arith  (opt-in; user AND kernel)
+    want_arith_warn: uint32 = 0             # --check-arith-warn (report + continue)
     want_opt: uint32 = 0                    # --opt (opt-in; now routes through the SSA pipeline)
     want_llvm: uint32 = 0                   # --backend=llvm / --emit-llvm (opt-in; OPTIONAL LLVM backend)
     pos_in: uint64 = 0
@@ -1348,6 +1375,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 # increment 1b, docs/adder_memory_safety.md). Honoured ONLY for
                 # a userspace target below — never the kernel.
                 want_bounds = 1
+            elif drv_arg_starts(astr, "--check-arith-warn") != 0:
+                # Report-and-continue variant. MUST be tested before the
+                # `--check-arith` arm: drv_arg_starts is a PREFIX test and
+                # "--check-arith" IS a prefix of "--check-arith-warn".
+                want_arith = 1
+                want_arith_warn = 1
             elif drv_arg_starts(astr, "--check-arith") != 0:
                 # Opt-in CHECKED INTEGER ARITHMETIC (adder/compiler/checkarith.ad).
                 # Unlike --check-bounds this is honoured for the KERNEL target
@@ -1434,9 +1467,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # unit. Byte-inert when the flag is off (nothing is appended).
     if want_arith != 0:
         if elf_target == ELF_FMT_KERNEL:
-            drv_emit_ck_runtime(1)
+            drv_emit_ck_runtime(1, want_arith_warn)
         else:
-            drv_emit_ck_runtime(0)
+            drv_emit_ck_runtime(0, want_arith_warn)
     n: uint32 = drv_src_len
     if n == 0:
         drv_err("[host_ac] FAIL: cannot read input\n")

@@ -3600,6 +3600,12 @@ bash scripts/test_font_hscale_host.sh
 # (memory-safety increment 1). HOST-ONLY, NO QEMU.  [0.8s measured on
 # 55c842b9]
 bash scripts/test_adder_bounds_check.sh
+# scripts/test_adder_check_arith.sh: OPT-IN checked integer arithmetic
+# (--check-arith, memory-safety increment 4). Would have caught the 2026-07-17
+# cyc_to_ns 64-bit multiply that wrapped the monotonic clock after 1099 s and
+# unbounded every timed wait in the kernel. HOST-ONLY, NO QEMU.  [~35s: it
+# bootstraps host_ac.elf and runs 7 clang links]
+bash scripts/test_adder_check_arith.sh
 # scripts/test_png_roundtrip_host.sh: FAST, QEMU-free host gate proving the
 # PNG encoder (lib/pngwrite.ad, as used by user/hamshot.ad) and the PNG
 # decoder (lib/png.ad, as used by user/hamview.ad) agree byte-for-byte at real

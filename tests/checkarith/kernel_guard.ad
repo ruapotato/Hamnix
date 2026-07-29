@@ -1,0 +1,15 @@
+# Bare-metal (kernel-target) fixture for --check-arith. The kernel is NOT
+# exempt from checked arithmetic — the cyc_to_ns defect that motivated the mode
+# is kernel code — so compiling this with --target=x86_64-bare-metal
+# --check-arith MUST emit a guarded call to __ck_arith_trap, and that trap must
+# route to the kernel's own panic() (a kernel cannot quietly carry on past a
+# detected overflow, and it has no write(2) to complain through).
+#
+# `panic` is stubbed here so the fixture is a self-contained translation unit;
+# in a real kernel build the injected runtime binds to kernel/panic.ad's panic.
+def panic(msg: Ptr[char]):
+    return
+
+
+def cyc_to_ns(cycles: uint64, mult: uint64, shift: uint64) -> uint64:
+    return (cycles * mult) >> shift

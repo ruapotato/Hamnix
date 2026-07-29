@@ -133,6 +133,17 @@ adder_cc_compile() {
                 hc+=("--opt")
             fi
         fi
+        # HAMNIX_CHECK_ARITH turns on the OPT-IN checked-integer-arithmetic mode
+        # (adder/compiler/checkarith.ad) for EVERY unit this wrapper builds:
+        #   HAMNIX_CHECK_ARITH=1     trap on the first detected overflow
+        #   HAMNIX_CHECK_ARITH=warn  report each site once and continue (triage)
+        # Default unset -> the flag is never passed and the build is
+        # byte-identical to the unchecked one.
+        case "${HAMNIX_CHECK_ARITH:-}" in
+            warn) hc+=("--check-arith-warn") ;;
+            "" ) : ;;
+            *  ) hc+=("--check-arith") ;;
+        esac
         if [ "$target" = "x86_64-bare-metal" ]; then
             # KERNEL target: host_ac emits a RELOCATABLE .o (ET_REL); we then
             # `as`+`ld` it together with the hand-written boot stubs under
@@ -183,6 +194,16 @@ adder_cc_link_kernel() {
         [ "${HAMNIX_KERNEL_OPT_NOIREMIT:-0}" = "1" ] && kopt+=("--no-iremit")
         echo "[adder_cc] KERNEL --opt build (${kopt[*]})" >&2
     fi
+    # HAMNIX_CHECK_ARITH (see adder_cc_compile): checked integer arithmetic for
+    # the KERNEL object too. The kernel is NOT exempt from this check — the
+    # defect that motivated the mode (the cyc_to_ns 64-bit multiply that wrapped
+    # the monotonic clock after 1099 s and unbounded every timed wait) is kernel
+    # code. `=1` routes a detected overflow to panic(); `=warn` to printk0().
+    case "${HAMNIX_CHECK_ARITH:-}" in
+        warn) kopt+=("--check-arith-warn"); echo "[adder_cc] KERNEL --check-arith-warn build" >&2 ;;
+        "" ) : ;;
+        *  ) kopt+=("--check-arith"); echo "[adder_cc] KERNEL --check-arith build" >&2 ;;
+    esac
     "$root/build/cutover/host_ac.elf" "${kopt[@]}" --target=x86_64-bare-metal "$in_ad" "$main_o" \
         || { echo "[adder_cc] ERROR: host_ac kernel .o emit failed" >&2; rm -rf "$tmp"; return 1; }
     # 2) Assemble the boot stubs + every other hand-written .S under arch/x86,
