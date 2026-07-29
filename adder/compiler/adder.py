@@ -617,11 +617,28 @@ def _run_sema(program) -> None:
         return
     for d in diagnostics:
         print(render(d), file=sys.stderr)
-    n_err = sum(1 for d in diagnostics if d.severity == "error")
-    if n_err:
-        print(f"Error: {n_err} type error{'' if n_err == 1 else 's'} "
-              f"(set ADDER_SEMA=0 to bypass the type checker)",
+    errs = [d for d in diagnostics if d.severity == "error"]
+    if errs:
+        # SELF-DESCRIBING SUMMARY. The old line said only "N type errors (set
+        # ADDER_SEMA=0 to bypass)", which offers exactly one remedy: turn the
+        # whole checker off. That is the worst of the available answers and
+        # it was the only one on offer. Name the classes that actually fired,
+        # how many sites each has, and the PER-CLASS knob that demotes just
+        # that one, so the escape hatch is proportional to the problem.
+        by_cls: dict = {}
+        for d in errs:
+            by_cls[d.cls] = by_cls.get(d.cls, 0) + 1
+        n_err = len(errs)
+        print(f"Error: {n_err} type error{'' if n_err == 1 else 's'} in "
+              f"{len(by_cls)} class{'' if len(by_cls) == 1 else 'es'}:",
               file=sys.stderr)
+        for cls in sorted(by_cls, key=lambda c: (-by_cls[c], c)):
+            knob = "ADDER_SEMA_" + cls.upper().replace("-", "_")
+            print(f"  {by_cls[cls]:5d}  [{cls}]"
+                  f"{' ' * max(1, 18 - len(cls))}"
+                  f"demote with {knob}=warning", file=sys.stderr)
+        print("  (ADDER_SEMA=0 disables the checker entirely; prefer the "
+              "per-class knob above)", file=sys.stderr)
         sys.exit(1)
 
 

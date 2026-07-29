@@ -804,6 +804,7 @@ def _swap_slides(a: uint64, b: uint64):
 
 
 # Insert a fresh blank slide AFTER `cur`, focus it. Returns 1 on success.
+# must_use: 1 = added, 0 = the deck is FULL (MAXSLIDES) and no slide was inserted — the caller must not advance `cur` as if one had been.
 def hamslides_add_slide() -> int32:
     if nslides >= MAXSLIDES:
         return 0
@@ -823,6 +824,7 @@ def hamslides_add_slide() -> int32:
 
 
 # Duplicate the current slide (copy placed right after it) and focus the copy.
+# must_use: 1 = duplicated, 0 = the deck is FULL (MAXSLIDES) and nothing was copied.
 def hamslides_duplicate_slide() -> int32:
     if nslides >= MAXSLIDES:
         return 0

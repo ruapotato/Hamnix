@@ -182,6 +182,7 @@ napi_poll_list: Array[8, uint64]    # NAPI_MAX_POLLERS napi_struct* slots
 napi_poll_n:    uint64 = 0
 
 
+# must_use: 0 = registered, -1 = the poll list is FULL (NAPI_MAX_POLLERS) and this RX queue will NEVER be polled.
 def napi_register(napi: Ptr[NapiStruct]) -> int32:
     # Add a napi to the poll list so net_rx_action visits it. Called once
     # per RX queue at driver init (after napi_struct_init).

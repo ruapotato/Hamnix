@@ -501,6 +501,7 @@ def md_badblocks_check(mem: Ptr[MdMember], sector: uint64,
     return 0
 
 
+# must_use: 0 = recorded, -1 = the bad-block list is FULL (MD_MAX_BADBLOCKS) and the range was NOT recorded — later reads of those sectors will be served from a known-bad member.
 def md_badblocks_set(mem: Ptr[MdMember], sector: uint64,
                      count: uint64) -> int32:
     # Record [sector, sector+count) as bad on this member, INSERTING into the

@@ -728,6 +728,7 @@ def _channels_reset():
     channel_buf_n = 0
 
 
+# must_use: 0 = added, -1 = duplicate (a benign no-op), -2 = the channel table is FULL (CHANNEL_MAX) or the name was empty — the channel will not be fetched.
 def _channel_add_name(name: Ptr[uint8], nlen: uint64) -> int32:
     # Append a channel name to channel_names_*[]. Returns 0 on
     # success, -1 if a duplicate (already present), -2 if full /

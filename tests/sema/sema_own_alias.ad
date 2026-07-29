@@ -1,0 +1,102 @@
+# NEGATIVE FIXTURE for scripts/test_adder_must_use.sh (`own-alias`).
+#
+# A LINT, not a borrow checker. The USER and the orchestrator agreed there
+# will be no borrow checker: page tables, intrusive lists and
+# hardware-aliased memory all legitimately store one address in several
+# places, so a sound checker would buy its soundness with an `unsafe` on the
+# hottest code in the tree and change nothing about the defects we ship.
+#
+# So the rule is one sentence: a local initialised from a `# owns_return`
+# function and then stored into TWO escaping locations, with no intervening
+# re-assignment, is reported ONCE, at the second store.
+#
+# Exactly ONE function below (`two_owners`) must be reported. Every other
+# one is a shape that must stay silent — those are the false positives that
+# would get the lint switched off.
+
+slot_a: uint64 = 0
+slot_b: uint64 = 0
+
+
+# owns_return: the caller owns this block and must free() it exactly once
+def alloc(n: uint64) -> uint64:
+    return n
+
+
+def free(p: uint64):
+    return
+
+
+def two_owners() -> int32:
+    # THE BUG: one allocation, two owners. Whichever frees first leaves the
+    # other holding a dangling pointer; if neither does, it leaks.
+    p: uint64 = alloc(64)
+    slot_a = p
+    slot_b = p
+    return 0
+
+
+def transferred() -> int32:
+    # SILENT: one escaping store. This is ownership TRANSFER, the normal case.
+    p: uint64 = alloc(64)
+    slot_a = p
+    return 0
+
+
+def local_copies() -> int32:
+    # SILENT: `q` and `r` are two NAMES, not two owners — they die with the
+    # frame. Flagging this would fire on every `tmp = p` in the tree.
+    p: uint64 = alloc(64)
+    q: uint64 = p
+    r: uint64 = p
+    free(q)
+    return cast[int32](r)
+
+
+def realloc_loop() -> int32:
+    # SILENT: each iteration re-assigns `p`, which ends the previous
+    # allocation's identity. One store per allocation.
+    i: uint64 = 0
+    p: uint64 = 0
+    while i < 4:
+        p = alloc(64)
+        slot_a = p
+        i = i + 1
+    return 0
+
+
+def deliberate_unsafe() -> int32:
+    # SILENT: the escape hatch the design asked for, in the idiom the tree
+    # already uses.
+    p: uint64 = alloc(64)
+    slot_a = p
+    unsafe:
+        slot_b = p
+    return 0
+
+
+def deliberate_marked() -> int32:
+    # SILENT: the per-line escape hatch.
+    p: uint64 = alloc(64)
+    slot_a = p
+    slot_b = p          # alias-ok
+    return 0
+
+
+def unannotated() -> int32:
+    # SILENT: `plain` carries no `# owns_return`, so nothing is tracked.
+    # This is why enabling the class tree-wide costs zero.
+    p: uint64 = plain(64)
+    slot_a = p
+    slot_b = p
+    return 0
+
+
+def plain(n: uint64) -> uint64:
+    return n
+
+
+def main() -> int32:
+    n: int32 = two_owners() + transferred() + local_copies()
+    m: int32 = realloc_loop() + deliberate_unsafe() + deliberate_marked()
+    return n + m + unannotated()

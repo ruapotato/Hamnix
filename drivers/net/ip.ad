@@ -375,6 +375,7 @@ def _ip_mask_to_plen(mask: uint32) -> uint8:
     return n
 
 
+# must_use: 0 = installed, -1 = the routing table is FULL (or the per-prefix nexthop cap IP_ECMP_MAX is hit) and the route was NOT added — traffic for that prefix will take the default route instead.
 def ip_route_add(net0: uint8, net1: uint8, net2: uint8, net3: uint8,
                  mask0: uint8, mask1: uint8, mask2: uint8, mask3: uint8,
                  gw0: uint8, gw1: uint8, gw2: uint8, gw3: uint8,

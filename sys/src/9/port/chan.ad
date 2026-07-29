@@ -446,6 +446,7 @@ def _name_alloc_slot(word: Ptr[uint8]) -> int32:
     return -1
 
 
+# must_use: 0 = pushed, -1 = the name stack is FULL (NAME_STACK_DEPTH / table-full) and the binding was NOT made.
 def name_push(word: Ptr[uint8], chan_ref: uint64,
               partuuid: Ptr[uint8], dir: Ptr[uint8]) -> int32:
     # Push a new entry onto the LIFO for `word`. Returns 0 on

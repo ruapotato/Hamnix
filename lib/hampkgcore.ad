@@ -392,6 +392,7 @@ def hampkg_set_status(s: Ptr[uint8], n: uint64):
 # Format printed by hpm: "<name>  <version>  -  <description>". We tokenise on
 # whitespace runs: token0=name, token1=version, an optional lone "-" separator,
 # then the rest is the description. Blank / non-package lines return 0.
+# must_use: 1 = parsed and added, 0 = the package table is FULL (PKG_MAX) or the line was unparseable — the result set is silently short.
 def hampkg_add_search_line(s: Ptr[uint8], n: uint64) -> int32:
     if pkg_count >= cast[int32](PKG_MAX):
         return 0
@@ -445,6 +446,7 @@ def hampkg_add_search_line(s: Ptr[uint8], n: uint64) -> int32:
 # (/etc/hamde/apps/*.desktop) where friendly Names legitimately have spaces.
 # `installed` seeds the installed flag (registry apps ARE installed). Returns 1
 # on success, 0 if the model is full or the name is empty.
+# must_use: 1 = added, 0 = the package table is FULL (PKG_MAX) or the name was empty, and the package is MISSING from every later listing/search.
 def hampkg_add_pkg(name: Ptr[uint8], nlen: uint64, ver: Ptr[uint8],
                    vlen: uint64, desc: Ptr[uint8], dlen: uint64,
                    installed: int32) -> int32:

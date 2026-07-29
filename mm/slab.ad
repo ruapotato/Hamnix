@@ -264,6 +264,8 @@ def _kmalloc_large(size: uint64) -> uint64:
     return page + LARGE_KMALLOC_HEADER
 
 
+# must_use: the allocation, or 0 when it FAILED. Dropping it leaks the block; using it without testing for 0 dereferences a null pointer.
+# owns_return: the caller owns this block and must kfree() it exactly once
 def kmalloc(size: uint64) -> uint64:
     # Small / slab-backed path.
     idx: int32 = _kmalloc_index(size)
@@ -273,6 +275,8 @@ def kmalloc(size: uint64) -> uint64:
     return _kmalloc_large(size)
 
 
+# must_use: the zeroed allocation, or 0 when it FAILED.
+# owns_return: the caller owns this block and must kfree() it exactly once
 def kzalloc(size: uint64) -> uint64:
     # kmalloc + memset(0, size). Linux's __GFP_ZERO maps onto this for
     # callers that need a zero-initialised allocation (anything with a

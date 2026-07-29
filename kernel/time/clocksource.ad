@@ -191,6 +191,7 @@ def _cs_select_current():
     cs_base_ns = carried_ns
 
 
+# must_use: >=0 = slot index, -1 = the clocksource table is FULL (MAX_CLOCKSOURCES) and the source was NOT registered — timekeeping silently keeps using the previous, possibly worse, source.
 def clocksource_register(name_id: uint64, read_fn_ptr: uint64,
                          mask: uint64, freq_hz: uint64,
                          rating: uint64) -> int32:

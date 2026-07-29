@@ -4182,6 +4182,7 @@ def _dict_make_top(d: int32) -> int32:
     return 1
 
 
+# must_use: 1 = stored, 0 = the dict pool is at LISTELEM_MAX (or `d` is not a VT_DICT) and the key/value pair was DROPPED — `d[k] = v` did not happen.
 def v_dict_set(d: int32, key: int32, val: int32) -> int32:
     # `d[key] = val` — update in place if present, else append a new
     # pair (growing the pool). Returns 1 on success.
@@ -8351,6 +8352,7 @@ def _argv_overflow() -> int32:
     return 0
 
 
+# must_use: 1 = word pushed, 0 = argv FULL at ARGV_MAX words and the word was DROPPED (rt_raise'd). Dropping this status is how `rm *` deleted 62 of 230 files and exited 0 — either branch on it or check rt_fault().
 def _argv_push_cstr(s: Ptr[uint8]) -> int32:
     # Returns 1 when the word was pushed, 0 when argv is full (and the
     # overflow has been raised). Callers that render a value BEFORE

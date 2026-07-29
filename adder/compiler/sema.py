@@ -84,6 +84,12 @@ CLASSES = (
     "narrowing-assign", # every OTHER narrowing (assignment, init, return);
                         # ~10.7k sites in-tree, so it cannot hard-error yet
     "deref",        # indexing / dereferencing a non-pointer, non-array
+    "must-use",     # the result of a FALLIBLE call is discarded — the call
+                    # reports failure only through its return value and
+                    # nobody is looking at it
+    "own-alias",    # a pointer this function OWNS is stored in two places
+                    # without an explicit transfer (a LINT, not a borrow
+                    # checker — see check_ownership)
 )
 
 # The landable default, chosen from measured whole-tree counts — see the
@@ -118,6 +124,14 @@ DEFAULT_SEVERITY = {
     "narrowing-arg":    "error",
     "narrowing-assign": "warning",
     "deref":        "warning",
+    # OPT-IN BY ANNOTATION.  Neither fires on a single line of unannotated
+    # code, so both are on by default at `warning`: the cost of enabling
+    # them tree-wide is exactly zero until someone writes the marker, and a
+    # lint nobody can see is a lint nobody fixes.  They stay at `warning`
+    # rather than `error` because the marker is a claim about intent, and a
+    # mis-annotated callee must not be able to break the build.
+    "must-use":     "warning",
+    "own-alias":    "warning",
 }
 
 
@@ -308,9 +322,9 @@ class Diagnostic:
 _SOURCE_CACHE: dict = {}
 
 
-def _source_line(filename: str, line: int) -> Optional[str]:
+def _source_lines(filename: str) -> list:
     if not filename or filename.startswith("<"):
-        return None
+        return []
     lines = _SOURCE_CACHE.get(filename)
     if lines is None:
         try:
@@ -319,9 +333,115 @@ def _source_line(filename: str, line: int) -> Optional[str]:
         except OSError:
             lines = []
         _SOURCE_CACHE[filename] = lines
+    return lines
+
+
+def _source_line(filename: str, line: int) -> Optional[str]:
+    lines = _source_lines(filename)
     if 1 <= line <= len(lines):
         return lines[line - 1]
     return None
+
+
+# --------------------------------------------------------------------------
+# Source annotations (`# must_use`, `# owns_return`, and the opt-outs)
+# --------------------------------------------------------------------------
+#
+# WHY A COMMENT AND NOT A DECORATOR.  Adder parses `@name` decorators, but
+# BOTH backends (`codegen_x86.py` and the self-hosted `codegen.ad`) hard-error
+# on every decorator except `@unsafe`, and both are frozen bootstrap artifacts
+# guarded by the seed<->native byte-identity oracle.  Introducing `@must_use`
+# would mean editing them, which would mean re-proving that oracle for a pure
+# ANALYSIS feature.  A marker comment costs the parser and both backends
+# nothing — it is invisible to them — so this whole feature is codegen-inert
+# by construction, exactly like the rest of this pass.
+#
+# The grammar is deliberately tiny:
+#
+#     # must_use: <why the caller has to look>
+#     def _argv_push_cstr(s: Ptr[uint8]) -> int32:
+#
+#     # owns_return: caller owns the block and must kfree() it
+#     def kmalloc(size: uint64) -> uint64:
+#
+# The marker must be in the comment block IMMEDIATELY above the `def` (no
+# blank line between the block and the `def`), so prose two paragraphs up that
+# happens to mention must_use cannot annotate anything by accident.
+#
+# The opt-outs are trailing comments on the offending line:
+#     f(x)          # ignore-result   — dropping this status is deliberate
+#     tbl.p = q     # alias-ok        — this second owner is deliberate
+# plus, for `own-alias` only, an enclosing `unsafe:` block or an `@unsafe`
+# function, which is the tree's established "I know what I am doing" idiom.
+
+_MARK_RE = {
+    "must_use":    "must_use",
+    "must-use":    "must_use",
+    "owns_return": "owns_return",
+    "owns-return": "owns_return",
+}
+
+_ANNOT_CACHE: dict = {}
+
+
+def _leading_comment_block(filename: str, def_line: int) -> list:
+    """The contiguous `#` comment lines directly above line `def_line`."""
+    lines = _source_lines(filename)
+    if not (1 <= def_line <= len(lines)):
+        return []
+    out = []
+    i = def_line - 2                       # 0-based index of the line above
+    while i >= 0:
+        s = lines[i].strip()
+        if s.startswith("#"):
+            out.append(s)
+            i -= 1
+            continue
+        break                              # blank line or code: block ends
+    out.reverse()
+    return out
+
+
+def annotations_of(decl) -> dict:
+    """`{"must_use": reason, "owns_return": reason}` for a declaration.
+
+    Returns only the keys actually present.  A marker with no `:` yields the
+    empty string, which is still truthy as *presence* — callers must test
+    `key in result`, not the value.
+    """
+    span = getattr(decl, "span", None)
+    filename = getattr(span, "filename", None) or ""
+    line = getattr(span, "start_line", 0) or 0
+    key = (filename, line)
+    hit = _ANNOT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    out: dict = {}
+    for raw in _leading_comment_block(filename, line):
+        body = raw.lstrip("#").strip()
+        # tolerate `#[must_use]` / `# must_use` / `# must_use: reason`
+        body = body.lstrip("[").rstrip("]")
+        head, _, tail = body.partition(":")
+        canon = _MARK_RE.get(head.strip().rstrip("]").lower())
+        if canon is not None:
+            out[canon] = tail.strip()
+    _ANNOT_CACHE[key] = out
+    return out
+
+
+def _line_optout(span, *words) -> bool:
+    """Is one of `words` present as a trailing comment on this line?"""
+    if span is None:
+        return False
+    src = _source_line(getattr(span, "filename", "") or "",
+                       getattr(span, "start_line", 0))
+    if not src:
+        return False
+    idx = src.find("#")
+    if idx < 0:
+        return False
+    tail = src[idx:].lower()
+    return any(w in tail for w in words)
 
 
 def render(diag: Diagnostic) -> str:
@@ -346,7 +466,11 @@ def render(diag: Diagnostic) -> str:
             out.append(" " * 5 + " | " + " " * len(prefix)
                        + "^" + "~" * (width - 1))
     if diag.note:
-        out.append("      note: " + diag.note)
+        # A multi-line note renders as several `note:` lines — "what went
+        # wrong" and "what to do about it" are different sentences and a
+        # diagnostic that runs them together gets skim-read as one.
+        for ln in str(diag.note).split("\n"):
+            out.append("      note: " + ln)
     return "\n".join(out)
 
 
@@ -380,11 +504,15 @@ class Checker:
         self.globals: dict = {}      # name -> internal type
         self.fields: dict = {}       # struct name -> {field: internal type}
         self.methods: set = set()
+        self.must_use: dict = {}     # callee name -> (reason, decl)
+        self.owns_return: dict = {}  # callee name -> (reason, decl)
 
         # Per-function state
         self.scope: dict = {}
         self.ret: Optional[tuple] = None
         self.fname: str = "<toplevel>"
+        self.defer_depth: int = 0    # `defer f()` discards by design
+        self.unsafe_depth: int = 0   # inside an `unsafe:` block
 
     # ---- reporting -------------------------------------------------------
 
@@ -413,6 +541,11 @@ class Checker:
         for d in decls:
             if isinstance(d, (FunctionDef, ExternDecl)):
                 self.funcs[d.name] = d
+                ann = annotations_of(d)
+                if "must_use" in ann:
+                    self.must_use[d.name] = (ann["must_use"], d)
+                if "owns_return" in ann:
+                    self.owns_return[d.name] = (ann["owns_return"], d)
             elif isinstance(d, VarDecl):
                 self.globals[d.name] = resolve_type(d.var_type, self.structs,
                                                     self.enums)
@@ -684,7 +817,11 @@ class Checker:
             if sk == "float":
                 self.report("ptr-int", span,
                             "'%s' used where '%s' is required (%s)"
-                            % (type_name(src), type_name(dst), what), None)
+                            % (type_name(src), type_name(dst), what),
+                            note="a float has no integer bit pattern the "
+                                 "backend can put in an address register; "
+                                 "this is almost certainly the wrong "
+                                 "variable, not a missing cast")
             return
         if dk in ("int", "bool") and sk == "ptr":
             self.report("int-from-ptr", span,
@@ -740,7 +877,10 @@ class Checker:
         # Pre-declare every local in the function so a use that textually
         # precedes its `x: T = ...` (legal across branches) still types.
         self.predeclare(fn.body)
+        self.defer_depth = 0
+        self.unsafe_depth = 0
         self.check_body(fn.body)
+        self.check_ownership(fn)
 
     def predeclare(self, body, seen: Optional[dict] = None) -> None:
         """Seed the function scope with every local declaration.
@@ -796,6 +936,7 @@ class Checker:
             return
         if isinstance(st, ExprStmt):
             self.check_expr(st.expr)
+            self.check_discarded(st)
             return
         if isinstance(st, (IfStmt,)):
             self.check_expr(st.condition)
@@ -820,10 +961,18 @@ class Checker:
             self.check_body(st.body)
             return
         if isinstance(st, UnsafeStmt):
+            self.unsafe_depth += 1
             self.check_body(st.body)
+            self.unsafe_depth -= 1
             return
         if isinstance(st, DeferStmt):
+            # `defer close(fd)` discards by construction — a defer has
+            # nowhere to put a result and no way to branch on one. Flagging
+            # it would be pure noise, so the must-use check is suppressed
+            # for the whole deferred statement.
+            self.defer_depth += 1
             self.check_stmt(st.stmt)
+            self.defer_depth -= 1
             return
         if isinstance(st, AssertStmt):
             self.check_expr(st.condition)
@@ -840,6 +989,168 @@ class Checker:
         for sub in _sub_bodies(st):
             self.check_body(sub)
 
+    # ---- must-use --------------------------------------------------------
+
+    def check_discarded(self, st: ExprStmt) -> None:
+        """A call to a `# must_use` function used as a BARE STATEMENT.
+
+        This is the whole dominant bug class of the tree in one check.  The
+        defects that motivated it were not aliasing and not type confusion —
+        they were an operation that FAILED, said so in its return value, and
+        nobody was required to look:
+
+            _argv_push_cstr dropped argument 64+ and returned 0  ->  `rm *`
+            deleted 62 of 230 files and exited 0.
+
+        Scope is deliberately narrow: `f(x)` alone on a line.  `x = f()`,
+        `if f():`, `return f()` and `g(f())` all INSPECT the result in the
+        only sense a compiler can check, so none of them is reported.  Rust's
+        `#[must_use]` draws the line in exactly the same place, and the
+        narrowness is what keeps the class quiet enough to leave on.
+        """
+        if self.defer_depth:
+            return
+        e = st.expr
+        if not isinstance(e, CallExpr) or not isinstance(e.func, Identifier):
+            return
+        name = e.func.name
+        if name in self.scope or name in self.globals:
+            return                          # a function-pointer value
+        hit = self.must_use.get(name)
+        if hit is None:
+            return
+        reason, decl = hit
+        span = _span_of(e.func) or _span_of(e) or st.span
+        if _line_optout(span, "ignore-result", "must_use: ignore",
+                        "must-use: ignore"):
+            return
+        ret = self.rt(decl.return_type)
+        where = getattr(getattr(decl, "span", None), "filename", None)
+        line = getattr(getattr(decl, "span", None), "start_line", 0)
+        note = []
+        if reason:
+            note.append("'%s' returns %s: %s"
+                        % (_pretty(decl), type_name(ret), reason))
+        else:
+            note.append("'%s' reports failure only through its %s result"
+                        % (_pretty(decl), type_name(ret)))
+        if where:
+            note.append("declared `# must_use` at %s:%d" % (where, line))
+        note.append("bind the result and branch on it, or write "
+                    "`# ignore-result` on this line to state that dropping "
+                    "it is deliberate")
+        self.report("must-use", span,
+                    "result of '%s' is discarded" % _pretty(decl),
+                    note="\n".join(note))
+
+    # ---- ownership lint --------------------------------------------------
+
+    def check_ownership(self, fn: FunctionDef) -> None:
+        """Warn when a pointer this function OWNS gains a second owner.
+
+        This is a LINT, not a borrow checker, and the difference is the whole
+        design.  A real checker would have to understand page tables,
+        intrusive lists and hardware-aliased memory — every one of which
+        legitimately stores one address in several places — so it would buy
+        its soundness with an `unsafe` on the hottest code in the tree and
+        change nothing about the defects we actually ship.
+
+        So the rule is one sentence: a local initialised from a
+        `# owns_return` function, then stored into TWO escaping locations
+        (a global, a struct field, a `*p`, an array slot) with no intervening
+        re-assignment, is reported ONCE, at the second store.  Two owners of
+        one allocation is a double-free or a leak depending on which one
+        frees first; which of the two it is, is beyond a lint, and the
+        diagnostic says so rather than guessing.
+
+        Everything that keeps the false-positive rate at zero is a deliberate
+        narrowing:
+          * it fires only for ANNOTATED allocators — unannotated code cannot
+            produce a single report;
+          * a store inside `unsafe:`, in an `@unsafe` function, or on a line
+            marked `# alias-ok` is not counted at all (that is the escape
+            hatch the design asked for, in the idiom the tree already uses);
+          * only a BARE `p` counts as the stored value — `p + off`,
+            `cast[...](p)` and `&p` are not the same pointer and are not
+            tracked;
+          * re-assigning `p` ends the old identity, so a loop that allocates
+            into the same local each iteration reports nothing.
+        """
+        if "unsafe" in (getattr(fn, "decorators", None) or []):
+            return
+        owners: dict = {}       # local -> (alloc name, span)
+        stores: dict = {}       # local -> [span, ...]
+        reported: set = set()
+
+        def visit(body, unsafe: int) -> None:
+            for st in body or []:
+                if isinstance(st, UnsafeStmt):
+                    visit(st.body, unsafe + 1)
+                    continue
+                if isinstance(st, VarDecl):
+                    src = _called_name(st.value)
+                    if src is not None and src in self.owns_return:
+                        owners[st.name] = (src, st.span)
+                        stores[st.name] = []
+                    elif st.name in owners:
+                        owners.pop(st.name, None)
+                elif isinstance(st, Assignment) \
+                        and getattr(st, "op", None) is None:
+                    tgt, val = st.target, st.value
+                    if isinstance(tgt, Identifier):
+                        src = _called_name(val)
+                        if src is not None and src in self.owns_return:
+                            # a fresh allocation into this local: new identity
+                            owners[tgt.name] = (src, st.span)
+                            stores[tgt.name] = []
+                            continue
+                        if tgt.name in owners and tgt.name not in self.globals:
+                            # `p` now names something else; stop tracking it
+                            owners.pop(tgt.name, None)
+                            stores.pop(tgt.name, None)
+                            continue
+                    if isinstance(val, Identifier) and val.name in owners \
+                            and _is_escaping_target(tgt, self.scope):
+                        if unsafe or _line_optout(st.span, "alias-ok"):
+                            continue
+                        stores.setdefault(val.name, []).append(
+                            (st.span, _describe(tgt)))
+                        if len(stores[val.name]) == 2 \
+                                and val.name not in reported:
+                            reported.add(val.name)
+                            self._report_alias(val.name, owners[val.name],
+                                               stores[val.name])
+                for sub in _sub_bodies(st):
+                    visit(sub, unsafe)
+
+        visit(fn.body, 0)
+
+    def _report_alias(self, local, origin, sites) -> None:
+        alloc, alloc_span = origin
+        (first_span, first_desc), (second_span, second_desc) = sites
+        decl = self.owns_return[alloc][1]
+        note = [
+            "'%s' was allocated by '%s' at %s:%d, which is declared "
+            "`# owns_return`%s"
+            % (local, _pretty(decl),
+               getattr(alloc_span, "filename", "?") or "?",
+               getattr(alloc_span, "start_line", 0),
+               (" — " + self.owns_return[alloc][0])
+               if self.owns_return[alloc][0] else ""),
+            "the first owner is '%s', stored at %s:%d"
+            % (first_desc, getattr(first_span, "filename", "?") or "?",
+               getattr(first_span, "start_line", 0)),
+            "two owners of one allocation is a double free or a leak "
+            "depending on which one releases it; transfer the pointer "
+            "(clear the first store) or copy the object",
+            "if the aliasing is deliberate — a page table, an intrusive "
+            "list, hardware-mapped memory — put this store inside "
+            "`unsafe:` or write `# alias-ok` on the line",
+        ]
+        self.report("own-alias", second_span,
+                    "owned pointer '%s' is stored in a second place ('%s')"
+                    % (local, second_desc), note="\n".join(note))
+
     def check_return(self, st: ReturnStmt) -> None:
         declared = self.ret
         if st.value is None:
@@ -853,7 +1164,10 @@ class Checker:
         if declared is not None and declared[0] == "void":
             self.report("ret-value", st.span,
                         "value returned from '%s', which is declared "
-                        "'-> None'" % self.fname, None)
+                        "'-> None'" % self.fname,
+                        note="the value is computed and then dropped — the "
+                             "caller cannot see it. Give '%s' a return type, "
+                             "or drop the expression." % self.fname)
             return
         self.check_assignable(declared, st.value, st.span,
                               "return from '%s'" % self.fname)
@@ -884,8 +1198,14 @@ class Checker:
             base = self.type_of(e.obj)
             if base is not None and base[0] in ("int", "bool", "float"):
                 self.report("deref", _span_of(e.obj),
-                            "cannot index a value of type '%s'"
-                            % type_name(base), None)
+                            "cannot index '%s': it has scalar type '%s', "
+                            "not a pointer, array or slice"
+                            % (_describe(e.obj), type_name(base)),
+                            note="if '%s' holds an ADDRESS, say so in its "
+                                 "type (`Ptr[T]`) or index through "
+                                 "`cast[Ptr[T]](%s)[...]`; an integer has no "
+                                 "elements to index"
+                                 % (_describe(e.obj), _describe(e.obj)))
             return
         if isinstance(e, MemberExpr):
             self.check_expr(e.obj)
@@ -943,7 +1263,11 @@ class Checker:
                 if "int" in (lt[0], rt_[0]):
                     self.report("cmp-sign", _span_of(e),
                                 "comparison between '%s' and '%s'"
-                                % (type_name(lt), type_name(rt_)), None)
+                                % (type_name(lt), type_name(rt_)),
+                                note="an address is being ordered against a "
+                                     "plain integer; if that is intended, "
+                                     "cast the pointer to `uint64` so the "
+                                     "compare is unambiguously unsigned")
             return
         if lt[1] == rt_[1] and lt[2] != rt_[2]:
             self.report("cmp-sign", _span_of(e),
@@ -978,8 +1302,18 @@ class Checker:
                     or name in self.structs or name in self.enums \
                     or name in self.enum_variants or name in self.methods:
                 return
+            near = _did_you_mean(name, self.funcs)
+            note = []
+            if near is not None:
+                note.append("did you mean '%s'?  %s"
+                            % (_pretty(self.funcs[near]),
+                               _signature_note(self.funcs[near])))
+            note.append("nothing in this link unit declares '%s'; add a "
+                        "`def`, an `extern def`, or the missing `from ... "
+                        "import %s`" % (name, name))
             self.report("not-callable", _span_of(f),
-                        "call to undeclared function '%s'" % name, None)
+                        "call to undeclared function '%s'" % name,
+                        note="\n".join(note))
             return
 
         params = decl.params
@@ -1162,6 +1496,31 @@ def _span_of(e):
     return None
 
 
+def _called_name(e) -> Optional[str]:
+    """The callee name if `e` is a direct call `f(...)`, else None."""
+    if isinstance(e, CallExpr) and isinstance(e.func, Identifier):
+        return e.func.name
+    return None
+
+
+def _is_escaping_target(target, scope: dict) -> bool:
+    """Does storing into `target` publish the value beyond this frame?
+
+    A plain local is NOT escaping: `q = p` inside one function is a second
+    NAME, not a second OWNER, and flagging it would fire on every `tmp = p`
+    in the tree.  A global, a struct field, an array slot or a `*p` outlives
+    the frame (or is reachable from something that does), so a pointer put
+    there really is claimed by a second owner.
+    """
+    if isinstance(target, Identifier):
+        return target.name not in scope
+    if isinstance(target, (MemberExpr, IndexExpr)):
+        return True
+    if isinstance(target, UnaryExpr) and target.op == UnaryOp.DEREF:
+        return True
+    return False
+
+
 def _describe(target) -> str:
     if isinstance(target, Identifier):
         return target.name
@@ -1183,15 +1542,58 @@ def _range_str(lo: int, hi: int) -> str:
 
 
 def _signature_note(decl) -> str:
+    """The callee's declaration, verbatim enough to fix the call from.
+
+    Defaults are spelled out: without them "1 given, 3 expected" plus a
+    parameter list is still not enough to know WHICH arguments the caller is
+    allowed to omit, which is the only question the reader has.
+    """
     parts = []
     for p in decl.params:
         t = p.param_type
-        parts.append("%s: %s" % (p.name, getattr(t, "name", "?")
-                                 if t is not None else "?"))
+        text = "%s: %s" % (p.name, getattr(t, "name", "?")
+                           if t is not None else "?")
+        d = getattr(p, "default", None)
+        if d is not None:
+            text += " = " + _literal_text(d)
+        parts.append(text)
     ret = decl.return_type
-    return "declared as %s(%s)%s" % (
+    where = getattr(decl, "span", None)
+    note = "declared as %s(%s)%s" % (
         _pretty(decl), ", ".join(parts),
         (" -> " + getattr(ret, "name", "?")) if ret is not None else "")
+    if where is not None and getattr(where, "filename", None):
+        note += "\nat %s:%d" % (where.filename, getattr(where, "start_line", 0))
+    return note
+
+
+def _literal_text(e) -> str:
+    """Short rendering of a default-argument expression."""
+    v = _int_literal_value(e)
+    if v is not None:
+        return str(v)
+    if isinstance(e, BoolLiteral):
+        return "True" if e.value else "False"
+    if isinstance(e, StringLiteral):
+        return '"..."'
+    if isinstance(e, NoneLiteral):
+        return "None"
+    if isinstance(e, Identifier):
+        return e.name
+    return "..."
+
+
+def _did_you_mean(name: str, candidates) -> Optional[str]:
+    """Closest known name to `name`, or None if nothing is close enough.
+
+    Cheap edit-distance-free heuristic: same length +/-2 and a shared
+    prefix/suffix, ranked by a difflib ratio.  Good enough to catch the
+    typo/rename case that `not-callable` is really about, and it costs
+    nothing because it only runs when a diagnostic is already firing.
+    """
+    import difflib
+    hits = difflib.get_close_matches(name, list(candidates), n=1, cutoff=0.82)
+    return hits[0] if hits else None
 
 
 def _sub_bodies(st):

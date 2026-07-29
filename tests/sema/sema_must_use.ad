@@ -1,0 +1,65 @@
+# NEGATIVE FIXTURE for scripts/test_adder_must_use.sh.
+#
+# The dominant defect class in this tree is not aliasing and not type
+# confusion — it is SILENT FAILURE: an operation fails, says so in its
+# return value, and nobody is required to look. `_argv_push_cstr` dropped
+# argument 64 onward and returned 0; `rm *` deleted 62 of 230 files and
+# exited 0.
+#
+# Every call below is to the SAME `# must_use` function. Exactly ONE of
+# them must be reported (`bad`); the other four are the shapes that DO
+# inspect the result, or opt out explicitly, and must stay silent.
+
+ARGV_MAX: uint64 = 8
+argv_n: uint64 = 0
+argv_ok: int32 = 0
+
+
+# must_use: 1 = pushed, 0 = argv is FULL at ARGV_MAX words and the word was
+# DROPPED — a discarded status here is a silently truncated command line
+def argv_push(s: Ptr[uint8]) -> int32:
+    if argv_n + 1 >= ARGV_MAX:
+        return 0
+    argv_n = argv_n + 1
+    return 1
+
+
+def branch_on_it(s: Ptr[uint8]) -> int32:
+    # INSPECTED: used as a condition.
+    if argv_push(s) == 0:
+        return 1
+    return 0
+
+
+def bind_it(s: Ptr[uint8]) -> int32:
+    # INSPECTED: bound to a local.
+    r: int32 = argv_push(s)
+    return r
+
+
+def store_it(s: Ptr[uint8]) -> int32:
+    # INSPECTED: stored in a global.
+    argv_ok = argv_push(s)
+    return argv_ok
+
+
+def opt_out(s: Ptr[uint8]) -> int32:
+    argv_push(s)        # ignore-result
+    return 0
+
+
+def forwarded(s: Ptr[uint8]) -> int32:
+    # INSPECTED: it is this function's result.
+    return argv_push(s)
+
+
+def bad(s: Ptr[uint8]) -> int32:
+    # THE BUG: bare statement, status dropped on the floor.
+    argv_push(s)
+    return 0
+
+
+def main() -> int32:
+    s: Ptr[uint8] = cast[Ptr[uint8]](0)
+    n: int32 = branch_on_it(s) + bind_it(s) + store_it(s)
+    return n + opt_out(s) + forwarded(s) + bad(s)

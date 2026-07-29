@@ -188,6 +188,7 @@ def btrfs_dev_read(offset: uint64, buf: Ptr[uint8], len: uint64) -> int32:
 
 # --- chunk map: logical -> physical -----------------------------------
 
+# must_use: 0 = added or already known, -1 = the chunk map is FULL (BTRFS_MAX_CHUNKS) and this logical range stays UNMAPPABLE.
 def _bt_chunk_add(logical: uint64, length: uint64, phys: uint64) -> int32:
     # De-dup: a chunk already present (re-seen via the CHUNK tree after
     # the bootstrap) is ignored.

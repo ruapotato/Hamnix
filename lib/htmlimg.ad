@@ -59,6 +59,7 @@ def htmlimg_find(name: Ptr[uint8], namelen: uint64) -> int32:
 # Register a decoded RGBA image under `name`. `rgba` is w*h*4 bytes (row-major,
 # 8-bit R,G,B,A). Returns the slot index, or -1 if the store is full. A repeated
 # name returns the existing slot without recopying.
+# must_use: >=0 = image slot, -1 = the decoded-image arena is FULL (MAX_IMG slots / IMG_ARENA_CAP bytes / NAME_CAP name bytes) and the image was NOT stored — rendering it later silently draws nothing.
 def htmlimg_add(name: Ptr[uint8], namelen: uint64, w: int32, h: int32,
                 rgba: Ptr[uint8]) -> int32:
     ex: int32 = htmlimg_find(name, namelen)

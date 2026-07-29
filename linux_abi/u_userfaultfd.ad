@@ -274,6 +274,7 @@ def _uffd_q_count(slot: uint64) -> uint64:
     return (uffd_q_tail[slot] - uffd_q_head[slot]) & (UFFD_MAX_QUEUE - 1)
 
 
+# must_use: 0 = enqueued, -1 = the fault queue is FULL (UFFD_MAX_QUEUE) and the pagefault message was DROPPED — the monitor never learns about that fault and the faulting thread stays blocked.
 def _uffd_q_push(slot: uint64, addr: uint64, flags: uint64) -> int32:
     # Enqueue a pagefault message. Returns 0 on success, -1 if the queue is
     # full (one slot is reserved to distinguish full from empty).

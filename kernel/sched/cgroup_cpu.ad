@@ -273,6 +273,7 @@ def cgroup_cpu_set_max(slot: int32, quota_us: uint64, period_us: uint64) -> int3
     return 0
 
 
+# must_use: 0 = attached, -1 = the cgroup task list is FULL (CG_TASKMAX) or the group is invalid — the task stays in its old cgroup and is NOT subject to the limits the caller thinks it just applied.
 def cgroup_cpu_attach(slot: int32, task_slot: uint64) -> int32:
     # Move `task_slot` into cgroup `slot`. slot 0 = root (detach).
     if task_slot >= CG_TASKMAX:

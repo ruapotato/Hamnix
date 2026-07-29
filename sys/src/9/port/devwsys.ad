@@ -894,6 +894,7 @@ def _wsys_cmd_compact(wid: int32):
         wsys_cmd_head[u] = 0
 
 
+# must_use: 1 = queued, 0 = the cmd ring is FULL (WSYS_CMD_SIZE) and the command was DROPPED.
 def _wsys_cmd_push_wid(wid: int32, c: uint8) -> int32:
     _wsys_cmd_compact(wid)
     u: uint64 = cast[uint64](wid)
@@ -1072,6 +1073,7 @@ def _wsys_keys_compact(wid: int32):
         wsys_keys_head[u] = 0
 
 
+# must_use: 1 = queued, 0 = the pointer ring is FULL (WSYS_PTR_SIZE) and the mouse event was DROPPED.
 def _wsys_ptr_push_byte(wid: int32, c: uint8) -> int32:
     # Append one byte to wid's pointer ring. Returns 1 on success, 0 if
     # the ring is full (DROP NEWEST). Does NOT wake — the caller wakes
@@ -1086,6 +1088,7 @@ def _wsys_ptr_push_byte(wid: int32, c: uint8) -> int32:
     return 1
 
 
+# must_use: 1 = queued, 0 = the keys ring is FULL (WSYS_KEYS_SIZE) and the keystroke was DROPPED.
 def _wsys_keys_push_byte(wid: int32, c: uint8) -> int32:
     # BUG 3 FIX (dropped keystroke). The keys ring has TWO writers that race:
     # the timer-IRQ keyboard pump (kbd_pump_to_compositor -> wsys_route_key_byte)
