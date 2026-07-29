@@ -40,7 +40,7 @@ from sys.src.port9.port.devwsys import (
 )
 # tsc_monotonic_ns() is valid with EFLAGS.IF masked (RDTSC ignores IF), which
 # is precisely the situation pointer_service_poll() below has to rate-limit in.
-from arch.x86.kernel.time import tsc_monotonic_ns
+from arch.x86.kernel.time import tsc_monotonic_ns, ptrlat_sample_inline
 from drivers.video.console.fb_text import fb_get_initialized
 # Control Center Mouse capplet live sink: a `cfg <speed> <primary> <natural>`
 # line written to /dev/mouse updates these globals; the /dev/mouse router
@@ -537,13 +537,30 @@ ptr_service_busy:    int32  = 0
 # seam is load-bearing; the latency gate reads it to reject a build where the
 # service points were silently removed.
 ptr_service_runs:    uint64 = 0
+# RUNTIME KILL-SWITCH, default ON. `ptrsvc 0` on /dev/wsys/ctl turns the inline
+# service off WITHOUT rebuilding, which is what makes the latency gate an A/B
+# measurement rather than an absolute-threshold guess: one boot, one workload,
+# one instrument, two arms. It is also the gate's mutation test — flipping this
+# to 0 must make the assertion FAIL, proving the gate measures the fix and not
+# the weather.
+ptr_service_enabled: int32 = 1
 
 
 def pointer_service_runs() -> uint64:
     return ptr_service_runs
 
 
+def pointer_service_set_enabled(on: int32):
+    ptr_service_enabled = on
+
+
+def pointer_service_enabled() -> int32:
+    return ptr_service_enabled
+
+
 def pointer_service_poll():
+    if ptr_service_enabled == 0:
+        return
     if ptr_service_busy != 0:
         return
     if wsys_de_is_live() == 0:
@@ -556,6 +573,10 @@ def pointer_service_poll():
     ptr_service_last_ns = now
     ptr_service_busy = 1
     ptr_service_runs = ptr_service_runs + 1
+    # Close the pointer-service interval BEFORE the pump so the histogram
+    # credits this cursor update (see arch/x86/kernel/time.ad::ptrlat_account
+    # for why sampling only the timer tick cannot measure this fix).
+    ptrlat_sample_inline()
     mouse_pump_to_compositor()
     ptr_service_busy = 0
 

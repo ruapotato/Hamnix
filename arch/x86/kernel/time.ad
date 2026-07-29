@@ -320,6 +320,55 @@ def ptrlat_trace_enable(on: int32):
         ptrlat_trace_left = 24
 
 
+def ptrlat_account(gap: uint64):
+    # Bucket one pointer-service interval. Split out of ptrlat_sample so the
+    # INLINE service path (pointer_service_poll) feeds the SAME histogram.
+    #
+    # WHY THIS MATTERS (measurement validity). The metric has to be "wall-clock
+    # interval between successive cursor updates", NOT "interval between timer
+    # ticks". Those were the same number before pointer_service_poll() existed,
+    # and they are NOT the same number after it: the whole point of the fix is
+    # to move the cursor from inside a long IF=0 region that no tick can
+    # interrupt. An instrument that only samples the tick is blind to its own
+    # fix — it would report an unchanged max_us on a build where the pointer
+    # visibly kept moving, and would equally report success for a build that
+    # merely made ticks more frequent without servicing the pointer. Sampling
+    # every actual pump makes max_us the number the USER feels.
+    ptrlat_n = ptrlat_n + 1
+    ptrlat_sum_ns = ptrlat_sum_ns + gap
+    if gap > ptrlat_max_ns:
+        ptrlat_max_ns = gap
+    if gap <= 15000000:
+        ptrlat_b15 = ptrlat_b15 + 1
+    elif gap <= 30000000:
+        ptrlat_b30 = ptrlat_b30 + 1
+    elif gap <= 60000000:
+        ptrlat_b60 = ptrlat_b60 + 1
+    elif gap <= 120000000:
+        ptrlat_b120 = ptrlat_b120 + 1
+    elif gap <= 250000000:
+        ptrlat_b250 = ptrlat_b250 + 1
+    else:
+        ptrlat_over = ptrlat_over + 1
+
+
+def ptrlat_sample_inline():
+    # The INLINE service path: pointer_service_poll() is about to run the pump
+    # from inside a long IRQ-off kernel region. Close the current interval here
+    # so the histogram credits the cursor update that actually happened.
+    # No RIP/CS trace: we are not in an interrupt frame and there is no
+    # "interrupted" context to name — the caller IS the long region.
+    now: uint64 = tsc_monotonic_ns()
+    if ptrlat_last_ns == 0:
+        ptrlat_last_ns = now
+        return
+    if now <= ptrlat_last_ns:
+        return
+    gap: uint64 = now - ptrlat_last_ns
+    ptrlat_last_ns = now
+    ptrlat_account(gap)
+
+
 def ptrlat_sample(interrupted_rip: uint64, interrupted_cs: uint64):
     # Called from timer_interrupt on the BSP immediately before the mouse
     # pump. BSP-only: APs are tickless and their backstop cadence is not the
@@ -343,22 +392,7 @@ def ptrlat_sample(interrupted_rip: uint64, interrupted_cs: uint64):
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk2("[ptrlat-trace]   last_sysnr=%d in_syscall_us=%d\n",
                 ptrlat_last_sysnr, insys)
-    ptrlat_n = ptrlat_n + 1
-    ptrlat_sum_ns = ptrlat_sum_ns + gap
-    if gap > ptrlat_max_ns:
-        ptrlat_max_ns = gap
-    if gap <= 15000000:
-        ptrlat_b15 = ptrlat_b15 + 1
-    elif gap <= 30000000:
-        ptrlat_b30 = ptrlat_b30 + 1
-    elif gap <= 60000000:
-        ptrlat_b60 = ptrlat_b60 + 1
-    elif gap <= 120000000:
-        ptrlat_b120 = ptrlat_b120 + 1
-    elif gap <= 250000000:
-        ptrlat_b250 = ptrlat_b250 + 1
-    else:
-        ptrlat_over = ptrlat_over + 1
+    ptrlat_account(gap)
 
 
 # Accessors so port code (sys/src/9/port/devwsys.ad) can render the report

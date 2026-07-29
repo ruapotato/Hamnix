@@ -206,6 +206,13 @@ from lib.vk.vk_gpu import (
     vk_gpu_scanout_width, vk_gpu_scanout_height,
 )
 extern def fb_font_glyph_addr() -> uint64
+# Inline pointer-service seam, implemented in sys/src/9/port/devmouse.ad.
+# Declared `extern` rather than imported because devmouse imports THIS module
+# (devmouse -> devwsys), so an import edge back would close a cycle. Resolved
+# at link, exactly like the virtio ring's pointer_service_poll declaration.
+extern def pointer_service_runs() -> uint64
+extern def pointer_service_set_enabled(on: int32)
+extern def pointer_service_enabled() -> int32
 # Anti-aliased proportional DE chrome text (#284, subsumes #169). The scene
 # `text`/`glyphs` primitive historically rasterized the 8x16 bitmap console
 # font. We route it through the PURE lib/font_ttf engine (extern-free: static
@@ -3376,6 +3383,23 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         if lv != 0:
             _wsys_ptrlat_report()
         ptrlat_reset()
+        return cast[int64](count)
+
+    # `ptrsvc <0|1>` — turn the INLINE pointer service off/on at runtime
+    # (sys/src/9/port/devmouse.ad::pointer_service_poll). This exists so the
+    # latency gate can measure BOTH arms in ONE boot against ONE workload:
+    # `ptrsvc 0` is the pre-fix baseline, `ptrsvc 1` is the fix. Comparing two
+    # arms of the same boot removes the machine-speed and host-load variables
+    # that make an absolute latency threshold unreliable in CI. Same
+    # before-the-hostowner-gate placement as `ptrlat` and `perf`.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "ptrsvc") == 1:
+        sv: int64 = 1
+        if _wsys_scene_next_int(buf, &p0, count, &sv) == 0:
+            sv = 1
+        pointer_service_set_enabled(cast[int32](sv))
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk1(cast[Ptr[char]]("[ptrsvc] inline_pointer_service=%d\n"),
+                cast[uint64](pointer_service_enabled()))
         return cast[int64](count)
 
     # `desktop` — the rl5 flip: latch the scene compositor as the SOLE
@@ -8992,6 +9016,13 @@ def _wsys_ptrlat_report():
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk3(cast[Ptr[char]]("[ptrlat] le120ms=%d le250ms=%d over250ms=%d\n"),
             ptrlat_get_b120(), ptrlat_get_b250(), ptrlat_get_over())
+    # svc_runs = cursor updates delivered by the INLINE service seam that no
+    # timer tick could have delivered. Zero on a build whose service points
+    # were removed or whose kill-switch is off, which is what lets the gate
+    # distinguish "latency happened to be fine" from "the fix did the work".
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2(cast[Ptr[char]]("[ptrlat] svc_runs=%d svc_on=%d\n"),
+            pointer_service_runs(), cast[uint64](pointer_service_enabled()))
 
 
 def _wsys_perf_report():
