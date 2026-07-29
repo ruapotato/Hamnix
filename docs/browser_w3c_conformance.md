@@ -631,6 +631,17 @@ roughly by real-world value — the browser is now broad but NOT "fully W3C-impl
   machinery lives ENTIRELY in `lib/web/dom/{canvas,bindings}.ad` — any string event type is
   interned into the `GEN_KIND` listener table (`bindings.ad:113`) and bubbles the source tree like
   the 4 legacy kinds; there is NO 4-kind cap (the old worklist claim below is dead).
+- dom-core: **implied `<body>` for head-only documents** (gate `implicitbody`) — `document.body`/
+  `head`/`documentElement` already resolved for pages with explicit or content-forced tags, but a
+  document whose ONLY content is head-only (bare text and/or a lone `<script>`, nothing that forces
+  the head closed) came back with `document.body === undefined`: the tag inserter
+  (`bindings.ad _insert_implied_tags`) placed the implied `<body>` open-tag splice point AT
+  end-of-source, which its `while k < src_len` pass-2 loop never reached, so the rewritten source read
+  `<head>…</body></html>` with a `</body>` but no `<body>` open. Now the implied `</head>` and `<body>`
+  are flushed at the tail (spec order, ahead of `</body>`/`</html>`) so `document.body.appendChild(…)`
+  no longer throws. NOTE: rendering a node grafted onto a LITERALLY-empty implied body (zero-length span)
+  is scoped out — the DOM is correct but that body has no layout region; a content-bearing implied body
+  (the realistic case) both threads the DOM and renders (both asserted by the `implicitbody` gate).
 - dom-selectors: **FULL common CSS selector grammar in `querySelector`/`querySelectorAll` (+ `matches`/
   `closest`)** (2026-07-18, gate `qsa`) — the DOM-side query matcher (`lib/web/dom/{domtree,query,
   bindings,canvas}.ad`, INDEPENDENT of the `cascade.ad` cascade matcher) now supports the grammar

@@ -1888,6 +1888,14 @@ bash scripts/test_hambrowse_cssom_host.sh
 # coexists with a nested-node mutation (recursive rewrite); element scrollTop/
 # scrollLeft (writable static offsets) + document.body.scrollHeight.
 bash scripts/test_hambrowse_domcore_host.sh
+# IMPLIED <body> (W3C tree construction): a head-only document (bare text and/or
+# a lone <script>, no element that forces the head closed) still gets an implied
+# <body> — its open-tag splice point lands at end-of-source, which the tag
+# inserter's main loop skipped, so document.body came back undefined while
+# head/documentElement resolved. Now flushed at the tail; asserts body/head/
+# documentElement + closest/matches/appendChild reach the implied body, and that
+# a content-bearing implied body also RENDERS the appended node.
+bash scripts/test_hambrowse_implicitbody_host.sh
 # PHASE-0 FUNCTIONAL FIXES (docs/browser_gap_analysis_2026-07-24.md): the
 # correctness bugs + missing-but-simple APIs that block RUNNING (not just
 # painting) the live web. for(let) fresh per-iteration binding (closure-in-loop:

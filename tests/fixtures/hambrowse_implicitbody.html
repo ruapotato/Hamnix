@@ -1,0 +1,25 @@
+Bare text with no explicit html/head/body tags — the only markup is a script.
+Per the HTML5 tree construction algorithm the parser still synthesizes an
+<html>, <head> AND <body>, so document.body must resolve to a real BODY element
+(not undefined). This is the head-only-content edge: the implied <body> splice
+point lands at end-of-source, which the tag-inserter's main loop skipped.
+<script>
+  // document roots must ALL resolve to real element nodes.
+  console.log("iroots " + document.documentElement.tagName \
+              + " " + document.body.tagName \
+              + " " + document.head.tagName); // iroots HTML BODY HEAD
+
+  // the implied body is the SAME object querySelector('body') returns.
+  console.log("ibodyqs " + (document.body === document.querySelector('body'))); // ibodyqs true
+
+  // appendChild into the implied body works and threads parentNode -> BODY.
+  var d = document.createElement('div');
+  d.id = 'implanted';
+  d.textContent = 'implanted-into-implied-body';
+  document.body.appendChild(d);
+  console.log("iappend " + d.parentNode.tagName); // iappend BODY
+
+  // closest()/matches() on that node climb to the implied body too.
+  console.log("iclosest " + (d.closest('body') === document.body)); // iclosest true
+  console.log("imatches " + d.matches('#implanted')); // imatches true
+</script>

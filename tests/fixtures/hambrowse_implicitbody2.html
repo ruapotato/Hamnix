@@ -1,0 +1,13 @@
+<!doctype html>
+<div id="x">existing-body-content</div>
+<script>
+  // Implicit <body> that DOES have body-level content (a real <div> forces the
+  // head closed, so the implied body has a non-degenerate layout region). Here
+  // the append into document.body must both thread the DOM AND render.
+  console.log("i2roots " + document.documentElement.tagName \
+              + " " + document.body.tagName + " " + document.head.tagName); // i2roots HTML BODY HEAD
+  var d = document.createElement('div');
+  d.textContent = 'APPENDED-INTO-IMPLIED-BODY-2';
+  document.body.appendChild(d);
+  console.log("i2append " + d.parentNode.tagName); // i2append BODY
+</script>

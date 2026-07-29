@@ -732,6 +732,18 @@ def _insert_implied_tags():
                         continue
         w = _im_put(w, src_ptr[k])
         k = k + 1
+    # Tail flush for splice points that landed AT end-of-source. The pass-2 loop
+    # runs `while k < src_len`, so any implied tag whose insertion offset equals
+    # src_len (e.g. a document whose only content is head-only — bare text and/or
+    # a <script>, with no element that forces the head closed) is never emitted
+    # inside the loop. Without this, we produced `<head>...</body></html>` with a
+    # </body> but NO <body> open tag, so document.body came back undefined even
+    # though document.head/documentElement resolved. Emit </head> then <body> in
+    # spec order, ahead of the </body>/</html> flush below.
+    if has_head == 0 and hcut >= src_len:
+        w = _im_puts(w, cast[Ptr[uint8]]("</head>"))
+    if has_body == 0 and bopen >= src_len:
+        w = _im_puts(w, cast[Ptr[uint8]]("<body>"))
     if has_body == 0 and bclose >= src_len:
         w = _im_puts(w, cast[Ptr[uint8]]("</body>"))
     if has_html == 0:
