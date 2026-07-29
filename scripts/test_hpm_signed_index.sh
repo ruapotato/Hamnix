@@ -32,8 +32,10 @@ command -v as  >/dev/null 2>&1 || fail "as not found (binutils)"
 command -v ld  >/dev/null 2>&1 || fail "ld not found (binutils)"
 command -v gcc >/dev/null 2>&1 || fail "gcc not found (linux-runtime.S)"
 [ "$(uname -m)" = "x86_64" ] || fail "host must be x86_64 to run the ELF"
-python3 -c "import cryptography" 2>/dev/null \
-    || fail "python3 'cryptography' module required for hpm_sign.py"
+# hpm_sign.py signs with the host `cryptography` wheel when present and a
+# pure-Python RFC 8032 fallback when it is not; either backend must import.
+python3 -c "import sys; sys.path.insert(0,'scripts'); import hpm_sign" 2>/dev/null \
+    || fail "scripts/hpm_sign.py failed to import (no crypto backend at all)"
 
 WORK="$PROJ_ROOT/build/hpm_signed_index_test"
 rm -rf "$WORK"; mkdir -p "$WORK"

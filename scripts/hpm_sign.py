@@ -29,42 +29,72 @@
 # to the tree — the repo operator holds it out of band and passes its
 # path to `build_packages.py` via HPM_REPO_SECKEY.
 
+import os
 import sys
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey, Ed25519PublicKey)
-from cryptography.hazmat.primitives import serialization as _ser
+# Prefer the audited host `cryptography` library. When it is absent (a
+# stripped Debian python, an offline build box, a CI image without the
+# wheel), fall back to a pure-Python RFC 8032 Ed25519 signer. Ed25519 is
+# deterministic, so the fallback emits byte-identical signatures and public
+# keys — the on-image trust root is unchanged and the native TweetNaCl
+# verifier (lib/ed25519.ad) still accepts every index we stamp. The build
+# must NEVER die just because the wheel is missing.
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey, Ed25519PublicKey)
+    from cryptography.hazmat.primitives import serialization as _ser
+    _HAVE_CRYPTOGRAPHY = True
+except ImportError:
+    _HAVE_CRYPTOGRAPHY = False
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _ed25519_pure as _pure
 
-_RAW_PRIV = dict(encoding=_ser.Encoding.Raw,
-                 format=_ser.PrivateFormat.Raw,
-                 encryption_algorithm=_ser.NoEncryption())
-_RAW_PUB = dict(encoding=_ser.Encoding.Raw,
-                format=_ser.PublicFormat.Raw)
+_RAW_PRIV = dict()
+_RAW_PUB = dict()
+if _HAVE_CRYPTOGRAPHY:
+    _RAW_PRIV = dict(encoding=_ser.Encoding.Raw,
+                     format=_ser.PrivateFormat.Raw,
+                     encryption_algorithm=_ser.NoEncryption())
+    _RAW_PUB = dict(encoding=_ser.Encoding.Raw,
+                    format=_ser.PublicFormat.Raw)
+
+
+def _seed_bytes(seed_hex: str) -> bytes:
+    seed = bytes.fromhex(seed_hex.strip())
+    if len(seed) != 32:
+        raise ValueError(f"secret seed must be 32 bytes, got {len(seed)}")
+    return seed
 
 
 def keygen() -> tuple[str, str]:
     """Return (secret_seed_hex, public_key_hex)."""
-    sk = Ed25519PrivateKey.generate()
-    seed = sk.private_bytes(**_RAW_PRIV)
-    pub = sk.public_key().public_bytes(**_RAW_PUB)
-    return seed.hex(), pub.hex()
+    if _HAVE_CRYPTOGRAPHY:
+        sk = Ed25519PrivateKey.generate()
+        seed = sk.private_bytes(**_RAW_PRIV)
+        pub = sk.public_key().public_bytes(**_RAW_PUB)
+        return seed.hex(), pub.hex()
+    seed = os.urandom(32)
+    return seed.hex(), _pure.publickey(seed).hex()
 
 
-def _load_secret(seed_hex: str) -> Ed25519PrivateKey:
-    seed = bytes.fromhex(seed_hex.strip())
-    if len(seed) != 32:
-        raise ValueError(f"secret seed must be 32 bytes, got {len(seed)}")
+def _load_secret(seed_hex: str):
+    seed = _seed_bytes(seed_hex)
     return Ed25519PrivateKey.from_private_bytes(seed)
 
 
 def pub_of(seed_hex: str) -> str:
-    return _load_secret(seed_hex).public_key().public_bytes(**_RAW_PUB).hex()
+    if _HAVE_CRYPTOGRAPHY:
+        return _load_secret(seed_hex).public_key().public_bytes(
+            **_RAW_PUB).hex()
+    return _pure.publickey(_seed_bytes(seed_hex)).hex()
 
 
 def sign_bytes(data: bytes, seed_hex: str) -> str:
     """Return the detached signature as 128 hex chars."""
-    return _load_secret(seed_hex).sign(data).hex()
+    if _HAVE_CRYPTOGRAPHY:
+        return _load_secret(seed_hex).sign(data).hex()
+    return _pure.signature(data, _seed_bytes(seed_hex)).hex()
 
 
 def sign_file(index_path: str, seed_hex: str) -> str:
@@ -82,13 +112,17 @@ def parse_pubfile(path: str) -> bytes:
 
 
 def verify_file(index_path: str, sig_path: str, pub_path: str) -> bool:
-    pub = Ed25519PublicKey.from_public_bytes(parse_pubfile(pub_path))
+    pub_raw = parse_pubfile(pub_path)
     sig = bytes.fromhex(Path(sig_path).read_text().strip())
-    try:
-        pub.verify(sig, Path(index_path).read_bytes())
-        return True
-    except Exception:
-        return False
+    data = Path(index_path).read_bytes()
+    if _HAVE_CRYPTOGRAPHY:
+        pub = Ed25519PublicKey.from_public_bytes(pub_raw)
+        try:
+            pub.verify(sig, data)
+            return True
+        except Exception:
+            return False
+    return _pure.checkvalid(sig, data, pub_raw)
 
 
 def _main(argv: list[str]) -> int:
