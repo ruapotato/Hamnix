@@ -119,7 +119,8 @@ def run_one_task() -> int32:
     best_micro: int32 = 0
     i: int32 = 0
     while i < timer_next:
-        if cast[int32](timer_active[i]) != 0:
+        if cast[int32](timer_active[i]) != 0 and \
+           (task_micro_only == 0 or cast[int32](timer_micro[i]) != 0):
             cm: int32 = cast[int32](timer_micro[i])
             take: int32 = 0
             if best < 0:
@@ -207,6 +208,11 @@ def drain_until_settled(po: int32):
 # page pipeline runs and have it persist across he_layout()'s internal js_init.
 drain_enabled: int32 = 1
 
+# Non-zero while the document's <script>s are running (see js_set_page_parsing).
+# NOT reset by js_init, like drain_enabled, so the page pipeline can set it
+# around he_layout's internal js_init.
+page_parsing: int32 = 0
+
 
 def js_set_drain(on: int32):
     drain_enabled = on
@@ -221,4 +227,35 @@ def drain_timers():
         # a callback that threw stops the drain, like a host runtime's turn.
         if ctl == CTL_THROW or err_flag != 0:
             break
+
+
+# Restrict run_one_task to MICROTASKS only. Set while the page is still being
+# parsed: per HTML a <script> element ending is a microtask checkpoint, not a
+# licence to run the timer queue, because the parser has not finished and
+# DOMContentLoaded / load have not fired yet. See drain_microtasks.
+task_micro_only: int32 = 0
+
+
+# Drain only the microtask queue, leaving timer tasks queued.
+#
+# This is the microtask checkpoint at the end of a script. Draining TIMERS there
+# instead was a real ordering bug: a page's `setTimeout(f, 0)` ran before the
+# document's own later <script> elements, and -- far worse -- a LONG timer ran
+# before the load event. testharness.js arms a 10-second watchdog inside
+# testharness.js itself, so on every WPT file that watchdog fired at the end of
+# the very first script, before `load` could set the harness's all_loaded flag.
+# 613 of 706 files reported harness status TIMEOUT for that reason alone.
+#
+# Verified against chromium (scratch order.html): script end, microtask,
+# DOMContentLoaded, load, setTimeout(0), then the 10s timer.
+def drain_microtasks():
+    task_micro_only = 1
+    count: int32 = 0
+    while count < TIMER_DRAIN_CAP:
+        if run_one_task() == 0:
+            break
+        count = count + 1
+        if ctl == CTL_THROW or err_flag != 0:
+            break
+    task_micro_only = 0
 

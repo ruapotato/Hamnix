@@ -220,7 +220,13 @@ def _js_eval_core(src: Ptr[uint8], slen: uint64, nested: int32) -> Ptr[uint8]:
         # of the caller's turn and must not run the event loop; see
         # js_eval_nested.
         if err_flag == 0 and ctl != CTL_THROW and drain_enabled != 0 and nested == 0:
-            drain_timers()
+            if page_parsing != 0:
+                # Still parsing the document: a script element ending is a
+                # MICROTASK CHECKPOINT, not the end of the event loop. The
+                # timer queue must wait for DOMContentLoaded and load.
+                drain_microtasks()
+            else:
+                drain_timers()
     if err_flag == 0 and ctl == CTL_THROW:
         # uncaught exception -> print like a host runtime
         emit_tgt = 1
@@ -660,5 +666,24 @@ def js_call_fn(fnval: int32, thisval: int32, argv: Ptr[int32], argc: int32) -> i
 # end-of-script; an embedder that dispatches DOM events via js_call_fn should
 # call this AFTER each event turn so setTimeout(f,0) handlers scheduled by the
 # event fire before the next render.
+# Set by the page pipeline while the document's <script>s are being executed,
+# so js_eval stops at a microtask checkpoint instead of running the timer queue
+# between script elements. The embedder owns the flag because only the embedder
+# knows when the parse is finished; a bare js_eval (js.ad, js_host.ad, the REPL)
+# leaves it 0 and keeps the full end-of-turn drain.
+def js_set_page_parsing(on: int32):
+    page_parsing = on
+
+
 def js_drain_timers():
     drain_timers()
+
+
+# Drain only if the embedder has not turned the end-of-turn drain off. Firing a
+# document lifecycle event (DOMContentLoaded / load) is a TASK, so tasks it
+# queues have to run -- but js_set_drain(0) is the host's deliberate "let me see
+# the pre-drain DOM" control and must keep working, so this honours it where a
+# bare js_drain_timers() would override it.
+def js_drain_timers_if_enabled():
+    if drain_enabled != 0:
+        drain_timers()

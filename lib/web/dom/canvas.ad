@@ -4224,6 +4224,17 @@ def _build_stylesheets(doc: int32):
     js_set_prop(doc, cast[Ptr[uint8]]("styleSheets"), 11, arr)
 
 
+# Set document.readyState and fire `readystatechange` at the document, which is
+# how the spec pairs them. Safe before any listener exists (_fire_document
+# pre-scans and no-ops), so the initial "loading" set costs nothing.
+def _doc_set_ready(st: Ptr[uint8], n: int32):
+    if js_type_of(js_doc) != 5:
+        return
+    js_set_prop(js_doc, cast[Ptr[uint8]]("readyState"), 10, \
+                js_new_string(st, cast[uint64](n)))
+    _fire_document(cast[Ptr[uint8]]("readystatechange"), 16)
+
+
 def _js_build_document():
     _cssom_reset()                       # fresh CSSOM rule model for this page
     doc: int32 = js_new_object_v()
@@ -4236,6 +4247,12 @@ def _js_build_document():
     js_set_prop(doc, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](9)))
     js_set_prop(doc, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#document"), 9))
+    # document.readyState — "loading" while the page's <script>s run (they run
+    # during the parse, as in a browser), then "interactive" before
+    # DOMContentLoaded and "complete" before load. Scripts branch on this
+    # constantly ("run now if already loaded, else wait for DOMContentLoaded"),
+    # and it read as undefined, which is neither.
+    _doc_set_ready(cast[Ptr[uint8]]("loading"), 7)
     js_set_prop(doc, cast[Ptr[uint8]]("getElementById"), 14, \
                 js_new_native_fn(js_hbase + NID_GETBYID))
     js_set_prop(doc, cast[Ptr[uint8]]("createElement"), 13, \
@@ -5127,6 +5144,9 @@ def _run_scripts() -> int32:
     # only makes layout coordinates available to script code (as browsers do).
     _layout()
     _refresh_all_geom()
+    # The document is now being parsed: script elements reach only a microtask
+    # checkpoint, so the timer queue cannot run ahead of DOMContentLoaded/load.
+    js_set_page_parsing(1)
     i: uint64 = 0
     while i < src_len:
         # A <script> inside <noscript> (RAWTEXT with scripting enabled — and
@@ -5185,7 +5205,12 @@ def _run_scripts() -> int32:
     # that defers init to `document.addEventListener('DOMContentLoaded', …)` (the
     # dominant framework/analytics pattern) actually runs. No-ops when nothing
     # registered for the type (fast pre-scan in _fire_document).
+    # Parsing is over, so the timer queue is allowed to run again — but only
+    # AFTER the lifecycle events, which is the whole point of the flag.
+    js_set_page_parsing(0)
+    _doc_set_ready(cast[Ptr[uint8]]("interactive"), 11)
     _fire_document(cast[Ptr[uint8]]("DOMContentLoaded"), 16)
+    _doc_set_ready(cast[Ptr[uint8]]("complete"), 8)
     _fire_document(cast[Ptr[uint8]]("load"), 4)
     # window.onload = fn (an IDL event-handler attribute on the window/global,
     # not an addEventListener registration) fires as part of the load event, once,
@@ -5193,6 +5218,14 @@ def _run_scripts() -> int32:
     # page init hook, so honour it explicitly: read the global `onload` binding
     # (writing window.onload defines a global) and invoke it if callable.
     _fire_window_onload()
+    # Firing DOMContentLoaded / load is a TASK, so anything those handlers
+    # queued has to run -- they are not the end of the event loop, they are an
+    # event in it. Without this the load handler could schedule work that never
+    # happened: testharness.js sets its `all_loaded` flag inside
+    # `on_event(window,'load', () => setTimeout(() => {...}, 0))`, that timer
+    # never fired, and so EVERY WPT file reported harness status TIMEOUT even
+    # when all of its subtests had completed and passed.
+    js_drain_timers_if_enabled()
     _js_capture_console()
     _dom_readback()
     return 1
