@@ -353,7 +353,7 @@ from drivers.net.virtio_net import (
 from drivers.net.ip import ip_init, ip_set_gateway
 from drivers.net.udp import udp_init
 from drivers.net.icmp import (
-    icmp_init, icmp_send_echo_request,
+    icmp_init, icmp_send_echo_request, icmp_get_in_echo_reply_count,
     net_arp_icmp_helpers_selftest, _nai_marker_present,
 )
 from drivers.net.ipv6 import ipv6_init, ipv6_selftest
@@ -700,12 +700,34 @@ def net_smoke_test():
         http_init()
         tls_init()
 
+        # The developer-marker scan needs the initramfs entry table.
+        # cpio_init() is idempotent (start_kernel called it before
+        # net_smoke_test, and vfs_init calls it again later); calling it
+        # here makes the gates below independent of that boot ordering.
+        cpio_init()
+        # #BOOTSTALL (2026-07-28): the boot-path network self-tests are
+        # gated behind the SAME master developer marker as the boot:37
+        # battery, /etc/run-selftests. build_initramfs.py plants it for
+        # every build EXCEPT the two production kernels (the installed
+        # disk, HAMNIX_CPIO_EMPTY=1, and the installer medium,
+        # HAMNIX_INSTALLER_BLOB=1). So every gate that greps for these
+        # lines — test_dns.sh, test_net_fuzz.sh, test_net_http.sh,
+        # test_net_https*.sh, test_hambrowse_fetch.sh — still runs them
+        # unchanged, while a shipped image no longer pays for them on
+        # the critical boot path. NOTHING moved out of CI; only out of
+        # the production boot.
+        net_selftests: int32 = initramfs_has_marker("/etc/run-selftests")
+
         # DNS resolver offline self-test (kernel roadmap §11):
         # exercises multi-A / PTR / MX / SRV parsing + the truncated-
         # UDP TC-bit path against hand-built response packets, so the
         # record-type codecs are proven even in a no-internet CI
         # sandbox. Runs before any wire traffic — purely in-memory.
-        dns_selftest()
+        # ~26 sub-tests, each with its own printk: measured 0.60 s of a
+        # production boot (serial-throughput bound), and it asserts
+        # nothing a user needs at boot.
+        if net_selftests == 1:
+            dns_selftest()
 
         # MSI-X interrupt-delivery self-test (kernel roadmap §9).
         # Proves the virtio-net MSI-X path delivers a real CPU
@@ -879,10 +901,24 @@ def net_smoke_test():
         # a router via option 3, which we mirrored, but as a safety
         # net (and to confirm the route configuration for the test).
         icmp_send_echo_request(10, 0, 2, 2)
+        # #BOOTSTALL (2026-07-28): this loop had NO exit condition — it
+        # always burned all 50,000,000 virtio_net_poll() calls even
+        # though the gateway's echo reply lands in the first few
+        # thousand. Measured 6.30 s of dead time on a production
+        # OVMF/TCG boot (the single largest contiguous gap in the whole
+        # network phase), and every one of those seconds is spent after
+        # `[icmp] echo reply from 10.0.2.2` has already been printed.
+        # Short-circuit on the reply counter, exactly like the ARP and
+        # DHCP polls above. The budget is unchanged, so a box whose
+        # gateway never answers waits precisely as long as before.
+        icmp_replies0: uint64 = icmp_get_in_echo_reply_count()
         i_spin: uint64 = 0
         while i_spin < 50000000:
             virtio_net_poll()
-            i_spin = i_spin + 1
+            if icmp_get_in_echo_reply_count() > icmp_replies0:
+                i_spin = 50000000                   # reply seen — break
+            else:
+                i_spin = i_spin + 1
 
         # --- DNS resolver smoke (M16.98) ------------------------
         # After DHCP has handed us a DNS server (option 6 -> 10.0.2.3
@@ -891,7 +927,22 @@ def net_smoke_test():
         # succeeds when the CI / dev host has working internet. The
         # test script accepts either "[dns] resolved" (PASS) or
         # "[dns] timeout" (SKIP — no internet) as a valid outcome.
-        if dhcp_state_get() == 3:
+        #
+        # #BOOTSTALL (2026-07-28): this whole block reaches out to the
+        # PUBLIC INTERNET (DNS -> example.com, then HTTP GET, then a
+        # full TLS 1.3 handshake) on the critical boot path of a
+        # SHIPPED image. Measured on a production OVMF/TCG boot with
+        # working internet: 0.4 s DNS + 0.3 s HTTP + 16.0 s HTTPS —
+        # and the HTTPS leg then FAILS ("cert chain rejected"), so the
+        # user waits 16 s for an error. On a box with slow, filtered or
+        # absent DNS it is far worse: none of the timeouts underneath
+        # can expire this early in boot, because time_init() (and hence
+        # the jiffy tick these budgets count) has not run yet. That is
+        # the shape of the 1-3 minute stall the user reported.
+        # Gated behind /etc/run-selftests like the rest — the gates
+        # that assert on these lines all build non-production kernels,
+        # so their coverage is untouched.
+        if dhcp_state_get() == 3 and net_selftests == 1:
             dns_name: Ptr[uint8] = "example.com"
             dns_result: Array[4, uint8]
             dns_result_ptr: Ptr[uint8] = cast[Ptr[uint8]](&dns_result[0])
