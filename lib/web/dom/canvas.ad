@@ -4391,23 +4391,38 @@ def _js_build_document():
     # Global event constructors: `new Event('x',{bubbles})`, `new CustomEvent
     # ('x',{detail})`, plus MouseEvent/KeyboardEvent (extra fields). Each returns
     # a fresh event object usable with dispatchEvent (which reads ev.type).
-    js_global_set(cast[Ptr[uint8]]("Event"), 5, \
-                  js_new_native_fn(js_hbase + NID_EVENT_CTOR))
+    # Real, constructable interfaces (their NID natives build fields on `new`).
+    _mk_ev_iface(cast[Ptr[uint8]]("Event"), 5, NID_EVENT_CTOR, 0)
     # Event.NONE / CAPTURING_PHASE / AT_TARGET / BUBBLING_PHASE live on the
-    # interface object as well as on instances.
+    # interface object as well as on instances, and on Event.prototype so an
+    # `ev.NONE`-through-the-chain read resolves too.
     _event_constants(js_global_get(cast[Ptr[uint8]]("Event"), 5))
+    _event_constants(g_ev_proto[0])
     # window.DOMException. Needed as a real constructor, not just a name: a
     # thrown DOMException must satisfy `e.constructor === self.DOMException`,
     # which is the last thing testharness's assert_throws_dom checks.
     g_domexc_ctor = js_new_native_fn(js_hbase + NID_DOMEXC_CTOR)
     js_global_set(cast[Ptr[uint8]]("DOMException"), 12, g_domexc_ctor)
     g_proto_domexc = js_fn_prototype(g_domexc_ctor)
-    js_global_set(cast[Ptr[uint8]]("CustomEvent"), 11, \
-                  js_new_native_fn(js_hbase + NID_CUSTOMEVENT))
-    js_global_set(cast[Ptr[uint8]]("MouseEvent"), 10, \
-                  js_new_native_fn(js_hbase + NID_MOUSEEVENT))
-    js_global_set(cast[Ptr[uint8]]("KeyboardEvent"), 13, \
-                  js_new_native_fn(js_hbase + NID_KEYBDEVENT))
+    _mk_ev_iface(cast[Ptr[uint8]]("CustomEvent"), 11, NID_CUSTOMEVENT, 1)
+    _mk_ev_iface(cast[Ptr[uint8]]("MouseEvent"), 10, NID_MOUSEEVENT, 2)
+    _mk_ev_iface(cast[Ptr[uint8]]("KeyboardEvent"), 13, NID_KEYBDEVENT, 3)
+    # UIEvent + the legacy-only interfaces document.createEvent must still mint.
+    # They are not independently constructable in this engine, so their global
+    # constructor reuses the base Event native — but each carries its OWN
+    # prototype object, because createEvent brands the returned event with
+    # exactly window[iface].prototype and the WPT alias test compares identity.
+    _mk_ev_iface(cast[Ptr[uint8]]("UIEvent"), 7, NID_EVENT_CTOR, 4)
+    _mk_ev_iface(cast[Ptr[uint8]]("BeforeUnloadEvent"), 17, NID_EVENT_CTOR, 5)
+    _mk_ev_iface(cast[Ptr[uint8]]("CompositionEvent"), 16, NID_EVENT_CTOR, 6)
+    _mk_ev_iface(cast[Ptr[uint8]]("DeviceMotionEvent"), 17, NID_EVENT_CTOR, 7)
+    _mk_ev_iface(cast[Ptr[uint8]]("DeviceOrientationEvent"), 22, NID_EVENT_CTOR, 8)
+    _mk_ev_iface(cast[Ptr[uint8]]("DragEvent"), 9, NID_EVENT_CTOR, 9)
+    _mk_ev_iface(cast[Ptr[uint8]]("FocusEvent"), 10, NID_EVENT_CTOR, 10)
+    _mk_ev_iface(cast[Ptr[uint8]]("HashChangeEvent"), 15, NID_EVENT_CTOR, 11)
+    _mk_ev_iface(cast[Ptr[uint8]]("MessageEvent"), 12, NID_EVENT_CTOR, 12)
+    _mk_ev_iface(cast[Ptr[uint8]]("StorageEvent"), 12, NID_EVENT_CTOR, 13)
+    _mk_ev_iface(cast[Ptr[uint8]]("TextEvent"), 9, NID_EVENT_CTOR, 14)
     # `new Image()` constructor — a common preload/beacon global (round: google).
     js_global_set(cast[Ptr[uint8]]("Image"), 5, \
                   js_new_native_fn(js_hbase + NID_IMAGE_CTOR))
@@ -7027,27 +7042,65 @@ def _throw_domexc(nm: Ptr[uint8], n: int32, msg: Ptr[uint8], mn: int32) -> int32
 #
 # Interface names are matched ASCII-case-INSENSITIVELY, which is what the spec
 # requires here (createEvent("mouseevents") is legal and used in the wild).
+# Mint one Event-interface object: a global constructor plus its own prototype,
+# stashed in g_ev_proto[flavor] so createEvent can brand instances with exactly
+# window[iface].prototype (WPT's alias test compares by identity).
+def _mk_ev_iface(nm: Ptr[uint8], nlen: int32, nid: int32, flavor: int32):
+    ctor: int32 = js_new_native_fn(js_hbase + nid)
+    js_global_set(nm, cast[uint64](nlen), ctor)
+    g_ev_proto[flavor] = js_fn_prototype(ctor)
+
+
+# Map a document.createEvent() interface name to a `flavor`, or -1 if the name
+# is not in the spec's legacy event-interface table. ASCII case-INSENSITIVE, and
+# the plural legacy aliases (Events/HTMLEvents/SVGEvents -> Event, MouseEvents ->
+# MouseEvent, UIEvents -> UIEvent, KeyEvents -> KeyboardEvent) collapse here.
+def _ev_flavor(p: Ptr[uint8], n: int32) -> int32:
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("event"), 5) != 0 or \
+       _ascii_ci_eq(p, n, cast[Ptr[uint8]]("events"), 6) != 0 or \
+       _ascii_ci_eq(p, n, cast[Ptr[uint8]]("htmlevents"), 10) != 0 or \
+       _ascii_ci_eq(p, n, cast[Ptr[uint8]]("svgevents"), 9) != 0:
+        return 0
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("customevent"), 11) != 0:
+        return 1
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("mouseevent"), 10) != 0 or \
+       _ascii_ci_eq(p, n, cast[Ptr[uint8]]("mouseevents"), 11) != 0:
+        return 2
+    # NB: "KeyEvents" is deliberately NOT here — it is absent from the spec's
+    # createEvent table, and WPT asserts createEvent("KeyEvents") throws.
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("keyboardevent"), 13) != 0:
+        return 3
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("uievent"), 7) != 0 or \
+       _ascii_ci_eq(p, n, cast[Ptr[uint8]]("uievents"), 8) != 0:
+        return 4
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("beforeunloadevent"), 17) != 0:
+        return 5
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("compositionevent"), 16) != 0:
+        return 6
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("devicemotionevent"), 17) != 0:
+        return 7
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("deviceorientationevent"), 22) != 0:
+        return 8
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("dragevent"), 9) != 0:
+        return 9
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("focusevent"), 10) != 0:
+        return 10
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("hashchangeevent"), 15) != 0:
+        return 11
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("messageevent"), 12) != 0:
+        return 12
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("storageevent"), 12) != 0:
+        return 13
+    if _ascii_ci_eq(p, n, cast[Ptr[uint8]]("textevent"), 9) != 0:
+        return 14
+    return -1
+
+
 def _create_event() -> int32:
     n: int32 = 0
     if js_arg_count() >= 1:
         n = _arg_bytes(0, &dom_idtmp[0], 256)
-    flavor: int32 = -1
-    if _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("event"), 5) != 0 or \
-       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("events"), 6) != 0 or \
-       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("htmlevents"), 10) != 0 or \
-       _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("svgevents"), 9) != 0:
-        flavor = 0
-    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("customevent"), 11) != 0:
-        flavor = 1
-    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("mouseevent"), 10) != 0 or \
-         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("mouseevents"), 11) != 0:
-        flavor = 2
-    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("keyboardevent"), 13) != 0 or \
-         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("keyevents"), 9) != 0:
-        flavor = 3
-    elif _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("uievent"), 7) != 0 or \
-         _ascii_ci_eq(&dom_idtmp[0], n, cast[Ptr[uint8]]("uievents"), 8) != 0:
-        flavor = 4
+    flavor: int32 = _ev_flavor(&dom_idtmp[0], n)
     if flavor < 0:
         return _throw_domexc(cast[Ptr[uint8]]("NotSupportedError"), 17, \
                              cast[Ptr[uint8]]("createEvent: unsupported interface"), 34)
@@ -7059,6 +7112,8 @@ def _create_event() -> int32:
 # in. Shares the shape _make_event produces so dispatch treats both alike.
 def _blank_event(flavor: int32) -> int32:
     ev: int32 = js_new_object_v()
+    if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
+        js_set_proto_v(ev, g_ev_proto[flavor])
     js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, js_new_string(&dom_txtbuf[0], 0))
     js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(0))
     js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(0))
@@ -7145,6 +7200,8 @@ def _ascii_ci_eq(a: Ptr[uint8], an: int32, b: Ptr[uint8], bn: int32) -> int32:
 
 def _make_event(flavor: int32) -> int32:
     ev: int32 = js_new_object_v()
+    if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
+        js_set_proto_v(ev, g_ev_proto[flavor])
     # type (arg0) — copied into a stable buffer first (js_str_ptr shares scratch).
     tn: int32 = 0
     if js_arg_count() >= 1:

@@ -1052,6 +1052,12 @@ g_domexc_ctor: int32 = 0             # the DOMException constructor VALUE. Kept 
                                      # testharness's assert_throws_dom ends by
                                      # checking `e.constructor === self.DOMException`
                                      # to prove the error came from this global.
+# Per-interface Event prototype objects, indexed by createEvent/_make_event
+# `flavor` (0 Event, 1 CustomEvent, 2 MouseEvent, 3 KeyboardEvent, 4 UIEvent,
+# 5.. the legacy-createEvent-only interfaces). document.createEvent must brand
+# each created event with EXACTLY window[iface].prototype, so we stash the same
+# object handle here that we handed the global constructor.
+g_ev_proto: Array[16, int32]
 
 # close-tag scan results
 g_close_lt:  uint64 = 0
@@ -1123,6 +1129,10 @@ def _dom_reset():
     g_proto_doc = 0
     g_proto_domexc = 0
     g_domexc_ctor = 0
+    gepi: int32 = 0
+    while gepi < 16:
+        g_ev_proto[gepi] = 0
+        gepi = gepi + 1
     _cssom_reset()
     htmlcanvas_reset()
 
