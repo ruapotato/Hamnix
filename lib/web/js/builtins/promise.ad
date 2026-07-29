@@ -74,6 +74,7 @@ def pr_alloc() -> int32:
             return -1
         rid = pr_n
         pr_n = pr_n + 1
+    pr_sched[rid] = cast[uint8](0)            # REGISTERED (owned by a promise's list)
     pr_live = pr_live + 1
     if pr_live > pr_live_hi:
         pr_live_hi = pr_live
@@ -89,6 +90,7 @@ def pr_free_slot(rid: int32):
     pr_onrej[rid] = 0
     pr_result[rid] = 0
     pr_source[rid] = -1
+    pr_sched[rid] = cast[uint8](0)
     pr_next[rid] = pr_free_head
     pr_free_head = rid
     pr_live = pr_live - 1
@@ -101,6 +103,9 @@ def schedule_reaction(rid: int32):
     reg: int32 = timer_alloc()
     if reg < 0:
         return                                # table full — timer_alloc REPORTED it
+    # From here the record's ONLY reference is the number in timer_args below, so
+    # the object collector must root it wholesale — see pr_sched in state.ad.
+    pr_sched[rid] = cast[uint8](1)
     timer_fn[reg] = g_promise_job
     timer_delay[reg] = 0.0
     timer_seq[reg] = timer_seq_ctr

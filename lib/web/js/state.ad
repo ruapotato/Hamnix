@@ -476,6 +476,19 @@ pr_n: int32 = 0
 #   * run_reaction additionally REJECTS a record whose pr_source is -1 (i.e. a
 #     freed one), so a double-schedule bug reports itself instead of silently
 #     running a recycled record.
+#
+# pr_sched SPLITS the two ownerships above, and that is what makes the OBJECT
+# collector precise here. It used to root every record over 0..pr_n WHOLESALE,
+# including a record merely REGISTERED on a promise nobody can reach any more —
+# and since the promise roots the record (prom_react) while the wholesale scan
+# rooted the promise back (pr_source), an abandoned `new Promise(() => {})` with
+# a .then on it was IMMORTAL, one dead promise + handler closure + dependent
+# promise per registration. That is the leak behind "object pool exhausted" in a
+# page that fires requests it never gets answers to. Only a SCHEDULED record is
+# rooted wholesale now (it must be: its one reference is an invisible number in
+# a timer arg); a REGISTERED one is reached through its live owner by
+# obj_gc_trace, and freed by obj_gc_free when that owner dies.
+pr_sched:  Array[16384, uint8]    # 1 = handed to the microtask queue (rooted wholesale)
 pr_free_head: int32 = -1
 pr_live:      int32 = 0           # reaction records currently outstanding
 pr_live_hi:   int32 = 0           # high-water of pr_live

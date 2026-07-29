@@ -4261,3 +4261,13 @@ bash scripts/ci_run_gate.sh scripts/test_de_desktop_live_view.sh
 # real page proving embedder-held (DOM) handles survive 200k objects of churn.
 # ~4 min, QEMU-free.
 bash scripts/test_jsengine_gc_obj_host.sh
+# The three ASYNC pools (deferred-callback queue, promise reactions, Map/Set
+# entries). All three were bump-only, so an async SPA's setTimeout render loop
+# stopped dead at 4,096 turns, a .then chain at 4,096 and a Map-per-turn loop at
+# 65,536 — every one of them in SILENCE (the DOM_MAX / emit_c bug class). Asserts
+# the measured turn counts past those caps, occupancy proving REUSE not a bigger
+# pool, that each remaining cap NAMES itself, 10 adversarial retention cases
+# (self-clearing interval, stale ids after slot reuse, a queued reaction id
+# surviving 5,000 slot recycles) and no live-free under HAMNIX_JS_GC_STRESS=1.
+# ~2 min, QEMU-free.
+bash scripts/test_jsengine_asyncpools_host.sh

@@ -592,13 +592,20 @@ def gc_collect_objs():
     obj_gc_mv(mset_this_v)
     obj_gc_mv(mset_key_v)
     obj_gc_mv(mset_val_v)
-    # promise reaction + combinator cells (queued work, owned by no object)
+    # SCHEDULED promise reactions: queued work owned by no object — the microtask
+    # holds the record id as a NUMBER in a timer arg, invisible here, so these
+    # must be rooted wholesale. A record merely REGISTERED on a promise is NOT
+    # rooted here (pr_sched == 0): it is reached through its live owner in
+    # obj_gc_trace, and freed with that owner in obj_gc_free. Rooting those too —
+    # as this loop used to — made every abandoned pending promise with a .then on
+    # it IMMORTAL, because the record rooted the promise that rooted the record.
     r = 0
     while r < pr_n:
-        obj_gc_mv(pr_onful[r])
-        obj_gc_mv(pr_onrej[r])
-        obj_gc_mv(pr_result[r])
-        obj_gc_m(pr_source[r])
+        if pr_sched[r] != 0:
+            obj_gc_mv(pr_onful[r])
+            obj_gc_mv(pr_onrej[r])
+            obj_gc_mv(pr_result[r])
+            obj_gc_m(pr_source[r])
         r = r + 1
     r = 0
     while r < comb_n:
