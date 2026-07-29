@@ -297,6 +297,9 @@ def preprocess_chromium(rel):
 
 
 def run_chromium(rel, timeout, mode="separate", binary="chromium"):
+    if not os.path.isfile(os.path.join(TESTS, rel.replace("/", os.sep))):
+        return {"harness": None, "harness_note": "not vendored", "subtests": [],
+                "missing": [], "rc": None}
     payload, missing = preprocess_chromium(rel)
     # The temp file lives NEXT TO the test so its relative src/href/iframe URLs
     # resolve exactly as upstream intended.

@@ -176,7 +176,8 @@ def check_baseline(recs, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("jsonl")
-    ap.add_argument("--vs", help="chromium JSONL for the cross-check")
+    ap.add_argument("--vs", action="append", default=[],
+                    help="chromium JSONL for the cross-check (repeatable)")
     ap.add_argument("--gaps", type=int, default=25)
     ap.add_argument("--baseline", help="write a shrink-only baseline of failing tests")
     ap.add_argument("--check-baseline", metavar="FILE",
@@ -239,7 +240,16 @@ def main():
         print("  %5d  %s" % (n, m))
 
     if args.vs:
-        cr = load(args.vs)
+        # --vs may name several JSONLs (a long chromium sweep is easier to
+        # resume than to restart). Restrict to tests OUR run also covered, so
+        # the control's headline is over the same population as ours.
+        ours = {r["test"] for r in recs}
+        cr, seen = [], set()
+        for path in args.vs:
+            for r in load(path):
+                if r["test"] in ours and r["test"] not in seen:
+                    seen.add(r["test"])
+                    cr.append(r)
         cmap = {}
         cfiles = {}
         for r in cr:
