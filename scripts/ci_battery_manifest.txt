@@ -2957,6 +2957,17 @@ HAMNIX_SKIP_BUILD=1 bash scripts/ci_run_gate.sh scripts/test_webkit.sh
 # path (guest app -> devaudio cdev -> HDA driver -> QEMU codec -> host samples).
 bash scripts/test_hda_audio.sh
 bash scripts/test_audio_playback.sh
+# AUDIO STREAM LIFETIME (user report 2026-07-28: "on the first sound effect it
+# played the end of the boot jingle", "on close it played the last sound effect
+# over and over", "1/2 the sounds don't play while the music is playing").
+# user/audiolife.ad runs a multi-PROCESS scenario as /init — a staged clip whose
+# process exits, one raw effect from a second process, and a game's effects over
+# a music player's stream — and the gate asserts on the PCM the codec actually
+# emitted (QEMU `-audiodev wav`): a clip plays ONCE, one effect is emitted ONCE,
+# and EVERY effect submitted while the music plays is IN the mix. Pre-fix this
+# gate measured 7.272 s of a 3.000 s clip, one effect emitted twice, and 0.000 s
+# of 0.600 s of effects overlapping the music.
+bash scripts/test_audio_stream_lifetime.sh
 # hamaudio player's real media path (#321): the guest reads a shipped .wav off
 # the filesystem, DECODES it (lib/wavdecode.ad), and streams the extracted PCM
 # to the HDA sink. hamaudioselftest runs AS /init; the host asserts correct
