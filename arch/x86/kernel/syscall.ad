@@ -1301,7 +1301,10 @@ def _aslr_rand64() -> uint64:
     # (the same 0x9E3779B97F4A7C15 mix kernel/stack_protect.ad uses for the
     # stack canary) so the low/high bits are both well diffused. This is
     # NOT crypto-grade, but it is genuine per-exec entropy, not a constant.
-    _aslr_stream = _aslr_stream + cast[uint64](0x9E3779B97F4A7C15)
+    # INTENTIONAL WRAP (--check-arith opt-out): a Weyl sequence — the add is
+    # defined modulo 2^64. docs/adder_memory_safety.md.
+    unsafe:
+        _aslr_stream = _aslr_stream + cast[uint64](0x9E3779B97F4A7C15)
     x: uint64 = read_tsc()
     x = x ^ tsc_monotonic_ns()
     x = x ^ _aslr_stream
@@ -1312,8 +1315,11 @@ def _aslr_rand64() -> uint64:
     if aslr_det_seed != 0:
         x = aslr_det_seed ^ _aslr_stream
     # splitmix64 finalizer.
-    x = (x ^ (x >> 30)) * cast[uint64](0xBF58476D1CE4E5B9)
-    x = (x ^ (x >> 27)) * cast[uint64](0x94D049BB133111EB)
+    # INTENTIONAL WRAP (--check-arith opt-out): splitmix64 finaliser — both
+    # multiplies are defined modulo 2^64. docs/adder_memory_safety.md.
+    unsafe:
+        x = (x ^ (x >> 30)) * cast[uint64](0xBF58476D1CE4E5B9)
+        x = (x ^ (x >> 27)) * cast[uint64](0x94D049BB133111EB)
     x = x ^ (x >> 31)
     return x
 

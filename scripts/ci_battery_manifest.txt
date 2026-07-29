@@ -4078,3 +4078,17 @@ bash scripts/test_leakprobe_slopes_host.sh
 # site 0, survives the chunked meminfo read — and proves the default-off
 # guarantee both ways (no tracker bytes in the blob, no counter movement).
 bash scripts/ci_run_gate.sh scripts/test_track_allocs.sh
+# test_llvm_kernel_unsafe_link: the LLVM lane's twin of test_napi PART 1. ~95 s,
+# no QEMU. test_napi asserts the NATIVE x86_64 kernel link; this asserts the
+# LLVM-lane kernel link, which is the DEFAULT ship path
+# (scripts/build_installer_img.sh). REGISTERED 2026-07-28 after `unsafe:` — the
+# documented --check-bounds/--check-arith opt-out — was used inside a kernel
+# function for the first time ever: it fell outside the SSA subset, bailed the
+# ENCLOSING function to a bare `declare`, and because elf_emit.ad emits
+# leading-underscore functions as STB_LOCAL the hybrid native fallback could not
+# define it => `undefined reference to __stack_chk_init` and a dead ship build.
+# kobjdiff passed with 0 divergences throughout (it compares native-vs-seed
+# CODEGEN and cannot see LLVM-lane link resolution). Part 1 catches the SSA bail
+# in ~1 s; part 2 asserts no leading-underscore function bails (the unlinkable
+# class) and that the real kernel link resolves.
+bash scripts/test_llvm_kernel_unsafe_link.sh

@@ -1,0 +1,35 @@
+# Fixture for scripts/test_llvm_kernel_unsafe_link.sh.
+#
+# Shape of the REGRESSION it pins (kernel/stack_protect.ad __stack_chk_init):
+# a MODULE-PRIVATE (leading-underscore) function whose body contains an
+# `unsafe:` block -- the documented --check-bounds / --check-arith opt-out --
+# called from a PUBLIC function.
+#
+# Before the fix, `unsafe:` was outside the SSA subset, so the LLVM lane BAILED
+# the whole enclosing function and emitted only a `declare`. The hybrid native
+# fallback cannot cover it, because elf_emit.ad emits leading-underscore
+# functions as STB_LOCAL -- so the kernel link died with
+#   undefined reference to `__stack_chk_init'
+# even though kobjdiff (native-vs-seed) was completely green.
+#
+# Keep the `_`-prefix, the `unsafe:` block and the public caller: each one is
+# load-bearing for what this fixture detects.
+
+unsafe_fixture_guard: uint64 = 0
+
+
+# Module-private + `unsafe:` == the exact combination that broke the link.
+def _unsafe_mix(seed: uint64) -> uint64:
+    acc: uint64 = seed
+    unsafe:
+        # INTENTIONAL WRAP: golden-ratio diffusion multiply.
+        acc = acc * 0x9E3779B97F4A7C15
+        acc = acc ^ 0xC0FFEE0000000000
+        unsafe_fixture_guard = acc
+    return acc
+
+
+# Public entry point that CALLS the private one, so the private symbol must
+# actually resolve at link time (this is `start_kernel_early` in miniature).
+def unsafe_fixture_entry(seed: uint64) -> uint64:
+    return _unsafe_mix(seed)
