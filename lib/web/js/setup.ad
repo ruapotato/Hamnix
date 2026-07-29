@@ -74,6 +74,11 @@ def rn_new(op: int32) -> int32:
 
 
 # ---- char classes ----
+# Sentinels returned by re_class_item (see its note).
+RE_CLS_SET: int32 = -1
+RE_CLS_OOR: int32 = -2
+
+
 def cls_new(negate: int32) -> int32:
     idx: int32 = n_cls
     i: int32 = 0
@@ -436,8 +441,15 @@ def re_parse_escape() -> int32:
         br: int32 = rn_new(RN_BACKREF)
         rn_a[br] = gi
         return br
-    # single-char escapes
+    # single-char escapes. \xHH and \uHHHH both denote a CODE POINT, and JS
+    # strings are held as UTF-8 byte buffers, so anything above ASCII has to be
+    # matched as its UTF-8 byte sequence — exactly what u-mode \u already does
+    # via re_utf8_atom. Emitting a bare RN_CHAR here instead meant /\xe9/ looked
+    # for byte 0xE9 and so failed to match "é" (C3 A9), and made \xe9 disagree
+    # with the identical é.
     lit: int32 = re_escape_char(e)
+    if lit > 127:
+        return re_utf8_atom(lit)
     ch2: int32 = rn_new(RN_CHAR)
     rn_a[ch2] = lit
     return ch2
@@ -463,14 +475,26 @@ def re_escape_char(e: uint8) -> int32:
             rc_i = rc_i + 2
             return h1 * 16 + h2
         return 120
-    if e == 117:                             # \uHHHH -> low byte (byte engine)
+    if e == 117:                             # \uHHHH -> the full code point
+        # This used to return only the LOW BYTE, with the note "(byte engine)"
+        # as though it were a deliberate approximation. It is not one: dropping
+        # the high byte maps \ud800 to 0x00 and \udbff to 0xff, so the character
+        # class [\ud800-\udbff] became the range [\x00-\xff] and matched EVERY
+        # byte. testharness.js sanitises every assertion message through
+        # /([\ud800-\udbff]+)(?![\udc00-\udfff])/g, so all 738 WPT failure
+        # messages came back fully code-unit-escaped and unreadable.
+        #
+        # Return the true code point and let each context decide what it can
+        # represent: the atom path emits the UTF-8 byte sequence, the character
+        # class (a 256-bit byte bitmap) reports RE_CLS_OOR for anything it
+        # cannot hold, which matches nothing rather than matching everything.
         u1: int32 = hexval(rc_at(rc_i))
         u2: int32 = hexval(rc_at(rc_i + 1))
         u3: int32 = hexval(rc_at(rc_i + 2))
         u4: int32 = hexval(rc_at(rc_i + 3))
         if u1 >= 0 and u2 >= 0 and u3 >= 0 and u4 >= 0:
             rc_i = rc_i + 4
-            return (u3 * 16 + u4)
+            return (((u1 * 16 + u2) * 16 + u3) * 16 + u4)
         return 117
     return cast[int32](e)                    # \. \/ \\ \* ... literal
 
@@ -671,25 +695,43 @@ def re_parse_class() -> int32:
     idx: int32 = cls_new(neg)
     while rc_i < rc_len and rc_peek() != 93:  # until ]
         lo: int32 = re_class_item(idx)
-        if lo < 0:
+        if lo == RE_CLS_SET:
             continue                          # a set (\d etc) was folded in
         # range?
         if rc_peek() == 45 and rc_peek1() != 93 and rc_peek1() != 0:
             rc_i = rc_i + 1                    # consume '-'
             hi: int32 = re_class_item(idx)
-            if hi < 0:
+            if hi == RE_CLS_SET:
                 cls_add(idx, 45)              # stray set after '-': treat '-' literal
-            else:
-                cls_add_range(idx, lo, hi)
-        else:
+                if lo != RE_CLS_OOR:
+                    cls_add(idx, lo)          # ...and `lo` is still a member
+            elif lo != RE_CLS_OOR:
+                # If only the TOP end is unrepresentable, keep the part that
+                # fits. If the LOW end is beyond the bitmap the whole range is
+                # (hi >= lo), so nothing is added at all: [\ud800-\udbff] now
+                # matches NOTHING, which is correct for a UTF-8 subject -- no
+                # single byte is a lone surrogate. It used to become [\x00-\xff]
+                # and match every byte in the string.
+                if hi == RE_CLS_OOR:
+                    cls_add_range(idx, lo, 255)
+                else:
+                    cls_add_range(idx, lo, hi)
+        elif lo != RE_CLS_OOR:
             cls_add(idx, lo)
     if rc_peek() == 93:
         rc_i = rc_i + 1                       # skip ]
     return re_class_node(idx)
 
 
-# Parse one class item; returns its char code, or -1 if it was a predefined
-# set escape (\d \w \s + negations) already merged into the class bitmap.
+# Parse one class item. Returns its char code (0..255), or one of:
+#   RE_CLS_SET (-1)  it was a predefined set escape (\d \w \s \p{..} + negations)
+#                    and has already been merged into the class bitmap.
+#   RE_CLS_OOR (-2)  it was a well-formed item whose code point is above 255, so
+#                    this 256-bit byte bitmap cannot represent it.
+# The two must be distinguished: RE_CLS_SET means "no endpoint here, `-` is a
+# literal", while RE_CLS_OOR is a real range endpoint that simply matches no
+# byte. Collapsing them made [\u{1F600}-x] mis-parse, and treating an
+# out-of-range endpoint as a byte made [\ud800-\udbff] match everything.
 def re_class_item(idx: int32) -> int32:
     c: uint8 = rc_peek()
     if c == 92:                              # escape
@@ -698,22 +740,22 @@ def re_class_item(idx: int32) -> int32:
         rc_i = rc_i + 1
         if e == 100:
             cls_add_set(idx, 0, 0)
-            return -1
+            return RE_CLS_SET
         if e == 68:
             cls_add_set(idx, 0, 1)
-            return -1
+            return RE_CLS_SET
         if e == 119:
             cls_add_set(idx, 1, 0)
-            return -1
+            return RE_CLS_SET
         if e == 87:
             cls_add_set(idx, 1, 1)
-            return -1
+            return RE_CLS_SET
         if e == 115:
             cls_add_set(idx, 2, 0)
-            return -1
+            return RE_CLS_SET
         if e == 83:
             cls_add_set(idx, 2, 1)
-            return -1
+            return RE_CLS_SET
         if e == 98:                          # \b inside class = backspace (8)
             return 8
         if re_uni != 0 and (e == 112 or e == 80):   # \p{..}/\P{..} in class
@@ -731,16 +773,25 @@ def re_class_item(idx: int32) -> int32:
                 cw: int32 = re_prop_which(csoff, cslen)
                 if cw >= 0:
                     cls_add_prop(idx, cw, cpneg)
-            return -1
+            return RE_CLS_SET
         if re_uni != 0 and e == 117:         # \u{CP}/\uHHHH in class
             # cursor already sits just past the 'u' — exactly re_parse_u_cp's entry.
             ucp: int32 = re_parse_u_cp()
-            # a byte class holds 0..255; astral members can't be represented
-            # (byte engine) — add cp when it fits, else silently drop (documented).
+            # A byte class holds 0..255, so an astral / non-Latin-1 member is
+            # unrepresentable. Report it as an OUT-OF-RANGE endpoint, not as a
+            # folded-in set: it is still a range endpoint, and saying otherwise
+            # made [\u{1F600}-x] mis-parse the '-' as a literal.
             if ucp >= 0 and ucp <= 255:
                 return ucp
-            return -1
-        return re_escape_char(e)
+            if ucp < 0:
+                return RE_CLS_SET            # malformed \u form: nothing to add
+            return RE_CLS_OOR
+        # Non-u mode parses \uHHHH too (only \u{..} and surrogate pairing are
+        # u-mode-only), and re_escape_char now yields the full code point.
+        ecp: int32 = re_escape_char(e)
+        if ecp > 255:
+            return RE_CLS_OOR
+        return ecp
     rc_i = rc_i + 1
     return cast[int32](c)
 
