@@ -107,15 +107,26 @@ need() {  # need <file> <literal marker> <what it is>
         struct_fail=1
     fi
 }
+# need_call <file> <fn> <what it is> -- an actual CALL, i.e. an INDENTED
+# statement, not the `extern def fn()` declaration. Mutation testing caught
+# this: deleting every real call from fs/elf.ad still satisfied a plain
+# substring grep, because the `extern def pointer_service_poll()` line matches
+# it. A structural guard that a deletion cannot trip is not a guard.
+need_call() {
+    if ! grep -aqE "^[[:space:]]+$2\\(\\)" "$1"; then
+        echo "$TAG FAIL: structural marker missing: $3 (no indented call to $2() in $1)" >&2
+        struct_fail=1
+    fi
+}
 # The metric must be fed from BOTH service routes, or it cannot see the fix.
 need arch/x86/kernel/time.ad 'def ptrlat_account('       'shared gap accounting'
 need arch/x86/kernel/time.ad 'def ptrlat_sample_inline('  'inline-route sampling'
 need arch/x86/kernel/time.ad 'ptrlat_account(gap)'        'tick route feeds accounting'
-need sys/src/9/port/devmouse.ad 'ptrlat_sample_inline()'  'inline seam samples the gap'
+need_call sys/src/9/port/devmouse.ad ptrlat_sample_inline 'inline seam samples the gap'
 # The service seam itself, and the two long IRQ-off regions it is called from.
 need sys/src/9/port/devmouse.ad 'def pointer_service_poll(' 'pointer service seam'
-need drivers/virtio/virtio_ring.ad 'pointer_service_poll()' 'virtio used-ring service point'
-need fs/elf.ad 'pointer_service_poll()'                     'ELF loader service point'
+need_call drivers/virtio/virtio_ring.ad pointer_service_poll 'virtio used-ring service point'
+need_call fs/elf.ad pointer_service_poll 'ELF loader service point'
 # The runtime A/B switch this gate measures with.
 need sys/src/9/port/devmouse.ad 'def pointer_service_set_enabled(' 'runtime kill-switch'
 need sys/src/9/port/devwsys.ad '"ptrsvc"'                   'ptrsvc ctl verb'
