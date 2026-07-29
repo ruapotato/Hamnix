@@ -298,6 +298,24 @@ assert_in BODYFOCUS 'glyphs [0-9]+ [0-9]+ "Blank Slide"' \
 refute_in BODYFOCUS 'glyphs [0-9]+ [0-9]+ "Click here to add content"' \
                                                 "the placeholder hint is gone once the body has content"
 
+# --- DECK FULL is REPORTED, not a silent no-op -----------------------------
+# hamslides_key (Ctrl-N / Ctrl-U), _menu_activate and hamslides_hit dropped
+# hamslides_add_slide()'s status and `return 1` — "handled" — whether or not a
+# slide was inserted. At MAXSLIDES the keystroke did NOTHING and the UI said
+# NOTHING. These assert on the EFFECT: the count doesn't move (it never did)
+# AND the refusal is now counted and drawn. Mutation: drop the `if r == 0:
+# _notice_deck_full()` in hamslides_add_slide_ui and FULL_NOTICE_DELTA goes 0.
+assert_grep '^FULL_NSLIDES 16'                  "40 Ctrl-N presses stop at MAXSLIDES=16"
+assert_grep '^FULL_NSLIDES_DELTA 0'             "Ctrl-N at the cap inserts no slide"
+assert_grep '^FULL_NOTICE_DELTA 1'              "Ctrl-N at the cap REPORTS the refusal (was silent)"
+assert_grep '^FULL_NOTICE_LIVE 1'               "a user-visible notice is live after the refusal"
+assert_grep '^FULL_NOTICE_TEXT Deck FULL: MAXSLIDES=16 reached, no slide added' \
+                                                "the notice NAMES the limit and its value"
+assert_grep '^FULL_MENU_NOTICE_DELTA 1'         "Edit > New Slide at the cap reports too"
+assert_grep '^FULL_CTRLU_NOTICE_DELTA 1'        "Ctrl-U duplicate at the cap reports too"
+assert_in DECKFULL 'glyphs [0-9]+ 480 "Deck FULL: MAXSLIDES=16 reached, no slide added"' \
+                                                "the refusal reaches PIXELS in the status bar"
+
 # --- the document file really exists on disk with the magic ----------------
 if [ -s "$DOC" ]; then echo "[hamslides-host] PASS $DOC written on disk";
 else echo "[hamslides-host] FAIL document not written to $DOC"; fail=1; fi

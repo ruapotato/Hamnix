@@ -40,7 +40,8 @@ from lib.hamslidescore import hamslides_init, hamslides_build_scene, \
     hamslides_menu_open, hamslides_undo_depth, hamslides_hit, \
     hamslides_focus_row, hamslides_present_black, hamslides_present_notes, \
     hamslides_win_w, hamslides_win_h, hamslides_goto, hamslides_key_idle, \
-    hamslides_esc_pending
+    hamslides_esc_pending, hamslides_key, hamslides_deckfull_count, \
+    hamslides_notice_text
 from lib.filepick import filepick_open, filepick_active, filepick_emit_panel, \
     filepick_handle_code, filepick_take_result, filepick_result_path, \
     filepick_result_mode, filepick_save_name_ptr, FILEPICK_OPEN, FILEPICK_SAVE
@@ -728,5 +729,55 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     _o_flush()
     sys_write(1, hamscene_bufptr(), hamscene_length())
     _o_str(cast[Ptr[uint8]]("BODYFOCUS-END\n"))
+    _o_flush()
+
+    # ---- (14) DECK FULL is REPORTED, not silently ignored ---------------
+    # hamslides_key (Ctrl-N / Ctrl-U), _menu_activate and hamslides_hit all
+    # `return 1` — "handled" — whether or not a slide was actually inserted.
+    # At MAXSLIDES the keystroke, the menu item and the toolbar button did
+    # NOTHING and said NOTHING. This drives the deck to the cap through the
+    # real key path and then asserts on the EFFECT of one more Ctrl-N: the
+    # slide count must not move (it never did) AND the refusal must be
+    # counted and rendered in the status bar (it never was).
+    hamslides_clear()
+    fillk: int32 = 0
+    while fillk < 40:                                  # far past MAXSLIDES
+        _press(14)                                     # Ctrl-N
+        fillk = fillk + 1
+    _kv(cast[Ptr[uint8]]("FULL_NSLIDES"),
+        cast[int64](hamslides_slide_count()))          # == MAXSLIDES (16)
+    base_notices: uint64 = hamslides_deckfull_count()
+    # One more Ctrl-N at the cap: count unchanged, notice count +1, and a
+    # notice string live for the status bar to draw.
+    n_before: uint64 = hamslides_slide_count()
+    key_ret: int32 = hamslides_key(14)
+    _kv(cast[Ptr[uint8]]("FULL_CTRLN_RET"), cast[int64](key_ret))
+    _kv(cast[Ptr[uint8]]("FULL_NSLIDES_DELTA"),
+        cast[int64](hamslides_slide_count()) - cast[int64](n_before))
+    _kv(cast[Ptr[uint8]]("FULL_NOTICE_DELTA"),
+        cast[int64](hamslides_deckfull_count() - base_notices))
+    nptr: Ptr[uint8] = hamslides_notice_text()
+    if nptr == cast[Ptr[uint8]](0):
+        _kv(cast[Ptr[uint8]]("FULL_NOTICE_LIVE"), cast[int64](0))
+    else:
+        _kv(cast[Ptr[uint8]]("FULL_NOTICE_LIVE"), cast[int64](1))
+        _dump_str(cast[Ptr[uint8]]("FULL_NOTICE_TEXT"), nptr)
+    # The MENU path (Edit > New Slide) and the TOOLBAR "+" must report too.
+    m_before: uint64 = hamslides_deckfull_count()
+    menu_ret: int32 = hamslides_menu_select(2, 1)      # Edit > New Slide
+    _kv(cast[Ptr[uint8]]("FULL_MENU_RET"), cast[int64](menu_ret))
+    _kv(cast[Ptr[uint8]]("FULL_MENU_NOTICE_DELTA"),
+        cast[int64](hamslides_deckfull_count() - m_before))
+    d_before: uint64 = hamslides_deckfull_count()
+    dup_ret: int32 = hamslides_key(21)                 # Ctrl-U duplicate
+    _kv(cast[Ptr[uint8]]("FULL_CTRLU_RET"), cast[int64](dup_ret))
+    _kv(cast[Ptr[uint8]]("FULL_CTRLU_NOTICE_DELTA"),
+        cast[int64](hamslides_deckfull_count() - d_before))
+    # And the notice must reach PIXELS: the status bar draws it.
+    _render()
+    _o_str(cast[Ptr[uint8]]("DECKFULL-BEGIN\n"))
+    _o_flush()
+    sys_write(1, hamscene_bufptr(), hamscene_length())
+    _o_str(cast[Ptr[uint8]]("DECKFULL-END\n"))
     _o_flush()
     return 0

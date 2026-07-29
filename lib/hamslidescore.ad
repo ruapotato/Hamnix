@@ -91,6 +91,60 @@ thumb_top: uint64 = 0
 dirty: int32 = 0
 flash: int32 = 0                          # "saved!" ack countdown
 
+# TRANSIENT USER-VISIBLE NOTICE. hamslides_add_slide / _duplicate_slide
+# return 0 when the deck is at MAXSLIDES, and every caller — Ctrl-N, the
+# Edit menu, the toolbar's "+" — used to `return 1` ("handled") regardless.
+# At 16 slides the keystroke did NOTHING and the UI said NOTHING: a silent
+# no-op, which is the same defect class as a partial action reported as a
+# complete one. Now the refusal surfaces in the status bar, NAMING the
+# limit and its value, and hamslides_last_notice() lets a test assert on
+# the effect rather than on a return code.
+#
+# The cap is NOT raised. MAXSLIDES sizes six parallel static arrays and the
+# on-disk deck format; raising it to a number that is still finite would
+# just relocate this same cliff, which is exactly the trap this project has
+# hit before (DOM_MAX 1024 -> 4096, 1.9% headroom). A deck that outgrows
+# 16 slides needs dynamic slide storage, not a bigger constant — see the
+# report. What must never happen again is hitting it in silence.
+NOTICE_TICKS: int32 = 24                  # ~ a couple of seconds of frames
+notice_ticks: int32 = 0
+notice_text: Ptr[uint8] = 0
+# Monotonic count of refusals, for assertions.
+notice_deckfull_count: uint64 = 0
+
+
+def _notice_deck_full():
+    notice_text = cast[Ptr[uint8]]("Deck FULL: MAXSLIDES=16 reached, no slide added")
+    notice_ticks = NOTICE_TICKS
+    notice_deckfull_count = notice_deckfull_count + 1
+
+
+def hamslides_notice_text() -> Ptr[uint8]:
+    if notice_ticks <= 0:
+        return cast[Ptr[uint8]](0)
+    return notice_text
+
+
+def hamslides_deckfull_count() -> uint64:
+    return notice_deckfull_count
+
+
+# Add a slide and TELL THE USER if the deck refused. Returns the underlying
+# status so a caller that cares can still branch; every UI caller routes
+# through here so the refusal can never again be invisible.
+def hamslides_add_slide_ui() -> int32:
+    r: int32 = hamslides_add_slide()
+    if r == 0:
+        _notice_deck_full()
+    return r
+
+
+def hamslides_duplicate_slide_ui() -> int32:
+    r: int32 = hamslides_duplicate_slide()
+    if r == 0:
+        _notice_deck_full()
+    return r
+
 # Action requested by a keystroke/click, drained by the driver:
 #   0 none, 1 save, 2 open, 3 quit, 11 Save As..., 12 Open...
 pending_action: int32 = 0
@@ -1326,10 +1380,10 @@ def hamslides_key(code: int32) -> int32:
         pending_action = 3
         return 1
     if code == 14:                                     # Ctrl-N -> new slide
-        hamslides_add_slide()
+        hamslides_add_slide_ui()
         return 1
     if code == 21:                                     # Ctrl-U -> duplicate
-        hamslides_duplicate_slide()
+        hamslides_duplicate_slide_ui()
         return 1
     if code == 4:                                      # Ctrl-D -> delete slide
         hamslides_delete_slide()
@@ -2100,10 +2154,10 @@ def _menu_activate(m: int32, i: uint64) -> int32:
             hamslides_undo()
             return 3
         if i == 1:
-            hamslides_add_slide()
+            hamslides_add_slide_ui()
             return 3
         if i == 2:
-            hamslides_duplicate_slide()
+            hamslides_duplicate_slide_ui()
             return 3
         hamslides_delete_slide()
         return 3
@@ -2388,6 +2442,12 @@ def _draw_status():
         p = _append_cstr(&stat_buf[0], p, cast[Ptr[uint8]]("   Notes"))
     stat_buf[p] = 0
     hamscene_glyphs(10, STATUS_Y + 4, &stat_buf[0], _th_deep())
+    # A pending refusal REPLACES the keybinding hint and is drawn in the
+    # accent colour: the whole point of the notice is that it can't be missed.
+    nt: Ptr[uint8] = hamslides_notice_text()
+    if nt != cast[Ptr[uint8]](0):
+        hamscene_glyphs(WIN_W - 400, STATUS_Y + 4, nt, _th_accent())
+        return
     hamscene_glyphs(WIN_W - 282, STATUS_Y + 4,
                     cast[Ptr[uint8]]("Tab indents  ^Y layout  ^P present"),
                     _th_muted())
@@ -2517,6 +2577,8 @@ def _build_present():
 def hamslides_build_scene():
     if flash > 0:
         flash = flash - 1
+    if notice_ticks > 0:
+        notice_ticks = notice_ticks - 1
     hamscene_begin()
     if view == VIEW_PRESENT:
         _build_present()
@@ -2584,10 +2646,10 @@ def hamslides_hit(x: int64, y: int64) -> int32:
     # toolbar row
     if y >= cast[int64](TB_Y) and y < cast[int64](TB_Y + TB_H):
         if x >= cast[int64](NEW_X) and x < cast[int64](NEW_X + NEW_W):
-            hamslides_add_slide()
+            hamslides_add_slide_ui()
             return 3
         if x >= cast[int64](DUP_X) and x < cast[int64](DUP_X + DUP_W):
-            hamslides_duplicate_slide()
+            hamslides_duplicate_slide_ui()
             return 3
         if x >= cast[int64](DEL_X) and x < cast[int64](DEL_X + DEL_W):
             hamslides_delete_slide()

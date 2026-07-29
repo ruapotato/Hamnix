@@ -162,7 +162,7 @@ from lib.hammouse_cfg import (
 # FPS accounting moved into the compositor (user/hamUId.ad `[de_perf]
 # cursor_fps=N`), so no auxmouse / jiffy / printk2 imports are needed here.
 from kernel.printk.printk import printk0, printk1, printk2, printk3, \
-    printk_set_level
+    printk_set_level, printk_va4
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN, \
     PRINTK_LEVEL_EMERG
 # End-to-end keyboard-delivery measurement self-test (DE input lag/loss
@@ -892,6 +892,7 @@ def _wsys_cmd_compact(wid: int32):
     if wsys_cmd_tail[u] == wsys_cmd_head[u]:
         wsys_cmd_tail[u] = 0
         wsys_cmd_head[u] = 0
+        _wsys_ring_warn_rearm(WSYS_RING_CMD)
 
 
 # must_use: 1 = queued, 0 = the cmd ring is FULL (WSYS_CMD_SIZE) and the command was DROPPED.
@@ -1059,11 +1060,79 @@ def _wsys_evt_wq_init_if_needed():
     wsys_evt_wq_inited = 1
 
 
+# --- ring-exhaustion diagnostic + counters --------------------------
+#
+# A full event ring is a real, observable condition (a client that stopped
+# draining), and it used to be COMPLETELY silent: the push returned 0, the
+# write loop ignored it, and write(2) reported the full count. Two things
+# make it loud now:
+#
+#   * `_wsys_ring_full_warn` names the ring, the wid, the CAP THAT WAS HIT
+#     and how many bytes did not fit — rate-limited to one line per ring per
+#     drain cycle so a wedged client cannot flood the console;
+#   * `wsys_ring_dropped_bytes` is a monotonic per-ring counter a selftest
+#     (and `/dev/wsys/perf`) can assert on, because asserting on a console
+#     line is asserting on a string.
+#
+# The cap itself is NOT raised here. A short write is a legitimate POSIX
+# outcome; the defect was reporting a short write as a complete one. Raising
+# the ring would only move the same silent cliff further out — this tree has
+# been burned by exactly that (DOM_MAX 1024 -> 4096, 1.9% headroom).
+
+WSYS_RING_CMD:  uint64 = 0
+WSYS_RING_PTR:  uint64 = 1
+WSYS_RING_KEYS: uint64 = 2
+
+# Monotonic count of bytes REFUSED by each ring since boot, indexed by
+# WSYS_RING_*. Never reset; a selftest samples the delta across a write.
+wsys_ring_dropped: Array[3, uint64]
+# One warn per ring per fill episode: set when we warn, cleared when the
+# ring next drains to empty (in the compact helpers).
+wsys_ring_warned:  Array[3, uint64]
+
+
+def wsys_ring_dropped_bytes(which: uint64) -> uint64:
+    # Test/introspection accessor: bytes this ring has refused since boot.
+    if which >= 3:
+        return 0
+    return wsys_ring_dropped[which]
+
+
+def _wsys_ring_idx(name: Ptr[char]) -> uint64:
+    # `name` is one of the three literals below; compare first byte.
+    c: int32 = name[0]
+    if c == 99:                                    # 'c' cmd
+        return WSYS_RING_CMD
+    if c == 112:                                   # 'p' pointer
+        return WSYS_RING_PTR
+    return WSYS_RING_KEYS                          # 'k' keys
+
+
+def _wsys_ring_full_warn(name: Ptr[char], wid: int32, cap: uint64,
+                         unwritten: uint64):
+    # Loud path for ring exhaustion. Names the limit AND its value, per the
+    # project rule that a retained cap must report through a named
+    # diagnostic when it is hit.
+    idx: uint64 = _wsys_ring_idx(name)
+    wsys_ring_dropped[idx] = wsys_ring_dropped[idx] + unwritten
+    if wsys_ring_warned[idx] != 0:
+        return
+    wsys_ring_warned[idx] = 1
+    printk_set_level(PRINTK_LEVEL_WARN)
+    printk_va4(cast[Ptr[char]]("[devwsys] wid %d /%s ring FULL (cap=%d bytes): short write, %d byte(s) not accepted; reader is not draining\n"),
+               cast[uint64](wid), cast[uint64](name), cap, unwritten)
+
+
+def _wsys_ring_warn_rearm(idx: uint64):
+    wsys_ring_warned[idx] = 0
+
+
 def _wsys_ptr_compact(wid: int32):
     u: uint64 = cast[uint64](wid)
     if wsys_ptr_tail[u] == wsys_ptr_head[u]:
         wsys_ptr_tail[u] = 0
         wsys_ptr_head[u] = 0
+        _wsys_ring_warn_rearm(WSYS_RING_PTR)
 
 
 def _wsys_keys_compact(wid: int32):
@@ -1071,6 +1140,7 @@ def _wsys_keys_compact(wid: int32):
     if wsys_keys_tail[u] == wsys_keys_head[u]:
         wsys_keys_tail[u] = 0
         wsys_keys_head[u] = 0
+        _wsys_ring_warn_rearm(WSYS_RING_KEYS)
 
 
 # must_use: 1 = queued, 0 = the pointer ring is FULL (WSYS_PTR_SIZE) and the mouse event was DROPPED.
@@ -1639,13 +1709,27 @@ def devwsys_self_read(off: uint64, buf: Ptr[uint8],
 
 def devwsys_cmd_write(wid: int32, buf: Ptr[uint8],
                       count: uint64) -> int64:
+    # SHORT-WRITE CORRECTNESS. This used to push `count` bytes in a loop and
+    # `return count` unconditionally: when the ring filled mid-write the tail
+    # bytes were DROPPED and write(2) still reported the FULL count. That is
+    # the `rm *` shape — a partial action reported as a complete one — and it
+    # is a POSIX violation besides. Stop at the first byte the ring refuses,
+    # return the number ACTUALLY consumed, and report -EAGAIN when nothing at
+    # all fit so a caller can distinguish "ring full" from "wrote zero of
+    # zero". Callers must loop on the remainder (see wsys_write_all).
     if wsys_wid_in_use(wid) == 0:
         return -2
     i: uint64 = 0
     while i < count:
-        _wsys_cmd_push_wid(wid, buf[i])
+        if _wsys_cmd_push_wid(wid, buf[i]) == 0:
+            break
         i = i + 1
-    return cast[int64](count)
+    if i < count:
+        _wsys_ring_full_warn(cast[Ptr[char]]("cmd"), wid, WSYS_CMD_SIZE,
+                             count - i)
+    if i == 0 and count > 0:
+        return -11                                 # -EAGAIN: ring full
+    return cast[int64](i)
 
 
 def devwsys_readonly_write(buf: Ptr[uint8], count: uint64) -> int64:
@@ -1668,15 +1752,22 @@ def devwsys_pointer_write(wid: int32, buf: Ptr[uint8],
     _wsys_evt_wq_init_if_needed()
     i: uint64 = 0
     while i < count:
-        _wsys_ptr_push_byte(wid, buf[i])           # DROP-NEWEST on full
+        if _wsys_ptr_push_byte(wid, buf[i]) == 0:  # DROP-NEWEST on full
+            break
         i = i + 1
     # Wake one blocked reader (the focused/target client) so it picks up
     # the event promptly — event-driven, no timer-tick re-poll.
-    wq_wake_one(&wsys_ptr_wq[cast[uint64](wid)])
-    # Also kick any SYS_WAITFDS multi-fd waiter that includes this
-    # window's pointer fd in its set.
-    waitfds_notify()
-    return cast[int64](count)
+    if i > 0:
+        wq_wake_one(&wsys_ptr_wq[cast[uint64](wid)])
+        # Also kick any SYS_WAITFDS multi-fd waiter that includes this
+        # window's pointer fd in its set.
+        waitfds_notify()
+    if i < count:
+        _wsys_ring_full_warn(cast[Ptr[char]]("pointer"), wid,
+                             WSYS_PTR_SIZE, count - i)
+    if i == 0 and count > 0:
+        return -11                                 # -EAGAIN: ring full
+    return cast[int64](i)
 
 
 def devwsys_keys_write(wid: int32, buf: Ptr[uint8],
@@ -1686,12 +1777,19 @@ def devwsys_keys_write(wid: int32, buf: Ptr[uint8],
     _wsys_evt_wq_init_if_needed()
     i: uint64 = 0
     while i < count:
-        _wsys_keys_push_byte(wid, buf[i])
+        if _wsys_keys_push_byte(wid, buf[i]) == 0:
+            break
         i = i + 1
-    wq_wake_one(&wsys_keys_wq[cast[uint64](wid)])
-    # Also kick any SYS_WAITFDS multi-fd waiter (see pointer twin above).
-    waitfds_notify()
-    return cast[int64](count)
+    if i > 0:
+        wq_wake_one(&wsys_keys_wq[cast[uint64](wid)])
+        # Also kick any SYS_WAITFDS multi-fd waiter (see pointer twin above).
+        waitfds_notify()
+    if i < count:
+        _wsys_ring_full_warn(cast[Ptr[char]]("keys"), wid,
+                             WSYS_KEYS_SIZE, count - i)
+    if i == 0 and count > 0:
+        return -11                                 # -EAGAIN: ring full
+    return cast[int64](i)
 
 
 # --- structured input-event READ (client, BLOCKING) -----------------
@@ -13633,6 +13731,7 @@ def wsys_close_box_selftest() -> int32:
     wsys_focusout_selftest()
     wsys_cursor_hotspot_selftest()
     wsys_keys_lossless_selftest()
+    wsys_ring_shortwrite_selftest()
     wsys_multiwindow_selftest()
     wsys_mate_wm_selftest()
     wsys_taskbar_churn_selftest()
@@ -13645,6 +13744,132 @@ def wsys_close_box_selftest() -> int32:
     wsys_surplus_hide_selftest()
     wsys_wctl_truth_selftest()
     wsys_fill_throughput_selftest()
+    return 1
+
+
+wsys_sw_probe: Array[512, uint8]
+
+
+def wsys_ring_shortwrite_selftest() -> int32:
+    # SHORT-WRITE TRUTH. devwsys_{keys,pointer,cmd}_write used to push
+    # `count` bytes in a loop and `return count` UNCONDITIONALLY. When the
+    # ring filled mid-write the tail bytes were dropped and write(2) still
+    # claimed the full count — a partial action reported as a complete one,
+    # the same shape as the `rm *` that deleted 62 of 230 files and exited 0.
+    #
+    # This asserts on the EFFECT, not on an exit status:
+    #   (a) with the ring nearly full, the return value equals the number of
+    #       bytes the ring ACTUALLY accepted (not the requested count), and
+    #       that number equals the ring's measured free space;
+    #   (b) with the ring completely full, the write returns -EAGAIN rather
+    #       than a cheerful full count;
+    #   (c) the bytes that WERE accepted read back byte-for-byte, so a short
+    #       write is short — not corrupt;
+    #   (d) the drop is accounted in wsys_ring_dropped_bytes, so the loss is
+    #       observable rather than silent.
+    # Reverting any of the three write functions to `return count` fails (a)
+    # and (b).
+    _wsys_init_if_needed()
+    _wsys_evt_wq_init_if_needed()
+    wid: int32 = wsys_alloc_wid(999993)
+    if wid <= 1:
+        printk0("[RING_SHORTWRITE] FAIL could not allocate a scene wid\n")
+        return 0
+    u: uint64 = cast[uint64](wid)
+    wsys_scene_len[u] = 1
+    _wsys_reset_evt_rings(wid)
+
+    # Leave exactly FREE bytes of headroom in the keys ring.
+    FREE: uint64 = 10
+    fill: uint64 = WSYS_KEYS_SIZE - FREE
+    k: uint64 = 0
+    while k < fill:
+        if _wsys_keys_push_byte(wid, 65) == 0:         # 'A'
+            printk0("[RING_SHORTWRITE] FAIL prefill refused early\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        k = k + 1
+
+    # Ask for 64 bytes when only FREE fit.
+    i: uint64 = 0
+    while i < 64:
+        wsys_sw_probe[i] = cast[uint8](48 + (i % 10))  # '0'..'9'
+        i = i + 1
+    before: uint64 = wsys_ring_dropped_bytes(WSYS_RING_KEYS)
+    got: int64 = devwsys_keys_write(wid, &wsys_sw_probe[0], 64)
+    if got != cast[int64](FREE):
+        printk2("[RING_SHORTWRITE] FAIL keys write reported %d bytes, ring only had room for %d\n",
+                cast[uint64](got), FREE)
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    dropped: uint64 = wsys_ring_dropped_bytes(WSYS_RING_KEYS) - before
+    if dropped != 64 - FREE:
+        printk2("[RING_SHORTWRITE] FAIL drop accounting %d, expected %d\n",
+                dropped, 64 - FREE)
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # The ring is now exactly full: a further write must FAIL LOUDLY
+    # (-EAGAIN), not report success.
+    again: int64 = devwsys_keys_write(wid, &wsys_sw_probe[0], 8)
+    if again != -11:
+        printk1("[RING_SHORTWRITE] FAIL full-ring keys write returned %d, expected -11 (-EAGAIN)\n",
+                cast[uint64](again))
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    # The accepted prefix must be intact: drain the prefill, then the FREE
+    # bytes we were told landed must be probe[0..FREE-1] exactly.
+    drained: uint64 = 0
+    while drained < fill:
+        n: int64 = _wsys_keys_pop_into(wid, &wsys_sw_probe[128],
+                                       fill - drained)
+        if n <= 0:
+            printk0("[RING_SHORTWRITE] FAIL prefill did not drain\n")
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        drained = drained + cast[uint64](n)
+    tn: int64 = _wsys_keys_pop_into(wid, &wsys_sw_probe[256], FREE)
+    if tn != cast[int64](FREE):
+        printk1("[RING_SHORTWRITE] FAIL accepted tail drained %d bytes\n",
+                cast[uint64](tn))
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+    j: uint64 = 0
+    while j < FREE:
+        if wsys_sw_probe[256 + j] != cast[uint8](48 + (j % 10)):
+            printk1("[RING_SHORTWRITE] FAIL accepted byte %d differs\n", j)
+            wsys_scene_len[u] = 0
+            wsys_free_wid(wid)
+            return 0
+        j = j + 1
+
+    # Same property on the pointer ring (the twin that documented
+    # "DROP-NEWEST on full" as policy while its return value still lied).
+    _wsys_reset_evt_rings(wid)
+    k = 0
+    while k < WSYS_PTR_SIZE:
+        if _wsys_ptr_push_byte(wid, 66) == 0:
+            break
+        k = k + 1
+    pgot: int64 = devwsys_pointer_write(wid, &wsys_sw_probe[0], 16)
+    if pgot != -11:
+        printk1("[RING_SHORTWRITE] FAIL full-ring pointer write returned %d, expected -11\n",
+                cast[uint64](pgot))
+        wsys_scene_len[u] = 0
+        wsys_free_wid(wid)
+        return 0
+
+    printk0("[RING_SHORTWRITE] PASS short write reports the bytes actually accepted; a full ring returns -EAGAIN\n")
+    _wsys_reset_evt_rings(wid)
+    wsys_scene_len[u] = 0
+    wsys_free_wid(wid)
     return 1
 
 

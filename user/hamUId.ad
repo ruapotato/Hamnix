@@ -15886,6 +15886,54 @@ def evt_emit_i64(out: Ptr[uint8], pos: uint64, v: int64) -> uint64:
     return pos + u64_to_dec(cast[uint64](v), &out[pos])
 
 
+# Bytes the compositor failed to hand to a /dev/wsys event ring since start,
+# and the count of TORN event lines (a line of which only a prefix landed).
+# Exposed for the on-device selftest; a nonzero torn count is a real input
+# corruption and says so on the console.
+evt_short_write_bytes: uint64 = 0
+evt_torn_lines:        uint64 = 0
+# Retry budget for a full ring. The client drains from a blocked read that
+# our own write() just woke, so one or two retries is all a live consumer
+# ever needs; a bigger number would only stall the compositor's frame loop
+# behind a wedged client. Measured: with a draining client, 0 retries are
+# used (the first write always takes the whole line).
+EVT_WRITE_RETRIES: int32 = 4
+
+
+def evt_write_line(fd: int32, buf: Ptr[uint8], n: uint64) -> int32:
+    # Write ONE complete event line, handling the SHORT WRITE that
+    # devwsys_{pointer,keys}_write now correctly reports when the ring is
+    # full. Previously the compositor ignored sys_write's return entirely
+    # and the kernel lied about it, so a full ring silently ate the tail of
+    # an event line. Returns 1 if the whole line landed, 0 otherwise —
+    # and a partial line is reported loudly, because a torn "d 6<EOF>" is
+    # an input event the client will misparse.
+    off: uint64 = 0
+    tries: int32 = 0
+    while off < n:
+        w: int64 = sys_write(fd, &buf[off], n - off)
+        if w > 0:
+            off = off + cast[uint64](w)
+            tries = 0
+            continue
+        # w == 0 or -EAGAIN: the ring is full right now.
+        tries = tries + 1
+        if tries > EVT_WRITE_RETRIES:
+            break
+        sys_yield()
+    if off >= n:
+        return 1
+    evt_short_write_bytes = evt_short_write_bytes + (n - off)
+    if off > 0:
+        evt_torn_lines = evt_torn_lines + 1
+    write_str(1, "[hamUId] event ring FULL: dropped ")
+    write_u64(1, n - off)
+    write_str(1, " of ")
+    write_u64(1, n)
+    write_str(1, " byte(s) of one event line (client is not draining)\n")
+    return 0
+
+
 def evt_ptr_fd_for(slot: uint64) -> int32:
     # Lazily open (write) /dev/wsys/<wid>/pointer for this slot. Returns
     # the fd, or -1 if the window has no wsys backing / the open failed.
@@ -15956,7 +16004,7 @@ def evt_emit_pointer(slot: int64, etype: uint8, sx: int64, sy: int64,
     p = evt_emit_i64(&evt_line[0], p, dz)
     evt_line[p] = 10
     p = p + 1
-    sys_write(fd, &evt_line[0], p)
+    evt_write_line(fd, &evt_line[0], p)
 
 
 def evt_emit_key(slot: int64, etype: uint8, code: int64):
@@ -15978,7 +16026,7 @@ def evt_emit_key(slot: int64, etype: uint8, code: int64):
     p = evt_emit_i64(&evt_line[0], p, code)
     evt_line[p] = 10
     p = p + 1
-    sys_write(fd, &evt_line[0], p)
+    evt_write_line(fd, &evt_line[0], p)
 
 
 # Consume all currently-available mouse packets, updating CUR_X/CUR_Y
