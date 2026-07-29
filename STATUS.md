@@ -14,6 +14,8 @@ For the current end-state plus open blockers, see [README.md](README.md).
 For docs/architecture spec, see [docs/architecture.md](docs/architecture.md).
 For agent-orchestrated development workflow, see [README.md§Agent-orchestrated development](README.md#agent-orchestrated-development).
 
+**2026-07-29 — browser/WPT (Done).** Salvaged + verified three orphaned web/dom feature commits from a died session (rebased clean onto post-implied-`<body>` main): detached-tree `querySelector` + CSS identifier escapes + Node constants (`b3027142`); full legacy `createEvent` interface table + branded prototypes (`b6e0eb97`); passive listeners + `cancelable`/`returnValue`/`cancelBubble` semantics (`78c8920b`). WPT ratchet `PASS_FLOOR` banked **695→885** (`9f8d03c2`), 0 regressions, implicitbody gate still green. In flight (2 worktree agents): dom/nodes namespace+factory APIs (DOMImplementation/setAttributeNS/DOMParser/createProcessingInstruction) and css-cascade CSSOM (`document.styleSheets`/`cssRules`, `CSS` global).
+
 > **Current boot model (read this before the milestone log below).**
 > There is **no pre-baked root disk image** anymore. The single install
 > artifact is `build/hamnix-installer.img` (built by
