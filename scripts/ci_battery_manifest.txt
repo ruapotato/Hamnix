@@ -548,7 +548,16 @@ bash scripts/test_adder_sema.sh
 # shapes are the false positives that would get the lints switched off),
 # silence on unannotated code, the limit/declaration/remedy all named in the
 # notes, per-class knob + ADDER_SEMA=0, promotion to error, byte-identical
-# codegen, and the tree's annotations still attached. Host-only (no QEMU).
+# codegen, and the tree's annotations still attached. Then the WHOLE-TREE
+# ledger: sema_scan's per-entry sweep finds link units by looking for `def
+# main` and the kernel has none (its entry is `kmain`), so the kernel, every
+# driver and all of sys/src/9 are invisible to it — scripts/sema_must_use_scan.py
+# resolves callee names whole-tree instead and diffs against the shrink-only
+# scripts/sema_must_use_baseline.txt (42 sites, each triaged BUG/LATENT/
+# COVERED/TEST in that file). own-alias is asserted clean over the 130 files
+# calling an annotated allocator. BOTH ledgers are mutation-tested in-gate:
+# the script appends a violation, asserts red, and restores byte-exactly
+# under an EXIT/INT/TERM trap. ~2.5 min, host-only (no QEMU).
 bash scripts/test_adder_must_use.sh
 # ONE SYMBOL, ONE SIGNATURE — the blind spot behind ad33523f. `sys_open` was
 # declared 1-arg by the device runtime and 3-arg by linux-runtime.S; every

@@ -91,14 +91,19 @@ def _extract(rel):
     try:
         prog = parse(path.read_text(errors="replace"), str(path))
     except Exception as exc:                                # noqa: BLE001
-        return rel, None, None, "%s" % exc
-    annotated, calls = {}, []
+        return rel, None, None, "%s" % exc, None
+    annotated, calls, owns = {}, [], {}
     for d in prog.declarations:
         if isinstance(d, (FunctionDef, ExternDecl)):
             ann = sema.annotations_of(d)
             if "must_use" in ann:
                 annotated[d.name] = (ann["must_use"],
                                      getattr(d.span, "start_line", 0))
+            if "owns_return" in ann:
+                # only the reason travels: shipping the whole
+                # FunctionDef back through a pickle would cost
+                # more than the parse that produced it
+                owns[d.name] = ann["owns_return"]
         if not isinstance(d, FunctionDef):
             continue
         for st, in_defer in _walk(d.body):
@@ -115,7 +120,41 @@ def _extract(rel):
                                  "must_use: ignore", "must-use: ignore"):
                 continue
             calls.append((e.func.name, d.name, line))
-    return rel, annotated, calls, None
+    return rel, annotated, calls, None, owns
+
+
+class _OwnerStub:
+    """Stand-in for the allocator's decl in an own-alias diagnostic.
+
+    The real `FunctionDef` lives in another process (and another file); the
+    lint only ever asks it for a display name, so shipping the whole AST
+    back through a pickle would be pure cost.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.orig_name = name
+
+
+_OWNERS: dict = {}
+
+
+def _init_owners(owners):
+    global _OWNERS
+    _OWNERS = {n: (reason, _OwnerStub(n)) for n, reason in owners.items()}
+
+
+def _own_scan(rel):
+    """Run the `own-alias` lint over ONE file with the whole-tree owner map."""
+    path = PROJECT_ROOT / rel
+    try:
+        prog = parse(path.read_text(errors="replace"), str(path))
+        diags = sema.check_ownership_program(
+            prog, extra_owns=_OWNERS,
+            policy={c: "warning" for c in sema.CLASSES})
+    except Exception as exc:                                # noqa: BLE001
+        return rel, [], "%s: %s" % (type(exc).__name__, exc)
+    return rel, [(d.location(), d.message, sema.render(d)) for d in diags], None
 
 
 def scan(roots, jobs):
@@ -129,23 +168,52 @@ def scan(roots, jobs):
     else:
         results = [_extract(r) for r in rels]
 
-    annotated, fails = {}, []
-    for rel, ann, _calls, err in results:
+    annotated, fails, owners = {}, [], {}
+    for rel, ann, _calls, err, own in results:
         if err is not None:
             fails.append((rel, err))
             continue
         for name, (reason, line) in ann.items():
             annotated[name] = (reason, rel, line)
+        owners.update(own)
 
     sites = []
-    for rel, _ann, calls, err in results:
+    for rel, _ann, calls, err, _own in results:
         if err is not None:
             continue
         for callee, caller, line in calls:
             if callee in annotated:
                 sites.append((rel, caller, callee, line))
     sites.sort()
-    return annotated, sites, fails, len(rels)
+    return annotated, sites, fails, len(rels), owners, rels
+
+
+def own_scan(rels, owners, jobs):
+    """`own-alias` over every file that mentions an annotated allocator.
+
+    Pre-filtering by text is not an approximation: the lint's ownership
+    origin is a DIRECT call `p = alloc(...)`, so a file whose source does
+    not contain the allocator's name cannot produce a report.
+    """
+    if not owners:
+        return [], []
+    cand = [r for r in rels
+            if any(n in (PROJECT_ROOT / r).read_text(errors="replace")
+                   for n in owners)]
+    ctx = multiprocessing.get_context("fork")
+    if jobs > 1:
+        with ctx.Pool(jobs, initializer=_init_owners,
+                      initargs=(owners,)) as pool:
+            res = pool.map(_own_scan, cand, chunksize=4)
+    else:
+        _init_owners(owners)
+        res = [_own_scan(r) for r in cand]
+    hits, errs = [], []
+    for rel, diags, err in res:
+        if err is not None:
+            errs.append((rel, err))
+        hits.extend(diags)
+    return hits, errs, len(cand)
 
 
 def key_of(site):
@@ -163,10 +231,25 @@ def main() -> int:
                          "NOT in it (the list is SHRINK-ONLY)")
     ap.add_argument("--emit-baseline", action="store_true")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--own-alias", action="store_true",
+                    help="also run the `own-alias` lint whole-tree and print "
+                         "every report (the false-positive census)")
     args = ap.parse_args()
 
-    annotated, sites, fails, n_files = scan(args.roots or DEFAULT_DIRS,
-                                            args.jobs)
+    annotated, sites, fails, n_files, owners, rels = scan(
+        args.roots or DEFAULT_DIRS, args.jobs)
+
+    if args.own_alias:
+        hits, errs, n_cand = own_scan(rels, owners, args.jobs)
+        print("`# owns_return` functions: %d (%s)"
+              % (len(owners), ", ".join(sorted(owners)) or "-"))
+        print("files mentioning one of them: %d" % n_cand)
+        print("own-alias reports: %d" % len(hits))
+        for _loc, _msg, rendered in hits:
+            print(rendered)
+        if errs:
+            print("(%d file(s) could not be analysed)" % len(errs))
+        return 1 if hits else 0
 
     if args.emit_baseline:
         for k in sorted({key_of(s) for s in sites}):

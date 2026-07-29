@@ -55,6 +55,20 @@ FIX="tests/sema"
 WORK="build/must_use_check"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
+# The mutation tests below EDIT tracked source files in place. If this script
+# is killed between the edit and the restore (a CI timeout, a SIGTERM from the
+# orchestrator) the probe is left behind and the next run of any gate compiles
+# a tree nobody wrote. Register the restore up front so it happens on the way
+# out whatever the exit path — this is not hypothetical, it happened.
+MUTATED=()
+restore_mutations() {
+    local i
+    for ((i = 0; i < ${#MUTATED[@]}; i += 2)); do
+        [ -f "${MUTATED[i+1]}" ] && cp -f "${MUTATED[i+1]}" "${MUTATED[i]}"
+    done
+}
+trap restore_mutations EXIT INT TERM
+
 compile() {  # compile <src> <out> ; stderr -> $WORK/cerr
     python3 -m compiler.adder compile "$1" --target=x86_64-linux \
         -o "$2" >/dev/null 2>"$WORK/cerr"
@@ -199,7 +213,7 @@ ok "$(grep -oE '[0-9]+ known' "$WORK/ledger") unchecked-result sites, none new"
 # MUTATION TEST: the gate must actually be able to go red. Introduce one new
 # unchecked call to an annotated callee and confirm the ledger rejects it.
 MUT="lib/hampkgcore.ad"
-cp "$MUT" "$WORK/mut.bak"
+cp "$MUT" "$WORK/mut.bak"; MUTATED+=("$MUT" "$WORK/mut.bak")
 cat >> "$MUT" <<'ADEOF'
 
 
@@ -219,5 +233,56 @@ grep -q "NEW UNCHECKED RESULT: lib/hampkgcore.ad:.*_must_use_mutation_probe() dr
 # ...and the restore must be exact, or the next gate inherits a dirty tree.
 cmp -s "$WORK/mut.bak" "$MUT" || fail "mutation probe did not restore $MUT"
 ok "mutation test: a NEW unchecked-result site fails the gate, by name"
+
+# ---- (10) own-alias is CLEAN whole-tree, and has real coverage ------------
+# `sema_scan --mode entry` cannot see a single kmalloc caller (they are all
+# kernel code, and the kernel has no `def main`), so "0 own-alias" from that
+# sweep would have been a measurement of nothing. This runs the lint over
+# every file that mentions an annotated allocator.
+#
+# Zero reports is the honest result and it is a DISPROOF, not a null: a
+# census of the same 121 files finds 154 tracked owning allocations and 35
+# escaping stores of them, and none of those 35 is a second store of an
+# already-stored pointer. The tree does not have this bug at this
+# granularity — which is exactly the pushback that motivated ranking silent
+# failure above aliasing in the first place. The lint stays on because its
+# cost is provably zero and it will catch the first one that appears.
+python3 scripts/sema_must_use_scan.py --own-alias > "$WORK/own" 2>&1; orc=$?
+grep -q '^own-alias reports: 0$' "$WORK/own" \
+    || { cat "$WORK/own"; fail "own-alias is no longer clean whole-tree"; }
+[ "$orc" -eq 0 ] || { cat "$WORK/own"; fail "own-alias scan exit $orc with 0 reports"; }
+n_own=$(sed -n 's/^`# owns_return` functions: \([0-9]*\).*/\1/p' "$WORK/own")
+[ "${n_own:-0}" -ge 2 ] \
+    || { cat "$WORK/own"; fail "expected >=2 annotated allocators, got $n_own"; }
+n_cand=$(sed -n 's/^files mentioning one of them: \([0-9]*\)$/\1/p' "$WORK/own")
+[ "${n_cand:-0}" -ge 100 ] || { cat "$WORK/own"
+    fail "only $n_cand files analysed — the lint lost its coverage"; }
+ok "own-alias: 0 reports over $n_cand files calling $n_own annotated allocators"
+
+# MUTATION TEST: prove the whole-tree own-alias scan can go red.
+MUT2="mm/slab.ad"
+cp "$MUT2" "$WORK/mut2.bak"; MUTATED+=("$MUT2" "$WORK/mut2.bak")
+cat >> "$MUT2" <<'ADEOF'
+
+
+_own_alias_probe_a: uint64 = 0
+_own_alias_probe_b: uint64 = 0
+
+
+def _own_alias_mutation_probe() -> int32:
+    p: uint64 = kmalloc(64)
+    _own_alias_probe_a = p
+    _own_alias_probe_b = p
+    return 0
+ADEOF
+python3 scripts/sema_must_use_scan.py --own-alias > "$WORK/mut2" 2>&1; m2rc=$?
+cp "$WORK/mut2.bak" "$MUT2"
+[ "$m2rc" -ne 0 ] || { cat "$WORK/mut2"
+    fail "MUTATION SURVIVED: a two-owner allocation did not fail the scan"; }
+grep -q "owned pointer 'p' is stored in a second place ('_own_alias_probe_b')" \
+    "$WORK/mut2" || { cat "$WORK/mut2"
+    fail "mutation rejected, but not with the two-owner diagnostic"; }
+cmp -s "$WORK/mut2.bak" "$MUT2" || fail "own-alias probe did not restore $MUT2"
+ok "mutation test: a two-owner allocation fails the whole-tree own-alias scan"
 
 echo "[must-use] PASS"

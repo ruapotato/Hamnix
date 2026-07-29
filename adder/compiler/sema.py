@@ -1625,6 +1625,40 @@ def _sub_bodies(st):
 # Public entry point
 # --------------------------------------------------------------------------
 
+def check_ownership_program(program: Program, extra_owns: Optional[dict] = None,
+                            policy: Optional[dict] = None) -> list:
+    """Run ONLY the `own-alias` lint over `program`.
+
+    Exists because the lint is INTRA-FUNCTION but its annotation map is
+    whole-tree: `kmalloc` is declared in mm/slab.ad and called from 329 sites
+    across the kernel, and `sema_scan --mode entry` cannot see any of them
+    (it resolves link units by looking for `def main`, and the kernel's entry
+    is `kmain`). Measuring the lint's false-positive rate therefore needs a
+    per-file run with the annotations injected from outside, which is what
+    `extra_owns` is for.
+    """
+    c = Checker(program, policy, max_diagnostics=10 ** 9)
+    c.collect()
+    for name, val in (extra_owns or {}).items():
+        c.owns_return.setdefault(name, val)
+    for d in program.declarations:
+        if isinstance(d, FunctionDef):
+            fns = [d]
+        elif isinstance(d, ClassDef):
+            fns = list(d.methods)
+        else:
+            continue
+        for fn in fns:
+            c.fname = getattr(fn, "orig_name", None) or fn.name
+            c.ret = c.rt(fn.return_type)
+            c.scope = {}
+            for p in fn.params:
+                c.scope[p.name] = c.rt(p.param_type)
+            c.predeclare(fn.body)
+            c.check_ownership(fn)
+    return c.diagnostics
+
+
 def check_program(program: Program, policy: Optional[dict] = None,
                   max_diagnostics: int = 200):
     """Type-check `program`.  Returns (diagnostics, per-class counts).
