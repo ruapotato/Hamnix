@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html><head><title>document/window event dispatch</title></head><body>
+<button id="btn">Click</button>
+<div id="outer"><div id="inner">x</div></div>
+<div id="log"></div>
+<script>
+// Pins the LIVE-DOM INTERACTION keystone end to end, with the document- and
+// window-level EventTarget surface (removeEventListener + dispatchEvent) that
+// was missing before this gate landed. Every EV line is asserted verbatim
+// against chromium --headless behaviour by test_hambrowse_docevent_host.sh.
+function L(t, v) { console.log('EV ' + t + ' :: ' + v); }
+
+// --- element interaction chain (must already work) ---
+var btn = document.getElementById('btn');
+var log = document.getElementById('log');
+var count = 0;
+btn.addEventListener('click', function (e) {
+  count++;
+  var n = document.createElement('span');
+  n.textContent = 'c' + count;
+  log.appendChild(n);
+});
+btn.click();
+L('el.click.count', count);                 // 1
+L('el.click.dom', log.children.length);     // 1
+btn.dispatchEvent(new Event('click'));
+L('el.dispatch.count', count);              // 2
+
+// bubbling target through the source tree
+var order = [];
+var outer = document.getElementById('outer');
+var inner = document.getElementById('inner');
+outer.addEventListener('click', function (e) { order.push('outer:' + e.target.id); });
+inner.addEventListener('click', function (e) { order.push('inner:' + e.target.id); });
+inner.click();
+L('el.bubble', order.join(','));            // inner:inner,outer:inner
+
+// --- document.dispatchEvent (the fix) ---
+var dc = 0;
+document.addEventListener('click', function () { dc++; });
+document.dispatchEvent(new Event('click'));
+L('doc.click', dc);                         // 1  (standard-kind DOC_EL listener)
+
+var kk = '';
+document.addEventListener('keydown', function (e) { kk = e.key || 'nokey'; });
+document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+L('doc.keydown', kk);                       // Enter  (GEN_KIND DOC_EL listener)
+
+var det = 'nd';
+document.addEventListener('ping', function (e) { det = e.detail ? e.detail.v : 'nd'; });
+document.dispatchEvent(new CustomEvent('ping', { detail: { v: 42 } }));
+L('doc.detail', det);                       // 42  (caller's event object survives)
+
+document.addEventListener('cancelme', function (e) { e.preventDefault(); });
+L('doc.pd.ret', document.dispatchEvent(new Event('cancelme', { cancelable: true }))); // false
+L('doc.ok.ret', document.dispatchEvent(new Event('nobody')));                          // true
+
+var tgt = 'no';
+document.addEventListener('tt', function (e) { tgt = (e.target === document) ? 'yes' : 'no'; });
+document.dispatchEvent(new Event('tt'));
+L('doc.target', tgt);                        // yes
+
+var si = [];
+document.addEventListener('se', function (e) { si.push('a'); e.stopImmediatePropagation(); });
+document.addEventListener('se', function () { si.push('b'); });
+document.dispatchEvent(new Event('se'));
+L('doc.stopImmed', si.join(','));            // a
+
+var rc = 0;
+function rh() { rc++; }
+document.addEventListener('rr', rh);
+document.removeEventListener('rr', rh);
+document.dispatchEvent(new Event('rr'));
+L('doc.remove', rc);                         // 0
+
+// --- window.dispatchEvent ---
+var wr = 0;
+window.addEventListener('resize', function () { wr++; });
+window.dispatchEvent(new Event('resize'));
+L('win.dispatch', wr);                       // 1
+</script>
+</body></html>

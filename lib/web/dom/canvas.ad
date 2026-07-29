@@ -2639,6 +2639,22 @@ def _js_host_dispatch(id: int32) -> int32:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
         # returning !defaultPrevented. Reads ev.type to pick the handler.
         dspel: int32 = _find_el_by_obj(js_this())
+        # document.dispatchEvent(ev) / window.dispatchEvent(ev): neither is a
+        # registered element, so fire the DOC_EL-sentinel listeners directly
+        # with the caller's event object. Guarded ABOVE the created-node path so
+        # a document dispatch never mis-routes through _find_cre_by_obj.
+        if dspel < 0 and (js_this() == js_doc or js_this() == js_win) and \
+           js_arg_count() >= 1:
+            ddvo: int32 = js_arg(0)
+            ddtp: int32 = js_get_prop(ddvo, cast[Ptr[uint8]]("type"), 4)
+            ddsrc: Ptr[uint8] = js_str_ptr(ddtp)
+            ddbuf: Array[128, uint8]
+            ddn: int32 = 0
+            while ddsrc[ddn] != 0 and ddn < 127:
+                ddbuf[ddn] = ddsrc[ddn]
+                ddn = ddn + 1
+            ddbuf[ddn] = 0
+            return js_bool(_fire_document_ev(ddvo, &ddbuf[0], ddn))
         if dspel < 0 and js_arg_count() >= 1:
             # created/dynamic node: object-dispatch along the live parentNode
             # chain (the source-tree path below can't reach it).
@@ -4254,6 +4270,15 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_GETBYTAG))
     js_set_prop(doc, cast[Ptr[uint8]]("addEventListener"), 16, \
                 js_new_native_fn(js_hbase + NID_ADDEVT))
+    # The other two halves of the EventTarget interface on `document`: pages do
+    # `document.removeEventListener('keydown', h)` on teardown and
+    # `document.dispatchEvent(new Event('visibilitychange'))` (routers, focus
+    # traps, custom pub/sub). Both resolve the DOC_EL sentinel — see NID_REMEVT
+    # and _fire_document_ev.
+    js_set_prop(doc, cast[Ptr[uint8]]("removeEventListener"), 19, \
+                js_new_native_fn(js_hbase + NID_REMEVT))
+    js_set_prop(doc, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                js_new_native_fn(js_hbase + NID_DISPATCH))
     tl: int32 = _scan_title()
     dom_title_len = tl
     dom_title_present = 1
@@ -4313,6 +4338,10 @@ def _js_build_document():
                     js_new_native_fn(js_hbase + NID_ADDEVT))
         js_set_prop(js_win, cast[Ptr[uint8]]("removeEventListener"), 19, \
                     js_new_native_fn(js_hbase + NID_REMEVT))
+        # window.dispatchEvent(new Event('resize'|'hashchange'|…)) — same DOC_EL
+        # listener pool as document (the headless model unifies the two).
+        js_set_prop(js_win, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                    js_new_native_fn(js_hbase + NID_DISPATCH))
     # Global event constructors: `new Event('x',{bubbles})`, `new CustomEvent
     # ('x',{detail})`, plus MouseEvent/KeyboardEvent (extra fields). Each returns
     # a fresh event object usable with dispatchEvent (which reads ev.type).
@@ -6093,6 +6122,59 @@ def _fire_document(typp: Ptr[uint8], typn: int32) -> int32:
                     evl_dead[li] = 1
         li = li + 1
     return ran
+
+
+# document.dispatchEvent(ev) / window.dispatchEvent(ev): fire every live
+# DOC_EL listener whose type matches ev.type, in registration order, passing
+# the CALLER's event object (so ev.detail / custom fields survive, unlike
+# _fire_document which synthesises its own). Both the four standard kinds
+# (click/input/change/submit, stored by kind) and GEN_KIND string listeners
+# (keydown, custom types) are matched — a document click listener must fire for
+# document.dispatchEvent(new Event('click')). Enriches the event with
+# target/currentTarget = document and the no-op control methods, resets the
+# g_prevent_default / g_stop_immediate flags first, and honours
+# stopImmediatePropagation. Returns !defaultPrevented for the dispatchEvent
+# return value.
+def _fire_document_ev(evo: int32, typp: Ptr[uint8], typn: int32) -> int32:
+    g_prevent_default = 0
+    g_stop_prop = 0
+    g_stop_immediate = 0
+    ek: int32 = _evt_std_kind(typp, typn)
+    if evo >= 0:
+        js_set_prop(evo, cast[Ptr[uint8]]("target"), 6, js_doc)
+        js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_doc)
+        js_set_prop(evo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                    js_new_native_fn(js_hbase + NID_PREVENT))
+        js_set_prop(evo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                    js_new_native_fn(js_hbase + NID_STOPPROP))
+        js_set_prop(evo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
+                    js_new_native_fn(js_hbase + NID_STOPIMMED))
+        js_set_prop(evo, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
+        js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
+    li: int32 = 0
+    while li < evl_n:
+        hit: int32 = 0
+        if evl_dead[li] == 0 and evl_el[li] == DOC_EL:
+            if ek >= 0 and evl_kind[li] == ek:
+                hit = 1
+            if evl_kind[li] == GEN_KIND and _evl_type_eq(li, typp, typn) != 0:
+                hit = 1
+        if hit != 0:
+            lfn: int32 = evl_fn[li]
+            if js_is_callable(lfn) != 0:
+                if evo >= 0:
+                    g_argv1[0] = evo
+                    js_call_fn(lfn, js_doc, &g_argv1[0], 1)
+                else:
+                    js_call_fn(lfn, js_doc, cast[Ptr[int32]](0), 0)
+                if evl_once[li] != 0:
+                    evl_dead[li] = 1
+                if g_stop_immediate != 0:
+                    li = evl_n
+        li = li + 1
+    if g_prevent_default != 0:
+        return 0
+    return 1
 
 
 def _fire_handler(idx: int32, kind: int32, evtobj: int32, phase: int32) -> int32:
