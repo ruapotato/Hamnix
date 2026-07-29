@@ -91,10 +91,24 @@ VERDICTS
   NONDISCRIMINATING the pair cannot distinguish a CSS engine from no CSS engine
   ERROR             a document could not be rendered at all
 
-NOT SOFT-GREEN. --selftest drives four synthetic pairs (positive, negative,
-nondiscriminating, determinism) through the real pipeline and exits non-zero
-unless every one lands on its expected verdict. Callers treat that as
-INCONCLUSIVE (125), never PASS.
+NOT SOFT-GREEN. --selftest drives EIGHT controls through the real pipeline and
+exits non-zero unless every one lands on its expected verdict; callers treat
+that as INCONCLUSIVE (125), never PASS:
+
+  positive / negative        a discriminating pair that holds, and one that does
+                             not -- an always-green comparator dies here
+  mismatch-holds / -violated the same for the mismatch relationship
+  nondiscriminating          a pair a null engine would pass must NOT score
+  determinism               the same document rendered twice is byte-identical;
+                             the whole zero-tolerance argument rests on it
+  inline css / inline js     an external stylesheet and an external script each
+                             CHANGE the render. Zero vendored documents in the
+                             round-1 tranche use either (the ones that did were
+                             the Ahem tests, and Ahem arrives via a stylesheet),
+                             so without these two the loader is untested code on
+                             a path the lane depends on the moment @font-face
+                             lands -- and a dead loader would present as a wave
+                             of engine bugs.
 """
 
 import argparse
@@ -144,7 +158,14 @@ def _attrs(blob):
     return out
 
 
-def _local(doc_rel, href):
+def _local(doc_rel, href, root):
+    """Resolve `href` as written in `doc_rel` to a real file under `root`.
+
+    `root` is threaded explicitly rather than read off the module-global TESTS:
+    Renderer takes a tests_root, and having resource resolution silently ignore
+    it made every external stylesheet/script invisible under any root but the
+    default -- which is exactly the configuration --selftest runs in.
+    """
     href = (href or "").split("?")[0].split("#")[0]
     if not href or "://" in href or href.startswith("//"):
         return None
@@ -152,17 +173,17 @@ def _local(doc_rel, href):
         os.path.join(os.path.dirname(doc_rel), href)).replace(os.sep, "/")
     if t.startswith(".."):
         return None
-    p = os.path.join(TESTS, t)
+    p = os.path.join(root, t)
     return p if os.path.isfile(p) else None
 
 
-def inline_resources(doc_rel, data):
+def inline_resources(doc_rel, data, root=TESTS):
     """Inline <link rel=stylesheet> and <script src>. Uniform, both sides."""
     def sub_link(m):
         a = _attrs(m.group(1))
         if "stylesheet" not in (a.get("rel") or "").lower():
             return m.group(0)
-        p = _local(doc_rel, a.get("href"))
+        p = _local(doc_rel, a.get("href"), root)
         if not p:
             return m.group(0)
         try:
@@ -177,7 +198,7 @@ def inline_resources(doc_rel, data):
         a = _attrs(m.group(1))
         if not a.get("src"):
             return m.group(0)
-        p = _local(doc_rel, a["src"])
+        p = _local(doc_rel, a["src"], root)
         if not p:
             return m.group(0)
         try:
@@ -273,7 +294,7 @@ class Renderer:
         except OSError:
             self.cache[key] = None
             return None
-        data = inline_resources(doc_rel, data)
+        data = inline_resources(doc_rel, data, self.root)
         if not css:
             data = strip_css(data)
         self.n += 1
@@ -402,6 +423,54 @@ SELFTEST = {
 }
 
 
+def selftest_inliner(root, rend):
+    """Prove inline_resources() actually loads external CSS and JS.
+
+    NOT redundant, and specifically NOT covered by the vendored lane: as of the
+    round-1 tranche ZERO vendored documents carry a <link rel=stylesheet> or a
+    <script src> (the ones that did were the Ahem tests, and Ahem arrives *via*
+    a stylesheet, so they are excluded). That makes the inliner untested code on
+    a path the lane will depend on the moment @font-face lands or another area
+    is imported -- exactly the shape of thing that rots silently and then
+    produces a wave of "engine bugs" that are really a dead resource loader.
+    Each control must CHANGE the render; a no-op inliner fails it.
+    """
+    ok = True
+    open(os.path.join(root, "ext.css"), "w").write(
+        "#box{width:70px;height:35px;background:#0000ff}")
+    # backgroundColor, not the `background` shorthand: the engine's CSSOM
+    # implements the longhand only, and a control must fail for the reason it
+    # names (a dead resource loader) rather than for an unrelated engine gap.
+    open(os.path.join(root, "ext.js"), "w").write(
+        "document.getElementById('box').style.backgroundColor = '#00ff00';")
+    open(os.path.join(root, "il_css.html"), "w").write(
+        '<link rel="stylesheet" href="ext.css"><div id=box></div>')
+    open(os.path.join(root, "il_js.html"), "w").write(
+        '<style>#box{width:70px;height:35px;background:#0000ff}</style>'
+        '<div id=box></div><script src="ext.js"></script>')
+    for name, what in (("il_css.html", "external CSS"),
+                       ("il_js.html", "external JS")):
+        raw = open(os.path.join(root, name), "rb").read()
+        grew = inline_resources(name, raw, root) != raw
+        with_inline = rend.render(name)
+        # render the SAME file with the inliner bypassed
+        rc = subprocess.run([rend.bin, os.path.join(root, name),
+                             os.path.join(rend.tmp, "noinl.ppm"),
+                             str(VIEW_W)], capture_output=True)
+        without = viewport(parse_ppm(os.path.join(rend.tmp, "noinl.ppm"))) \
+            if rc.returncode == 0 else None
+        good = grew and with_inline is not None and with_inline != without
+        ok = ok and good
+        print("[reftest-selftest] %-20s want=%-18s got=%-18s %s"
+              % ("inline " + what.split()[1].lower(), "render changes",
+                 "changed" if good else "NO EFFECT", "ok" if good else "MISMATCH"))
+        if not good:
+            print("[reftest-selftest]   %s is not being loaded; documents that "
+                  "depend on it\n[reftest-selftest]   would be scored as if the "
+                  "resource did not exist." % what)
+    return ok
+
+
 def selftest():
     tmp = tempfile.mkdtemp(prefix="wpt-reftest-selftest-")
     root = os.path.join(tmp, "docs")
@@ -436,6 +505,8 @@ def selftest():
         if not det:
             print("[reftest-selftest]   the renderer is not deterministic, so "
                   "exact comparison is not a valid pass condition.")
+
+        ok = selftest_inliner(root, Renderer(tmp, tests_root=root)) and ok
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return ok
