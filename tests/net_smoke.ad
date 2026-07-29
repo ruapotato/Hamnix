@@ -711,11 +711,14 @@ def net_smoke_test():
         # every build EXCEPT the two production kernels (the installed
         # disk, HAMNIX_CPIO_EMPTY=1, and the installer medium,
         # HAMNIX_INSTALLER_BLOB=1). So every gate that greps for these
-        # lines — test_dns.sh, test_net_fuzz.sh, test_net_http.sh,
-        # test_net_https*.sh, test_hambrowse_fetch.sh — still runs them
-        # unchanged, while a shipped image no longer pays for them on
-        # the critical boot path. NOTHING moved out of CI; only out of
-        # the production boot.
+        # lines — test_dns.sh, test_net_fuzz.sh, test_net_dns_cache.sh,
+        # test_net_http.sh, test_net_https{,_gzip,_chunked}.sh — boots a
+        # NON-production kernel via `-kernel`, so all of them still run
+        # them unchanged. NOTHING moved out of CI; it moved out of the
+        # production boot only. (test_hambrowse_fetch.sh does boot the
+        # production installer image, but it asserts only on its own
+        # [hambrowse] lines and fetches a literal 10.0.2.2 URL with no
+        # DNS involved — it just gets ~22 s faster.)
         net_selftests: int32 = initramfs_has_marker("/etc/run-selftests")
 
         # DNS resolver offline self-test (kernel roadmap §11):

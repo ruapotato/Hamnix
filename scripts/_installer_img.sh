@@ -78,7 +78,15 @@
 # This is exactly why the guard is only half the answer — the other half is
 # the producer-side always-overwrite contract in scripts/_fresh_artifact.sh,
 # which needs no list of directories to be right.
-_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler sys"
+# `tests` is in this list despite the name: tests/*.ad are NOT host-side test
+# scripts, they are KERNEL SOURCE. tests/net_smoke.ad defines net_smoke_test(),
+# which start_kernel() calls on every boot including the shipped one, and
+# tests/dispatcher.ad re-exports the whole F10 split back into init/main.ad. It
+# was missing here until 2026-07-28, which meant an edit to the boot-path
+# network code did not mark the installer image stale — a gate could rebuild
+# nothing and boot an image predating the fix it was supposed to be testing,
+# the exact false-green this file exists to prevent.
+_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler sys tests"
 # Plus the BUILD scripts themselves (not the test_*.sh gates — a gate edit
 # does not change a single byte of the shipped image, and forcing a 6-minute
 # rebuild for one would make this guard hated and then disabled).
