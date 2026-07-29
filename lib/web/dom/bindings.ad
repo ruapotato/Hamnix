@@ -1633,6 +1633,85 @@ def _sel_attr_name_end(c: uint8) -> int32:
     return 0
 
 
+# LIVE-CLASS SEAM (round: classList/className mutations feed selector matching).
+# =============================================================================
+# `_sel_match_at` matches against the ORIGINAL source class attribute via
+# `_hx_find_attr`. That is frozen at parse time, so a class added/removed by
+# script AFTER parse (classList.add/remove/toggle, `el.className = ...`,
+# `setAttribute('class', ...)`) was INVISIBLE to querySelectorAll /
+# getElementsByClassName / matches() / closest(): a page that toggles a class
+# and re-queries (active tab, filter, show/hide — the single most common
+# interactive DOM pattern) read the stale, source-frozen class set. Measured
+# against chromium --headless: after `items[0].classList.add('active')`,
+# `document.querySelectorAll('.active').length` came back 1 in hambrowse vs 2 in
+# chromium, because the matcher never saw the added class.
+#
+# The live className lives on the JS heap (the element's "className" prop), which
+# this low-level source-scanning module has no access to (bindings.ad sits BELOW
+# the JS/DOM layer, and domtree.ad's anchor lookup is imported AFTER it). So the
+# DOM layer registers a resolver here — same raw-address-cast-to-Fn seam the
+# module resolver / fetch transport already use — mapping a source '<' offset to
+# the element's LIVE className bytes, or NULL when the element is not a
+# registered/live node (in which case the frozen source attribute is authoritative,
+# e.g. during the post-script render relayout over the class-rewritten source).
+# Signature: fn(anchor: int32, out_len: Ptr[int32]) -> Ptr[uint8]
+live_cls_addr: uint64 = 0
+live_cls_set:  int32 = 0
+
+
+def _set_live_cls_resolver(fn: Fn[int32, Ptr[int32], Ptr[uint8]]):
+    live_cls_addr = cast[uint64](fn)
+    live_cls_set = 1
+
+
+# Does whitespace-delimited class string p[0..plen) contain token tok[0..tn)?
+# (Buffer form of _cls_has_token, which reads the shared source buffer.)
+def _cls_has_token_buf(p: Ptr[uint8], plen: int32, tok: Ptr[uint8], \
+                       tn: int32) -> int32:
+    if tn == 0:
+        return 0
+    i: int32 = 0
+    while i < plen:
+        while i < plen and (p[i] == 32 or p[i] == 9):
+            i = i + 1
+        s: int32 = i
+        while i < plen and p[i] != 32 and p[i] != 9:
+            i = i + 1
+        if _idbytes_eq_buf(&p[s], i - s, tok, tn) != 0:
+            return 1
+    return 0
+
+
+# Case-sensitive exact byte compare of two buffers (class tokens are ASCII-cased
+# the same way _cls_has_token compares them: byte-exact).
+def _idbytes_eq_buf(a: Ptr[uint8], an: int32, b: Ptr[uint8], bn: int32) -> int32:
+    if an != bn:
+        return 0
+    i: int32 = 0
+    while i < an:
+        if a[i] != b[i]:
+            return 0
+        i = i + 1
+    return 1
+
+
+# The live class bytes for the element anchored at source '<' offset `ts-1`, or
+# NULL (with g_live_cls_len 0) when there is no live node. Filled by the resolver.
+g_live_cls_len: int32 = 0
+
+
+def _live_class_of(ts: uint64) -> Ptr[uint8]:
+    if live_cls_set == 0:
+        g_live_cls_len = 0
+        return cast[Ptr[uint8]](0)
+    rfn: Fn[int32, Ptr[int32], Ptr[uint8]] = \
+        cast[Fn[int32, Ptr[int32], Ptr[uint8]]](live_cls_addr)
+    ln: int32 = 0
+    p: Ptr[uint8] = cast[Ptr[uint8]](rfn(cast[int32](ts) - 1, &ln))
+    g_live_cls_len = ln
+    return p
+
+
 # Does the start tag whose name span is [ts,ne) and whose body ends at the '>'
 # `je` match the SINGLE compound selector sel[0..seln)? Supports an optional
 # leading tag name (or '*'), then any run of `.class`, `#id`, and `[attr]` /
@@ -1658,10 +1737,21 @@ def _sel_match_at(ts: uint64, je: uint64, ne: uint64, sel: Ptr[uint8], \
             s0: int32 = i
             while i < seln and _sel_isname(sel[i]) != 0:
                 i = i + 1
-            if _hx_find_attr(ts, je, cast[Ptr[uint8]]("class")) == 0:
-                return 0
-            if _cls_has_token(g_attr_start, g_attr_end, &sel[s0], i - s0) == 0:
-                return 0
+            # LIVE class first: if this source element is a registered/live DOM
+            # node, its className may have been mutated by script after parse
+            # (classList / className= / setAttribute) — match the LIVE class set,
+            # not the frozen source attribute. NULL => no live node => the source
+            # attribute is authoritative (unregistered node, or the post-script
+            # render relayout over the already-rewritten source).
+            lcp: Ptr[uint8] = _live_class_of(ts)
+            if cast[uint64](lcp) != 0:
+                if _cls_has_token_buf(lcp, g_live_cls_len, &sel[s0], i - s0) == 0:
+                    return 0
+            else:
+                if _hx_find_attr(ts, je, cast[Ptr[uint8]]("class")) == 0:
+                    return 0
+                if _cls_has_token(g_attr_start, g_attr_end, &sel[s0], i - s0) == 0:
+                    return 0
         elif c == 35:                                     # '#id'
             i = i + 1
             s1: int32 = i
