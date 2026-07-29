@@ -149,29 +149,39 @@ CAT_ROW = (78, 58)          # "Accessories" row in the menu box
 APP_ROW = (300, 58)         # "Calculator" row in the open fly-out
 
 
-def menu_window_open():
-    """True when a DECORATED window (the Applications menu) is mapped."""
-    for n in range(1, 9):
-        t = run_cmd(f"cat /dev/wsys/{n}/ctl", settle=0.15, tries=1)
-        m = re.search(r"^\s*(-?\d+) (-?\d+) (\d+) (\d+).*dec=(\d+)", t, re.M)
-        if m and m.group(5) != "0" and int(m.group(4)) > 100:
-            return True
-    return False
+def live_wids():
+    """The set of window ids the compositor currently has mapped."""
+    t = run_cmd("ls /dev/wsys", settle=0.3, tries=2)
+    s = set(int(m) for m in re.findall(r"^\s*(\d{1,2})\s*$", t, re.M))
+    if s:
+        return s
+    # /dev/wsys does not enumerate here: probe each id individually.
+    out = set()
+    for n in range(1, 8):
+        r = run_cmd(f"cat /dev/wsys/{n}/ctl", settle=0.15, tries=1)
+        if re.search(r"^\s*-?\d+ -?\d+ \d+ \d+", r, re.M):
+            out.add(n)
+    return out
 
 
 def open_app_menu(label):
-    """Click Applications until its window is actually mapped. The FIRST
-    spawn is cold and can take several seconds; a single click + fixed sleep
-    silently drives the rest of the gesture onto the bare desktop."""
-    for attempt in range(4):
+    """Click Applications until its window is actually MAPPED — detected as a
+    NEW window id, not by a fixed sleep. The first hamappmenu spawn is cold
+    and can take seconds; a click + fixed sleep silently drives the rest of
+    the gesture onto the bare desktop, which reads as a bogus failure.
+    The button TOGGLES, so never re-click while the menu might be up."""
+    base = live_wids()
+    for _ in range(3):
         mv(*MENU_BTN, 0); time.sleep(0.3)
         mv(*MENU_BTN, 1); time.sleep(0.3)
         mv(*MENU_BTN, 0)
-        for _ in range(6):
-            time.sleep(1.0)
-            if menu_window_open():
+        for _ in range(5):
+            time.sleep(1.5)
+            if live_wids() - base:
                 shot(label + "_menu")
                 return True
+        # still nothing: the click must have missed. Click again (the menu is
+        # provably NOT up, so this cannot toggle it closed).
     shot(label + "_menu")
     return False
 
