@@ -6823,6 +6823,10 @@ def he_css_scan_links():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60:                         # '<'
+            skl: uint64 = _css_inert_skip(i)             # <noscript>/<template> = inert
+            if skl > 0:
+                i = skl
+                continue
             k: uint64 = i + 1
             if _tagname_is(k, cast[Ptr[uint8]]("link")) != 0:
                 te: uint64 = k
@@ -6854,6 +6858,74 @@ def he_css_link_len(i: int32) -> int32:
     return css_link_len[i]
 
 
+# ---- INERT markup regions (<noscript> with scripting ON, <template>) --------
+# The stylesheet collectors below are RAW-SOURCE scanners: they walk src for
+# `<style>` / `<link rel=stylesheet>` with no notion of tree position. That made
+# them pick up sheets the real document does not have:
+#
+#   * <noscript>. hambrowse ALWAYS has scripting enabled, so per the HTML parsing
+#     spec a <noscript> element's content is RAWTEXT — markup-shaped text, not
+#     elements. The DOM side already models this (bindings.ad's _inert_tag_skip,
+#     forms.ad's noscript branch), but the CSS side did not. real google.com's
+#     RESULTS page opens with
+#         <noscript><style>table,div,span,p{display:none}</style>…</noscript>
+#     as its JS-disabled fallback, so the scanner applied `display:none` to
+#     every table/div/span/p on the page and laid out ZERO segments — the whole
+#     results page rendered blank.  Chromium (verified): document.styleSheets
+#     .length === 0 and getComputedStyle(div).display === "block".
+#   * <template>. Its content is parsed into a separate DocumentFragment and is
+#     likewise inert until cloned; Chromium reports styleSheets.length === 0 for
+#     a <style> inside one (verified the same way).
+#
+# `_css_inert_skip` returns the index just PAST the matching close tag when src[i]
+# opens one of these, else 0 ("not an inert region, keep scanning"). Matching is
+# same-name depth-counted so a nested <template> inside a <template> does not
+# end the outer region early.
+def _css_inert_skip(i: uint64) -> uint64:
+    if i + 1 >= src_len or src_ptr[i] != 60:              # '<'
+        return 0
+    k: uint64 = i + 1
+    if src_ptr[k] == 47:                                  # a close tag: not an opener
+        return 0
+    nm: Ptr[uint8] = cast[Ptr[uint8]](0)
+    if _tagname_is(k, cast[Ptr[uint8]]("noscript")) != 0:
+        nm = cast[Ptr[uint8]]("noscript")
+    elif _tagname_is(k, cast[Ptr[uint8]]("template")) != 0:
+        nm = cast[Ptr[uint8]]("template")
+    else:
+        return 0
+    te: uint64 = _hx_tag_end_p(src_ptr, src_len, i)        # '>' of the opener
+    if te >= src_len:
+        return src_len
+    if src_ptr[te - 1] == 47:                             # <noscript/> self-close
+        return te + 1
+    depth: int32 = 1
+    j: uint64 = te + 1
+    while j < src_len:
+        if src_ptr[j] == 60:
+            c: uint64 = j + 1
+            close: int32 = 0
+            if c < src_len and src_ptr[c] == 47:
+                close = 1
+                c = c + 1
+            if _tagname_is(c, nm) != 0:
+                if close != 0:
+                    depth = depth - 1
+                    if depth == 0:
+                        e: uint64 = _hx_tag_end_p(src_ptr, src_len, j)
+                        if e >= src_len:
+                            return src_len
+                        return e + 1
+                else:
+                    depth = depth + 1
+            j = _hx_tag_end_p(src_ptr, src_len, j)
+            if j < src_len:
+                j = j + 1
+            continue
+        j = j + 1
+    return src_len                                        # unterminated: inert to EOF
+
+
 # Pre-sweep: harvest every custom property (--name: value) from all <style>
 # blocks and fetched external sheets BEFORE the rules are cascaded, so var()
 # resolves independent of where the token is defined relative to its use.
@@ -6861,6 +6933,11 @@ def _collect_cvars():
     _cvar_reset()
     i: uint64 = 0
     while i < src_len:
+        if src_ptr[i] == 60:
+            sk0: uint64 = _css_inert_skip(i)                  # <noscript>/<template> = no sheets
+            if sk0 > 0:
+                i = sk0
+                continue
         if src_ptr[i] == 60 and _tagname_is(i + 1, cast[Ptr[uint8]]("style")) != 0:
             i = _hx_tag_end_p(src_ptr, src_len, i)
             if i < src_len:
@@ -6904,6 +6981,10 @@ def _collect_css():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60:                         # '<'
+            sk: uint64 = _css_inert_skip(i)              # <noscript>/<template> = no sheets
+            if sk > 0:
+                i = sk
+                continue
             k: uint64 = i + 1
             if _tagname_is(k, cast[Ptr[uint8]]("style")) != 0:
                 # advance to end of the opening tag

@@ -449,3 +449,40 @@ def js_set_gc_stress(on: int32):
         gc_hi_water = gc_base_water
         env_hi_water = env_base_water
         str_hi_water = str_base_water
+
+
+# ---- ARENA OCCUPANCY readout ----------------------------------------------
+# Public, allocation-free stats so an embedder (and the gates) can MEASURE what
+# an arena is doing over a real page instead of guessing at a constant. Added
+# after "environment pool exhausted" was reported on live google.com: the answer
+# there was a lifetime bug (env collection suppressed inside builtins), not a
+# sizing one, and the only way to tell those apart is occupancy over a session.
+#   0 n_envs        3 n_vals        6 n_strs       9  n_objs
+#   1 env_collections 4 gc_collections 7 str_collections 10 MAX_OBJ
+#   2 env_last_freed  5 gc_last_freed  8 str_last_freed  11 MAX_ENV
+def js_arena_stat(which: int32) -> int32:
+    if which == 0:
+        return n_envs
+    if which == 1:
+        return env_collections
+    if which == 2:
+        return env_last_freed
+    if which == 3:
+        return n_vals
+    if which == 4:
+        return gc_collections
+    if which == 5:
+        return gc_last_freed
+    if which == 6:
+        return n_strs
+    if which == 7:
+        return str_collections
+    if which == 8:
+        return str_last_freed
+    if which == 9:
+        return n_objs
+    if which == 10:
+        return MAX_OBJ
+    if which == 11:
+        return MAX_ENV
+    return -1

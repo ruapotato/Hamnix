@@ -1815,10 +1815,29 @@ def arr_push(o: int32, val: int32):
 def env_new(parent: int32, is_func: int32) -> int32:
     # Phase-3 GC trigger: when the arena reaches its high-water mark and no
     # reclaimed env is waiting, run a stop-the-world ENV collection to repopulate
-    # the free list. gc_disabled gates it OFF inside un-audited native/builtin
-    # calls (same discipline as mk_val). Default env_hi_water is near the ceiling,
-    # so a program that fit the env arena before never reaches here.
-    if env_free_head < 0 and gc_disabled == 0 and n_envs >= env_hi_water:
+    # the free list. Default env_hi_water is near the ceiling, so a program that
+    # fit the env arena before never reaches here.
+    #
+    # NOT gated on gc_disabled — deliberately, and this is the fix for the
+    # user-reported "environment pool exhausted" on google.com. gc_disabled
+    # guards the VALUE arena: builtins hold raw value handles in Adder locals
+    # that no wholesale root covers, so freeing a value under them corrupts.
+    # The ENV arena has NO such exposure: gc_collect_envs frees only envs and
+    # bindings, and env ids live in exactly two places — the env_root pin stack
+    # (pushed at every env_new site in interp.ad/module.ad) and obj_fn_env /
+    # mod_env / g_env, all of which are roots. NO builtin ever calls env_new, so
+    # no builtin frame can hold an unpinned env. Suppressing env collection
+    # inside builtins therefore bought no safety and cost correctness:
+    # `Function.prototype.call/apply` (interp.ad's is_callable branch) runs the
+    # WHOLE user callback with gc_disabled > 0, so a page whose work goes through
+    # `fn.call(...)` / `fn.apply(...)` — which real google.com does constantly —
+    # bump-allocated one unreclaimable call scope per invocation and hit the
+    # 80,000 ceiling. Reproduced pre-fix at well under 80k iterations of
+    # `f.call(null, i)`; array HOFs escaped only because array_map/filter/...
+    # each hand-lowered gc_disabled around their callback loop, and nobody ever
+    # did that for call/apply. Decoupling the env trigger fixes the whole class
+    # at once instead of one builtin at a time.
+    if env_free_head < 0 and n_envs >= env_hi_water:
         gc_collect_envs()
     # Prefer a reclaimed env before bumping the arena.
     if env_free_head >= 0:
@@ -1837,6 +1856,23 @@ def env_new(parent: int32, is_func: int32) -> int32:
     # longer). Without a check env_new wrote past env_* into adjacent BSS. Fail
     # cleanly (reuse last slot).
     if n_envs >= MAX_ENV:
+        # LAST DITCH before a hard, page-killing error: collect unconditionally.
+        # The water-mark trigger above can be skipped (env_hi_water is RAISED by
+        # a low-yield collection, and js_init resets it only per page), so the
+        # arena can reach MAX_ENV with reclaimable scopes still in it. This is
+        # sound at exactly the same point the water-mark trigger is.
+        gc_collect_envs()
+        if env_free_head >= 0:
+            fe2: int32 = env_free_head
+            env_free_head = env_parent[fe2]
+            env_freed[fe2] = cast[uint8](0)
+            env_parent[fe2] = parent
+            env_head[fe2] = -1
+            if is_func != 0:
+                env_is_func[fe2] = 1
+            else:
+                env_is_func[fe2] = 0
+            return fe2
         set_error(cast[Ptr[uint8]]("environment pool exhausted"))
         return MAX_ENV - 1
     e: int32 = n_envs
