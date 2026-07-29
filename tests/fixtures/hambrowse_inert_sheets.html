@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html><head><title>inert sheets</title>
-<noscript><style>div,span,p{display:none}</style><link rel="stylesheet" href="./never_fetched.css"><div>NOSCRIPT-FALLBACK</div></noscript>
+<noscript><style>div,span,p{display:none}</style><link rel="stylesheet" href="./never_fetched.css"><div>NOSCRIPT-FALLBACK</div><script>window.__ns=1;console.log("NOSCRIPT-SCRIPT-RAN");</script></noscript>
 </head><body>
-<template><style>p{display:none}</style><p>TEMPLATE-INERT</p></template>
+<template><style>p{display:none}</style><p>TEMPLATE-INERT</p><script>window.__tp=1;console.log("TEMPLATE-SCRIPT-RAN");</script></template>
 <div>VISIBLE-DIV</div>
 <p>VISIBLE-PARA</p>
 <span>VISIBLE-SPAN</span>
+<script>console.log("REAL-SCRIPT-RAN ns=" + (window.__ns||0) + " tp=" + (window.__tp||0));</script>
 </body></html>

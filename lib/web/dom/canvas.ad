@@ -5129,6 +5129,19 @@ def _run_scripts() -> int32:
     _refresh_all_geom()
     i: uint64 = 0
     while i < src_len:
+        # A <script> inside <noscript> (RAWTEXT with scripting enabled — and
+        # hambrowse always is) or inside <template> (an inert DocumentFragment)
+        # is NOT executed by a browser. This scanner ran both. Verified against
+        # chromium --headless on tests/fixtures/hambrowse_inert_sheets.html:
+        # a noscript script and a template script both leave their globals
+        # UNSET (ns=0 tp=0) while the page's real script runs. Executing the
+        # noscript branch is actively wrong — it is the no-JS fallback, and on
+        # real sites it redirects or rewrites the page for a JS-less client.
+        if src_ptr[i] == 60:
+            isk: uint64 = hx_inert_region_skip(i)
+            if isk > 0:
+                i = isk
+                continue
         if src_ptr[i] == 60 and i + 1 < src_len and \
            _tagname_is(i + 1, cast[Ptr[uint8]]("script")) != 0:
             # body starts after this start tag's '>'

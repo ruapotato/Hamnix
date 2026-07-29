@@ -20,7 +20,10 @@
 #       !important}; applied document-wide it deleted MDN's own list items.
 #   CHROMIUM ORACLE (--headless --dump-dom, getComputedStyle + styleSheets):
 #     noscript+template fixture -> sheets=0, div=block, p=block, span=inline
-#   so the fallback/template TEXT must not render either.
+#   so the fallback/template TEXT must not render either. The same scanners ran
+#   a <script> out of either region; chromium leaves both their globals unset
+#   (ns=0 tp=0), and executing the <noscript> one is actively harmful since it
+#   is the fallback a site serves to a client WITHOUT JS.
 #
 # PART B — ATTRIBUTE SELECTORS MATCH ONLY AT ATTRIBUTE-NAME POSITIONS.
 #   _attr_match / _body_has_attr hunted for the attribute NAME as a substring of
@@ -73,6 +76,13 @@ assert_nogrep 'TEMPLATE-INERT'    "$A" "<template> content stays unrendered unti
 # All three elements laid out: a regression that re-applies either sheet drops
 # the segment count, which is exactly how google.com went to segs=0.
 assert_grep '^LAYOUT segs=3 ' "$A" "exactly the 3 real elements lay out (segs=3, not 0)"
+# ... and neither inert region's <script> RUNS. Executing the <noscript> branch
+# is actively harmful — it is the no-JS fallback, and real sites use it to
+# redirect or rewrite the page for a client without JS.
+# CHROMIUM ORACLE on the same markup: ns=0 tp=0, and only the page script runs.
+assert_grep 'REAL-SCRIPT-RAN ns=0 tp=0' "$A" "the page's own <script> runs and sees NEITHER inert script's global"
+assert_nogrep 'NOSCRIPT-SCRIPT-RAN'     "$A" "<script> inside <noscript> is not executed"
+assert_nogrep 'TEMPLATE-SCRIPT-RAN'     "$A" "<script> inside <template> is not executed"
 
 # ---------------------------------------------------------------------------
 # PART B — attribute selectors only match real attribute names.

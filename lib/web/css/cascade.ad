@@ -6823,7 +6823,7 @@ def he_css_scan_links():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60:                         # '<'
-            skl: uint64 = _css_inert_skip(i)             # <noscript>/<template> = inert
+            skl: uint64 = hx_inert_region_skip(i)             # <noscript>/<template> = inert
             if skl > 0:
                 i = skl
                 continue
@@ -6877,11 +6877,11 @@ def he_css_link_len(i: int32) -> int32:
 #     likewise inert until cloned; Chromium reports styleSheets.length === 0 for
 #     a <style> inside one (verified the same way).
 #
-# `_css_inert_skip` returns the index just PAST the matching close tag when src[i]
+# `hx_inert_region_skip` returns the index just PAST the matching close tag when src[i]
 # opens one of these, else 0 ("not an inert region, keep scanning"). Matching is
 # same-name depth-counted so a nested <template> inside a <template> does not
 # end the outer region early.
-def _css_inert_skip(i: uint64) -> uint64:
+def hx_inert_region_skip(i: uint64) -> uint64:
     if i + 1 >= src_len or src_ptr[i] != 60:              # '<'
         return 0
     k: uint64 = i + 1
@@ -6934,7 +6934,7 @@ def _collect_cvars():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60:
-            sk0: uint64 = _css_inert_skip(i)                  # <noscript>/<template> = no sheets
+            sk0: uint64 = hx_inert_region_skip(i)                  # <noscript>/<template> = no sheets
             if sk0 > 0:
                 i = sk0
                 continue
@@ -6981,7 +6981,7 @@ def _collect_css():
     i: uint64 = 0
     while i < src_len:
         if src_ptr[i] == 60:                         # '<'
-            sk: uint64 = _css_inert_skip(i)              # <noscript>/<template> = no sheets
+            sk: uint64 = hx_inert_region_skip(i)              # <noscript>/<template> = no sheets
             if sk > 0:
                 i = sk
                 continue
