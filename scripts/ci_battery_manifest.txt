@@ -2968,6 +2968,13 @@ bash scripts/test_audio_playback.sh
 # gate measured 7.272 s of a 3.000 s clip, one effect emitted twice, and 0.000 s
 # of 0.600 s of effects overlapping the music.
 bash scripts/test_audio_stream_lifetime.sh
+# ...and the same contract on the REAL PRODUCT: the installer .img under
+# UEFI/OVMF, with the desktop spawning the real `/bin/aplay
+# /usr/share/sounds/boot-jingle.wav`. Asserts on the captured codec output that
+# the 7.44 s jingle sounds in FULL and that the TOTAL non-silent audio is that
+# same 7.44 s — no replay. Mutation-checked: removing hda_stream_drain's
+# play-out wait drops it to 2.05 s and the gate goes red.
+bash scripts/test_audio_jingle_ondevice.sh
 # hamaudio player's real media path (#321): the guest reads a shipped .wav off
 # the filesystem, DECODES it (lib/wavdecode.ad), and streams the extracted PCM
 # to the HDA sink. hamaudioselftest runs AS /init; the host asserts correct
