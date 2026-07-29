@@ -19,6 +19,9 @@ def _reset_layout():
         bbox_padv[bk] = 0
         bk = bk + 1
     n_bfills = 0
+    # Explicit-height pixel pins are per-render (native BSS persists across
+    # re-layouts, so a stale pin would size a row span that no longer exists).
+    n_hpins = 0
     # CSSOM layout-read tap: drop the previous render's element boxes so a
     # re-layout (script mutated the DOM) never reports a stale geometry.
     n_eboxes = 0

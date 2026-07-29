@@ -511,6 +511,33 @@ row_rule: Array[12000, uint8]    # 0 none, 1 heading rule on this row
 # (a global shrink regressed position:sticky / grid-auto-rows). Only ever set on
 # a lone heading-margin row; multi-row margins keep the uniform pitch.
 row_mgap: Array[12000, int32]
+
+# ---- EXPLICIT-HEIGHT PIXEL PINS ------------------------------------------
+# The engine flows on a LINE_H (16px) CHARACTER GRID, but the pixel renderer
+# draws each row at its real `line-height: normal` pitch (18px at the 16px body
+# size). A CSS `height`/`min-height`/`max-height` therefore used to be quantised
+# to whole grid rows and then MULTIPLIED by that 18/16 mismatch, so an explicit
+# height was both rounded UP and scaled ~1.125x: measured on a bare
+# `div{height:Npx}`, Chrome paints 50/100/200/300 and we painted 54/108/234/342
+# ((N + 8)/16 rows at 18px each).
+#
+# A grid-row count cannot express a pixel height, so the constraint is carried
+# to the pixel pass instead: each sized box records the row span it owns plus
+# the pixel height that span must total. lib/htmlpage.ad's row-height pass
+# (which is where a row's real pitch is finally known) reconciles them by
+# absorbing the difference into the span's LAST rows, so the box ends up
+# EXACTLY its used height and every following row shifts with it — no drift.
+#
+# kind 0 = exact (`height`), 1 = at least (`min-height`), 2 = at most
+# (`max-height`). min/max are one-sided because the natural content height is a
+# pixel quantity the engine cannot see: only the pixel pass can tell whether the
+# floor/ceiling actually binds.
+HPIN_MAX: int32 = 512
+hpin_r0:   Array[512, int32]      # first row of the span (inclusive)
+hpin_r1:   Array[512, int32]      # one past the last row (exclusive)
+hpin_px:   Array[512, int32]      # pixel height the span must total
+hpin_kind: Array[512, int32]      # 0 exact / 1 min / 2 max
+n_hpins:   int32 = 0
 total_rows: uint64 = 0
 top_line:   uint64 = 0
 
@@ -2845,12 +2872,21 @@ def _block_box_close():
         if natrows < 0:
             natrows = 0
         tgtpx: int32 = natrows * LINE_H
+        # Which constraint the resolved height actually came from, so the pixel pin
+        # below is one-sided where CSS is one-sided: 0 exact, 1 floor, 2 ceiling.
+        hkind: int32 = 0
         if ehc >= 0:
             tgtpx = ehc
+        else:
+            hkind = -1                                # nothing bound yet
         if eminh >= 0 and tgtpx < eminh:
             tgtpx = eminh
+            if ehc < 0:
+                hkind = 1
         if emaxh >= 0 and tgtpx > emaxh:
             tgtpx = emaxh
+            if ehc < 0:
+                hkind = 2
         tgtrows: int32 = (tgtpx + LINE_H / 2) / LINE_H
         if tgtrows < 1 and tgtpx > 0:
             tgtrows = 1
@@ -2873,6 +2909,18 @@ def _block_box_close():
         else:
             cur_row = cast[uint64](newbot)
             row_dirty = 0
+        # Carry the PIXEL constraint to the pixel pass. tgtrows is only how many
+        # 16px grid rows the flow reserves; the renderer draws each of them at its
+        # real ~18px `line-height: normal` pitch, so without this the box renders
+        # both rounded-up AND scaled by 18/16. Record the span and the height it
+        # must total, and let lib/htmlpage.ad reconcile them (it is the first place
+        # a row's true pitch is known).
+        if newbot > srow and hkind >= 0 and n_hpins < HPIN_MAX:
+            hpin_r0[n_hpins]   = srow
+            hpin_r1[n_hpins]   = newbot
+            hpin_px[n_hpins]   = tgtpx
+            hpin_kind[n_hpins] = hkind
+            n_hpins = n_hpins + 1
     # CSS overflow clip: if this box clips either axis, remove/truncate the
     # descendant segments/fills/borders that fall outside its padding edge. The
     # clip bottom is the box's final row span; the x-range matches the box's own

@@ -22,7 +22,9 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     he_seg_line, he_seg_x, he_seg_off, he_seg_len, he_seg_text_ptr, \
     he_seg_face, he_seg_bold, he_seg_uline, he_seg_rgb, he_seg_bg, he_seg_bgcov, \
     he_seg_yoff, he_seg_strike, he_seg_italic, \
-    he_row_rule, he_row_mgap, he_row_align, he_seg_gridx, he_seg_cellx, he_seg_pxsize, he_seg_lineh, \
+    he_row_rule, he_row_mgap, he_row_align, \
+    he_n_hpins, he_hpin_r0, he_hpin_r1, he_hpin_px, he_hpin_kind, \
+    he_seg_gridx, he_seg_cellx, he_seg_pxsize, he_seg_lineh, \
     he_seg_img, he_seg_imgw, he_seg_imgh, he_seg_link, he_seg_boxart, \
     he_seg_objfit, he_seg_objpx, he_seg_objpxp, he_seg_objpy, he_seg_objpyp, \
     he_seg_marker, he_seg_indjump, he_seg_lmarg, he_seg_field, he_seg_fieldlen, he_seg_accent, \
@@ -710,6 +712,64 @@ def htmlpage_render() -> int32:
             row_asc[rp] = row_asc[rp] + pt
             row_h[rp]   = row_h[rp] + pt + pb
         rp = rp + 1
+
+    # 1e. EXPLICIT-HEIGHT PIXEL PINS (see hpin_* in lib/web/layout/box.ad). The
+    # engine flows on a 16px LINE_H character grid; every row above was just sized
+    # to its REAL pitch (~18px at the 16px body size). A CSS height quantised to
+    # grid rows and then drawn at the real pitch therefore came out both rounded UP
+    # and scaled by 18/16 — measured on a bare `div{height:Npx}`, Chrome paints
+    # 50/100/200/300 where we painted 54/108/234/342. This is the first point where
+    # a row's true pitch is known, so it is where the constraint is honoured.
+    #
+    # For each pinned span, sum the rows' real pitches and absorb the difference
+    # into the span's LAST rows (walking backwards while a shrink exceeds one row).
+    # Content therefore keeps its position at the TOP of the box and the slack —
+    # or the overflow — lands at the bottom, which is where CSS puts it. Because
+    # row_top is computed AFTERWARDS from these heights, every following row shifts
+    # with the correction: the box ends up exactly its used height with no drift.
+    #
+    # Pins arrive in element CLOSE order, i.e. innermost first, so an outer box's
+    # sum already sees its children's corrected heights.
+    nhp: int32 = he_n_hpins()
+    hpi: int32 = 0
+    while hpi < nhp:
+        pr0: int32 = he_hpin_r0(hpi)
+        pr1: int32 = he_hpin_r1(hpi)
+        if pr0 >= 0 and pr1 > pr0 and cast[uint64](pr1) <= nrow:
+            natsum: int32 = 0
+            pq: int32 = pr0
+            while pq < pr1:
+                pp: int32 = row_h[cast[uint64](pq)]
+                if row_lh[cast[uint64](pq)] > pp:
+                    pp = row_lh[cast[uint64](pq)]
+                natsum = natsum + pp
+                pq = pq + 1
+            want: int32 = he_hpin_px(hpi)
+            pk: int32 = he_hpin_kind(hpi)
+            if pk == 1 and want < natsum:
+                want = natsum                    # min-height: a floor, never a cap
+            elif pk == 2 and want > natsum:
+                want = natsum                    # max-height: a cap, never a floor
+            if want < 0:
+                want = 0
+            delta: int32 = want - natsum
+            # Absorb the correction from the bottom of the span upwards. A GROW all
+            # lands on the last row; a SHRINK deeper than one row keeps eating
+            # rows above it (an over-tall span pulled up by max-height).
+            pz: int32 = pr1 - 1
+            while delta != 0 and pz >= pr0:
+                cur: int32 = row_h[cast[uint64](pz)]
+                if row_lh[cast[uint64](pz)] > cur:
+                    cur = row_lh[cast[uint64](pz)]
+                nv: int32 = cur + delta
+                if nv < 0:
+                    nv = 0
+                delta = delta - (nv - cur)
+                row_h[cast[uint64](pz)] = nv
+                if row_lh[cast[uint64](pz)] > nv:
+                    row_lh[cast[uint64](pz)] = nv
+                pz = pz - 1
+        hpi = hpi + 1
 
     # 2. cumulative tops. Every row advances by its glyph-box height alone — the
     # tight `line-height:normal` pitch (~19px at 16px, ~1.2em) that Chrome uses by
