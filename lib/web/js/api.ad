@@ -129,7 +129,59 @@ def js_init():
 # Run a program. Returns a pointer to the NUL-terminated output buffer
 # (accumulated console.log output). js_out_len() gives its length; js_error()
 # is nonzero on a parse/runtime error and js_error_msg() the message.
+#
+# js_eval is a TURN BOUNDARY: it ends by draining the deferred-callback queue,
+# because a <script> element finishing is exactly the point at which the event
+# loop is allowed to run queued tasks. See _js_eval_core / js_eval_nested for
+# the entry point that engine-internal source must use instead.
 def js_eval(src: Ptr[uint8], slen: uint64) -> Ptr[uint8]:
+    return _js_eval_core(src, slen, 0)
+
+
+# js_eval_nested — evaluate ENGINE-GENERATED source in the CALLER'S turn.
+#
+# The engine compiles a few small helpers by handing JS source to its own
+# evaluator: the CSSOM getPropertyValue thunk (_cs_gpv_fn) and the inline-
+# event-handler wrapper (_compile_inline_handler). Those are *compilations* —
+# they define a function and immediately hand back its value. They are not
+# script elements and they are not tasks.
+#
+# Routing them through js_eval made them turn boundaries, and that was a real
+# and expensive bug. js_eval ends with drain_timers(), so `getComputedStyle()`
+# — a synchronous CSSOM getter — pumped the event loop from inside the call the
+# first time a page used it. On a Web Platform Tests page that meant
+# testharness.js's own watchdog timer fired in the MIDDLE of the first test()
+# body: the harness concluded it had timed out, declared itself complete with a
+# single test registered, and every later test() on the page was dropped. It
+# cost all 243 subtests of css/css-cascade and 166 confirmed failures beyond.
+#
+# The naive fix is to stop js_eval draining, or to force drain_enabled off
+# around the helper. Both are wrong: the drain is load-bearing for real script
+# elements (a page's setTimeout(f,0) initialiser must run before we lay out and
+# render), and drain_enabled is a HOST-owned control — the browser front-end
+# flips it off deliberately to observe the pre-drain DOM, so an engine-internal
+# save/restore would fight the embedder over the same flag.
+#
+# The distinction that actually matters is "is this a turn?", so that is what is
+# parameterised. A nested eval runs the same tokenize/parse/exec pipeline and
+# reports its own err_flag (callers check js_error() to detect a failed
+# compile), but it does NOT drain, and it SAVES AND RESTORES the caller's
+# control-flow latches. That second half matters on its own: js_eval clears
+# ctl / ctl_label / pending_label at entry, so compiling a helper from inside a
+# labelled loop used to discard the pending `continue outer` of the script that
+# called it.
+def js_eval_nested(src: Ptr[uint8], slen: uint64) -> Ptr[uint8]:
+    return _js_eval_core(src, slen, 1)
+
+
+def _js_eval_core(src: Ptr[uint8], slen: uint64, nested: int32) -> Ptr[uint8]:
+    # A nested eval borrows the caller's turn, so the caller's in-flight control
+    # flow (a pending break/continue label, an exception on its way out) has to
+    # survive it untouched.
+    save_ctl: int32 = ctl
+    save_ctl_label: int32 = ctl_label
+    save_pending: int32 = pending_label
+    save_throw: int32 = throw_val
     # Each top-level eval (a <script> element or an inline event handler) runs
     # INDEPENDENTLY, exactly like a browser: a parse error or uncaught throw in
     # one <script> must NOT abort the scripts that follow. Clear the error and
@@ -163,8 +215,11 @@ def js_eval(src: Ptr[uint8], slen: uint64) -> Ptr[uint8]:
         hoist_scan(prog, g_env)
         exec_stmt(prog, g_env)
         # drain deferred callbacks (setTimeout(f,0) etc.) so they run before
-        # rendering — only if the top-level script did not itself throw.
-        if err_flag == 0 and ctl != CTL_THROW and drain_enabled != 0:
+        # rendering — only if the top-level script did not itself throw, and
+        # only at a real turn boundary. A nested (engine-internal) eval is part
+        # of the caller's turn and must not run the event loop; see
+        # js_eval_nested.
+        if err_flag == 0 and ctl != CTL_THROW and drain_enabled != 0 and nested == 0:
             drain_timers()
     if err_flag == 0 and ctl == CTL_THROW:
         # uncaught exception -> print like a host runtime
@@ -178,6 +233,13 @@ def js_eval(src: Ptr[uint8], slen: uint64) -> Ptr[uint8]:
         emit_tgt = 1
         emit_cstr(&err_str[0])
         emit_c(10)
+    if nested != 0:
+        # err_flag deliberately survives: _compile_inline_handler reads
+        # js_error() to detect a helper that failed to compile.
+        ctl = save_ctl
+        ctl_label = save_ctl_label
+        pending_label = save_pending
+        throw_val = save_throw
     out_buf[out_top] = 0
     return &out_buf[0]
 

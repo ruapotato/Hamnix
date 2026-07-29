@@ -1,19 +1,25 @@
 # scripts/wpt_baseline.txt -- SHRINK-ONLY record of what the native
 # engine does NOT pass in the vendored WPT subset (tests/wpt/).
 #
-# The ratchet (scripts/test_wpt_ratchet_host.sh) fails when a line
-# APPEARS that is not here, i.e. when something that passed starts
-# failing. Lines DISAPPEARING is the point of the exercise: fix
-# engine bugs, then regenerate with
+# The ratchet (scripts/test_wpt_ratchet_host.sh) fails when a subtest
+# that was PASSING starts failing, or when the total PASS count drops
+# below #!PASS_FLOOR. Failures DISAPPEARING is the point of the
+# exercise: fix engine bugs, then regenerate with
 #   bash scripts/test_wpt_ratchet_host.sh --regen
 #
-# A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
-# no harness output; when that file starts reporting, its individual
-# failures are NOT counted as regressions (they were always failing,
-# just invisible).
+# Two kinds of row, both TAB-separated <test path>\t<subtest name>:
+#   <path>\t<subtest>     -- did NOT pass at baseline
+#   +<path>\t<subtest>    -- DID pass at baseline (the regression set)
 #
-# TAB-separated: <test path>\t<subtest name>
-#!PASS_FLOOR 395
+# Recording the passes is what makes a regression decidable. A newly
+# appearing failure row is ambiguous by itself: the subtest may have
+# regressed, or it may never have reported before. Only a subtest that
+# was in the pass set and no longer is counts as a regression --
+# and #!PASS_FLOOR catches any genuine loss a second time regardless.
+#
+# A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
+# no harness output at all.
+#!PASS_FLOOR 417
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -28,9 +34,42 @@ css/css-cascade/important-vs-inline-002.html	Untitled 1
 css/css-cascade/important-vs-inline-002.html	Untitled 2
 css/css-cascade/important-vs-inline-002.html	Untitled 3
 css/css-cascade/important-vs-inline-003.html	Untitled
-css/css-cascade/inherit-initial.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/inherit-initial.html	overflow:inherit on root element should compute to 'visible'.
 css/css-cascade/inline-style-background.html	Untitled
-css/css-cascade/layer-basic.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/layer-basic.html	A1 Anonymous layers
+css/css-cascade/layer-basic.html	A2 Anonymous layers
+css/css-cascade/layer-basic.html	A3 Anonymous layers
+css/css-cascade/layer-basic.html	A4 Anonymous layers
+css/css-cascade/layer-basic.html	A5 Anonymous layers
+css/css-cascade/layer-basic.html	A6 Anonymous layers
+css/css-cascade/layer-basic.html	A7 Anonymous layers
+css/css-cascade/layer-basic.html	A8 Anonymous layers
+css/css-cascade/layer-basic.html	A9 Anonymous layers
+css/css-cascade/layer-basic.html	B1 Named layers
+css/css-cascade/layer-basic.html	B10 Named layers
+css/css-cascade/layer-basic.html	B2 Named layers
+css/css-cascade/layer-basic.html	B3 Named layers
+css/css-cascade/layer-basic.html	B4 Named layers
+css/css-cascade/layer-basic.html	B5 Named layers
+css/css-cascade/layer-basic.html	B6 Named layers
+css/css-cascade/layer-basic.html	B7 Named layers
+css/css-cascade/layer-basic.html	B8 Named layers
+css/css-cascade/layer-basic.html	B9 Named layers
+css/css-cascade/layer-basic.html	C1 Named layers shorthand
+css/css-cascade/layer-basic.html	C2 Named layers shorthand
+css/css-cascade/layer-basic.html	C3 Named layers shorthand
+css/css-cascade/layer-basic.html	C4 Named layers shorthand
+css/css-cascade/layer-basic.html	C5 Named layers shorthand
+css/css-cascade/layer-basic.html	D1 Mixed named and anonymous layers
+css/css-cascade/layer-basic.html	D2 Mixed named and anonymous layers
+css/css-cascade/layer-basic.html	D3 Mixed named and anonymous layers
+css/css-cascade/layer-basic.html	D4 Mixed named and anonymous layers
+css/css-cascade/layer-basic.html	D5 Mixed named and anonymous layers
+css/css-cascade/layer-basic.html	E1 Statement syntax
+css/css-cascade/layer-basic.html	E2 Statement syntax
+css/css-cascade/layer-basic.html	E3 Statement syntax
+css/css-cascade/layer-basic.html	E4 Statement syntax
+css/css-cascade/layer-basic.html	E5 Statement syntax
 css/css-cascade/layer-counter-style-override.html	@counter-style override between layers
 css/css-cascade/layer-counter-style-override.html	@counter-style override update with appended sheet 1
 css/css-cascade/layer-counter-style-override.html	@counter-style override update with appended sheet 2
@@ -53,7 +92,15 @@ css/css-cascade/layer-import.html	B1 Anonymous imports
 css/css-cascade/layer-import.html	B2 Anonymous imports
 css/css-cascade/layer-import.html	B3 Anonymous imports
 css/css-cascade/layer-import.html	B4 Anonymous imports
-css/css-cascade/layer-important.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/layer-important.html	A1 Unlayered !important style
+css/css-cascade/layer-important.html	B1 Same specificity, layered !important first
+css/css-cascade/layer-important.html	C1 Same specificity, layered !important second
+css/css-cascade/layer-important.html	D1 Same specificity, all !important
+css/css-cascade/layer-important.html	D2 Same specificity, all !important
+css/css-cascade/layer-important.html	D3 Same specificity, all !important
+css/css-cascade/layer-important.html	D4 Same specificity, all !important
+css/css-cascade/layer-important.html	E1 Different specificity, all !important
+css/css-cascade/layer-important.html	E2 Different specificity, all !important
 css/css-cascade/layer-keyframes-override.html	@keyframes override between layers
 css/css-cascade/layer-keyframes-override.html	@keyframes override update with appended sheet 1
 css/css-cascade/layer-keyframes-override.html	@keyframes override update with appended sheet 2
@@ -63,7 +110,6 @@ css/css-cascade/layer-property-override.html	@property override between layers
 css/css-cascade/layer-property-override.html	@property override update with appended sheet 1
 css/css-cascade/layer-property-override.html	@property override update with appended sheet 2
 css/css-cascade/layer-property-override.html	@property unlayered overrides layered
-css/css-cascade/layer-replaceSync-clears-stale.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/layer-rules-cssom.html	Anonymous layer block name
 css/css-cascade/layer-rules-cssom.html	Basic layer block name
 css/css-cascade/layer-rules-cssom.html	Basic layer statement name
@@ -135,19 +181,19 @@ css/css-cascade/revert-rule-revert-layer.html	Combination revert-layer/revert-ru
 css/css-cascade/revert-rule-revert-layer.html	Combination revert-rule/revert-layer/revert-rule
 css/css-cascade/revert-rule-revert-layer.html	Combination revert-rule/revert-rule/revert-layer
 css/css-cascade/revert-rule-shadow.html	<FILE PRODUCED NO RESULTS>
-css/css-cascade/revert-val-003.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/revert-val-003.html	revert works with transitions
 css/css-cascade/revert-val-004.html	The revert keyword works with the all property
 css/css-cascade/revert-val-005.html	The revert keyword works with logical properties
 css/css-cascade/revert-val-005.html	The revert keyword works with physical properties
 css/css-cascade/revert-val-006.html	The revert keyword works with @keyframes
-css/css-cascade/revert-val-007.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/revert-val-007.html	A @keyframe animation with revert works when applied to multiple identical elements
 css/css-cascade/revert-val-008.html	The revert keyword works in the final frame of a web animation
 css/css-cascade/revert-val-009.html	The revert keyword works in implicit keyframes
 css/css-cascade/revert-val-010.html	The revert works when appearing in setKeyframes
 css/css-cascade/revert-val-011.html	Untitled
 css/css-cascade/revert-val-011.html	Untitled 1
 css/css-cascade/revert-val-011.html	Untitled 2
-css/css-cascade/scope-container.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-container.html	Style rules within @container are scoped
 css/css-cascade/scope-cssom.html	CSSScopeRule is a CSSGroupingRule
 css/css-cascade/scope-cssom.html	CSSScopeRule.cssText, implicit scope
 css/css-cascade/scope-cssom.html	CSSScopeRule.cssText, limit only
@@ -230,8 +276,8 @@ css/css-cascade/scope-invalidation.html	Scope root with :has(), :scope subject
 css/css-cascade/scope-invalidation.html	Sibling element affecting scope limit
 css/css-cascade/scope-invalidation.html	Subject element becoming scope limit
 css/css-cascade/scope-invalidation.html	Toggling inner/outer scope roots
-css/css-cascade/scope-layer.html	<FILE PRODUCED NO RESULTS>
-css/css-cascade/scope-media.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-layer.html	Style rules within @layer are scoped
+css/css-cascade/scope-media.html	Style rules within @media are scoped
 css/css-cascade/scope-name-defining-rules.html	@keyframes is unaffected by @scope
 css/css-cascade/scope-name-defining-rules.html	@keyframes is unaffected by non-matching @scope
 css/css-cascade/scope-name-defining-rules.html	@property is unaffected by @scope
@@ -261,10 +307,10 @@ css/css-cascade/scope-specificity.html	@scope (#main) { @scope (.a) { .b {  } } 
 css/css-cascade/scope-specificity.html	@scope (#main) { div .b {  } } and div .b
 css/css-cascade/scope-specificity.html	@scope (#main) { div.b {  } } and div.b
 css/css-cascade/scope-specificity.html	@scope (#main, .foo, .bar) { #a {  } } and #a
-css/css-cascade/scope-starting-style.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-starting-style.html	Style rules within @starting-style are scoped
 css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling exits scope
 css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling exits scope
-css/css-cascade/scope-supports.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-supports.html	Style rules within @supports are scoped
 css/css-cascade/scope-visited-cssom.html	:link as scoped selector
 css/css-cascade/scope-visited-cssom.html	:link as scoping limit
 css/css-cascade/scope-visited-cssom.html	:link as scoping root
@@ -2338,7 +2384,7 @@ dom/nodes/insertion-removing-steps/Node-append-form-and-script-from-fragment.htm
 dom/nodes/insertion-removing-steps/Node-append-meta-referrer-and-script-from-fragment.html	<meta name=referrer> gets processed and applied in the post-insertion steps
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-button-from-div.html	Script inserted before a form-associated button can observe the button's form, because by the time the script executes, the DOM insertion that associates the button with the form is already done
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-custom-from-fragment.html	An earlier-inserted script can upgrade a later-inserted custom element, whose upgrading is synchronously observable to the script, since DOM insertion has been completed by the time it runs
-dom/nodes/insertion-removing-steps/Node-appendChild-script-and-default-style-meta-from-fragment.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/insertion-removing-steps/Node-appendChild-script-and-default-style-meta-from-fragment.html	Inserting <meta> that uses alternate stylesheets, applies the style during DOM post-insertion steps
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-div-from-fragment.html	Earlier-inserted scripts can observe the parentNode of later-inserted nodes, because script runs after DOM insertion completes
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a DocumentFragment) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a append() with multiple arguments) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
@@ -2447,7 +2493,7 @@ dom/nodes/moveBefore/script-move-before.html	Synchronous script execution in SVG
 dom/nodes/moveBefore/select-option-optgroup.html	Moving options between select elements.
 dom/nodes/moveBefore/select-option-optgroup.html	Option selectedness is updated on option and optgroup DOM moves
 dom/nodes/moveBefore/slotchange-events.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/style-applies.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/moveBefore/style-applies.html	Moving a style inside the document should not affect whether it's applied
 dom/nodes/moveBefore/throws-exception.html	moveBefore() on a cross-document target node
 dom/nodes/name-validation.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/node-creation-realm.html	<FILE PRODUCED NO RESULTS>
@@ -2945,11 +2991,12 @@ html/semantics/disabled-elements/disabledElement.html	A disabled <select> should
 html/semantics/disabled-elements/disabledElement.html	A disabled <span> should be focusable
 html/semantics/disabled-elements/disabledElement.html	A disabled <textarea> should not be focusable
 html/semantics/disabled-elements/disabledElement.html	The body element must be the active element if no element is focused
-html/semantics/document-metadata/interactions-of-styling-and-scripting/conditionally-block-rendering-on-link-media-attr.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/interactions-of-styling-and-scripting/dynamic-render-blocking-link-stylesheet-does-not-block-script.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/interactions-of-styling-and-scripting/dynamic-render-blocking-style-element-does-not-block-script.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/interactions-of-styling-and-scripting/script-created-link-stylesheet-does-not-block-script.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/interactions-of-styling-and-scripting/script-created-style-element-does-not-block-script.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/interactions-of-styling-and-scripting/conditionally-block-rendering-on-link-media-attr.html	Both style sheets loaded via the link elements should be registered as style sheets for the document after 2 seconds
+html/semantics/document-metadata/interactions-of-styling-and-scripting/conditionally-block-rendering-on-link-media-attr.html	Only the style sheet loaded via a link element whose media attribute matches the environment should block following script execution
+html/semantics/document-metadata/interactions-of-styling-and-scripting/dynamic-render-blocking-link-stylesheet-does-not-block-script.html	Untitled
+html/semantics/document-metadata/interactions-of-styling-and-scripting/dynamic-render-blocking-style-element-does-not-block-script.html	Untitled
+html/semantics/document-metadata/interactions-of-styling-and-scripting/script-created-link-stylesheet-does-not-block-script.html	Untitled
+html/semantics/document-metadata/interactions-of-styling-and-scripting/script-created-style-element-does-not-block-script.html	Untitled
 html/semantics/document-metadata/interactions-of-styling-and-scripting/style-element-media-match-block-script.html	Untitled
 html/semantics/document-metadata/interactions-of-styling-and-scripting/style-element-media-not-match-does-not-block-script.html	Untitled
 html/semantics/document-metadata/styling/LinkStyle.html	The LinkStyle interface's sheet attribute must return null if the corresponding element is not in a Document
@@ -2979,26 +3026,30 @@ html/semantics/document-metadata/the-link-element/link-load-event-alt-001.html	<
 html/semantics/document-metadata/the-link-element/link-load-event-alt-002.html	Untitled
 html/semantics/document-metadata/the-link-element/link-load-event.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-link-element/link-load-fired-before-scripting-unblocked.html	Check if the stylesheet's load event is fired before the pending parsing-blocking script is unblocked
-html/semantics/document-metadata/the-link-element/link-rel-attribute-tokenization.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-link-element/link-rel-attribute.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-link-element/link-rel-attribute-tokenization.html	The rel attribute needs to handle ASCII whitespace correctly
+html/semantics/document-metadata/the-link-element/link-rel-attribute.html	Removing stylesheet from link rel attribute should remove the stylesheet for light DOM
+html/semantics/document-metadata/the-link-element/link-rel-attribute.html	Removing stylesheet from link rel attribute should remove the stylesheet for shadow DOM
 html/semantics/document-metadata/the-link-element/link-rellist.html	Untitled
 html/semantics/document-metadata/the-link-element/link-style-data-url-quirks.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-link-element/stylesheet-bad-mime-type.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-link-element/stylesheet-media-change-no-fetch.html	Untitled
 html/semantics/document-metadata/the-link-element/stylesheet-non-OK-status.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-link-element/stylesheet-not-removed-until-next-stylesheet-loads.html	Check that a style sheet loaded by a <link> is available until its successor is loaded
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-attribute-changes.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-empty-content-value.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-first-valid-applies.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-no-content-value.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-attribute-changes.html	Meta color-scheme initially 'dark'.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-empty-content-value.html	Meta color-scheme with empty content attribute has no effect.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-first-valid-applies.html	Tree order decides which meta color-scheme applies.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Initial color-scheme
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Inserted meta color-scheme applies
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Inserted meta color-scheme before existing in head applies
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-no-content-value.html	Meta color-scheme without content attribute has no effect.
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-normal-descendant-change.html	Normal initially dark
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove-head.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-single-value-in-body.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-single-value-in-head.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove-head.html	Initial value after removing head including meta color-scheme.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove-head.html	Meta color-scheme applies.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove.html	First meta applies.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-single-value-in-body.html	Meta color-scheme in body should apply.
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-single-value-in-head.html	Meta color-scheme in head applies.
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-single-value-in-shadow-tree.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-meta-element/http-equiv-and-name-1.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-meta-element/http-equiv-and-name-1.html	<meta> set the color-scheme to dark
 html/semantics/document-metadata/the-meta-element/http-equiv-and-name-2.html	<meta> set the content-language to de-DE
 html/semantics/document-metadata/the-meta-element/pragma-directives/attr-meta-http-equiv-refresh/allow-scripts-flag-changing-1.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-meta-element/pragma-directives/attr-meta-http-equiv-refresh/allow-scripts-flag-changing-2.html	<FILE PRODUCED NO RESULTS>
@@ -3010,14 +3061,19 @@ html/semantics/document-metadata/the-meta-element/the-lang-attribute-012.html	Th
 html/semantics/document-metadata/the-style-element/non-parser-created-doc.html	CSS API should work on non-parser-created documents
 html/semantics/document-metadata/the-style-element/style-error-01.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/style-load-after-mutate.html	Untitled
-html/semantics/document-metadata/the-style-element/style_disabled.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/style_disabled.html	The style is not applied when it is disabled
 html/semantics/document-metadata/the-style-element/style_events.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/style_load_async.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/style_load_event.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/style_media.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/style_media_change.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/style_media.html	The style information must be applied to the environment specified by the media attribute
+html/semantics/document-metadata/the-style-element/style_media_change.html	change media value dynamically
+html/semantics/document-metadata/the-style-element/style_media_change.html	removing media attribute
+html/semantics/document-metadata/the-style-element/style_type_change.html	Change type from invalid type to valid type
+html/semantics/document-metadata/the-style-element/style_type_change.html	Change type from valid type to invalid type
 html/semantics/document-metadata/the-style-element/style_type_change.html	Check initial styleSheets length type
-html/semantics/document-metadata/the-style-element/style_type_html.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/style_type_html.html	With a mixed-case type attribute, the style should apply
+html/semantics/document-metadata/the-style-element/style_type_html.html	With an empty type attribute, the style should apply
+html/semantics/document-metadata/the-style-element/style_type_html.html	With no type attribute, the style should apply
 html/semantics/document-metadata/the-style-element/tentative/style-element-basic-import.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-allowed.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-both-blocked.html	<FILE PRODUCED NO RESULTS>
@@ -3040,8 +3096,8 @@ html/semantics/document-metadata/the-title-element/title.text-03.html	title.text
 html/semantics/document-metadata/the-title-element/title.text-03.html	title.text and space normalization: "two\n\nnewlines"
 html/semantics/document-metadata/the-title-element/title.text-03.html	title.text and space normalization: "two\r\rcarriage returns"
 html/semantics/document-metadata/the-title-element/title.text-03.html	title.text and space normalization: "two\t\ttabs"
-html/semantics/edits/the-del-element/del_effect.html	<FILE PRODUCED NO RESULTS>
-html/semantics/edits/the-ins-element/ins_effect.html	<FILE PRODUCED NO RESULTS>
+html/semantics/edits/the-del-element/del_effect.html	Untitled
+html/semantics/edits/the-ins-element/ins_effect.html	Untitled
 html/semantics/grouping-content/the-div-element/grouping-div.html	The prototype for div is HTMLDivElement.prototype
 html/semantics/grouping-content/the-dl-element/grouping-dl.html	The prototype for dl is HTMLDListElement.prototype
 html/semantics/grouping-content/the-hr-element/grouping-hr.html	The prototype for hr is HTMLHRElement.prototype
@@ -3221,7 +3277,7 @@ html/semantics/selectors/pseudo-classes/disabled.html	':disabled' should not mat
 html/semantics/selectors/pseudo-classes/enabled.html	':enabled' elements that are not disabled
 html/semantics/selectors/pseudo-classes/focus-autofocus.html	<FILE PRODUCED NO RESULTS>
 html/semantics/selectors/pseudo-classes/focus.html	<FILE PRODUCED NO RESULTS>
-html/semantics/selectors/pseudo-classes/indeterminate-radio.html	<FILE PRODUCED NO RESULTS>
+html/semantics/selectors/pseudo-classes/indeterminate-radio.html	Untitled
 html/semantics/selectors/pseudo-classes/indeterminate-type-change.html	Evaluation of :indeterminate changes on input type change.
 html/semantics/selectors/pseudo-classes/indeterminate.html	':progress' also matches <input> checkbox whose indeterminate IDL is set to true
 html/semantics/selectors/pseudo-classes/indeterminate.html	':progress' matches <input>s radio buttons whose radio button group contains no checked input and <progress> elements without value attribute
@@ -3510,3 +3566,286 @@ html/semantics/the-button-element/command-and-commandfor/toggleevent-source-attr
 url/a-element-origin.html	Loading data…
 url/data-uri-fragment.html	<FILE PRODUCED NO RESULTS>
 url/failure.html	Loading data…
++css/css-cascade/inherit-initial.html	background-color:inherit on root element should compute to 'rgba(0, 0, 0, 0)'.
++css/css-cascade/inherit-initial.html	position:inherit on root element should compute to 'static'.
++css/css-cascade/inherit-initial.html	z-index:inherit on root element should compute to 'auto'.
++css/css-cascade/layer-replaceSync-clears-stale.html	replaceSync clears stale layer statements
++dom/collections/HTMLCollection-iterator.html	HTMLCollection does not have iterable's entries method.
++dom/collections/HTMLCollection-iterator.html	HTMLCollection does not have iterable's values method.
++dom/collections/HTMLCollection-iterator.html	HTMLCollection has length method.
++dom/collections/HTMLCollection-iterator.html	HTMLCollection is iterable via for-of loop.
++dom/collections/HTMLCollection-supported-property-names.html	Object.getOwnPropertyNames on HTMLCollection with non-HTML namespace
++dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, attribute set on dataset in JS
++dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, data attribute trailing hyphen
++dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, empty data attribute
++dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, multiple data attributes
++dom/events/Event-dispatch-click.html	disabled checkbox should fire onclick
++dom/events/Event-dispatch-click.html	disabled radio should fire onclick
++dom/events/Event-dispatch-click.html	disabled submit button should not activate
++dom/events/Event-dispatch-click.html	disconnected form should not submit
++dom/events/Event-dispatch-click.html	submit button should not activate if the event listener disables it
++dom/events/Event-dispatch-click.html	submit button that morphed from checkbox should not activate
++dom/events/Event-dispatch-detached-input-and-change.html	detached checkbox should not emit input or change events on click().
++dom/events/Event-dispatch-detached-input-and-change.html	detached checkbox should not emit input or change events on dispatchEvent(new MouseEvent('click')).
++dom/events/Event-dispatch-detached-input-and-change.html	detached radio should not emit input or change events on click().
++dom/events/Event-dispatch-detached-input-and-change.html	detached radio should not emit input or change events on dispatchEvent(new MouseEvent('click')).
++dom/events/Event-returnValue.html	returnValue should change returnValue if cancelable is true.
++dom/events/Event-type-empty.html	Constructor
++dom/events/Event-type.html	Event.type should be initialized by the constructor
++dom/events/EventListener-handleEvent.html	calls `handleEvent` method of `EventListener`
++dom/events/EventListener-handleEvent.html	doesn't call `handleEvent` method on callable `EventListener`
++dom/events/KeyEvent-initKeyEvent.html	KeyboardEvent.initKeyEvent shouldn't be defined (created by constructor)
++dom/events/event-global.html	window.event is only defined during dispatch
++dom/events/event-global.html	window.event is set to the current event, which is the event passed to dispatch
++dom/events/event-handler-attribute-replace-preserves-passive.html	Replacing a wheel event handler attribute on body via setAttribute preserves its passive flag
++dom/events/event-handler-attribute-replace-preserves-passive.html	Replacing a wheel event handler attribute on document element via setAttribute preserves its passive flag
++dom/events/passive-by-default.html	mousewheel listener is non-passive by default for undefined
++dom/events/passive-by-default.html	mousewheel listener is non-passive with {passive:false} for undefined
++dom/events/passive-by-default.html	mousewheel listener is non-passive with {passive:undefined} for undefined
++dom/events/passive-by-default.html	touchend listener is non-passive by default for undefined
++dom/events/passive-by-default.html	touchend listener is non-passive with {passive:false} for undefined
++dom/events/passive-by-default.html	touchend listener is non-passive with {passive:undefined} for undefined
++dom/events/passive-by-default.html	touchmove listener is non-passive by default for undefined
++dom/events/passive-by-default.html	touchmove listener is non-passive with {passive:false} for undefined
++dom/events/passive-by-default.html	touchmove listener is non-passive with {passive:undefined} for undefined
++dom/events/passive-by-default.html	touchstart listener is non-passive by default for undefined
++dom/events/passive-by-default.html	touchstart listener is non-passive with {passive:false} for undefined
++dom/events/passive-by-default.html	touchstart listener is non-passive with {passive:undefined} for undefined
++dom/events/passive-by-default.html	wheel listener is non-passive by default for undefined
++dom/events/passive-by-default.html	wheel listener is non-passive with {passive:false} for undefined
++dom/events/passive-by-default.html	wheel listener is non-passive with {passive:undefined} for undefined
++dom/historical-mutation-events.html	Historical DOM features must be removed: MutationEvent
++dom/historical.html	Event should not have this constant: BLUR
++dom/historical.html	Event should not have this constant: CHANGE
++dom/historical.html	Event should not have this constant: CLICK
++dom/historical.html	Event should not have this constant: DBLCLICK
++dom/historical.html	Event should not have this constant: DRAGDROP
++dom/historical.html	Event should not have this constant: FOCUS
++dom/historical.html	Event should not have this constant: KEYDOWN
++dom/historical.html	Event should not have this constant: KEYPRESS
++dom/historical.html	Event should not have this constant: KEYUP
++dom/historical.html	Event should not have this constant: MOUSEDOWN
++dom/historical.html	Event should not have this constant: MOUSEDRAG
++dom/historical.html	Event should not have this constant: MOUSEMOVE
++dom/historical.html	Event should not have this constant: MOUSEOUT
++dom/historical.html	Event should not have this constant: MOUSEOVER
++dom/historical.html	Event should not have this constant: MOUSEUP
++dom/historical.html	Event should not have this constant: SELECT
++dom/historical.html	Historical DOM features must be removed: DOMConfiguration
++dom/historical.html	Historical DOM features must be removed: DOMCursor
++dom/historical.html	Historical DOM features must be removed: DOMError
++dom/historical.html	Historical DOM features must be removed: DOMErrorHandler
++dom/historical.html	Historical DOM features must be removed: DOMImplementationList
++dom/historical.html	Historical DOM features must be removed: DOMImplementationSource
++dom/historical.html	Historical DOM features must be removed: DOMLocator
++dom/historical.html	Historical DOM features must be removed: DOMObject
++dom/historical.html	Historical DOM features must be removed: DOMRequest
++dom/historical.html	Historical DOM features must be removed: DOMSettableTokenList
++dom/historical.html	Historical DOM features must be removed: DOMUserData
++dom/historical.html	Historical DOM features must be removed: Entity
++dom/historical.html	Historical DOM features must be removed: EntityReference
++dom/historical.html	Historical DOM features must be removed: EventException
++dom/historical.html	Historical DOM features must be removed: NameList
++dom/historical.html	Historical DOM features must be removed: Notation
++dom/historical.html	Historical DOM features must be removed: RangeException
++dom/historical.html	Historical DOM features must be removed: SVGPathSegList
++dom/historical.html	Historical DOM features must be removed: TypeInfo
++dom/historical.html	Historical DOM features must be removed: UserDataHandler
++dom/historical.html	Historical DOM features must be removed: schemaTypeInfo
++dom/historical.html	Historical DOM features must be removed: setIdAttribute
++dom/historical.html	Historical DOM features must be removed: setIdAttributeNS
++dom/historical.html	Historical DOM features must be removed: setIdAttributeNode
++dom/historical.html	Text member must be removed: isElementContentWhitespace
++dom/historical.html	Text member must be removed: replaceWholeText
++dom/historical.html	Window member must be removed: attachEvent
++dom/historical.html	Window member must be removed: content
++dom/historical.html	Window member must be removed: sidebar
++dom/historical.html	document.load
++dom/interface-objects.html	Interface objects properties should not be Enumerable
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/nodes/DOMImplementation-hasFeature.html	Untitled
++dom/nodes/Document-createElement-namespace.html	Created element's namespace in current document
++dom/nodes/Document-createProcessingInstruction.html	Untitled
++dom/nodes/Document-getElementById.html	Calling document.getElementById with a null argument.
++dom/nodes/Document-getElementById.html	Ensure that the id attribute only affects elements present in a document
++dom/nodes/Document-getElementById.html	Inserting an id by inserting its parent node
++dom/nodes/Document-getElementById.html	Modern browsers optimize this method with using internal id cache. This test checks that their optimization should effect only append to `Document`, not append to `Node`.
++dom/nodes/Document-getElementById.html	remove id attribute via innerHTML
++dom/nodes/Document-getElementById.html	update `id` attribute via element.id
++dom/nodes/Document-getElementById.html	update `id` attribute via setAttribute/removeAttribute
++dom/nodes/Document-getElementById.html	where insertion order and tree order don't match
++dom/nodes/Document-getElementsByTagName.html	Caching is allowed
++dom/nodes/DocumentFragment-querySelectorAll-after-modification.html	Untitled
++dom/nodes/Element-childElement-null.html	Untitled
++dom/nodes/Element-childElementCount-nochild.html	Untitled
++dom/nodes/Element-childElementCount.html	Untitled
++dom/nodes/Element-classlist.html	Assigning to classList (HTML node)
++dom/nodes/Element-closest.html	Element.closest with context node 'test1' and selector 'div#test7'
++dom/nodes/Element-closest.html	Element.closest with context node 'test10' and selector ':empty'
++dom/nodes/Element-closest.html	Element.closest with context node 'test11' and selector ':last-child'
++dom/nodes/Element-closest.html	Element.closest with context node 'test12' and selector '.div3 > .div1'
++dom/nodes/Element-closest.html	Element.closest with context node 'test12' and selector '.div3 > .div2'
++dom/nodes/Element-closest.html	Element.closest with context node 'test12' and selector ':first-child'
++dom/nodes/Element-closest.html	Element.closest with context node 'test12' and selector '[name="form-a"]'
++dom/nodes/Element-closest.html	Element.closest with context node 'test12' and selector 'select'
++dom/nodes/Element-closest.html	Element.closest with context node 'test13' and selector 'div'
++dom/nodes/Element-closest.html	Element.closest with context node 'test13' and selector 'div:not(.div1)'
++dom/nodes/Element-closest.html	Element.closest with context node 'test13' and selector 'fieldset'
++dom/nodes/Element-closest.html	Element.closest with context node 'test13' and selector 'form[name="form-a"]'
++dom/nodes/Element-closest.html	Element.closest with context node 'test3' and selector 'form + form'
++dom/nodes/Element-closest.html	Element.closest with context node 'test4' and selector '[selected]'
++dom/nodes/Element-closest.html	Element.closest with context node 'test4' and selector 'div > :scope'
++dom/nodes/Element-closest.html	Element.closest with context node 'test5' and selector 'form + form'
++dom/nodes/Element-closest.html	Element.closest with context node 'test6' and selector 'div.div3'
++dom/nodes/Element-closest.html	Element.closest with context node 'test6' and selector 'input + fieldset'
++dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'form > input[required]'
++dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'select[required]'
++dom/nodes/Element-firstElementChild.html	Untitled
++dom/nodes/Element-getElementsByTagName.html	Caching is allowed
++dom/nodes/Element-getElementsByTagName.html	Matching the context object
++dom/nodes/Element-hasAttributes.html	element.hasAttributes() must return false when the element does not have attribute.
++dom/nodes/Element-lastElementChild.html	Untitled
++dom/nodes/Element-matches-namespaced-elements.html	empty string namespace, matches
++dom/nodes/Element-matches-namespaced-elements.html	has a namespace, *|, matches
++dom/nodes/Element-matches-namespaced-elements.html	has a namespace, matches
++dom/nodes/Element-nextElementSibling.html	Untitled
++dom/nodes/Element-previousElementSibling.html	Untitled
++dom/nodes/Element-siblingElement-null.html	Untitled
++dom/nodes/Element-tagName.html	tagName should be updated when changing ownerDocument
++dom/nodes/Element-tagName.html	tagName should upper-case for HTML elements in HTML documents.
++dom/nodes/MutationObserver-document.html	setup test
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributeFilter is present and attributes is omitted
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributeFilter is present and attributes is true
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributeOldValue and attributes are both true
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributeOldValue is false and attributes is omitted
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributeOldValue is true and attributes is omitted
++dom/nodes/MutationObserver-sanity.html	Should not throw if attributes is true
++dom/nodes/MutationObserver-sanity.html	Should not throw if characterData is true
++dom/nodes/MutationObserver-sanity.html	Should not throw if characterDataOldValue is false and characterData is omitted
++dom/nodes/MutationObserver-sanity.html	Should not throw if characterDataOldValue is true and characterData is omitted
++dom/nodes/MutationObserver-sanity.html	Should not throw if characterDataOldValue is true and characterData is true
++dom/nodes/MutationObserver-sanity.html	Should not throw if childList is true
++dom/nodes/MutationObserver-takeRecords.html	No more records present
++dom/nodes/MutationObserver-takeRecords.html	unreachabled test
++dom/nodes/Node-appendChild.html	Appending to a leaf node.
++dom/nodes/Node-baseURI.html	For elements belonging to document fragments in document, baseURI should be document URL
++dom/nodes/Node-baseURI.html	For elements belonging to document fragments, baseURI should be document URL
++dom/nodes/Node-baseURI.html	For elements belonging to document, baseURI should be document URL
++dom/nodes/Node-baseURI.html	For elements unassigned to document, baseURI should be document URL
++dom/nodes/Node-childNodes-cache.html	Untitled
++dom/nodes/Node-childNodes.html	Caching of Node.childNodes
++dom/nodes/Node-constants.html	Constants for nodeType on Element object.
++dom/nodes/Node-constants.html	Constants for nodeType on Node interface object.
++dom/nodes/Node-constants.html	Constants for nodeType on Node prototype object.
++dom/nodes/Node-constants.html	Constants for nodeType on Text object.
++dom/nodes/Node-nodeName.html	For Comment nodes, nodeName should return "#comment".
++dom/nodes/Node-nodeName.html	For Document nodes, nodeName should return "#document".
++dom/nodes/Node-nodeName.html	For DocumentFragment nodes, nodeName should return "#document-fragment".
++dom/nodes/Node-nodeName.html	For Text nodes, nodeName should return "#text".
++dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (element)
++dom/nodes/Node-replaceChild.html	Replacing a node with itself should not move the node
++dom/nodes/NodeList-Iterable.html	NodeList has forEach method.
++dom/nodes/NodeList-Iterable.html	NodeList has length method.
++dom/nodes/NodeList-Iterable.html	NodeList is iterable via for-of loop.
++dom/nodes/NodeList-Iterable.html	NodeList responds to Object.keys correctly
++dom/nodes/ParentNode-querySelector-escapes.html	"\ud83dsurrogateFirst" should never match with "#\\d83d surrogateFirst"
++dom/nodes/ParentNode-querySelector-escapes.html	"eof\\" should never match with "#eof\\"
++dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange0" should never match with "#outOfRange\\110030"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogatePair🔑" should never match with "#surrogatePair\\d83d\\dd11"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogateSecond\udd11" should never match with "#surrogateSecond\\dd11"
++dom/nodes/ParentNode-querySelector-escapes.html	"zero\u0000" should never match with "#zero\\0"
++dom/nodes/ParentNode-querySelector-escapes.html	"zero\u0000" should never match with "#zero\\000000"
++dom/nodes/ParentNode-querySelector-scope.html	querySelector with id and sibling
++dom/nodes/ParentNode-querySelector-scope.html	querySelectorAll with id and sibling
++dom/nodes/ParentNode-querySelectorAll-removed-elements.html	Untitled
++dom/nodes/ParentNode-querySelectors-exclusive.html	Untitled
++dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelector
++dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelectorAll
++dom/nodes/attributes.html	Basic functionality should be intact.
++dom/nodes/attributes.html	setAttribute should not throw even if a load is not allowed
++dom/nodes/attributes.html	setAttribute should not throw even when qualifiedName starts with 'xmlns'
++dom/nodes/attributes.html	setAttributeNode, if it fires mutation events, should fire one with the new node when resetting an existing attribute
++dom/nodes/case.html	getAttribute abc
++dom/nodes/case.html	getAttribute Ä
++dom/nodes/case.html	getAttribute ä
++dom/nodes/case.html	getElementsByTagName a:ABC
++dom/nodes/case.html	getElementsByTagName a:Abc
++dom/nodes/case.html	getElementsByTagName a:abc
++dom/nodes/getElementsByClassName-04.htm	Untitled
++dom/nodes/getElementsByClassName-07.htm	Untitled
++dom/nodes/getElementsByClassName-08.htm	Untitled
++dom/nodes/getElementsByClassName-12.htm	Untitled
++dom/nodes/getElementsByClassName-30.htm	big element listing
++dom/nodes/getElementsByClassName-32.html	cannot find the class name
++dom/nodes/getElementsByClassName-32.html	does not get confused by numeric IDs
++dom/nodes/getElementsByClassName-32.html	finds the class name
++dom/nodes/getElementsByClassName-32.html	finds the same element with multiple class names
++dom/ranges/Range-commonAncestorContainer-2.html	Normal Ranges
++dom/window-extends-event-target.html	window.addEventListener respects custom `this`
++html/semantics/document-metadata/the-base-element/base_href_invalid.html	Untitled
++html/semantics/document-metadata/the-style-element/historical.html	style.scoped should not be supported
++html/semantics/document-metadata/the-style-element/style_non_matching_media.html	Untitled
++html/semantics/document-metadata/the-style-element/style_type_html.html	With a charset parameter in the type attribute, the style should not apply
++html/semantics/document-metadata/the-style-element/style_type_html.html	With a whitespace-surrounded type attribute, the style should not apply
++html/semantics/document-metadata/the-style-element/tentative/style-element-csp-blocked.html	securitypolicyviolation events should be fired for declarative style violations.
++html/semantics/document-metadata/the-title-element/title-multiple-elements.html	Browsers must ignore <title> elements after the first one.
++html/semantics/grouping-content/the-dd-element/grouping-dd.html	The prototype for dd is HTMLElement.prototype
++html/semantics/grouping-content/the-dt-element/grouping-dt.html	The prototype for dt is HTMLElement.prototype
++html/semantics/grouping-content/the-figcaption-element/grouping-figcaption.html	The prototype for figcaption is HTMLElement.prototype
++html/semantics/grouping-content/the-figure-element/grouping-figure.html	The prototype for figure is HTMLElement.prototype
++html/semantics/grouping-content/the-ol-element/grouping-ol.html	Changing IDL 'reversed' property changes list's reversed property.
++html/semantics/links/links-created-by-a-and-area-elements/htmlanchorelement_attribute-getter-setter.html	Getter and setter for attribute of anchor element(4):href
++html/semantics/links/links-created-by-a-and-area-elements/htmlanchorelement_getter.html	Getter for attribute of anchor element(4):href
++html/semantics/selectors/pseudo-classes/indeterminate.html	adding a value to progress1 should put it in a determinate state
++html/semantics/selectors/pseudo-classes/valid-invalid.html	':invalid' doesn't match new elements that satisfy their constraints
++html/semantics/selectors/pseudo-classes/valid-invalid.html	:valid/:invalid styling for <fieldset>
++html/semantics/selectors/pseudo-classes/valid-invalid.html	:valid/:invalid styling for <form>
++html/semantics/selectors/pseudo-classes/valid-invalid.html	empty fieldset correctly styled on page-load
++html/semantics/selectors/pseudo-classes/valid-invalid.html	empty form correctly styled on page-load
++html/semantics/selectors/pseudo-classes/valid-invalid.html	invalid fieldset correctly styled on page-load
++html/semantics/selectors/pseudo-classes/valid-invalid.html	invalid form correctly styled on page-load
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically adding invalid to empty fieldset results in correct style
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically adding invalid to empty form results in correct style
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically adding valid to empty fieldset results in correct style
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically adding valid to empty form results in correct style
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically-invalidated fieldset correctly styled
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically-invalidated form correctly styled
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically-validated fieldset correctly styled
++html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically-validated form correctly styled
++html/semantics/selectors/pseudo-classes/valid-invalid.html	valid fieldset correctly styled on page-load
++html/semantics/selectors/pseudo-classes/valid-invalid.html	valid form correctly styled on page-load
++html/semantics/tabular-data/historical.html	table.onsort should not be supported
++html/semantics/tabular-data/historical.html	table.sortable should not be supported
++html/semantics/tabular-data/historical.html	table.stopSorting should not be supported
++html/semantics/tabular-data/historical.html	th.sort should not be supported
++html/semantics/tabular-data/historical.html	th.sorted should not be supported
++html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1000 must work
++html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1001 must be treated as 1000
++html/semantics/tabular-data/the-table-element/insertRow-method-03.html	Untitled
++html/semantics/text-level-semantics/historical.html	a.media should not be supported
++html/semantics/text-level-semantics/historical.html	area.media should not be supported
++html/semantics/text-level-semantics/historical.html	time.datetime should not be supported
++html/semantics/text-level-semantics/the-a-element/a.text-getter-01.html	Untitled
++html/semantics/text-level-semantics/the-a-element/a.text-setter-01.html	Untitled
++html/semantics/text-level-semantics/the-ruby-element/rt-without-ruby-crash.html	No crash
++html/semantics/text-level-semantics/the-time-element/001.html	HTML parsing should locate 4 time elements in this document
++html/semantics/text-level-semantics/the-time-element/001.html	the dateTime property should be read/write

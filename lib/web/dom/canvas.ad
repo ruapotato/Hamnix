@@ -5936,7 +5936,11 @@ def _compile_inline_handler(src: int32, srclen: int32) -> int32:
     w = w + 1
     hb_hwrap[w] = 59                                          # ';'
     w = w + 1
-    js_eval(&hb_hwrap[0], cast[uint64](w))
+    # NESTED: this only DEFINES the wrapper function; the handler itself is
+    # called by the caller. Draining the timer queue here would run the event
+    # loop in the middle of event dispatch — a handler's setTimeout(f,0) must
+    # run after the handler returns, which _after_event_settle already ensures.
+    js_eval_nested(&hb_hwrap[0], cast[uint64](w))
     if js_error() != 0:
         js_had_error = 1
         return -1

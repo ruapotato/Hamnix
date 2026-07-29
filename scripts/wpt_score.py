@@ -97,34 +97,74 @@ def failure_rows(recs):
     return rows
 
 
+PASS_PREFIX = "+"
+
+
+def passing_rows(recs):
+    """Every (test, subtest) that PASSES. Recorded in the baseline alongside the
+    failures because the two sets together are what make a regression
+    decidable.
+
+    A failure row that is absent from the baseline is ambiguous on its own: the
+    subtest may have passed before (a real regression), or it may never have
+    reported at all (newly observable, and a step forward). The baseline used to
+    resolve that with a per-FILE rule -- 'if the whole file was silent, its
+    failures are not regressions' -- which is right in spirit but too coarse. A
+    file can be PARTIALLY silent: style_type_change.html reported subtest 1 and
+    dropped subtests 2 and 3, because getComputedStyle killed the harness
+    mid-file. Fixing that bug made 2 and 3 report FAIL for the first time and
+    the ratchet called them regressions, when in fact nothing had regressed --
+    they had simply never been measurable.
+
+    Recording the PASS set makes it exact: a regression is a subtest that was
+    PASSING and now is not. Nothing is hidden by this, because #!PASS_FLOOR
+    independently forbids the total PASS count from dropping -- any genuine
+    PASS->FAIL is caught twice over."""
+    rows = set()
+    for r in recs:
+        for s in r["subtests"]:
+            if s["status"] == 0:
+                rows.add("%s\t%s" % (r["test"], s["name"]))
+    return rows
+
+
 def write_baseline(recs, path):
     rows = failure_rows(recs)
+    passing = passing_rows(recs)
     npass = sum(1 for r in recs for s in r["subtests"] if s["status"] == 0)
     with open(path, "w") as f:
         f.write(
             "# scripts/wpt_baseline.txt -- SHRINK-ONLY record of what the native\n"
             "# engine does NOT pass in the vendored WPT subset (tests/wpt/).\n"
             "#\n"
-            "# The ratchet (scripts/test_wpt_ratchet_host.sh) fails when a line\n"
-            "# APPEARS that is not here, i.e. when something that passed starts\n"
-            "# failing. Lines DISAPPEARING is the point of the exercise: fix\n"
-            "# engine bugs, then regenerate with\n"
+            "# The ratchet (scripts/test_wpt_ratchet_host.sh) fails when a subtest\n"
+            "# that was PASSING starts failing, or when the total PASS count drops\n"
+            "# below #!PASS_FLOOR. Failures DISAPPEARING is the point of the\n"
+            "# exercise: fix engine bugs, then regenerate with\n"
             "#   bash scripts/test_wpt_ratchet_host.sh --regen\n"
             "#\n"
-            "# A line reading '%s' means the whole file produced\n"
-            "# no harness output; when that file starts reporting, its individual\n"
-            "# failures are NOT counted as regressions (they were always failing,\n"
-            "# just invisible).\n"
+            "# Two kinds of row, both TAB-separated <test path>\\t<subtest name>:\n"
+            "#   <path>\\t<subtest>     -- did NOT pass at baseline\n"
+            "#   %s<path>\\t<subtest>    -- DID pass at baseline (the regression set)\n"
             "#\n"
-            "# TAB-separated: <test path>\\t<subtest name>\n"
-            "#!PASS_FLOOR %d\n" % (NO_RESULTS, npass))
+            "# Recording the passes is what makes a regression decidable. A newly\n"
+            "# appearing failure row is ambiguous by itself: the subtest may have\n"
+            "# regressed, or it may never have reported before. Only a subtest that\n"
+            "# was in the pass set and no longer is counts as a regression --\n"
+            "# and #!PASS_FLOOR catches any genuine loss a second time regardless.\n"
+            "#\n"
+            "# A line reading '%s' means the whole file produced\n"
+            "# no harness output at all.\n"
+            "#!PASS_FLOOR %d\n" % (PASS_PREFIX, NO_RESULTS, npass))
         for line in sorted(rows):
             f.write(line + "\n")
+        for line in sorted(passing):
+            f.write(PASS_PREFIX + line + "\n")
     return npass, len(rows)
 
 
 def read_baseline(path):
-    rows, floor = set(), 0
+    rows, passing, floor = set(), set(), 0
     with open(path) as f:
         for line in f:
             if line.startswith("#!PASS_FLOOR"):
@@ -133,20 +173,35 @@ def read_baseline(path):
             if line.startswith("#"):
                 continue
             line = line.rstrip("\n")
-            if line:
+            if not line:
+                continue
+            if line.startswith(PASS_PREFIX):
+                passing.add(line[len(PASS_PREFIX):])
+            else:
                 rows.add(line)
-    return rows, floor
+    return rows, passing, floor
 
 
 def check_baseline(recs, path):
-    base, floor = read_baseline(path)
+    base, base_pass, floor = read_baseline(path)
     cur = failure_rows(recs)
+    cur_pass = passing_rows(recs)
     npass = sum(1 for r in recs for s in r["subtests"] if s["status"] == 0)
 
-    # A file that used to report nothing is now reporting. Its individual
-    # failures were always there, just unobservable -- not regressions.
-    was_silent = {l.split("\t")[0] for l in base if l.endswith("\t" + NO_RESULTS)}
-    new = sorted(l for l in cur - base if l.split("\t")[0] not in was_silent)
+    # A REGRESSION is a subtest that was passing and is not any more -- either
+    # it now fails, or it stopped reporting altogether. Anything else appearing
+    # in the failure set is newly OBSERVABLE, not newly broken: fixing a bug
+    # that silenced part of a file makes its remaining failures visible for the
+    # first time, and that is progress, not a regression. #!PASS_FLOOR below is
+    # the independent guard on the total.
+    #
+    # Older baselines have no pass rows at all; fall back to the previous
+    # per-file rule for those so the gate still works before a regen.
+    if base_pass:
+        new = sorted(base_pass - cur_pass)
+    else:
+        was_silent = {l.split("\t")[0] for l in base if l.endswith("\t" + NO_RESULTS)}
+        new = sorted(l for l in cur - base if l.split("\t")[0] not in was_silent)
     fixed = sorted(base - cur)
 
     print("[wpt-ratchet] baseline failures %d   current failures %d" % (len(base), len(cur)))
@@ -157,7 +212,7 @@ def check_baseline(recs, path):
             print("    + %s" % l.replace("\t", "  ::  "))
     rc = 0
     if new:
-        print("[wpt-ratchet] REGRESSION: %d subtest(s) newly failing:" % len(new))
+        print("[wpt-ratchet] REGRESSION: %d subtest(s) were PASSING and are not now:" % len(new))
         for l in new[:40]:
             print("    - %s" % l.replace("\t", "  ::  "))
         if len(new) > 40:

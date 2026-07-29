@@ -2229,15 +2229,20 @@ def _cs_used_width(el: int32, depth: int32) -> int32:
 
 # Lazily compile (once) the getPropertyValue implementation as a JS function and
 # cache its value. It reads this[<css-prop-name>] off the computed-style object,
-# returning '' for an unset / unknown property (CSSOM getPropertyValue). Reusing
-# the engine's own eval (as the inline-event-handler compiler does) is re-entrant
-# -safe: the outer script is already parsed to an AST, so re-tokenizing here does
-# not disturb it.
+# returning '' for an unset / unknown property (CSSOM getPropertyValue).
+#
+# js_eval_NESTED, not js_eval. Re-tokenizing here is safe (the outer script is
+# already an AST), which is what the previous note said — but js_eval is also
+# the engine's TURN BOUNDARY and ends by draining the timer queue. This helper
+# is compiled on the first getComputedStyle() of a page, so every page's first
+# getComputedStyle() ran the event loop from inside a synchronous CSSOM getter.
+# A DOM/CSSOM getter must never run script; js_eval_nested compiles in the
+# caller's turn and does not drain.
 def _cs_gpv_fn() -> int32:
     if g_cs_gpv >= 0:
         return g_cs_gpv
     s: Ptr[uint8] = cast[Ptr[uint8]]("var __hb_gpv__=function(p){var k=''+p;var v=this[k];if(v===undefined||v===null){return '';}return v;};")
-    js_eval(s, cast[uint64](_cstr_len(s)))
+    js_eval_nested(s, cast[uint64](_cstr_len(s)))
     g_cs_gpv = js_global_get(cast[Ptr[uint8]]("__hb_gpv__"), 10)
     return g_cs_gpv
 
