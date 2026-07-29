@@ -272,6 +272,30 @@ def viewport(ppm, w=VIEW_W, h=VIEW_H):
     return bytes(out)
 
 
+WORK_PREFIX = ".hamnix_reftest_"
+
+
+def sweep_stale(root=TESTS):
+    """Remove work files a killed run left inside the vendored tree.
+
+    Renderer writes its preprocessed copy NEXT TO the vendored document so that
+    relative <img src> and the engine's base-URL handling still resolve. The
+    normal path deletes it in a `finally`, but a SIGKILL does not run one, and
+    the leftovers land in a git-TRACKED directory -- so the next reader sees a
+    dirty tests/wpt/ and cannot tell vendored content from harness debris.
+    """
+    n = 0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            if fn.startswith(WORK_PREFIX):
+                try:
+                    os.unlink(os.path.join(dirpath, fn))
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
@@ -301,8 +325,8 @@ class Renderer:
         # Keep the extension AND the directory: relative <img src> and the
         # engine's own base-URL handling must still resolve.
         work = os.path.join(os.path.dirname(src),
-                            ".hamnix_reftest_%d_%s" % (self.n,
-                                                       os.path.basename(src)))
+                            "%s%d_%s" % (WORK_PREFIX, self.n,
+                                         os.path.basename(src)))
         out = os.path.join(self.tmp, "r%d.ppm" % self.n)
         try:
             with open(work, "wb") as f:
@@ -544,6 +568,11 @@ def main():
     elif not args.all:
         ap.error("give a test path or --all")
 
+    stale = sweep_stale()
+    if stale:
+        print("[reftest-run] removed %d stale work file(s) from a killed run"
+              % stale)
+
     tmp = tempfile.mkdtemp(prefix="wpt-reftest-")
     counts = {}
     records = []
@@ -559,6 +588,7 @@ def main():
                     print("    %s" % rec["detail"])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        sweep_stale()
 
     if args.jsonl:
         os.makedirs(os.path.dirname(os.path.abspath(args.jsonl)), exist_ok=True)
