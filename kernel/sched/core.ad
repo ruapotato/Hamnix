@@ -7290,6 +7290,13 @@ def _free_task_user_pagetables(su: uint64):
     local_irq_restore(_ftp_irq)
 
 
+# Census diagnostics: how much the walk deliberately DECLINED to mark. These
+# are reported so a future reader can see whether the identity/huge filters
+# are doing the work claimed of them, rather than having to trust the prose.
+_cens_skip_huge:  uint64 = 0
+_cens_skip_ident: uint64 = 0
+
+
 def _mm_census_walk_task(su: uint64):
     # Mark every frame reachable from task `su`'s USER address space.
     #
@@ -7316,6 +7323,35 @@ def _mm_census_walk_task(su: uint64):
     # intermediate table pages: those are real buddy frames, and although
     # PA_SITE_PGTABLE is excluded from the sweep as a kernel site, marking
     # them keeps the bitmap honest if that allowlist ever widens.
+    #
+    # ONLY NON-IDENTITY 4 KiB LEAVES ARE MARKED, and that is the fix for a
+    # measured blindness, not a guess. Skipping SHARED boot entries was not
+    # enough: a 30-minute soak with a planted control frame reported
+    # "CONTROL FAILED — a planted UNMAPPED frame was NOT detected", i.e. the
+    # census was still marking essentially all of RAM reachable and its
+    # "0 orphans" was worthless. The reason is that CRACKING re-derives the
+    # identity map inside PRIVATE tables: a cracked PDPT/PD/PT is a clone
+    # whose entries cover the same physical RAM, and once any flag or
+    # granularity differs from the boot entry the `!= boot` test passes and
+    # the walk marks the identity range anyway.
+    #
+    # Hamnix identity-maps low user RAM (vaddr == phys), so "present in a
+    # user table" genuinely cannot separate a live private mapping from the
+    # identity map — EXCEPT by the one property every frame this census
+    # judges has: it is a FRESH allocation installed at a PRE-EXISTING
+    # virtual address, so its phys does NOT equal its VA. cow_resolve_pte
+    # alloc_page()s a copy and installs it at the faulting VA; an anon
+    # demand fault does the same. An identity leaf, by definition, has
+    # phys == VA. So marking only leaves where phys != VA admits every
+    # judged frame and excludes the entire identity map however it was
+    # re-derived — which is also why the planted control (mapped NOWHERE,
+    # reachable only via identity) must now be detected.
+    #
+    # Huge (PS) leaves are no longer marked at all: they are the boot /
+    # identity / kernel map, never a per-task private 4 KiB COW copy (COW
+    # pages are installed at 4 KiB granularity by vm_cow_share_range).
+    # PA_SITE_VMA_HUGE is dropped from the judged allowlist to match, so
+    # 2 MiB frames are not falsely orphaned by that choice.
     if task_table[su].cr3 == 0:
         return
     boot_cr3: uint64 = cow_boot_cr3()
@@ -7357,8 +7393,9 @@ def _mm_census_walk_task(su: uint64):
                     bpe = bpdpt[pi]
                 if (pe & PT_P) != 0 and pe != bpe:
                     if (pe & PT_PS) != 0:
-                        # 1 GiB leaf = 262144 frames.
-                        page_alloc_census_mark(pe & PT_ADDR, 262144)
+                        # 1 GiB leaf: identity / kernel map, never a private
+                        # 4 KiB COW copy. Deliberately NOT marked.
+                        _cens_skip_huge = _cens_skip_huge + 1
                     elif _pt_subtable_phys_ok(pe & PT_ADDR) != 0:
                         pd_phys: uint64 = pe & PT_ADDR
                         page_alloc_census_mark(pd_phys, 1)
@@ -7372,8 +7409,9 @@ def _mm_census_walk_task(su: uint64):
                                 bde = bpd[di]
                             if (de & PT_P) != 0 and de != bde:
                                 if (de & PT_PS) != 0:
-                                    # 2 MiB leaf = 512 frames.
-                                    page_alloc_census_mark(de & PT_ADDR, 512)
+                                    # 2 MiB leaf: identity / kernel map.
+                                    # Deliberately NOT marked (see header).
+                                    _cens_skip_huge = _cens_skip_huge + 1
                                 elif _pt_subtable_phys_ok(de & PT_ADDR) != 0:
                                     pt_phys: uint64 = de & PT_ADDR
                                     page_alloc_census_mark(pt_phys, 1)
@@ -7382,8 +7420,17 @@ def _mm_census_walk_task(su: uint64):
                                     while ti < 512:
                                         te: uint64 = pt[ti]
                                         if (te & PT_P) != 0:
-                                            page_alloc_census_mark(
-                                                te & PT_ADDR, 1)
+                                            # The VA this slot maps, rebuilt
+                                            # from the walk position.
+                                            lva: uint64 = (li << 39) \
+                                                | (pi << 30) | (di << 21) \
+                                                | (ti << 12)
+                                            lph: uint64 = te & PT_ADDR
+                                            if lph != lva:
+                                                page_alloc_census_mark(lph, 1)
+                                            else:
+                                                _cens_skip_ident = \
+                                                    _cens_skip_ident + 1
                                         ti = ti + 1
                             di = di + 1
                 pi = pi + 1
@@ -7408,6 +7455,8 @@ def mm_orphan_census() -> uint64:
     # 128-byte read chunk and would wedge the guest (two soak runs were lost
     # to that mistake). Returns the orphan total; 0 is also what a REFUSED
     # census returns, so the report distinguishes them in words.
+    _cens_skip_huge = 0
+    _cens_skip_ident = 0
     if page_alloc_census_begin() == 0:
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk0("[census] REFUSED: arm `track full` first (no site table)\n")
@@ -7426,6 +7475,9 @@ def mm_orphan_census() -> uint64:
     total: uint64 = page_alloc_census_sweep()
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk1("[census] walked %d address spaces\n", walked)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[census] declined to mark: %d huge leaves, %d identity PTEs\n",
+            _cens_skip_huge, _cens_skip_ident)
     page_alloc_census_report(total)
     return total
 

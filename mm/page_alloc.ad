@@ -756,7 +756,10 @@ def page_alloc_site_is_user_mapped(s: uint64) -> int32:
         return 1
     if s == PA_SITE_VMA_PREFAULT or s == PA_SITE_VMA_FILE:
         return 1
-    if s == PA_SITE_VMA_HUGE or s == PA_SITE_VMA_ANON:
+    # PA_SITE_VMA_HUGE is deliberately ABSENT: the walk no longer marks huge
+    # leaves (they are the identity/kernel map), so judging 2 MiB frames here
+    # would orphan every one of them falsely.
+    if s == PA_SITE_VMA_ANON:
         return 1
     if s == PA_SITE_VMA_SWAPIN or s == PA_SITE_VMA_GROW:
         return 1
