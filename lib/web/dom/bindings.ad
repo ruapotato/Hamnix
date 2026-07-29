@@ -190,7 +190,12 @@ evl_fn:   Array[1024, int32]          # JS function value
 evl_dead: Array[1024, int32]          # 1 = removed via removeEventListener
 evl_once: Array[1024, int32]          # 1 = {once:true}: auto-remove after first fire
 evl_capture: Array[1024, int32]       # 1 = {capture:true} (stored; bubble-only model)
+evl_passive: Array[1024, int32]       # 1 = passive: preventDefault() from this listener is a no-op
 evl_n:    int32 = 0
+# Passive flag of the listener CURRENTLY executing (set around each js_call_fn in
+# the fire loops). event.preventDefault() consults it: a passive listener cannot
+# cancel the event. Reset to 0 between listeners and outside any dispatch.
+g_cur_passive: int32 = 0
 
 # Arbitrary event-type support (browser round 2). The 4 integer kinds above are
 # the ones with an attribute-handler slot (onclick/oninput/onchange/onsubmit)
@@ -980,6 +985,10 @@ NID_DOMEXC_CTOR:  int32 = 148        # new DOMException(message, name)
 NID_CREATEEVENT:  int32 = 149        # document.createEvent(interface) -> uninitialised event
 NID_INITEVENT:    int32 = 150        # event.initEvent(type, bubbles, cancelable)
 NID_INITCUSTOMEV: int32 = 151        # event.initCustomEvent(type, bubbles, cancelable, detail)
+NID_RETVAL_GET:   int32 = 152        # get event.returnValue  (legacy; == !canceled flag)
+NID_RETVAL_SET:   int32 = 153        # set event.returnValue  (false cancels a cancelable event)
+NID_CANCELBUB_GET: int32 = 154       # get event.cancelBubble (== stop-propagation flag)
+NID_CANCELBUB_SET: int32 = 155       # set event.cancelBubble (true sets stop-propagation)
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every
@@ -1109,6 +1118,7 @@ def _dom_reset():
     g_prevent_default = 0
     g_stop_prop = 0
     g_stop_immediate = 0
+    g_cur_passive = 0
     g_cur_event = -1
     evl_n = 0
     evt_tybuf_len = 0

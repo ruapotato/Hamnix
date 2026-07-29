@@ -8,7 +8,7 @@ from lib.jsengine import _url_resolve, url_buf_a
 from lib.htmlengine import _attr_decode_at, doc_url, doc_url_len, base_url, base_url_len, url_bscratch, DOC_URL_CAP
 from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
-from lib.htmlengine import _cid_sel_match
+from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
 from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
@@ -2841,14 +2841,57 @@ def _js_host_dispatch(id: int32) -> int32:
         return js_null()
     if rel == NID_STOPPROP:
         # event.stopPropagation() — halt bubbling after the current element's
-        # listeners finish (round 8).
+        # listeners finish (round 8). Also raises the per-event stop-propagation
+        # flag so event.cancelBubble reads true (even outside a dispatch).
         g_stop_prop = 1
+        spe: int32 = js_this()
+        if js_type_of(spe) == 5:
+            js_set_prop(spe, cast[Ptr[uint8]]("@sp"), 3, js_bool(1))
         return js_undefined()
     if rel == NID_STOPIMMED:
         # event.stopImmediatePropagation() — like stopPropagation but ALSO stops
         # any remaining listeners on the CURRENT element from running.
         g_stop_prop = 1
         g_stop_immediate = 1
+        sie: int32 = js_this()
+        if js_type_of(sie) == 5:
+            js_set_prop(sie, cast[Ptr[uint8]]("@sp"), 3, js_bool(1))
+        return js_undefined()
+    if rel == NID_RETVAL_GET:
+        # event.returnValue (legacy) — false once the canceled flag is set.
+        rge: int32 = js_this()
+        if js_type_of(rge) == 5 and \
+           js_to_bool(js_get_prop(rge, cast[Ptr[uint8]]("defaultPrevented"), 16)) != 0:
+            return js_bool(0)
+        return js_bool(1)
+    if rel == NID_RETVAL_SET:
+        # event.returnValue = false  ==  preventDefault(); = true is a no-op.
+        rse: int32 = js_this()
+        rsv: int32 = js_undefined()
+        if js_arg_count() > 0:
+            rsv = js_arg(0)
+        if js_type_of(rse) == 5 and js_to_bool(rsv) == 0 and g_cur_passive == 0:
+            rcbl: int32 = js_get_prop(rse, cast[Ptr[uint8]]("cancelable"), 10)
+            if js_type_of(rcbl) == 0 or js_to_bool(rcbl) != 0:
+                g_prevent_default = 1
+                js_set_prop(rse, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(1))
+        return js_undefined()
+    if rel == NID_CANCELBUB_GET:
+        # event.cancelBubble — the stop-propagation flag.
+        cge: int32 = js_this()
+        if js_type_of(cge) == 5 and \
+           js_to_bool(js_get_prop(cge, cast[Ptr[uint8]]("@sp"), 3)) != 0:
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_CANCELBUB_SET:
+        # event.cancelBubble = true  ==  stopPropagation(); = false is a no-op.
+        cse: int32 = js_this()
+        csv: int32 = js_undefined()
+        if js_arg_count() > 0:
+            csv = js_arg(0)
+        if js_type_of(cse) == 5 and js_to_bool(csv) != 0:
+            js_set_prop(cse, cast[Ptr[uint8]]("@sp"), 3, js_bool(1))
+            g_stop_prop = 1
         return js_undefined()
     if rel == NID_CREATEEVENT:
         return _create_event()
@@ -3111,24 +3154,48 @@ def _js_host_dispatch(id: int32) -> int32:
                         # {once, capture, passive}. once auto-removes after fire.
                         oncef: int32 = 0
                         capf: int32 = 0
+                        passf: int32 = -1                          # -1 = not specified
                         if js_arg_count() >= 3:
                             o3: int32 = js_arg(2)
                             if js_type_of(o3) == 5:                # options object
                                 oncef = js_to_bool(js_get_prop(o3, cast[Ptr[uint8]]("once"), 4))
                                 capf = js_to_bool(js_get_prop(o3, cast[Ptr[uint8]]("capture"), 7))
+                                p3: int32 = js_get_prop(o3, cast[Ptr[uint8]]("passive"), 7)
+                                if js_type_of(p3) != 0:            # passive present (not undefined)
+                                    passf = js_to_bool(p3)
                             else:
                                 capf = js_to_bool(o3)             # useCapture bool
+                        # Absent/undefined passive -> the spec's default passive
+                        # value: true only for touchstart/touchmove/wheel/mousewheel
+                        # on window/document/documentElement/body.
+                        if passf < 0:
+                            passf = _default_passive(el, &dom_idtmp[0], evn)
                         evl_once[evl_n] = oncef
                         evl_capture[evl_n] = capf
+                        evl_passive[evl_n] = passf
                         evl_n = evl_n + 1
         return js_undefined()
     if rel == NID_PREVENT:
-        # event.preventDefault() — also reflect defaultPrevented on the in-flight
-        # event object so a handler can read event.defaultPrevented.
-        g_prevent_default = 1
-        if g_cur_event >= 0:
-            js_set_prop(g_cur_event, cast[Ptr[uint8]]("defaultPrevented"), 16, \
-                        js_bool(1))
+        # event.preventDefault() — set the canceled flag (reflected by
+        # defaultPrevented / returnValue) ONLY when the event is cancelable and
+        # the current listener is not passive. An explicit `cancelable:false`
+        # blocks it; an absent cancelable (internal click/pointer events) is
+        # treated as cancelable so preventDefault still suppresses the default.
+        evp: int32 = js_this()
+        if g_cur_passive == 0:
+            blocked: int32 = 0
+            if js_type_of(evp) == 5:
+                cblv: int32 = js_get_prop(evp, cast[Ptr[uint8]]("cancelable"), 10)
+                if js_type_of(cblv) != 0 and js_to_bool(cblv) == 0:
+                    blocked = 1
+            if blocked == 0:
+                g_prevent_default = 1
+                if js_type_of(evp) == 5:
+                    js_set_prop(evp, cast[Ptr[uint8]]("defaultPrevented"), 16, \
+                                js_bool(1))
+                elif g_cur_event >= 0:
+                    js_set_prop(g_cur_event, cast[Ptr[uint8]]("defaultPrevented"), \
+                                16, js_bool(1))
         return js_undefined()
     if rel == NID_CLSADD or rel == NID_CLSREM or rel == NID_CLSTOG or \
        rel == NID_CLSHAS:
@@ -6184,11 +6251,13 @@ def _fire_generic(idx: int32, typp: Ptr[uint8], typn: int32, \
            _phase_wants(li, phase) != 0:
             lfn: int32 = evl_fn[li]
             if js_is_callable(lfn) != 0:
+                g_cur_passive = evl_passive[li]
                 if evtobj >= 0:
                     g_argv1[0] = evtobj
                     js_call_fn(lfn, dom_obj[idx], &g_argv1[0], 1)
                 else:
                     js_call_fn(lfn, dom_obj[idx], cast[Ptr[int32]](0), 0)
+                g_cur_passive = 0
                 ran = 1
                 if evl_once[li] != 0:
                     evl_dead[li] = 1
@@ -6281,16 +6350,20 @@ def _fire_document_ev(evo: int32, typp: Ptr[uint8], typn: int32) -> int32:
         if hit != 0:
             lfn: int32 = evl_fn[li]
             if js_is_callable(lfn) != 0:
+                g_cur_passive = evl_passive[li]
                 if evo >= 0:
                     g_argv1[0] = evo
                     js_call_fn(lfn, js_doc, &g_argv1[0], 1)
                 else:
                     js_call_fn(lfn, js_doc, cast[Ptr[int32]](0), 0)
+                g_cur_passive = 0
                 if evl_once[li] != 0:
                     evl_dead[li] = 1
                 if g_stop_immediate != 0:
                     li = evl_n
         li = li + 1
+    if evo >= 0:
+        js_set_prop(evo, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     if g_prevent_default != 0:
         return 0
     return 1
@@ -6310,11 +6383,13 @@ def _fire_handler(idx: int32, kind: int32, evtobj: int32, phase: int32) -> int32
            _phase_wants(li, phase) != 0:
             lfn: int32 = evl_fn[li]
             if js_is_callable(lfn) != 0:
+                g_cur_passive = evl_passive[li]
                 if evtobj >= 0:
                     g_argv1[0] = evtobj
                     js_call_fn(lfn, dom_obj[idx], &g_argv1[0], 1)
                 else:
                     js_call_fn(lfn, dom_obj[idx], cast[Ptr[int32]](0), 0)
+                g_cur_passive = 0
                 ran = 1
                 # once:true listeners fire at most once (DOM addEventListener opt).
                 if evl_once[li] != 0:
@@ -6502,6 +6577,7 @@ def _dispatch_event(target_el: int32, kind: int32, evtobj: int32) -> int32:
     _set_ephase(evtobj, EPHASE_NONE)
     if evtobj >= 0:
         js_set_prop(evtobj, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+        js_set_prop(evtobj, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     g_cur_event = -1
     return ran
 
@@ -6566,6 +6642,7 @@ def _dispatch_generic(target_el: int32, typp: Ptr[uint8], typn: int32, \
     _set_ephase(evtobj, EPHASE_NONE)
     if evtobj >= 0:
         js_set_prop(evtobj, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+        js_set_prop(evtobj, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     g_cur_event = -1
     return ran
 
@@ -6691,11 +6768,13 @@ def _fire_docel(kind: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> int
         if hit != 0:
             lfn: int32 = evl_fn[li]
             if js_is_callable(lfn) != 0:
+                g_cur_passive = evl_passive[li]
                 if evo >= 0:
                     g_argv1[0] = evo
                     js_call_fn(lfn, js_doc, &g_argv1[0], 1)
                 else:
                     js_call_fn(lfn, js_doc, cast[Ptr[int32]](0), 0)
+                g_cur_passive = 0
                 ran = 1
                 if evl_once[li] != 0:
                     evl_dead[li] = 1
@@ -6770,6 +6849,7 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
     _set_ephase(evo, EPHASE_NONE)
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+        js_set_prop(evo, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     g_cur_event = -1
     return ran
 
@@ -7042,13 +7122,41 @@ def _throw_domexc(nm: Ptr[uint8], n: int32, msg: Ptr[uint8], mn: int32) -> int32
 #
 # Interface names are matched ASCII-case-INSENSITIVELY, which is what the spec
 # requires here (createEvent("mouseevents") is legal and used in the wild).
+# The spec "default passive value" for an addEventListener with no explicit
+# passive option: TRUE only for the scroll-blocking event types on the four
+# scroll-owning targets (window / document / documentElement / body), so a page
+# cannot jank scrolling from those. Everything else defaults to non-passive.
+def _default_passive(el: int32, typp: Ptr[uint8], typn: int32) -> int32:
+    if _ascii_ci_eq(typp, typn, cast[Ptr[uint8]]("touchstart"), 10) == 0 and \
+       _ascii_ci_eq(typp, typn, cast[Ptr[uint8]]("touchmove"), 9) == 0 and \
+       _ascii_ci_eq(typp, typn, cast[Ptr[uint8]]("wheel"), 5) == 0 and \
+       _ascii_ci_eq(typp, typn, cast[Ptr[uint8]]("mousewheel"), 10) == 0:
+        return 0
+    if el == DOC_EL:                                       # window / document
+        return 1
+    if el >= 0 and el < dom_n:
+        if _el_tag_is(el, cast[Ptr[uint8]]("html")) != 0 or \
+           _el_tag_is(el, cast[Ptr[uint8]]("body")) != 0:
+            return 1
+    return 0
+
+
 # Mint one Event-interface object: a global constructor plus its own prototype,
 # stashed in g_ev_proto[flavor] so createEvent can brand instances with exactly
 # window[iface].prototype (WPT's alias test compares by identity).
 def _mk_ev_iface(nm: Ptr[uint8], nlen: int32, nid: int32, flavor: int32):
     ctor: int32 = js_new_native_fn(js_hbase + nid)
     js_global_set(nm, cast[uint64](nlen), ctor)
-    g_ev_proto[flavor] = js_fn_prototype(ctor)
+    proto: int32 = js_fn_prototype(ctor)
+    g_ev_proto[flavor] = proto
+    # returnValue + cancelBubble are live accessors mapped onto the canceled /
+    # stop-propagation flags, inherited by every event of this interface.
+    js_define_accessor(proto, cast[Ptr[uint8]]("returnValue"), 11, \
+                       js_new_native_fn(js_hbase + NID_RETVAL_GET), \
+                       js_new_native_fn(js_hbase + NID_RETVAL_SET))
+    js_define_accessor(proto, cast[Ptr[uint8]]("cancelBubble"), 12, \
+                       js_new_native_fn(js_hbase + NID_CANCELBUB_GET), \
+                       js_new_native_fn(js_hbase + NID_CANCELBUB_SET))
 
 
 # Map a document.createEvent() interface name to a `flavor`, or -1 if the name
@@ -7161,6 +7269,11 @@ def _init_event(with_detail: int32) -> int32:
         c = 1
     js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(b))
     js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(c))
+    # initialize: unset the canceled + stop-propagation flags (so a reused
+    # createEvent'd event re-inits cleanly — returnValue back to true,
+    # cancelBubble back to false).
+    js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     if with_detail != 0:
         dv: int32 = js_null()
         if js_arg_count() >= 4:
