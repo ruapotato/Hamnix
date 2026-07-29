@@ -452,7 +452,7 @@ algorithm:
 | `kernel/block/blk.ad` `_bcache_hash` | `k * 11400714819323198485` | intentional — Fibonacci hashing |
 | `drivers/block/partition.ad` | `idx * 0xBF58476D1CE4E5B9` | intentional — splitmix constant |
 
-The first six are now annotated with `unsafe:` blocks (24,677 → 24,665 guards).
+The first six are now annotated with `unsafe:` blocks (24,677 → 24,668 guards).
 The default, unflagged kernel object is **byte-identical** after the
 annotations — verified with `cmp` against a pre-annotation object.
 
