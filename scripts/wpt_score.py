@@ -3,7 +3,7 @@
 breakdown, the ranked gap list, and the chromium cross-check.
 
     python3 scripts/wpt_score.py hamnix.jsonl
-    python3 scripts/wpt_score.py hamnix.jsonl --vs chromium.jsonl
+    python3 scripts/wpt_score.py hamnix.jsonl --vs chromium.jsonl [--vs more.jsonl]
     python3 scripts/wpt_score.py hamnix.jsonl --gaps 40
     python3 scripts/wpt_score.py hamnix.jsonl --baseline scripts/wpt_baseline.txt
 

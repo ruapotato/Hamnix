@@ -1,8 +1,9 @@
 # Web Platform Tests: the external browser score
 
 **Baseline, 2026-07-29: 395 / 3760 subtests = 10.51 %** across 706 vendored WPT
-tests. Chromium scores 99 %+ on the same tests through the same reporter (see
-[Cross-check](#cross-check-the-control)).
+tests. Chromium, through the same reporter on the same tests, scores 91.4 %
+overall and 99.4 % with the file://-origin outliers set aside — so the number
+below is ours, not the harness's (see [Cross-check](#cross-check-the-control)).
 
 This is the first browser number here that we did not grade ourselves.
 
@@ -110,17 +111,44 @@ Nothing changes an assertion, an expectation, or a test's logic.
 ## Cross-check: the control
 
 A harness that reports everything as failing is worse than no harness: it
-produces a confident number that is pure noise. So the same tests run under
-`chromium --headless` through the **same reporter**, and
-`scripts/wpt_score.py --vs` reports chromium's own score, the
-we-fail-chromium-passes set (the real gap), and the we-pass-chromium-fails set
-(suspicious — either a genuine chromium bug or our harness scoring something it
-should not).
+produces a confident number that is pure noise. So all 706 tests were also run
+under `chromium --headless` through the **same reporter**.
 
 Chromium gets the **unmodified** vendored document — URL rebasing and the
 vendor-hook swap only, no inlining and no coalescing. It has a real resource
 loader and correct task ordering, so it needs neither. Feeding it the untouched
 file is what makes it a control rather than a mirror.
+
+```
+chromium: 57,747 subtests, 52,757 PASS  ->  91.36 %
+          540 of 706 files score exactly 100 %
+          99.38 % once the 10 worst files are set aside (53,037 subtests)
+
+comparable subtests (reported by both engines):  3,200
+WE FAIL / CHROMIUM PASSES:  2,634    <- the real gap
+WE PASS / CHROMIUM FAILS :      1    <- inspected, and it is correct:
+    dom/historical.html :: "Historical DOM features must be removed: DOMError"
+    We pass by not having implemented DOMError. Chromium still ships it.
+files with results in chromium but none for us:  188
+files dead in BOTH:                               34   <- harness artifact, not
+                                                          an engine gap
+```
+
+**Why chromium is at 91 % and not 100 %,** verified by reading the messages:
+
+* `file://` origin. Tests that pull a fixture through an iframe or XHR get
+  `Cannot read properties of null (reading 'firstChild')`. Two Range files
+  contribute 3,680 subtests of this on their own. It hits both engines equally
+  and is a property of running without wptserve, not of either engine.
+* Suite newer than the browser. `:heading` selector tests fail with
+  "`:heading` is not a valid selector" — the pinned WPT snapshot tests a feature
+  the installed chromium has not shipped. **We fail these too, and the
+  cross-check is what tells us they are not our bug** — 56 of our failures are
+  in this class and are correctly absent from the ranked gap list below.
+
+The gap list is therefore built from the **we-fail-chromium-passes** set, not
+from our raw failure list. 2,634 of our 3,365 failures are confirmed real; the
+remainder are file://-origin artifacts or things chromium fails too.
 
 ## The harness is proved honest before its number is read
 
@@ -263,6 +291,23 @@ report a clean `OK`.
 `Array.prototype.unshift` and `forEach` being missing on 7 files is worth
 calling out separately: those are plain-ECMAScript gaps in a JS engine that
 already has `Proxy`, `Reflect` and `structuredClone`.
+
+### Confirmed gap by area (we fail, chromium passes — 2,634 subtests)
+
+```
+1679  dom/nodes                 44  dom/traversal          23  html/links
+ 214  dom/events                40  html/grouping-content  15  html/text-level-semantics
+ 166  css/css-cascade           38  dom/collections        12  dom/lists
+ 122  html/tabular-data         35  dom/ranges             10  html/disabled-elements
+  73  html/the-button-element   32  html/document-metadata  2  dom/abort
+  55  html/selectors            26  encoding
+  48  dom/misc
+```
+
+`dom/ranges` looks small here (35) only because 26 of its 54 files produce no
+output for us at all, so their assertions are not comparable. Chromium reports
+34,000+ subtests in that directory; it is the largest *hidden* gap in the table
+and moves the moment `document.createRange` exists.
 
 ### Where the subtests are
 
