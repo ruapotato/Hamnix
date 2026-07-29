@@ -1,0 +1,972 @@
+# adder/compiler/checkarith.ad
+#
+# OPT-IN CHECKED INTEGER ARITHMETIC (`--check-arith`) — memory-safety
+# increment 4, built in the SAME shape as `--check-bounds`
+# (docs/adder_memory_safety.md): DEFAULT-OFF, an `unsafe:` opt-out, and
+# byte-inert when off.
+#
+# WHY THIS EXISTS
+# ---------------
+# The worst defect of 2026-07-17 was a SILENT 64-bit multiply overflow in
+# `cyc_to_ns()`:  `(cycles * mult) >> shift`.  With mult=4184308 the product
+# passes 2^64 after 4.409e12 cycles = 1099.5 s, after which the monotonic clock
+# jumped BACKWARDS by 1099 s and every bounded wait in the kernel
+# (`wq_wait_commit_timeout`, `sys_waitfds`, ...) became unbounded.  One
+# unchecked `*`, four days invisible.  A checked-arithmetic mode would have
+# caught it the first time the kernel ran past 18 minutes.
+#
+# WHERE IT LIVES (and why NOT in codegen.ad)
+# ------------------------------------------
+# `codegen.ad` and the frozen Python seed are DELIBERATELY UNTOUCHED by this
+# feature.  Instrumentation is a pure AST -> AST rewrite that runs between
+# `parse_program()` and `gen_program_with_globals()` in the host driver.  The
+# instrumented program is ordinary Adder that the EXISTING code generator
+# compiles with no new emitters, so:
+#
+#   * with `--check-arith` off, `ck_instrument_program` is never called and
+#     the emitted bytes are IDENTICAL to the pre-feature compiler; and
+#   * `scripts/test_native_vs_seed_kobjdiff.sh` stays green because neither
+#     backend changed.
+#
+# THE REWRITE
+# -----------
+# For each checked binary operation `a OP b` that is (i) provably integer-typed
+# with a known width and signedness and (ii) SIDE-EFFECT FREE in both operands,
+# a guard STATEMENT is inserted immediately before the statement containing it:
+#
+#     if <overflow predicate over a, b>:
+#         __ck_arith_trap(<code>, cast[uint64](a), cast[uint64](b), <line>)
+#     <original statement>
+#
+# The predicates are the standard two's-complement tests, specialised by
+# signedness (which is why the type classifier below exists):
+#
+#   unsigned add   (a + b) < a
+#   unsigned sub   a < b
+#   unsigned mul   b != 0 and (a * b) // b != a
+#   unsigned shl   b >= W or ((a << b) >> b) != a
+#   signed   add   ((a ^ (a+b)) & (b ^ (a+b))) < 0
+#   signed   sub   ((a ^ b) & (a ^ (a-b))) < 0
+#   signed   mul   (b == -1 and a != 0 and 0-a == a)          # a == INT_MIN
+#                  or (b != 0 and b != -1 and (a*b)//b != a)
+#   signed   shl   b < 0 or b >= W or ((a << b) >> b) != a
+#   div/mod        b == 0   [ + signed: or (b == -1 and a == INT_MIN) ]
+#
+# `and`/`or` are short-circuiting in Adder, so the division in the mul
+# predicate is never reached with a zero (or, when signed, a -1) divisor: the
+# check itself can never fault.
+#
+# COVERAGE LIMITS (deliberate, documented, conservative)
+# -----------------------------------------------------
+#   * Operands must be PURE: literals, identifiers, casts and unary/binary
+#     combinations of those.  Anything that could be re-evaluated with a
+#     different result or a side effect — calls, pointer/array dereferences
+#     (which may be VOLATILE MMIO), member reads, `?`/`!` — makes the site
+#     un-instrumentable.  A guard re-evaluates its operands, so this is not
+#     negotiable.
+#   * Both operand types must be KNOWN and EQUAL (a bare integer literal
+#     adapts to the other side).  Mixed-width / mixed-signedness arithmetic,
+#     pointers, floats, enums, struct fields and anything the local classifier
+#     cannot see are skipped rather than guessed at.
+#   * Expressions in `while`/`do-while` conditions and in `elif` conditions are
+#     NOT instrumented: hoisting a guard out of a loop condition would check it
+#     once instead of per-iteration, and hoisting it out of an `elif` would
+#     evaluate arithmetic on a path that the program never takes (a false
+#     positive).  The right-hand side of `and`/`or` and the arms of a
+#     conditional expression are skipped for the same reason.
+#
+# These limits cost recall, never soundness: an instrumented site NEVER traps
+# on a program that did not actually overflow.
+
+from compiler.lexer import (
+    strbuf,
+    strbuf_pos,
+    STRBUF_SIZE,
+)
+from compiler.parser import (
+    nd_kind,
+    nd_aux,
+    nd_num,
+    nd_name_off,
+    nd_name_len,
+    nd_a,
+    nd_b,
+    nd_c,
+    nd_d,
+    nd_next,
+    nd_line,
+    node_new,
+    p_err,
+    ND_INT_LIT,
+    ND_CHAR_LIT,
+    ND_BOOL_LIT,
+    ND_IDENT,
+    ND_BINARY,
+    ND_UNARY,
+    ND_CALL,
+    ND_CAST,
+    ND_INDEX,
+    ND_MEMBER,
+    ND_METHOD_CALL,
+    ND_CONDITIONAL,
+    ND_VAR_DECL,
+    ND_ASSIGN,
+    ND_EXPR_STMT,
+    ND_RETURN,
+    ND_IF,
+    ND_ELIF,
+    ND_WHILE,
+    ND_DO_WHILE,
+    ND_FOR,
+    ND_FOR_UNPACK,
+    ND_DEFER,
+    ND_ASSERT,
+    ND_TUPLE_UNPACK,
+    ND_WITH,
+    ND_WITH_ITEM,
+    ND_MATCH,
+    ND_MATCH_ARM,
+    ND_TRY,
+    ND_EXCEPT,
+    ND_UNSAFE,
+    ND_TYPE,
+    ND_PARAM,
+    ND_FUNCTION,
+    ND_CLASS,
+    ND_EXTERN,
+    ND_PROGRAM,
+    BINOP_ADD,
+    BINOP_SUB,
+    BINOP_MUL,
+    BINOP_DIV,
+    BINOP_IDIV,
+    BINOP_MOD,
+    BINOP_EQ,
+    BINOP_NEQ,
+    BINOP_LT,
+    BINOP_GTE,
+    BINOP_AND,
+    BINOP_OR,
+    BINOP_BIT_AND,
+    BINOP_BIT_XOR,
+    BINOP_SHL,
+    BINOP_SHR,
+    AUGOP_ADD,
+    AUGOP_SUB,
+    AUGOP_MUL,
+    AUGOP_DIV,
+    AUGOP_MOD,
+    AUGOP_SHL,
+    UNOP_NEG,
+    UNOP_BIT_NOT,
+)
+
+# ---------------------------------------------------------------------------
+# Operation codes handed to the runtime trap (low byte of `code`).
+# ---------------------------------------------------------------------------
+CK_OP_ADD: uint32 = 1
+CK_OP_SUB: uint32 = 2
+CK_OP_MUL: uint32 = 3
+CK_OP_SHL: uint32 = 4
+CK_OP_DIV: uint32 = 5
+CK_OP_MOD: uint32 = 6
+
+# Primitive type codes (parser.type_keyword_code): 2=int8 3=int16 4=int32
+# 5=int64 6=uint8 7=uint16 8=uint32 9=uint64.  Plus two pseudo-codes used only
+# by the classifier below.
+CK_TY_UNKNOWN: uint32 = 0
+CK_TY_LIT: uint32 = 1          # a bare integer literal — adapts to the peer
+
+# Statistics (reported on stderr by the driver so a tree-wide run can be
+# audited: how many sites were instrumented vs skipped).
+ck_n_sites: uint32 = 0         # guards emitted
+ck_n_skipped: uint32 = 0       # checked-op sites skipped (impure / untyped)
+ck_enabled: uint32 = 0
+
+# ---------------------------------------------------------------------------
+# Symbol tables.  Two of them:
+#   * GLOBALS + function return types — built once, hashed (the merged kernel
+#     closure has ~9.3 K globals and ~10.2 K functions; a linear scan per
+#     identifier would be quadratic and dominate compile time).
+#   * LOCALS + params — rebuilt per function, small, scanned linearly
+#     backwards so an inner declaration shadows an outer one.
+# Both store the primitive type CODE (0 = unknown/not an integer).
+# ---------------------------------------------------------------------------
+CK_G_CAP: uint32 = 65536
+CK_G_BUCKETS: uint32 = 16384
+ck_g_off: Array[65536, uint32]
+ck_g_len: Array[65536, uint32]
+ck_g_ty: Array[65536, uint32]
+ck_g_next: Array[65536, uint32]      # chain link (index+1, 0 = end)
+ck_g_head: Array[16384, uint32]      # bucket head (index+1, 0 = empty)
+ck_g_count: uint32 = 0
+
+CK_F_CAP: uint32 = 32768
+CK_F_BUCKETS: uint32 = 16384
+ck_f_off: Array[32768, uint32]
+ck_f_len: Array[32768, uint32]
+ck_f_ty: Array[32768, uint32]
+ck_f_next: Array[32768, uint32]
+ck_f_head: Array[16384, uint32]
+ck_f_count: uint32 = 0
+
+CK_L_CAP: uint32 = 8192
+ck_l_off: Array[8192, uint32]
+ck_l_len: Array[8192, uint32]
+ck_l_ty: Array[8192, uint32]
+ck_l_count: uint32 = 0
+
+# Shared `uint64` type node used by every `cast[uint64](...)` in every trap
+# call (created once — the AST arena is a scarce resource on the kernel
+# closure).
+ck_u64_ty_node: uint32 = 0
+
+# Interned name of the runtime trap function.
+ck_trap_off: uint32 = 0
+ck_trap_len: uint32 = 0
+
+# Guard chain accumulated for the statement currently being scanned.
+ck_pend_head: uint32 = 0
+ck_pend_tail: uint32 = 0
+
+# Line of the statement being scanned (used for the trap's line argument).
+ck_cur_line: uint32 = 0
+
+
+# ---------------------------------------------------------------------------
+# strbuf helpers
+# ---------------------------------------------------------------------------
+
+# Compare two strbuf slices for equality.
+def ck_name_eq(o1: uint32, l1: uint32, o2: uint32, l2: uint32) -> uint32:
+    if l1 != l2:
+        return 0
+    i: uint32 = 0
+    while i < l1:
+        if strbuf[o1 + i] != strbuf[o2 + i]:
+            return 0
+        i = i + 1
+    return 1
+
+
+# 1 if the strbuf slice starts with the NUL-terminated literal `lit`.
+def ck_name_starts(o: uint32, l: uint32, lit: Ptr[uint8]) -> uint32:
+    i: uint32 = 0
+    while cast[uint32](lit[i]) != 0:
+        if i >= l:
+            return 0
+        if cast[uint32](strbuf[o + i]) != cast[uint32](lit[i]):
+            return 0
+        i = i + 1
+    return 1
+
+
+def ck_hash(o: uint32, l: uint32) -> uint32:
+    h: uint32 = 2166136261
+    i: uint32 = 0
+    while i < l:
+        h = h ^ cast[uint32](strbuf[o + i])
+        h = h * 16777619
+        i = i + 1
+    return h
+
+
+# Intern a NUL-terminated literal into strbuf; returns the offset and leaves
+# the length in ck_trap_len (single-use: only the trap name is interned).
+def ck_intern_trap_name(lit: Ptr[uint8]) -> uint32:
+    off: uint32 = strbuf_pos
+    n: uint32 = 0
+    while cast[uint32](lit[n]) != 0:
+        if strbuf_pos < STRBUF_SIZE - 1:
+            strbuf[strbuf_pos] = lit[n]
+            strbuf_pos = strbuf_pos + 1
+        n = n + 1
+    ck_trap_len = n
+    return off
+
+
+# ---------------------------------------------------------------------------
+# Type classification
+# ---------------------------------------------------------------------------
+
+# Primitive type code of a TYPE NODE, or 0 when it is not a plain integer.
+# Ptr/Array/Slice/Fn/Optional/Volatile/struct/enum types and floats all yield
+# 0 — deliberately: instrumenting them would be wrong (pointer arithmetic has
+# no overflow semantics, floats have no two's-complement wrap) and a VOLATILE
+# read must never be duplicated.
+def ck_type_code(tn: uint32) -> uint32:
+    if tn == 0:
+        return CK_TY_UNKNOWN
+    if nd_kind[tn] != ND_TYPE:
+        return CK_TY_UNKNOWN
+    code: uint32 = nd_aux[tn]
+    if code >= 2 and code <= 9:
+        return code
+    return CK_TY_UNKNOWN
+
+
+def ck_ty_width(code: uint32) -> uint32:
+    if code == 2 or code == 6:
+        return 8
+    if code == 3 or code == 7:
+        return 16
+    if code == 4 or code == 8:
+        return 32
+    return 64
+
+
+def ck_ty_signed(code: uint32) -> uint32:
+    if code >= 2 and code <= 5:
+        return 1
+    return 0
+
+
+def ck_g_lookup(o: uint32, l: uint32) -> uint32:
+    b: uint32 = ck_hash(o, l) % CK_G_BUCKETS
+    e: uint32 = ck_g_head[b]
+    while e != 0:
+        i: uint32 = e - 1
+        if ck_name_eq(ck_g_off[i], ck_g_len[i], o, l) != 0:
+            return ck_g_ty[i]
+        e = ck_g_next[i]
+    return CK_TY_UNKNOWN
+
+
+# Register a global.  A name seen twice with DIFFERENT types is demoted to
+# unknown (the merged whole-tree TU can legitimately contain two same-named
+# module-private globals only when one of them failed to mangle; refusing to
+# guess is the safe answer).
+def ck_g_add(o: uint32, l: uint32, ty: uint32):
+    if l == 0:
+        return
+    b: uint32 = ck_hash(o, l) % CK_G_BUCKETS
+    e: uint32 = ck_g_head[b]
+    while e != 0:
+        i: uint32 = e - 1
+        if ck_name_eq(ck_g_off[i], ck_g_len[i], o, l) != 0:
+            if ck_g_ty[i] != ty:
+                ck_g_ty[i] = CK_TY_UNKNOWN
+            return
+        e = ck_g_next[i]
+    if ck_g_count >= CK_G_CAP:
+        return
+    idx: uint32 = ck_g_count
+    ck_g_count = ck_g_count + 1
+    ck_g_off[idx] = o
+    ck_g_len[idx] = l
+    ck_g_ty[idx] = ty
+    ck_g_next[idx] = ck_g_head[b]
+    ck_g_head[b] = idx + 1
+
+
+def ck_f_lookup(o: uint32, l: uint32) -> uint32:
+    b: uint32 = ck_hash(o, l) % CK_F_BUCKETS
+    e: uint32 = ck_f_head[b]
+    while e != 0:
+        i: uint32 = e - 1
+        if ck_name_eq(ck_f_off[i], ck_f_len[i], o, l) != 0:
+            return ck_f_ty[i]
+        e = ck_f_next[i]
+    return CK_TY_UNKNOWN
+
+
+def ck_f_add(o: uint32, l: uint32, ty: uint32):
+    if l == 0:
+        return
+    b: uint32 = ck_hash(o, l) % CK_F_BUCKETS
+    e: uint32 = ck_f_head[b]
+    while e != 0:
+        i: uint32 = e - 1
+        if ck_name_eq(ck_f_off[i], ck_f_len[i], o, l) != 0:
+            if ck_f_ty[i] != ty:
+                ck_f_ty[i] = CK_TY_UNKNOWN
+            return
+        e = ck_f_next[i]
+    if ck_f_count >= CK_F_CAP:
+        return
+    idx: uint32 = ck_f_count
+    ck_f_count = ck_f_count + 1
+    ck_f_off[idx] = o
+    ck_f_len[idx] = l
+    ck_f_ty[idx] = ty
+    ck_f_next[idx] = ck_f_head[b]
+    ck_f_head[b] = idx + 1
+
+
+def ck_l_add(o: uint32, l: uint32, ty: uint32):
+    if l == 0:
+        return
+    # A re-declaration with a different type inside the same function body
+    # (two sibling blocks reusing a name) demotes the entry to unknown rather
+    # than letting a stale width/signedness produce a bogus predicate.
+    i: uint32 = 0
+    while i < ck_l_count:
+        if ck_name_eq(ck_l_off[i], ck_l_len[i], o, l) != 0:
+            if ck_l_ty[i] != ty:
+                ck_l_ty[i] = CK_TY_UNKNOWN
+            return
+        i = i + 1
+    if ck_l_count >= CK_L_CAP:
+        return
+    ck_l_off[ck_l_count] = o
+    ck_l_len[ck_l_count] = l
+    ck_l_ty[ck_l_count] = ty
+    ck_l_count = ck_l_count + 1
+
+
+def ck_l_lookup(o: uint32, l: uint32) -> uint32:
+    i: uint32 = ck_l_count
+    while i > 0:
+        i = i - 1
+        if ck_name_eq(ck_l_off[i], ck_l_len[i], o, l) != 0:
+            return ck_l_ty[i]
+    return CK_TY_UNKNOWN
+
+
+# Merge the classifications of the two operands of a binary op.
+def ck_ty_merge(x: uint32, y: uint32) -> uint32:
+    if x == CK_TY_UNKNOWN:
+        return CK_TY_UNKNOWN
+    if y == CK_TY_UNKNOWN:
+        return CK_TY_UNKNOWN
+    if x == CK_TY_LIT:
+        return y
+    if y == CK_TY_LIT:
+        return x
+    if x == y:
+        return x
+    return CK_TY_UNKNOWN
+
+
+# Classify an EXPRESSION.  Returns a primitive integer type code, CK_TY_LIT
+# for a bare literal, or 0 (unknown) — which suppresses instrumentation.
+def ck_expr_ty(e: uint32) -> uint32:
+    if e == 0:
+        return CK_TY_UNKNOWN
+    k: uint32 = nd_kind[e]
+    if k == ND_INT_LIT:
+        return CK_TY_LIT
+    if k == ND_IDENT:
+        t: uint32 = ck_l_lookup(nd_name_off[e], nd_name_len[e])
+        if t != CK_TY_UNKNOWN:
+            return t
+        return ck_g_lookup(nd_name_off[e], nd_name_len[e])
+    if k == ND_CAST:
+        return ck_type_code(nd_a[e])
+    if k == ND_UNARY:
+        u: uint32 = nd_aux[e]
+        if u == UNOP_NEG or u == UNOP_BIT_NOT:
+            it: uint32 = ck_expr_ty(nd_a[e])
+            if it == CK_TY_LIT:
+                return CK_TY_LIT
+            return it
+        return CK_TY_UNKNOWN
+    if k == ND_CALL:
+        f: uint32 = nd_a[e]
+        if f != 0 and nd_kind[f] == ND_IDENT:
+            return ck_f_lookup(nd_name_off[f], nd_name_len[f])
+        return CK_TY_UNKNOWN
+    if k == ND_BINARY:
+        op: uint32 = nd_aux[e]
+        if op == BINOP_SHL or op == BINOP_SHR:
+            return ck_expr_ty(nd_a[e])
+        if op == BINOP_ADD or op == BINOP_SUB or op == BINOP_MUL \
+                or op == BINOP_DIV or op == BINOP_IDIV or op == BINOP_MOD \
+                or op == BINOP_BIT_AND or op == BINOP_BIT_XOR:
+            return ck_ty_merge(ck_expr_ty(nd_a[e]), ck_expr_ty(nd_b[e]))
+        return CK_TY_UNKNOWN
+    return CK_TY_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Purity.  A guard RE-EVALUATES both operands before the original statement
+# runs, so an operand may not (a) have a side effect, (b) read something that
+# can change between the two evaluations (volatile MMIO), or (c) fault where
+# the original would not.  Only literals, identifiers, casts and unary/binary
+# combinations of those qualify.  Dereferences, indexing, member reads, calls
+# and `?`/`!` are all rejected.
+# ---------------------------------------------------------------------------
+def ck_pure(e: uint32) -> uint32:
+    if e == 0:
+        return 0
+    k: uint32 = nd_kind[e]
+    if k == ND_INT_LIT or k == ND_CHAR_LIT or k == ND_BOOL_LIT:
+        return 1
+    if k == ND_IDENT:
+        return 1
+    if k == ND_CAST:
+        return ck_pure(nd_b[e])
+    if k == ND_UNARY:
+        u: uint32 = nd_aux[e]
+        if u == UNOP_NEG or u == UNOP_BIT_NOT:
+            return ck_pure(nd_a[e])
+        return 0
+    if k == ND_BINARY:
+        if ck_pure(nd_a[e]) == 0:
+            return 0
+        return ck_pure(nd_b[e])
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# AST builders.  NOTE: operand subtrees are REUSED (the same node id appears
+# under several parents).  The instrumented operands are pure integer
+# expressions, which codegen lowers functionally — no per-node state — and
+# reuse keeps the node budget for the whole-kernel closure in range.
+# ---------------------------------------------------------------------------
+def ck_mk(kind: uint32) -> uint32:
+    id: uint32 = node_new(kind)
+    if id != 0:
+        nd_line[id] = ck_cur_line
+    return id
+
+
+def ck_lit(v: uint64) -> uint32:
+    id: uint32 = ck_mk(ND_INT_LIT)
+    nd_num[id] = v
+    return id
+
+
+def ck_bin(op: uint32, a: uint32, b: uint32) -> uint32:
+    id: uint32 = ck_mk(ND_BINARY)
+    nd_aux[id] = op
+    nd_a[id] = a
+    nd_b[id] = b
+    return id
+
+
+def ck_neg(a: uint32) -> uint32:
+    id: uint32 = ck_mk(ND_UNARY)
+    nd_aux[id] = UNOP_NEG
+    nd_a[id] = a
+    return id
+
+
+def ck_cast_u64(e: uint32) -> uint32:
+    if ck_u64_ty_node == 0:
+        t: uint32 = ck_mk(ND_TYPE)
+        nd_aux[t] = 9                 # uint64
+        ck_u64_ty_node = t
+    id: uint32 = ck_mk(ND_CAST)
+    nd_a[id] = ck_u64_ty_node
+    nd_b[id] = e
+    return id
+
+
+# ---------------------------------------------------------------------------
+# Overflow predicates
+# ---------------------------------------------------------------------------
+def ck_pred_unsigned(op: uint32, a: uint32, b: uint32, w: uint32) -> uint32:
+    if op == CK_OP_ADD:
+        return ck_bin(BINOP_LT, ck_bin(BINOP_ADD, a, b), a)
+    if op == CK_OP_SUB:
+        return ck_bin(BINOP_LT, a, b)
+    if op == CK_OP_MUL:
+        # b != 0 and (a * b) // b != a      (short-circuit ⇒ never divides by 0)
+        return ck_bin(BINOP_AND,
+                      ck_bin(BINOP_NEQ, b, ck_lit(0)),
+                      ck_bin(BINOP_NEQ,
+                             ck_bin(BINOP_IDIV, ck_bin(BINOP_MUL, a, b), b),
+                             a))
+    if op == CK_OP_SHL:
+        # b >= W or ((a << b) >> b) != a
+        return ck_bin(BINOP_OR,
+                      ck_bin(BINOP_GTE, b, ck_lit(cast[uint64](w))),
+                      ck_bin(BINOP_NEQ,
+                             ck_bin(BINOP_SHR, ck_bin(BINOP_SHL, a, b), b),
+                             a))
+    # div / mod: only division by zero can go wrong for unsigned operands.
+    return ck_bin(BINOP_EQ, b, ck_lit(0))
+
+
+# `a == INT_MIN`, expressed WITHOUT a width-specific literal: the minimum is
+# the one non-zero value that is its own negation.
+def ck_is_int_min(a: uint32) -> uint32:
+    return ck_bin(BINOP_AND,
+                  ck_bin(BINOP_NEQ, a, ck_lit(0)),
+                  ck_bin(BINOP_EQ, ck_bin(BINOP_SUB, ck_lit(0), a), a))
+
+
+def ck_pred_signed(op: uint32, a: uint32, b: uint32, w: uint32) -> uint32:
+    if op == CK_OP_ADD:
+        s: uint32 = ck_bin(BINOP_ADD, a, b)
+        return ck_bin(BINOP_LT,
+                      ck_bin(BINOP_BIT_AND,
+                             ck_bin(BINOP_BIT_XOR, a, s),
+                             ck_bin(BINOP_BIT_XOR, b, s)),
+                      ck_lit(0))
+    if op == CK_OP_SUB:
+        d: uint32 = ck_bin(BINOP_SUB, a, b)
+        return ck_bin(BINOP_LT,
+                      ck_bin(BINOP_BIT_AND,
+                             ck_bin(BINOP_BIT_XOR, a, b),
+                             ck_bin(BINOP_BIT_XOR, a, d)),
+                      ck_lit(0))
+    if op == CK_OP_MUL:
+        # (b == -1 and a == MIN) or (b != 0 and b != -1 and (a*b)//b != a)
+        m1: uint32 = ck_neg(ck_lit(1))
+        m1b: uint32 = ck_neg(ck_lit(1))
+        return ck_bin(BINOP_OR,
+                      ck_bin(BINOP_AND,
+                             ck_bin(BINOP_EQ, b, m1),
+                             ck_is_int_min(a)),
+                      ck_bin(BINOP_AND,
+                             ck_bin(BINOP_AND,
+                                    ck_bin(BINOP_NEQ, b, ck_lit(0)),
+                                    ck_bin(BINOP_NEQ, b, m1b)),
+                             ck_bin(BINOP_NEQ,
+                                    ck_bin(BINOP_IDIV,
+                                           ck_bin(BINOP_MUL, a, b), b),
+                                    a)))
+    if op == CK_OP_SHL:
+        # b < 0 or b >= W or ((a << b) >> b) != a
+        return ck_bin(BINOP_OR,
+                      ck_bin(BINOP_OR,
+                             ck_bin(BINOP_LT, b, ck_lit(0)),
+                             ck_bin(BINOP_GTE, b, ck_lit(cast[uint64](w)))),
+                      ck_bin(BINOP_NEQ,
+                             ck_bin(BINOP_SHR, ck_bin(BINOP_SHL, a, b), b),
+                             a))
+    # div / mod: zero divisor, or the MIN / -1 pair (which faults on x86).
+    return ck_bin(BINOP_OR,
+                  ck_bin(BINOP_EQ, b, ck_lit(0)),
+                  ck_bin(BINOP_AND,
+                         ck_bin(BINOP_EQ, b, ck_neg(ck_lit(1))),
+                         ck_is_int_min(a)))
+
+
+# ---------------------------------------------------------------------------
+# Guard emission
+# ---------------------------------------------------------------------------
+
+# Build `if <pred>: __ck_arith_trap(code, cast[uint64](a), cast[uint64](b),
+# line)` and append it to the pending-guard chain for the current statement.
+def ck_emit_guard(pred: uint32, op: uint32, tycode: uint32,
+                  a: uint32, b: uint32):
+    # code = op | width<<8 | signed<<16 — decoded by the runtime for the
+    # diagnostic.
+    w: uint64 = cast[uint64](ck_ty_width(tycode))
+    sg: uint64 = cast[uint64](ck_ty_signed(tycode))
+    code: uint64 = cast[uint64](op) + w * 256 + sg * 65536
+
+    a1: uint32 = ck_lit(code)
+    a2: uint32 = ck_cast_u64(a)
+    a3: uint32 = ck_cast_u64(b)
+    a4: uint32 = ck_lit(cast[uint64](ck_cur_line))
+    nd_next[a1] = a2
+    nd_next[a2] = a3
+    nd_next[a3] = a4
+
+    fname: uint32 = ck_mk(ND_IDENT)
+    nd_name_off[fname] = ck_trap_off
+    nd_name_len[fname] = ck_trap_len
+
+    call: uint32 = ck_mk(ND_CALL)
+    nd_a[call] = fname
+    nd_b[call] = a1
+    nd_aux[call] = 4
+
+    st: uint32 = ck_mk(ND_EXPR_STMT)
+    nd_a[st] = call
+
+    gif: uint32 = ck_mk(ND_IF)
+    nd_a[gif] = pred
+    nd_b[gif] = st
+
+    if ck_pend_head == 0:
+        ck_pend_head = gif
+    else:
+        nd_next[ck_pend_tail] = gif
+    ck_pend_tail = gif
+    ck_n_sites = ck_n_sites + 1
+
+
+# Consider `a OP b` for instrumentation.  `op` is a CK_OP_* code.
+def ck_consider(op: uint32, a: uint32, b: uint32):
+    if ck_pure(a) == 0 or ck_pure(b) == 0:
+        ck_n_skipped = ck_n_skipped + 1
+        return
+    ty: uint32 = ck_ty_merge(ck_expr_ty(a), ck_expr_ty(b))
+    if ty == CK_TY_UNKNOWN or ty == CK_TY_LIT:
+        # Unknown type, or a wholly constant expression (nothing to watch at
+        # run time).
+        ck_n_skipped = ck_n_skipped + 1
+        return
+    # A shift's result type is the LHS type; the count may be any integer.
+    if op == CK_OP_SHL:
+        ty = ck_expr_ty(a)
+        if ty == CK_TY_UNKNOWN or ty == CK_TY_LIT:
+            ck_n_skipped = ck_n_skipped + 1
+            return
+    w: uint32 = ck_ty_width(ty)
+    if ck_ty_signed(ty) != 0:
+        ck_emit_guard(ck_pred_signed(op, a, b, w), op, ty, a, b)
+    else:
+        ck_emit_guard(ck_pred_unsigned(op, a, b, w), op, ty, a, b)
+
+
+def ck_binop_to_ck(op: uint32) -> uint32:
+    if op == BINOP_ADD:
+        return CK_OP_ADD
+    if op == BINOP_SUB:
+        return CK_OP_SUB
+    if op == BINOP_MUL:
+        return CK_OP_MUL
+    if op == BINOP_SHL:
+        return CK_OP_SHL
+    if op == BINOP_DIV or op == BINOP_IDIV:
+        return CK_OP_DIV
+    if op == BINOP_MOD:
+        return CK_OP_MOD
+    return 0
+
+
+def ck_augop_to_ck(op: uint32) -> uint32:
+    if op == AUGOP_ADD:
+        return CK_OP_ADD
+    if op == AUGOP_SUB:
+        return CK_OP_SUB
+    if op == AUGOP_MUL:
+        return CK_OP_MUL
+    if op == AUGOP_SHL:
+        return CK_OP_SHL
+    if op == AUGOP_DIV:
+        return CK_OP_DIV
+    if op == AUGOP_MOD:
+        return CK_OP_MOD
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Expression walk.  Post-order: inner guards are appended before outer ones,
+# so a nested `(a*b)+c` traps on the inner multiply first.
+# ---------------------------------------------------------------------------
+def ck_walk_expr(e: uint32):
+    if e == 0:
+        return
+    k: uint32 = nd_kind[e]
+    if k == ND_BINARY:
+        op: uint32 = nd_aux[e]
+        if op == BINOP_AND or op == BINOP_OR:
+            # RHS is short-circuited: hoisting a guard out of it would run a
+            # check the program deliberately guarded against (the classic
+            # `x != 0 and y // x` case).
+            ck_walk_expr(nd_a[e])
+            return
+        ck_walk_expr(nd_a[e])
+        ck_walk_expr(nd_b[e])
+        c: uint32 = ck_binop_to_ck(op)
+        if c != 0:
+            ck_consider(c, nd_a[e], nd_b[e])
+        return
+    if k == ND_CONDITIONAL:
+        ck_walk_expr(nd_a[e])          # condition only; arms are conditional
+        return
+    if k == ND_UNARY:
+        ck_walk_expr(nd_a[e])
+        return
+    if k == ND_CAST:
+        ck_walk_expr(nd_b[e])
+        return
+    if k == ND_INDEX:
+        ck_walk_expr(nd_a[e])
+        ck_walk_expr(nd_b[e])
+        return
+    if k == ND_MEMBER:
+        ck_walk_expr(nd_a[e])
+        return
+    if k == ND_CALL:
+        arg: uint32 = nd_b[e]
+        while arg != 0:
+            ck_walk_expr(arg)
+            arg = nd_next[arg]
+        return
+    if k == ND_METHOD_CALL:
+        ck_walk_expr(nd_a[e])
+        arg2: uint32 = nd_b[e]
+        while arg2 != 0:
+            ck_walk_expr(arg2)
+            arg2 = nd_next[arg2]
+        return
+    return
+
+
+# ---------------------------------------------------------------------------
+# Statement walk
+# ---------------------------------------------------------------------------
+
+# Scan the expressions this statement evaluates UNCONDITIONALLY, before any of
+# its nested blocks run.  Loop and `elif` conditions are deliberately absent
+# (see the header).
+def ck_scan_stmt(s: uint32):
+    k: uint32 = nd_kind[s]
+    if k == ND_VAR_DECL:
+        ck_walk_expr(nd_b[s])
+        return
+    if k == ND_ASSIGN:
+        ck_walk_expr(nd_a[s])
+        ck_walk_expr(nd_b[s])
+        c: uint32 = ck_augop_to_ck(nd_aux[s])
+        if c != 0:
+            ck_consider(c, nd_a[s], nd_b[s])
+        return
+    if k == ND_EXPR_STMT:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_RETURN:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_IF:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_ASSERT:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_MATCH:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_FOR:
+        ck_walk_expr(nd_a[s])
+        return
+    if k == ND_FOR_UNPACK:
+        ck_walk_expr(nd_b[s])
+        return
+    if k == ND_TUPLE_UNPACK:
+        ck_walk_expr(nd_b[s])
+        return
+    return
+
+
+# Register a declaration this statement introduces into the local table.
+def ck_declare_stmt(s: uint32):
+    if nd_kind[s] == ND_VAR_DECL:
+        ck_l_add(nd_name_off[s], nd_name_len[s], ck_type_code(nd_a[s]))
+    return
+
+
+# Forward declaration by mutual recursion: ck_chain <-> ck_descend.
+def ck_chain(head: uint32) -> uint32:
+    prev: uint32 = 0
+    s: uint32 = head
+    new_head: uint32 = head
+    while s != 0:
+        nxt: uint32 = nd_next[s]
+        ck_cur_line = nd_line[s]
+        # Nested blocks first: their guards live inside those blocks and must
+        # not be confused with this statement's own pending chain.
+        ck_descend(s)
+        ck_pend_head = 0
+        ck_pend_tail = 0
+        ck_cur_line = nd_line[s]       # ck_descend recursed and moved it
+        ck_scan_stmt(s)
+        if ck_pend_head != 0:
+            nd_next[ck_pend_tail] = s
+            if prev == 0:
+                new_head = ck_pend_head
+            else:
+                nd_next[prev] = ck_pend_head
+            prev = s
+        else:
+            prev = s
+        ck_declare_stmt(s)
+        s = nxt
+    return new_head
+
+
+# Recurse into a statement's nested blocks, rewriting each chain head in
+# place.  `unsafe:` bodies are the OPT-OUT: everything inside one is left
+# completely uninstrumented (mirrors --check-bounds / cg_unsafe_depth).
+def ck_descend(s: uint32):
+    k: uint32 = nd_kind[s]
+    if k == ND_UNSAFE:
+        return
+    if k == ND_IF:
+        nd_b[s] = ck_chain(nd_b[s])
+        e: uint32 = nd_c[s]
+        while e != 0:
+            nd_b[e] = ck_chain(nd_b[e])
+            e = nd_next[e]
+        nd_d[s] = ck_chain(nd_d[s])
+        return
+    if k == ND_WHILE or k == ND_DO_WHILE or k == ND_FOR:
+        nd_b[s] = ck_chain(nd_b[s])
+        return
+    if k == ND_FOR_UNPACK:
+        nd_c[s] = ck_chain(nd_c[s])
+        return
+    if k == ND_WITH:
+        nd_b[s] = ck_chain(nd_b[s])
+        return
+    if k == ND_MATCH:
+        arm: uint32 = nd_b[s]
+        while arm != 0:
+            nd_b[arm] = ck_chain(nd_b[arm])
+            arm = nd_next[arm]
+        return
+    if k == ND_TRY:
+        nd_a[s] = ck_chain(nd_a[s])
+        h: uint32 = nd_b[s]
+        while h != 0:
+            nd_a[h] = ck_chain(nd_a[h])
+            h = nd_next[h]
+        nd_c[s] = ck_chain(nd_c[s])
+        nd_d[s] = ck_chain(nd_d[s])
+        return
+    if k == ND_DEFER:
+        # A deferred statement runs at scope exit; guards hoisted before it
+        # would run at the wrong time, so leave it alone.
+        return
+    return
+
+
+# ---------------------------------------------------------------------------
+# Declaration collection + entry point
+# ---------------------------------------------------------------------------
+def ck_collect_decls(prog: uint32):
+    d: uint32 = nd_b[prog]
+    while d != 0:
+        k: uint32 = nd_kind[d]
+        if k == ND_VAR_DECL:
+            ck_g_add(nd_name_off[d], nd_name_len[d], ck_type_code(nd_a[d]))
+        elif k == ND_FUNCTION:
+            ck_f_add(nd_name_off[d], nd_name_len[d], ck_type_code(nd_b[d]))
+        elif k == ND_EXTERN:
+            ck_f_add(nd_name_off[d], nd_name_len[d], ck_type_code(nd_b[d]))
+        d = nd_next[d]
+
+
+def ck_instrument_function(fn: uint32):
+    # Never instrument the injected runtime itself — its own arithmetic would
+    # recurse into the trap.
+    if ck_name_starts(nd_name_off[fn], nd_name_len[fn], "__ck_") != 0:
+        return
+    ck_l_count = 0
+    p: uint32 = nd_a[fn]
+    while p != 0:
+        if nd_kind[p] == ND_PARAM:
+            ck_l_add(nd_name_off[p], nd_name_len[p], ck_type_code(nd_a[p]))
+        p = nd_next[p]
+    nd_c[fn] = ck_chain(nd_c[fn])
+
+
+# ENTRY POINT.  Called by the host driver ONLY when `--check-arith` is on and
+# the file-wide `# adder: unsafe` pragma is absent.  Rewrites the program in
+# place; the caller then hands the SAME node id to gen_program_with_globals.
+def ck_instrument_program(prog: uint32):
+    if prog == 0:
+        return
+    ck_enabled = 1
+    ck_trap_off = ck_intern_trap_name("__ck_arith_trap")
+    ck_collect_decls(prog)
+    d: uint32 = nd_b[prog]
+    while d != 0:
+        k: uint32 = nd_kind[d]
+        if k == ND_FUNCTION:
+            ck_instrument_function(d)
+        elif k == ND_CLASS:
+            m: uint32 = nd_b[d]
+            while m != 0:
+                if nd_kind[m] == ND_FUNCTION:
+                    ck_instrument_function(m)
+                m = nd_next[m]
+        d = nd_next[d]

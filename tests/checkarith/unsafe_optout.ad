@@ -1,0 +1,13 @@
+# `unsafe:` opt-out. The SAME overflowing uint64 multiply as clockwrap.ad, but
+# inside an `unsafe:` block: --check-arith must emit ZERO guards (the compiler
+# reports "instrumented 0 site(s)") and the emitted module must contain no
+# reference to __ck_arith_trap at all. Mirrors the --check-bounds opt-out.
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    ns: uint64 = 0
+    unsafe:
+        mult: uint64 = 4184308
+        cycles: uint64 = 5000000000000 + cast[uint64](argc)
+        ns = (cycles * mult) >> 24
+    if ns > 1000000000000:
+        return 1
+    return 0

@@ -1,0 +1,6 @@
+# int32 addition overflowing past INT32_MAX.
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    a: int32 = 2147483000 + argc
+    b: int32 = 1000
+    c: int32 = a + b
+    return c

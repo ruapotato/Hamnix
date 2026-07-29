@@ -448,6 +448,16 @@ def main(argv):
             # --emit-llvm flag; with neither set it is never entered and
             # host_ac.elf's ELF output is byte-identical to the pre-LLVM compiler.
             modules += ["ssa.ad", "ssa_opt.ad", "ssa_emit.ad", "ssa_llvm.ad"]
+            # checkarith.ad is the OPT-IN `--check-arith` instrumentation pass
+            # (AST -> AST, runs between parse and codegen). It references only
+            # lexer + parser symbols, so it may sit anywhere after parser.ad;
+            # appended last to keep the diff to this list minimal. Gated at
+            # RUNTIME behind the driver's --check-arith flag — with the flag
+            # absent ck_instrument_program is never called and host_ac.elf's
+            # output is byte-identical to the pre-feature compiler. Like the SSA
+            # modules it is deliberately NOT added to the frozen Python seed's
+            # import closure: the seed stays the untouched bootstrap oracle.
+            modules += ["checkarith.ad"]
 
     chunks = []
     header = (

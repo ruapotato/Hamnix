@@ -1,0 +1,18 @@
+# The 2026-07-17 clock-wrap defect, reduced. cyc_to_ns() computed
+# `(cycles * mult) >> shift` in uint64. With mult=4184308 the product passes
+# 2^64 at 4.409e12 cycles (1099.5 s of TSC), after which the monotonic clock
+# jumps BACKWARDS. Unchecked this returns a small wrapped value and exits 0;
+# with --check-arith the multiply traps.
+#
+# `cycles` comes from argc so the compiler cannot constant-fold it.
+def cyc_to_ns(cycles: uint64, mult: uint64, shift: uint64) -> uint64:
+    return (cycles * mult) >> shift
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    mult: uint64 = 4184308
+    # 5e12 cycles ~ 1247 s past boot on a 4.0096 GHz TSC — past the wrap.
+    cycles: uint64 = 5000000000000 + cast[uint64](argc)
+    ns: uint64 = cyc_to_ns(cycles, mult, 24)
+    if ns > 1000000000000:
+        return 0
+    return 1

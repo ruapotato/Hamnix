@@ -1,0 +1,7 @@
+# uint64 subtraction underflowing below zero — the classic ring-buffer /
+# "elapsed = now - then" defect when `then` is in the future.
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    now: uint64 = 5 + cast[uint64](argc)
+    then: uint64 = 100
+    d: uint64 = now - then
+    return cast[int32](d)

@@ -1,0 +1,6 @@
+# uint32 addition wrapping past 2^32.
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    a: uint32 = 4294967000 + cast[uint32](argc)
+    b: uint32 = 1000
+    c: uint32 = a + b
+    return cast[int32](c)

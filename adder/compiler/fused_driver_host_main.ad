@@ -1168,6 +1168,113 @@ def drv_scan_unsafe_pragma(len: uint32) -> uint32:
     return 0
 
 
+# Append a NUL-terminated literal to the merged source buffer. Used ONLY by
+# the `--check-arith` runtime injector below (byte-inert when the flag is off).
+def drv_src_puts(s: Ptr[uint8]):
+    i: uint32 = 0
+    while s[i] != 0:
+        drv_src_put(s[i])
+        i = i + 1
+
+
+# ---------------------------------------------------------------------------
+# `--check-arith` RUNTIME INJECTION.
+#
+# The AST rewrite in checkarith.ad turns a checked `a OP b` into
+#     if <overflow predicate>: __ck_arith_trap(code, a, b, line)
+# so the merged translation unit must CONTAIN `__ck_arith_trap`. Rather than
+# teach codegen a new emitter (codegen.ad is deliberately untouched by this
+# feature), the trap is ordinary Adder source appended to the merged closure
+# right before it is lexed. Two variants:
+#
+#   USERSPACE  format the diagnostic into a static buffer, write(2) it to
+#              stderr, then exit_group(134). 134 is the wait-status the gate
+#              keys on — deliberately distinct from --check-bounds' 132
+#              (SIGILL) so a mixed run tells the two apart.
+#   KERNEL     the same message is formatted, but there is no write(2): the
+#              operands/line are latched into the ck_arith_* globals (readable
+#              from a crash dump) and the kernel's own panic() is called, which
+#              prints the message and halts. A kernel CANNOT quietly continue
+#              past a detected overflow — the whole point of the mode is that
+#              the 2026-07-17 clock wrap ran for four days precisely because
+#              nothing was loud.
+#
+# Every injected symbol is prefixed `__ck_` / `ck_arith_`; checkarith.ad skips
+# instrumenting any function whose name starts with `__ck_`, so the trap can
+# never recurse into itself.
+def drv_emit_ck_runtime(kern: uint32):
+    drv_src_put(10)
+    drv_src_puts("ck_arith_code: uint64 = 0\n")
+    drv_src_puts("ck_arith_lhs: uint64 = 0\n")
+    drv_src_puts("ck_arith_rhs: uint64 = 0\n")
+    drv_src_puts("ck_arith_line: uint64 = 0\n")
+    drv_src_puts("__ck_msg: Array[192, uint8]\n")
+    drv_src_puts("__ck_mp: uint32 = 0\n")
+    drv_src_puts("def __ck_put(c: uint8):\n")
+    drv_src_puts("    if __ck_mp < 190:\n")
+    drv_src_puts("        __ck_msg[__ck_mp] = c\n")
+    drv_src_puts("        __ck_mp = __ck_mp + 1\n")
+    drv_src_puts("def __ck_puts(s: Ptr[uint8]):\n")
+    drv_src_puts("    i: uint32 = 0\n")
+    drv_src_puts("    while s[i] != 0:\n")
+    drv_src_puts("        __ck_put(s[i])\n")
+    drv_src_puts("        i = i + 1\n")
+    drv_src_puts("def __ck_putu(v: uint64):\n")
+    drv_src_puts("    if v == 0:\n")
+    drv_src_puts("        __ck_put(48)\n")
+    drv_src_puts("        return\n")
+    drv_src_puts("    d: Array[24, uint8]\n")
+    drv_src_puts("    n: uint32 = 0\n")
+    drv_src_puts("    x: uint64 = v\n")
+    drv_src_puts("    while x != 0:\n")
+    drv_src_puts("        d[n] = cast[uint8](x % 10) + 48\n")
+    drv_src_puts("        x = x / 10\n")
+    drv_src_puts("        n = n + 1\n")
+    drv_src_puts("    while n != 0:\n")
+    drv_src_puts("        n = n - 1\n")
+    drv_src_puts("        __ck_put(d[n])\n")
+    drv_src_puts("def __ck_arith_trap(code: uint64, a: uint64, b: uint64, line: uint64):\n")
+    drv_src_puts("    ck_arith_code = code\n")
+    drv_src_puts("    ck_arith_lhs = a\n")
+    drv_src_puts("    ck_arith_rhs = b\n")
+    drv_src_puts("    ck_arith_line = line\n")
+    drv_src_puts("    __ck_mp = 0\n")
+    drv_src_puts("    __ck_puts(\"[check-arith] \")\n")
+    drv_src_puts("    op: uint64 = code % 256\n")
+    drv_src_puts("    if op == 1:\n")
+    drv_src_puts("        __ck_puts(\"add\")\n")
+    drv_src_puts("    elif op == 2:\n")
+    drv_src_puts("        __ck_puts(\"sub\")\n")
+    drv_src_puts("    elif op == 3:\n")
+    drv_src_puts("        __ck_puts(\"mul\")\n")
+    drv_src_puts("    elif op == 4:\n")
+    drv_src_puts("        __ck_puts(\"shl\")\n")
+    drv_src_puts("    elif op == 5:\n")
+    drv_src_puts("        __ck_puts(\"div-by-zero\")\n")
+    drv_src_puts("    else:\n")
+    drv_src_puts("        __ck_puts(\"mod-by-zero\")\n")
+    drv_src_puts("    __ck_puts(\" overflow lhs=\")\n")
+    drv_src_puts("    __ck_putu(a)\n")
+    drv_src_puts("    __ck_puts(\" rhs=\")\n")
+    drv_src_puts("    __ck_putu(b)\n")
+    drv_src_puts("    __ck_puts(\" ty=\")\n")
+    drv_src_puts("    if (code / 65536) % 256 != 0:\n")
+    drv_src_puts("        __ck_puts(\"int\")\n")
+    drv_src_puts("    else:\n")
+    drv_src_puts("        __ck_puts(\"uint\")\n")
+    drv_src_puts("    __ck_putu((code / 256) % 256)\n")
+    drv_src_puts("    __ck_puts(\" line=\")\n")
+    drv_src_puts("    __ck_putu(line)\n")
+    drv_src_puts("    __ck_put(10)\n")
+    drv_src_puts("    __ck_put(0)\n")
+    if kern != 0:
+        drv_src_puts("    panic(cast[Ptr[char]](&__ck_msg[0]))\n")
+    else:
+        drv_src_puts("    __syscall3(1, 2, cast[uint64](&__ck_msg[0]), cast[uint64](__ck_mp))\n")
+        drv_src_puts("    __syscall1(60, 134)\n")
+    drv_src_put(10)
+
+
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # CLI shape: <in.ad> <out.elf> [<merged-dump.ad>], plus an optional
     # output-FORMAT selector that may appear anywhere among the args:
@@ -1194,6 +1301,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     elf_target: uint32 = ELF_FMT_USER
     want_bounds: uint32 = 0                 # --check-bounds (opt-in; userspace)
+    want_arith: uint32 = 0                  # --check-arith  (opt-in; user AND kernel)
     want_opt: uint32 = 0                    # --opt (opt-in; now routes through the SSA pipeline)
     want_llvm: uint32 = 0                   # --backend=llvm / --emit-llvm (opt-in; OPTIONAL LLVM backend)
     pos_in: uint64 = 0
@@ -1240,6 +1348,17 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
                 # increment 1b, docs/adder_memory_safety.md). Honoured ONLY for
                 # a userspace target below — never the kernel.
                 want_bounds = 1
+            elif drv_arg_starts(astr, "--check-arith") != 0:
+                # Opt-in CHECKED INTEGER ARITHMETIC (adder/compiler/checkarith.ad).
+                # Unlike --check-bounds this is honoured for the KERNEL target
+                # too: the defect that motivated the mode (the cyc_to_ns 64-bit
+                # multiply that wrapped the monotonic clock after 1099 s) is
+                # kernel code, and exempting the kernel would exempt exactly the
+                # arithmetic that hurt most. Still DEFAULT-OFF, still suppressed
+                # inside `unsafe:` and by the whole-file `# adder: unsafe`
+                # pragma. (`--check-bounds` and `--check-arith` share no
+                # prefix, so the arm order is free.)
+                want_arith = 1
             elif drv_arg_starts(astr, "--opt") != 0:
                 # Opt-in optimizer. As of the opt1 retirement this routes through
                 # the SSA pipeline (SSA build + Phase-2 passes + linear-scan
@@ -1310,6 +1429,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # PASS B: mangle+append every file in dependency order, now that the
     # exported set is complete.
     drv_merge_ordered()
+    # --check-arith: append the trap runtime to the merged closure BEFORE it is
+    # lexed, so `__ck_arith_trap` is an ordinary function of this translation
+    # unit. Byte-inert when the flag is off (nothing is appended).
+    if want_arith != 0:
+        if elf_target == ELF_FMT_KERNEL:
+            drv_emit_ck_runtime(1)
+        else:
+            drv_emit_ck_runtime(0)
     n: uint32 = drv_src_len
     if n == 0:
         drv_err("[host_ac] FAIL: cannot read input\n")
@@ -1345,6 +1472,24 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         drv_err_u32(p_err_line)
         drv_err("\n")
         return 4
+
+    # --check-arith: AST -> AST instrumentation pass (adder/compiler/checkarith.ad).
+    # Runs between parse and codegen so the CODE GENERATOR is untouched by the
+    # feature: it just compiles the extra `if <predicate>: __ck_arith_trap(...)`
+    # statements as ordinary Adder. Suppressed wholesale by the whole-file
+    # `# adder: unsafe` pragma (the same opt-out --check-bounds honours); per
+    # site it is suppressed by an `unsafe:` block. When the flag is off this
+    # call does not happen and the AST reaches codegen bit-for-bit as parsed.
+    if want_arith != 0 and drv_scan_unsafe_pragma(n) == 0:
+        ck_instrument_program(prog)
+        if p_err != 0:
+            drv_err("[host_ac] FAIL: --check-arith exhausted the AST arena\n")
+            return 4
+        drv_err("[check-arith] instrumented ")
+        drv_err_u32(ck_n_sites)
+        drv_err(" site(s), skipped ")
+        drv_err_u32(ck_n_skipped)
+        drv_err(" (impure or untyped operands)\n")
 
     # OPTIONAL LLVM backend lane (--backend=llvm / --emit-llvm). Lower the whole
     # merged module through the SSA IR to TEXTUAL LLVM IR (ssa_llvm.ad) and write
