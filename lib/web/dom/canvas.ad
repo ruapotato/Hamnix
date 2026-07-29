@@ -5052,6 +5052,22 @@ def _refresh_all_geom():
         i = i + 1
 
 
+# LIVE-CLASS RESOLVER (bindings.ad seam). Maps a source '<' offset back to the
+# element's registered DOM node and returns its LIVE className bytes so the
+# selector matcher (_sel_match_at) sees classList/className/setAttribute
+# mutations. Returns NULL when the offset is not a live node — the source class
+# attribute is then authoritative (e.g. the post-script render relayout runs over
+# the class-rewritten source, whose offsets match no original anchor).
+def _live_cls_resolve(anchor: int32, out_len: Ptr[int32]) -> Ptr[uint8]:
+    idx: int32 = _dom_lookup_anchor(anchor)
+    if idx < 0:
+        out_len[0] = 0
+        return cast[Ptr[uint8]](0)
+    p: Ptr[uint8] = _cls_read(idx)                        # NUL-terminated live className
+    out_len[0] = _cstr_len(p)
+    return p
+
+
 def _run_scripts() -> int32:
     # A live JS context is needed if the page has a <script> element OR any
     # inline on<evt>="" handler (no <script> required for interactivity).
