@@ -4013,6 +4013,9 @@ def _node_constants(target: int32):
                 js_number(8.0))
     js_set_prop(target, cast[Ptr[uint8]]("DOCUMENT_POSITION_CONTAINED_BY"), 30, \
                 js_number(16.0))
+    js_set_prop(target, \
+                cast[Ptr[uint8]]("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC"), 41, \
+                js_number(32.0))
 
 
 # Build the DOM class hierarchy (Node / Element / HTMLElement / CharacterData /

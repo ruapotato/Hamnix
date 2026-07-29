@@ -103,8 +103,28 @@ def _cx_walk(parent_slot: int32, pel: int32, pcid: int32):
             b = b + 1
 
 
+# Does created node `cid` have a mounting parent — a source element (ap edge) or
+# another created node (cc edge)? A node with NO parent is a DETACHED ROOT: a
+# subtree built with createElement/appendChild that was never inserted into the
+# document. querySelector/All still has to see inside such trees (WPT builds
+# them constantly), so _cx_build roots them too.
+def _cx_has_parent(cid: int32) -> int32:
+    a: int32 = 0
+    while a < ap_n:
+        if ap_removed[a] == 0 and ap_child[a] == cid:
+            return 1
+        a = a + 1
+    b: int32 = 0
+    while b < cc_n:
+        if cc_removed[b] == 0 and cc_child[b] == cid:
+            return 1
+        b = b + 1
+    return 0
+
+
 # Rebuild the created-node overlay: every mounted created subtree, rooted at
-# each registered source element.
+# each registered source element, PLUS every detached created root (a subtree
+# never inserted into the document).
 def _cx_build():
     cx_n = 0
     z: int32 = 0
@@ -115,6 +135,14 @@ def _cx_build():
     while pel < dom_n:
         _cx_walk(-1, pel, -1)
         pel = pel + 1
+    # detached roots: any still-unvisited, live, parentless created node.
+    r: int32 = 0
+    while r < cre_n:
+        if cx_slot[r] < 0 and cre_gone[r] == 0 and _cx_has_parent(r) == 0:
+            rs: int32 = _cx_reg(r, -1, -1, 0)
+            if rs >= 0:
+                _cx_walk(rs, -1, r)
+        r = r + 1
 
 
 # case-insensitive byte compare (class/id/tag/attr tokens across the JS heap).
@@ -232,6 +260,111 @@ def _cre_sel_match(slot: int32, sel: Ptr[uint8], seln: int32) -> int32:
     return _cid_sel_match(cx_cid[slot], sel, seln)
 
 
+# ---- CSS identifier escapes (css-syntax 4.3.7) ---------------------
+# querySelector selectors carry `\`-escapes: `\XXXXXX ` (1-6 hex + optional one
+# trailing whitespace) is a code point; `\c` is the literal char `c`; a trailing
+# `\` at EOF is U+FFFD. Hex escapes for U+0000, surrogates, or > U+10FFFF also
+# fold to U+FFFD. We decode a name token into g_selname as UTF-8, so it compares
+# byte-for-byte against the (already UTF-8) id/class the DOM stores.
+g_selname: Array[256, uint8]
+
+
+def _sel_hexval(c: uint8) -> int32:
+    if c >= 48 and c <= 57:
+        return cast[int32](c) - 48
+    if c >= 97 and c <= 102:
+        return cast[int32](c) - 87
+    if c >= 65 and c <= 70:
+        return cast[int32](c) - 55
+    return -1
+
+
+def _sel_is_ws(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 12 or c == 13:
+        return 1
+    return 0
+
+
+# Encode code point `cp` as UTF-8 into out[pos..]; return the new position.
+def _utf8_enc(out: Ptr[uint8], pos: int32, cp: int32) -> int32:
+    if cp < 128:
+        out[pos] = cast[uint8](cp)
+        return pos + 1
+    if cp < 2048:
+        out[pos] = cast[uint8](192 + (cp >> 6))
+        out[pos + 1] = cast[uint8](128 + (cp & 63))
+        return pos + 2
+    if cp < 65536:
+        out[pos] = cast[uint8](224 + (cp >> 12))
+        out[pos + 1] = cast[uint8](128 + ((cp >> 6) & 63))
+        out[pos + 2] = cast[uint8](128 + (cp & 63))
+        return pos + 3
+    out[pos] = cast[uint8](240 + (cp >> 18))
+    out[pos + 1] = cast[uint8](128 + ((cp >> 12) & 63))
+    out[pos + 2] = cast[uint8](128 + ((cp >> 6) & 63))
+    out[pos + 3] = cast[uint8](128 + (cp & 63))
+    return pos + 4
+
+
+# Advance past a CSS name token starting at sel[i] (name chars + `\`-escapes);
+# return the index just past it. Escapes let `.`/`#`/space/etc. be part of a name.
+def _sel_name_end(sel: Ptr[uint8], i: int32, seln: int32) -> int32:
+    while i < seln:
+        c: uint8 = sel[i]
+        if c == 92:                                        # '\'
+            i = i + 1
+            if i >= seln:
+                return i                                    # trailing '\' (EOF)
+            if _sel_hexval(sel[i]) >= 0:
+                h: int32 = 0
+                while i < seln and h < 6 and _sel_hexval(sel[i]) >= 0:
+                    i = i + 1
+                    h = h + 1
+                if i < seln and _sel_is_ws(sel[i]) != 0:
+                    i = i + 1
+            else:
+                i = i + 1                                   # escaped single char
+        elif _sel_isname(c) != 0 or c >= 128:              # name char / UTF-8 lead+cont
+            i = i + 1
+        else:
+            break
+    return i
+
+
+# Decode the name token sel[off..end) into g_selname (UTF-8); return its length.
+def _sel_name_decode(sel: Ptr[uint8], off: int32, end: int32) -> int32:
+    o: int32 = 0
+    i: int32 = off
+    while i < end and o < 250:
+        c: uint8 = sel[i]
+        if c == 92:                                        # '\'
+            i = i + 1
+            if i >= end:
+                o = _utf8_enc(&g_selname[0], o, 65533)      # U+FFFD
+                return o
+            if _sel_hexval(sel[i]) >= 0:
+                cp: int32 = 0
+                h: int32 = 0
+                while i < end and h < 6 and _sel_hexval(sel[i]) >= 0:
+                    cp = cp * 16 + _sel_hexval(sel[i])
+                    i = i + 1
+                    h = h + 1
+                if i < end and _sel_is_ws(sel[i]) != 0:
+                    i = i + 1
+                if cp == 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343):
+                    cp = 65533                              # U+FFFD
+                o = _utf8_enc(&g_selname[0], o, cp)
+            else:
+                g_selname[o] = sel[i]                       # literal escaped char
+                o = o + 1
+                i = i + 1
+        else:
+            g_selname[o] = c
+            o = o + 1
+            i = i + 1
+    return o
+
+
 # cid-based version of _cre_sel_match: match the single compound base
 # sel[0..seln) against a CREATED element by its cre id (tag from cre_tag_*,
 # class/id/attrs from the node's live JS props). Usable for a node with no cx
@@ -254,26 +387,26 @@ def _cid_sel_match(cid: int32, sel: Ptr[uint8], seln: int32) -> int32:
         if c == 46:                                       # '.class'
             i = i + 1
             s0: int32 = i
-            while i < seln and _sel_isname(sel[i]) != 0:
-                i = i + 1
+            i = _sel_name_end(sel, i, seln)
+            cdl: int32 = _sel_name_decode(sel, s0, i)
             clsv: int32 = js_get_prop(cre_obj[cid], cast[Ptr[uint8]]("className"), 9)
             clsp: Ptr[uint8] = js_str_ptr(clsv)
             clsn: int32 = _cstr_len(clsp)
             if _is_undef_str(clsp, clsn) != 0:
                 clsn = 0
-            if _cstr_cls_has(clsp, clsn, &sel[s0], i - s0) == 0:
+            if _cstr_cls_has(clsp, clsn, &g_selname[0], cdl) == 0:
                 return 0
         elif c == 35:                                     # '#id'
             i = i + 1
             s1: int32 = i
-            while i < seln and _sel_isname(sel[i]) != 0:
-                i = i + 1
+            i = _sel_name_end(sel, i, seln)
+            idl: int32 = _sel_name_decode(sel, s1, i)
             idv: int32 = js_get_prop(cre_obj[cid], cast[Ptr[uint8]]("id"), 2)
             idp: Ptr[uint8] = js_str_ptr(idv)
             idn: int32 = _cstr_len(idp)
             if _is_undef_str(idp, idn) != 0:
                 idn = 0
-            if _ci_eq(idp, idn, &sel[s1], i - s1) == 0:
+            if _bytes_eq(idp, idn, &g_selname[0], idl) == 0:
                 return 0
         elif c == 91:                                     # '[attr]' / '[attr OP v]'
             i = i + 1
@@ -480,7 +613,15 @@ def _cre_match_chain(slot: int32, c: int32) -> int32:
 # Is cx `slot` within the active query scope (g_cre_scope_*)?
 def _cx_in_scope(slot: int32) -> int32:
     if g_cre_scope_doc != 0:
-        return 1
+        # a DOCUMENT-level query sees only nodes actually IN the document, i.e.
+        # created subtrees rooted at a source element. A DETACHED root (cx_src<0
+        # at the top) is not in the document and must stay invisible here.
+        d: int32 = slot
+        while cx_parent[d] >= 0:
+            d = cx_parent[d]
+        if cx_src[d] >= 0:
+            return 1
+        return 0
     if g_cre_scope_el >= 0:
         s: int32 = slot                                   # root's source el == scope el?
         while cx_parent[s] >= 0:
@@ -542,13 +683,25 @@ def _cre_find_first(sel: Ptr[uint8], seln: int32) -> int32:
     return -1
 
 
+# Is cx `slot` in a subtree actually mounted in the document (root has a source
+# element)? Detached created trees are NOT — a document-level lookup skips them.
+def _cx_mounted(slot: int32) -> int32:
+    d: int32 = slot
+    while cx_parent[d] >= 0:
+        d = cx_parent[d]
+    if cx_src[d] >= 0:
+        return 1
+    return 0
+
+
 # First created element whose id prop == idp[0..idn); its JS obj, else -1.
+# Document-scoped: only mounted created subtrees are considered.
 def _cre_find_by_id(idp: Ptr[uint8], idn: int32) -> int32:
     _cx_build()
     s: int32 = 0
     while s < cx_n:
         cid: int32 = cx_cid[s]
-        if cre_is_text[cid] == 0:
+        if cre_is_text[cid] == 0 and _cx_mounted(s) != 0:
             idv: int32 = js_get_prop(cre_obj[cid], cast[Ptr[uint8]]("id"), 2)
             ip: Ptr[uint8] = js_str_ptr(idv)
             inn: int32 = _cstr_len(ip)

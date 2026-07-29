@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 632
+#!PASS_FLOOR 695
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -1346,7 +1346,6 @@ dom/nodes/Element-closest.html	Element.closest with context node 'test4' and sel
 dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'input[required]'
 dom/nodes/Element-firstElementChild-namespace.html	Untitled
 dom/nodes/Element-getElementsByClassName.html	Interface should be correct.
-dom/nodes/Element-getElementsByClassName.html	getElementsByClassName should work on disconnected subtrees.
 dom/nodes/Element-getElementsByClassName.html	getElementsByClassName() should be a live collection
 dom/nodes/Element-getElementsByTagName-change-document-HTMLNess.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Element-getElementsByTagName.html	Element in HTML namespace, no prefix, non-ascii characters in name
@@ -1363,7 +1362,6 @@ dom/nodes/Element-getElementsByTagName.html	Should be able to set expando shadow
 dom/nodes/Element-getElementsByTagName.html	Should be able to set expando shadowing a proto prop (namedItem)
 dom/nodes/Element-getElementsByTagName.html	Shouldn't be able to set unsigned properties on a HTMLCollection (non-strict mode)
 dom/nodes/Element-getElementsByTagName.html	Shouldn't be able to set unsigned properties on a HTMLCollection (strict mode)
-dom/nodes/Element-getElementsByTagName.html	getElementsByTagName('*')
 dom/nodes/Element-getElementsByTagName.html	getElementsByTagName() should be a live collection
 dom/nodes/Element-getElementsByTagName.html	hasOwnProperty, getOwnPropertyDescriptor, getOwnPropertyNames
 dom/nodes/Element-getElementsByTagNameNS.html	ABC element in html namespace
@@ -1623,10 +1621,6 @@ dom/nodes/Node-cloneNode.html	implementation.createDocumentType
 dom/nodes/Node-cloneNode.html	implementation.createHTMLDocument
 dom/nodes/Node-cloneNode.html	node with children
 dom/nodes/Node-compareDocumentPosition.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/Node-constants.html	Constants for createDocumentPosition on Element object.
-dom/nodes/Node-constants.html	Constants for createDocumentPosition on Node interface object.
-dom/nodes/Node-constants.html	Constants for createDocumentPosition on Node prototype object.
-dom/nodes/Node-constants.html	Constants for createDocumentPosition on Text object.
 dom/nodes/Node-contains.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Comment must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node DocumentType must throw HIERARCHY_REQUEST_ERR.
@@ -1867,67 +1861,10 @@ dom/nodes/ParentNode-prepend.html	If node is not a DocumentFragment, DocumentTyp
 dom/nodes/ParentNode-querySelector-All.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/ParentNode-querySelector-case-insensitive.html	querySelector
 dom/nodes/ParentNode-querySelector-case-insensitive.html	querySelectorAll
-dom/nodes/ParentNode-querySelector-escapes.html	"&B" should match with "#\\26 B"
-dom/nodes/ParentNode-querySelector-escapes.html	"--" should match with "#--"
-dom/nodes/ParentNode-querySelector-escapes.html	"---" should match with "#---"
-dom/nodes/ParentNode-querySelector-escapes.html	"--11" should match with "#--11"
-dom/nodes/ParentNode-querySelector-escapes.html	"--abc" should match with "#--abc"
-dom/nodes/ParentNode-querySelector-escapes.html	"-m" should match with "#-\\6d"
-dom/nodes/ParentNode-querySelector-escapes.html	"-minus" should match with "#\\-minus"
-dom/nodes/ParentNode-querySelector-escapes.html	"-text" should match with "#-text"
 dom/nodes/ParentNode-querySelector-escapes.html	".,:!" should match with "#\\.\\,\\:\\!"
-dom/nodes/ParentNode-querySelector-escapes.html	".comma" should match with "#\\.comma"
-dom/nodes/ParentNode-querySelector-escapes.html	"00continueEscapes" should match with "#\\30 \\30 continueEscapes"
-dom/nodes/ParentNode-querySelector-escapes.html	"00continueEscapes" should match with "#\\30\\30 continueEscapes"
-dom/nodes/ParentNode-querySelector-escapes.html	"0connectHexMoreThan6Hex" should match with "#\\000030connectHexMoreThan6Hex"
-dom/nodes/ParentNode-querySelector-escapes.html	"0nextIsNotHexLetters" should match with "#\\30nextIsNotHexLetters"
-dom/nodes/ParentNode-querySelector-escapes.html	"0nextIsWhiteSpace" should match with "#\\30 nextIsWhiteSpace"
-dom/nodes/ParentNode-querySelector-escapes.html	"0spaceMoreThan6Hex" should match with "#\\000030 spaceMoreThan6Hex"
-dom/nodes/ParentNode-querySelector-escapes.html	"_underscore" should match with "#_underscore"
-dom/nodes/ParentNode-querySelector-escapes.html	"aBMPRegular" should match with "#\\61 BMPRegular"
 dom/nodes/ParentNode-querySelector-escapes.html	"ab�c" should match with "#ab\u0000c"
-dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30 \\30 "
-dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30 \\30"
-dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30\\30 "
-dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30\\30"
-dom/nodes/ParentNode-querySelector-escapes.html	"eof�" should match with "#eof\\"
-dom/nodes/ParentNode-querySelector-escapes.html	"g" should match with "#\\g"
-dom/nodes/ParentNode-querySelector-escapes.html	"hello" should match with "#hel\\6C o"
-dom/nodes/ParentNode-querySelector-escapes.html	"hello" should match with "#hel\\6Co"
-dom/nodes/ParentNode-querySelector-escapes.html	"large�" should match with "#large\\110000"
-dom/nodes/ParentNode-querySelector-escapes.html	"large�" should match with "#large\\23456a"
-dom/nodes/ParentNode-querySelector-escapes.html	"nonescaped" should match with "#nonescaped"
-dom/nodes/ParentNode-querySelector-escapes.html	"null�" should match with "#null\\0"
-dom/nodes/ParentNode-querySelector-escapes.html	"null�" should match with "#null\\0000"
-dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\110000"
-dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\110030"
-dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\555555"
-dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\ffffff"
-dom/nodes/ParentNode-querySelector-escapes.html	"simple-ident" should match with "#simple-ident"
-dom/nodes/ParentNode-querySelector-escapes.html	"spaces in\tident" should match with "#spaces\\ in\\\tident"
-dom/nodes/ParentNode-querySelector-escapes.html	"spaces" should match with "#sp\\61\tc\\65\fs"
 dom/nodes/ParentNode-querySelector-escapes.html	"spaces" should match with "#spac\\65\r\ns"
-dom/nodes/ParentNode-querySelector-escapes.html	"surrogatePair��" should match with "#surrogatePair\\d83d\\dd11"
-dom/nodes/ParentNode-querySelector-escapes.html	"surrogateSecond�" should match with "#surrogateSecond\\dd11"
-dom/nodes/ParentNode-querySelector-escapes.html	"surrogate�" should match with "#surrogate\\0DBAC"
-dom/nodes/ParentNode-querySelector-escapes.html	"surrogate�" should match with "#surrogate\\D800"
-dom/nodes/ParentNode-querySelector-escapes.html	"test" should match with "#te\\s\\t"
-dom/nodes/ParentNode-querySelector-escapes.html	"testing123" should match with "#testing123"
-dom/nodes/ParentNode-querySelector-escapes.html	"test힙" should match with "#test\\D799"
-dom/nodes/ParentNode-querySelector-escapes.html	"zero�" should match with "#zero\\0"
-dom/nodes/ParentNode-querySelector-escapes.html	"zero�" should match with "#zero\\000000"
-dom/nodes/ParentNode-querySelector-escapes.html	" " should match with "# "
-dom/nodes/ParentNode-querySelector-escapes.html	"ሴ" should match with "#ሴ"
-dom/nodes/ParentNode-querySelector-escapes.html	" " should match with "# "
-dom/nodes/ParentNode-querySelector-escapes.html	"" should match with "#\\E000"
 dom/nodes/ParentNode-querySelector-escapes.html	"�" should match with "#\u0000"
-dom/nodes/ParentNode-querySelector-escapes.html	"�surrogate" should match with "#\\00DFFFsurrogate"
-dom/nodes/ParentNode-querySelector-escapes.html	"�surrogateFirst" should match with "#\\d83d surrogateFirst"
-dom/nodes/ParentNode-querySelector-escapes.html	"𒍅" should match with "#𒍅"
-dom/nodes/ParentNode-querySelector-escapes.html	"🔑nonBMP" should match with "#\\1f511 nonBMP"
-dom/nodes/ParentNode-querySelector-escapes.html	"􀀀00" should match with "#\\10000000"
-dom/nodes/ParentNode-querySelector-escapes.html	"􏿿" should match with "#\\10fFfF"
-dom/nodes/ParentNode-querySelector-escapes.html	"􏿿0" should match with "#\\10fFfF0"
 dom/nodes/ParentNode-querySelector-scope.html	querySelector with :scope
 dom/nodes/ParentNode-querySelector-scope.html	querySelectorAll with :scope
 dom/nodes/ParentNode-querySelectors-namespaces.html	<FILE PRODUCED NO RESULTS>
@@ -2506,7 +2443,11 @@ dom/nodes/moveBefore/select-option-optgroup.html	Option selectedness is updated 
 dom/nodes/moveBefore/slotchange-events.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/style-applies.html	Moving a style inside the document should not affect whether it's applied
 dom/nodes/moveBefore/throws-exception.html	moveBefore() on a cross-document target node
-dom/nodes/name-validation.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/name-validation.html	Valid and invalid characters in createDocumentType.
+dom/nodes/name-validation.html	Valid and invalid characters in createElement.
+dom/nodes/name-validation.html	Valid and invalid characters in createElementNS and createDocument.
+dom/nodes/name-validation.html	Valid and invalid characters in setAttribute, toggleAttribute, and createAttribute.
+dom/nodes/name-validation.html	Valid and invalid characters in setAttributeNS and createAttributeNS.
 dom/nodes/node-creation-realm.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/node-realm-adoption-after-frame-removal.html	Never-wrapped node keeps its creation realm: iframe removed before adoption (subtree not pre-detached)
 dom/nodes/node-realm-adoption-after-frame-removal.html	Never-wrapped node keeps its creation realm: subtree detached, iframe removed, then adopted
@@ -3946,8 +3887,10 @@ url/failure.html	Loading data…
 +dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'form > input[required]'
 +dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'select[required]'
 +dom/nodes/Element-firstElementChild.html	Untitled
++dom/nodes/Element-getElementsByClassName.html	getElementsByClassName should work on disconnected subtrees.
 +dom/nodes/Element-getElementsByTagName.html	Caching is allowed
 +dom/nodes/Element-getElementsByTagName.html	Matching the context object
++dom/nodes/Element-getElementsByTagName.html	getElementsByTagName('*')
 +dom/nodes/Element-hasAttributes.html	element.hasAttributes() must return false when the element does not have attribute.
 +dom/nodes/Element-lastElementChild.html	Untitled
 +dom/nodes/Element-matches-namespaced-elements.html	empty string namespace, matches
@@ -3984,6 +3927,10 @@ url/failure.html	Loading data…
 +dom/nodes/Node-baseURI.html	For elements unassigned to document, baseURI should be document URL
 +dom/nodes/Node-childNodes-cache.html	Untitled
 +dom/nodes/Node-childNodes.html	Caching of Node.childNodes
++dom/nodes/Node-constants.html	Constants for createDocumentPosition on Element object.
++dom/nodes/Node-constants.html	Constants for createDocumentPosition on Node interface object.
++dom/nodes/Node-constants.html	Constants for createDocumentPosition on Node prototype object.
++dom/nodes/Node-constants.html	Constants for createDocumentPosition on Text object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Element object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Node interface object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Node prototype object.
@@ -3998,13 +3945,70 @@ url/failure.html	Loading data…
 +dom/nodes/NodeList-Iterable.html	NodeList has length method.
 +dom/nodes/NodeList-Iterable.html	NodeList is iterable via for-of loop.
 +dom/nodes/NodeList-Iterable.html	NodeList responds to Object.keys correctly
++dom/nodes/ParentNode-querySelector-escapes.html	"&B" should match with "#\\26 B"
++dom/nodes/ParentNode-querySelector-escapes.html	"--" should match with "#--"
++dom/nodes/ParentNode-querySelector-escapes.html	"---" should match with "#---"
++dom/nodes/ParentNode-querySelector-escapes.html	"--11" should match with "#--11"
++dom/nodes/ParentNode-querySelector-escapes.html	"--abc" should match with "#--abc"
++dom/nodes/ParentNode-querySelector-escapes.html	"-m" should match with "#-\\6d"
++dom/nodes/ParentNode-querySelector-escapes.html	"-minus" should match with "#\\-minus"
++dom/nodes/ParentNode-querySelector-escapes.html	"-text" should match with "#-text"
++dom/nodes/ParentNode-querySelector-escapes.html	".comma" should match with "#\\.comma"
++dom/nodes/ParentNode-querySelector-escapes.html	"00continueEscapes" should match with "#\\30 \\30 continueEscapes"
++dom/nodes/ParentNode-querySelector-escapes.html	"00continueEscapes" should match with "#\\30\\30 continueEscapes"
++dom/nodes/ParentNode-querySelector-escapes.html	"0connectHexMoreThan6Hex" should match with "#\\000030connectHexMoreThan6Hex"
++dom/nodes/ParentNode-querySelector-escapes.html	"0nextIsNotHexLetters" should match with "#\\30nextIsNotHexLetters"
++dom/nodes/ParentNode-querySelector-escapes.html	"0nextIsWhiteSpace" should match with "#\\30 nextIsWhiteSpace"
++dom/nodes/ParentNode-querySelector-escapes.html	"0spaceMoreThan6Hex" should match with "#\\000030 spaceMoreThan6Hex"
 +dom/nodes/ParentNode-querySelector-escapes.html	"\ud83dsurrogateFirst" should never match with "#\\d83d surrogateFirst"
++dom/nodes/ParentNode-querySelector-escapes.html	"_underscore" should match with "#_underscore"
++dom/nodes/ParentNode-querySelector-escapes.html	"aBMPRegular" should match with "#\\61 BMPRegular"
++dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30 \\30 "
++dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30 \\30"
++dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30\\30 "
++dom/nodes/ParentNode-querySelector-escapes.html	"continueEscapes00" should match with "#continueEscapes\\30\\30"
 +dom/nodes/ParentNode-querySelector-escapes.html	"eof\\" should never match with "#eof\\"
++dom/nodes/ParentNode-querySelector-escapes.html	"eof�" should match with "#eof\\"
++dom/nodes/ParentNode-querySelector-escapes.html	"g" should match with "#\\g"
++dom/nodes/ParentNode-querySelector-escapes.html	"hello" should match with "#hel\\6C o"
++dom/nodes/ParentNode-querySelector-escapes.html	"hello" should match with "#hel\\6Co"
++dom/nodes/ParentNode-querySelector-escapes.html	"large�" should match with "#large\\110000"
++dom/nodes/ParentNode-querySelector-escapes.html	"large�" should match with "#large\\23456a"
++dom/nodes/ParentNode-querySelector-escapes.html	"nonescaped" should match with "#nonescaped"
++dom/nodes/ParentNode-querySelector-escapes.html	"null�" should match with "#null\\0"
++dom/nodes/ParentNode-querySelector-escapes.html	"null�" should match with "#null\\0000"
 +dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange0" should never match with "#outOfRange\\110030"
++dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\110000"
++dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\110030"
++dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\555555"
++dom/nodes/ParentNode-querySelector-escapes.html	"outOfRange�" should match with "#outOfRange\\ffffff"
++dom/nodes/ParentNode-querySelector-escapes.html	"simple-ident" should match with "#simple-ident"
++dom/nodes/ParentNode-querySelector-escapes.html	"spaces in\tident" should match with "#spaces\\ in\\\tident"
++dom/nodes/ParentNode-querySelector-escapes.html	"spaces" should match with "#sp\\61\tc\\65\fs"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogatePair��" should match with "#surrogatePair\\d83d\\dd11"
 +dom/nodes/ParentNode-querySelector-escapes.html	"surrogatePair🔑" should never match with "#surrogatePair\\d83d\\dd11"
 +dom/nodes/ParentNode-querySelector-escapes.html	"surrogateSecond\udd11" should never match with "#surrogateSecond\\dd11"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogateSecond�" should match with "#surrogateSecond\\dd11"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogate�" should match with "#surrogate\\0DBAC"
++dom/nodes/ParentNode-querySelector-escapes.html	"surrogate�" should match with "#surrogate\\D800"
++dom/nodes/ParentNode-querySelector-escapes.html	"test" should match with "#te\\s\\t"
++dom/nodes/ParentNode-querySelector-escapes.html	"testing123" should match with "#testing123"
++dom/nodes/ParentNode-querySelector-escapes.html	"test힙" should match with "#test\\D799"
 +dom/nodes/ParentNode-querySelector-escapes.html	"zero\u0000" should never match with "#zero\\0"
 +dom/nodes/ParentNode-querySelector-escapes.html	"zero\u0000" should never match with "#zero\\000000"
++dom/nodes/ParentNode-querySelector-escapes.html	"zero�" should match with "#zero\\0"
++dom/nodes/ParentNode-querySelector-escapes.html	"zero�" should match with "#zero\\000000"
++dom/nodes/ParentNode-querySelector-escapes.html	" " should match with "# "
++dom/nodes/ParentNode-querySelector-escapes.html	"ሴ" should match with "#ሴ"
++dom/nodes/ParentNode-querySelector-escapes.html	" " should match with "# "
++dom/nodes/ParentNode-querySelector-escapes.html	"" should match with "#\\E000"
++dom/nodes/ParentNode-querySelector-escapes.html	"�surrogate" should match with "#\\00DFFFsurrogate"
++dom/nodes/ParentNode-querySelector-escapes.html	"�surrogateFirst" should match with "#\\d83d surrogateFirst"
++dom/nodes/ParentNode-querySelector-escapes.html	"𒍅" should match with "#𒍅"
++dom/nodes/ParentNode-querySelector-escapes.html	"🔑nonBMP" should match with "#\\1f511 nonBMP"
++dom/nodes/ParentNode-querySelector-escapes.html	"􀀀00" should match with "#\\10000000"
++dom/nodes/ParentNode-querySelector-escapes.html	"􏿿" should match with "#\\10fFfF"
++dom/nodes/ParentNode-querySelector-escapes.html	"􏿿0" should match with "#\\10fFfF0"
 +dom/nodes/ParentNode-querySelector-scope.html	querySelector with id and sibling
 +dom/nodes/ParentNode-querySelector-scope.html	querySelectorAll with id and sibling
 +dom/nodes/ParentNode-querySelectorAll-removed-elements.html	Untitled

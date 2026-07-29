@@ -437,6 +437,35 @@ g_comb:     Array[8, uint8]
 g_sel_adv:      int32 = 0
 
 
+# sel[i] is a '\' — return the index just past the whole CSS escape sequence
+# (`\` + 1-6 hex + one optional trailing whitespace, or `\` + one char). Used by
+# the tokenizers so a space that TERMINATES a hex escape (e.g. `#\30 x`) is not
+# mistaken for a descendant combinator.
+def _sel_esc_skip(sel: Ptr[uint8], i: int32, seln: int32) -> int32:
+    i = i + 1                                             # past '\'
+    if i >= seln:
+        return i
+    c: uint8 = sel[i]
+    ishex: int32 = 0
+    if (c >= 48 and c <= 57) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70):
+        ishex = 1
+    if ishex != 0:
+        h: int32 = 0
+        while i < seln and h < 6:
+            d: uint8 = sel[i]
+            if (d >= 48 and d <= 57) or (d >= 97 and d <= 102) or \
+               (d >= 65 and d <= 70):
+                i = i + 1
+                h = h + 1
+            else:
+                h = 6
+        if i < seln and (sel[i] == 32 or sel[i] == 9 or sel[i] == 10 or \
+                         sel[i] == 12 or sel[i] == 13):
+            i = i + 1
+        return i
+    return i + 1                                          # escaped single char
+
+
 def _sel_parse(sel: Ptr[uint8], seln: int32):
     n: int32 = seln
     if n > 255:
@@ -468,6 +497,9 @@ def _sel_parse(sel: Ptr[uint8], seln: int32):
         s: int32 = i
         while i < n:
             ch: uint8 = g_selbuf[i]
+            if ch == 92:                                  # '\' — keep whole escape
+                i = _sel_esc_skip(&g_selbuf[0], i, n)     # (its trailing space is
+                continue                                  #  NOT a combinator)
             if ch == 32 or ch == 62 or ch == 43 or ch == 126:
                 break
             if ch == 91:                                  # '[' — skip to ']'
@@ -516,6 +548,9 @@ def _sel_split(sel: Ptr[uint8], seln: int32):
         depthp: int32 = 0                                  # '(' ')' nesting
         while i < seln:
             ch: uint8 = sel[i]
+            if ch == 92:                                   # '\' — skip whole escape
+                i = _sel_esc_skip(sel, i, seln)
+                continue
             if ch == 91:
                 depthb = depthb + 1
             elif ch == 93:
