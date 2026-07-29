@@ -56,7 +56,7 @@ from kernel.softirq import (
 )
 from net.core.napi import (
     NapiStruct, napi_struct_init, napi_register, napi_schedule_irqoff,
-    net_rx_action,
+    net_rx_action, NAPI_MAX_POLLERS,
 )
 from mm.page_alloc import alloc_pages
 from mm.slab import kmalloc
@@ -698,7 +698,17 @@ def virtio_net_init() -> int32:
                      cast[Fn[None, uint64]](&_vnet_napi_disable_irq),
                      cast[Fn[None, uint64]](&_vnet_napi_enable_irq),
                      0)
-    napi_register(&vnet_state.napi)
+    # A FAILED registration means this RX queue is never visited by
+    # net_rx_action: the NIC comes up, negotiates features, populates its RX
+    # ring — and receives nothing, forever, with no diagnostic beyond the one
+    # line napi_register prints, which init used to walk straight past on its
+    # way to `return 0`. Refuse to report success for a NIC that cannot
+    # receive. The caller already treats a negative return as "no virtio-net
+    # attached", which is exactly the right degradation.
+    if napi_register(&vnet_state.napi) != 0:
+        printk1("[virtio-net] init ABORTED: NAPI poll list FULL (NAPI_MAX_POLLERS=%d) — this RX queue would never be polled\n",
+                NAPI_MAX_POLLERS)
+        return -1
     open_softirq(NET_RX_SOFTIRQ, virtio_net_rx_softirq)
     if vnet_state.msix_enabled != 0:
         # MSI-X path: each virtqueue has its own LAPIC vector, routed

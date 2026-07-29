@@ -512,8 +512,18 @@ def do_page_fault(error_code: uint64, fault_va: uint64,
         # a kernel copy_to_user into a uffd range is not modelled here.
         if is_user_fault != 0 and uffd_pagefault_hook_fn \
                 != cast[Fn[int32, uint64, uint64, int32]](0):
-            if uffd_pagefault_hook_fn(slot, fault_va, uffd_w) == 1:
+            uffd_rc: int32 = uffd_pagefault_hook_fn(slot, fault_va, uffd_w)
+            if uffd_rc == 1:
                 return cast[int64](1)
+            if uffd_rc == 2:
+                # The uffd OWNS this fault but could not tell its monitor
+                # (message queue full — the hook has already said so on the
+                # console, naming the cap). Returning 1 here would park the
+                # thread forever waiting on a fault nobody was told about;
+                # falling through to demand-zero would hand it a silently
+                # WRONG all-zero page. Fail the access instead: unhandled
+                # user fault, same path as a demand-fault OOM.
+                return cast[int64](0)
         # #167: a swapped-out anonymous page faults not-present with a
         # SWAP-ENTRY PTE (swap-marker bit set). Restore it from swap
         # BEFORE the demand-zero path — a demand VMA's evicted page must

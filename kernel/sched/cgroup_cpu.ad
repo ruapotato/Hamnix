@@ -424,7 +424,20 @@ def cgroup_pids_charge_fork(parent_slot: uint64, child_slot: uint64) -> int32:
         return 0
     # Inherit cgroup membership: the child joins the parent's cgroup
     # (cgroup v2: a fork keeps the parent's cgroup until migrated).
-    cgroup_cpu_attach(cast[int32](cg), child_slot)
+    #
+    # This dropped cgroup_cpu_attach's status and bumped pids_cur anyway,
+    # then returned 1 = "charged". Both halves were wrong at once: the child
+    # was NOT in the cgroup — so none of the CPU quota, throttling or
+    # pids.max the caller believes it just applied actually governed it —
+    # while pids.current counted it, permanently leaking a charge against a
+    # task the cgroup does not contain. A pids.max cgroup would then refuse
+    # forks it should have allowed, for the rest of its life, with nothing
+    # anywhere saying why.
+    if cgroup_cpu_attach(cast[int32](cg), child_slot) != 0:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[cgroup] fork charge REFUSED: task slot %d is outside the cgroup task table (CG_TASKMAX=%d); the child stays in the root cgroup and is NOT counted\n",
+                child_slot, CG_TASKMAX)
+        return -1
     g_cgroups[cg].pids_cur = g_cgroups[cg].pids_cur + 1
     return 1
 

@@ -133,7 +133,7 @@ def _feed_line(mode: int32, s: Ptr[uint8], n: uint64):
     if n == 0:
         return
     if mode == M_SEARCH:
-        hampkg_add_search_line(s, n)
+        hampkg_add_search_line(s, n)   # ignore-result: a refused row bumps pkg_truncated, which the status bar renders
     elif mode == M_LIST:
         hampkg_mark_installed_line(s, n)
     elif mode == M_SHOW:

@@ -27,7 +27,8 @@ from lib.htmlpaint import htmlpaint_load_ttf
 from lib.font_ttf import FACE_TT_SANS, FACE_TT_SANS_BOLD, FACE_TT_SERIF, \
     FACE_TT_MONO
 from lib.png import png_decode, png_width, png_height, png_rgba_ptr
-from lib.htmlimg import htmlimg_reset, htmlimg_add
+from lib.htmlimg import htmlimg_reset, htmlimg_add, \
+    htmlimg_dropped, htmlimg_drop_message, htmlimg_drop_message_len
 from lib.browserwin import browserwin_paint, browserwin_search_x0, \
     browserwin_search_w, browserwin_set_tabs, browserwin_set_tab_title, \
     browserwin_set_menu_open, browserwin_set_devtools, browserwin_set_zoom, \
@@ -130,8 +131,13 @@ def _decode_images(htmlpath: Ptr[char]):
                             FILE_CAP)
         if got > 0:
             if png_decode(&png_file_buf[0], cast[uint64](got)) == 0:
-                htmlimg_add(nm, nl, png_width(), png_height(), png_rgba_ptr())
+                htmlimg_add(nm, nl, png_width(), png_height(), png_rgba_ptr())   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
         idx = idx + 1
+    # LOUD ON INCOMPLETE. An <img> the store refused renders as nothing on a
+    # page that otherwise looks complete — a wrong render with no diagnostic.
+    # The store counts refusals; say so, naming the cap and its value.
+    if htmlimg_dropped() > 0:
+        sys_write(2, htmlimg_drop_message(), htmlimg_drop_message_len())
 
 
 def _write_ppm(path: Ptr[char], w: int32, h: int32) -> int32:

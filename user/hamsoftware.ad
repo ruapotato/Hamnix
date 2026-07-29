@@ -141,7 +141,7 @@ def _feed_line(mode: int32, s: Ptr[uint8], n: uint64):
     if n == 0:
         return
     if mode == M_SEARCH:
-        hampkg_add_search_line(s, n)
+        hampkg_add_search_line(s, n)   # ignore-result: a refused row bumps pkg_truncated, which the status bar renders
     elif mode == M_LIST:
         hampkg_mark_installed_line(s, n)
     elif mode == M_SHOW:
@@ -313,7 +313,9 @@ def _scan_registry() -> int32:
                         if desktop_liveonly() == 0 or _reg_is_live() != 0:
                             cat: Ptr[uint8] = desktop_category_name(
                                 desktop_catcode())
-                            hampkg_add_pkg(desktop_name_ptr(),
+                            # ignore-result: a refused row bumps
+                            # pkg_truncated, which the status bar renders.
+                            hampkg_add_pkg(desktop_name_ptr(),   # ignore-result
                                            desktop_name_len(),
                                            cast[Ptr[uint8]]("app"), 3,
                                            cat, _slen(cat), 1)

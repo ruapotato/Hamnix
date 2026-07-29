@@ -796,7 +796,8 @@ def _channels_load() -> int32:
         fd = sys_open(cast[Ptr[char]]("/etc/hpm/channels"))
     if fd < 0:
         # Missing file → default to `main`.
-        _channel_add_name(cast[Ptr[uint8]]("main"), 4)
+        if _channel_add_name(cast[Ptr[uint8]]("main"), 4) == -2:
+            write_str(2, "hpm: could not seed the default 'main' channel\n")
         return 0
     total: uint64 = 0
     while total < CHANNELS_READ_CAP:
@@ -864,7 +865,14 @@ def _channels_load() -> int32:
             i = i + 1
         channels_name_scratch[no] = 0
         if no > 0:
-            _channel_add_name(&channels_name_scratch[0], no)
+            # -2 = the table is full. A truncated channel list means the
+            # tail channels are NEVER FETCHED, so `hpm install <pkg>` says
+            # "not found" for a package that is right there in a configured
+            # channel. Report it, naming the cap; do not pretend the file
+            # was loaded whole.
+            if _channel_add_name(&channels_name_scratch[0], no) == -2:
+                write_str(2, "hpm: channel list TRUNCATED at CHANNEL_MAX=32 — the remaining channels in the file will NOT be fetched\n")
+                return -1
         # Skip to next line.
         while i < total and channels_read_buf[i] != 10:
             i = i + 1
@@ -872,8 +880,12 @@ def _channels_load() -> int32:
             i = i + 1
     if n_channels == 0:
         # File present but no usable channels — back-fill `main` so
-        # hpm doesn't sit in a no-channel state.
-        _channel_add_name(cast[Ptr[uint8]]("main"), 4)
+        # hpm doesn't sit in a no-channel state. n_channels == 0 means the
+        # table is empty, so this cannot be refused; a duplicate (-1) is
+        # equally impossible. Anything else is a real failure to report.
+        if _channel_add_name(cast[Ptr[uint8]]("main"), 4) == -2:
+            write_str(2, "hpm: could not seed the default 'main' channel\n")
+            return -1
     return 0
 
 

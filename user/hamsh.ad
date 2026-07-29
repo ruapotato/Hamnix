@@ -7918,7 +7918,14 @@ def eval_call(node: int32) -> int32:
                 if fi >= 0:
                     return val_elem[val_es[cast[uint64](d)] \
                         + cast[uint64](fi) * 2 + 1]
-                v_dict_set(d, key, dfl)
+                # `d.get(k, dflt)` STORES the default back and returns
+                # it as though stored. At LISTELEM_MAX it was not: the
+                # caller got dflt, the dict never gained the key, and the
+                # very next `d[k]` read handed back dflt again — a dict
+                # that silently refuses to remember. rt_raise is hamsh's
+                # established loud path; the fault stops the script.
+                if v_dict_set(d, key, dfl) == 0:
+                    return rt_raise("dict: value pool exhausted (LISTELEM_MAX) — d.get(k, default) could not store the default")
                 return dfl
             return dfl
         return 0
@@ -7933,8 +7940,11 @@ def eval_call(node: int32) -> int32:
                 oi: uint64 = 0
                 while oi < on:
                     ob: uint64 = val_es[cast[uint64](o)]
-                    v_dict_set(d, val_elem[ob + oi * 2],
-                               val_elem[ob + oi * 2 + 1])
+                    # A partial update is the `rm *` shape: half the pairs
+                    # copied, `update()` returning the dict as if whole.
+                    if v_dict_set(d, val_elem[ob + oi * 2],
+                                  val_elem[ob + oi * 2 + 1]) == 0:
+                        return rt_raise("dict: value pool exhausted (LISTELEM_MAX) — update() copied only part of the source dict")
                     oi = oi + 1
             return d
         return 0
@@ -12455,7 +12465,11 @@ def exec_index_assign(node: int32) -> int32:
             eval_status = 1
         return EX_NORMAL
     if ct == VT_DICT:
-        v_dict_set(cont, idx, rhs)
+        # `d[k] = v` that stores nothing and reports nothing is the same
+        # defect as the argv truncation that made `rm *` delete 62 of 230
+        # files and exit 0. Fail through hamsh's loud path instead.
+        if v_dict_set(cont, idx, rhs) == 0:
+            rt_raise("dict: value pool exhausted (LISTELEM_MAX) — d[k] = v did not store")
         return EX_NORMAL
     errstr_set("index-assign: target is not a list or dict")
     eval_status = 1

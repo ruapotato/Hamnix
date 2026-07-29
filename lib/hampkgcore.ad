@@ -80,6 +80,13 @@ CAT_N:      int32 = 4
 
 # ---- package model (parallel fixed arrays) ---------------------------------
 PKG_MAX: uint64 = 256
+
+# Rows the model REFUSED because it was already at PKG_MAX. A truncated
+# result list rendered as if complete is the browser-parity failure mode in
+# a different costume: the user searches, sees a full-looking page of hits,
+# and concludes the package they wanted does not exist. The model now knows
+# it is truncated and the UI says so — see hampkg_truncated().
+pkg_truncated: uint64 = 0
 NAME_CAP: uint64 = 48
 VER_CAP: uint64 = 24
 DESC_CAP: uint64 = 128
@@ -355,10 +362,17 @@ def hampkg_set_size(w: int32, h: int32):
 
 
 # ---- lifecycle -------------------------------------------------------------
+def hampkg_truncated() -> uint64:
+    # Rows dropped because the model was already at PKG_MAX. Nonzero means
+    # the list on screen is NOT the whole result set.
+    return pkg_truncated
+
+
 def hampkg_init():
     if search_h < 0:
         search_h = htb_new()
     pkg_count = 0
+    pkg_truncated = 0
     filt_count = 0
     sel_pkg = -1
     list_scroll = 0
@@ -369,6 +383,7 @@ def hampkg_init():
 
 def hampkg_reset_list():
     pkg_count = 0
+    pkg_truncated = 0
     filt_count = 0
     sel_pkg = -1
     list_scroll = 0
@@ -395,6 +410,7 @@ def hampkg_set_status(s: Ptr[uint8], n: uint64):
 # must_use: 1 = parsed and added, 0 = the package table is FULL (PKG_MAX) or the line was unparseable — the result set is silently short.
 def hampkg_add_search_line(s: Ptr[uint8], n: uint64) -> int32:
     if pkg_count >= cast[int32](PKG_MAX):
+        pkg_truncated = pkg_truncated + 1
         return 0
     i: uint64 = 0
     # skip leading spaces
@@ -451,6 +467,7 @@ def hampkg_add_pkg(name: Ptr[uint8], nlen: uint64, ver: Ptr[uint8],
                    vlen: uint64, desc: Ptr[uint8], dlen: uint64,
                    installed: int32) -> int32:
     if pkg_count >= cast[int32](PKG_MAX):
+        pkg_truncated = pkg_truncated + 1
         return 0
     if nlen == 0:
         return 0
@@ -963,7 +980,15 @@ def hampkg_build_scene():
     hamscene_fill(0, sy, ww, wh - sy,
                   cast[Ptr[uint8]]("#dfe2e8"))
     hamscene_stroke(0, sy, ww, 1, 1, cast[Ptr[uint8]]("#b8bec6"))
-    if status_len > 0:
+    if pkg_truncated > 0:
+        # TRUNCATION WINS THE STATUS BAR. A result list that is silently cut
+        # at PKG_MAX looks exactly like a complete one, and the user concludes
+        # the package they searched for does not exist. Say so, and name the
+        # cap and its value.
+        hamscene_glyphs(8, sy + 4,
+                        cast[Ptr[uint8]]("List TRUNCATED at PKG_MAX=256 results - narrow your search"),
+                        cast[Ptr[uint8]]("#a03030"))
+    elif status_len > 0:
         status[cast[uint64](status_len)] = 0
         hamscene_glyphs(8, sy + 4, &status[0],
                         cast[Ptr[uint8]]("#303540"))

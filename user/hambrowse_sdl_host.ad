@@ -56,7 +56,8 @@ from lib.png import png_decode, png_width, png_height, png_rgba_ptr
 from lib.jpeg import jpeg_decode, jpeg_width, jpeg_height, jpeg_rgba_ptr
 from lib.gif import gif_decode, gif_width, gif_height, gif_rgba_ptr
 from lib.svg import svg_decode, svg_width, svg_height, svg_rgba_ptr, svg_sniff
-from lib.htmlimg import htmlimg_reset, htmlimg_add
+from lib.htmlimg import htmlimg_reset, htmlimg_add, \
+    htmlimg_dropped, htmlimg_drop_message, htmlimg_drop_message_len
 from lib.browserwin import browserwin_paint, browserwin_addr_caret_at, \
     browserwin_url_box_w
 from lib.browserhistory import browserhist_reset, browserhist_push, \
@@ -239,22 +240,27 @@ def _decode_images():
         if got >= 2:
             if png_file_buf[0] == 137 and png_file_buf[1] == 80:
                 if png_decode(&png_file_buf[0], cast[uint64](got)) == 0:
-                    htmlimg_add(nm, nl, png_width(), png_height(),
+                    htmlimg_add(nm, nl, png_width(), png_height(),   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
                                 png_rgba_ptr())
             elif png_file_buf[0] == 255 and png_file_buf[1] == 216:
                 if jpeg_decode(&png_file_buf[0], cast[uint64](got)) == 0:
-                    htmlimg_add(nm, nl, jpeg_width(), jpeg_height(),
+                    htmlimg_add(nm, nl, jpeg_width(), jpeg_height(),   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
                                 jpeg_rgba_ptr())
             elif png_file_buf[0] == 71 and png_file_buf[1] == 73 and \
                  png_file_buf[2] == 70 and png_file_buf[3] == 56:
                 if gif_decode(&png_file_buf[0], cast[uint64](got)) == 0:
-                    htmlimg_add(nm, nl, gif_width(), gif_height(),
+                    htmlimg_add(nm, nl, gif_width(), gif_height(),   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
                                 gif_rgba_ptr())
             elif svg_sniff(&png_file_buf[0], cast[uint64](got)) != 0:
                 if svg_decode(&png_file_buf[0], cast[uint64](got)) == 0:
-                    htmlimg_add(nm, nl, svg_width(), svg_height(),
+                    htmlimg_add(nm, nl, svg_width(), svg_height(),   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
                                 svg_rgba_ptr())
         idx = idx + 1
+    # LOUD ON INCOMPLETE. An <img> the store refused renders as nothing on a
+    # page that otherwise looks complete — a wrong render with no diagnostic.
+    # The store counts refusals; say so, naming the cap and its value.
+    if htmlimg_dropped() > 0:
+        sys_write(2, htmlimg_drop_message(), htmlimg_drop_message_len())
 
 
 # ====================================================================

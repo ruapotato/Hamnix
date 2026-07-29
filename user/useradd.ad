@@ -562,7 +562,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
 
     # 2. The centerpiece: per-user home file server on the shared ext4.
     rc: int32 = sys_useradd_root(name)
-    if rc != 0:
+    if rc == 1:
+        # PARTIAL, and said so: the home file server exists on disk and the
+        # next boot's sentinel parse registers it, but `#<name>` is not
+        # resolvable in THIS boot because the kernel name stack was full.
+        # Re-running would not help, so this is a warning, not a failure —
+        # what must never happen (and used to) is silence.
+        write_str(2, "useradd: warning: home file server created, but '#<name>' is not live until the next boot (kernel name stack full)\n")
+    elif rc != 0:
         if rc == -1:
             write_str(2, "useradd: permission denied (must be hostowner)\n")
         elif rc == -17:

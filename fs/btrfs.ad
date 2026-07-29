@@ -221,7 +221,17 @@ def _bt_log_to_phys(logical: uint64, out: Ptr[uint64]) -> int32:
 
 # Parse a single CHUNK_ITEM payload (at `cp`, the start of the chunk
 # record) for the chunk that begins at logical `chunk_logical`, and add
-# it to the map. Single-stripe only. Returns 1 if added, 0 otherwise.
+# it to the map. Single-stripe only.
+#
+#   1  = recorded in the chunk map (or already known)
+#   0  = not a single-stripe chunk record; nothing to record
+#  -1  = THE CHUNK MAP IS FULL. Distinguishing this from 0 is the whole
+#        point: the old code dropped _bt_chunk_add's status and returned 1
+#        ("parsed OK") regardless, so a full map produced a mount that
+#        looked fine and then failed with "unmapped logical 0x..." on some
+#        unrelated read, arbitrarily far from the cause. A caller must
+#        treat -1 as a mount failure, not as a parsed chunk.
+# must_use: 1 = recorded, 0 = not a single-stripe record, -1 = the chunk map is FULL (BTRFS_MAX_CHUNKS) and this range stays UNMAPPABLE.
 def _bt_parse_chunk_item(chunk_logical: uint64, cp: Ptr[uint8]) -> int32:
     length:      uint64 = _bt_rd_u64(cp)
     num_stripes: uint16 = _bt_rd_u16(
@@ -231,7 +241,10 @@ def _bt_parse_chunk_item(chunk_logical: uint64, cp: Ptr[uint8]) -> int32:
         return 0
     stripe_off: uint64 = _bt_rd_u64(
         cast[Ptr[uint8]](cast[uint64](cp) + 48 + 8))
-    _bt_chunk_add(chunk_logical, length, stripe_off)
+    if _bt_chunk_add(chunk_logical, length, stripe_off) != 0:
+        printk2("btrfs: chunk map FULL (BTRFS_MAX_CHUNKS=%d) at logical 0x%x — refusing to mount with a partial map\n",
+                BTRFS_MAX_CHUNKS, chunk_logical)
+        return -1
     return 1
 
 
@@ -406,7 +419,9 @@ def btrfs_mount(dev_slot: int32) -> int32:
             cp: Ptr[uint8] = cast[Ptr[uint8]](arr + pos + 17)
             num_stripes: uint16 = _bt_rd_u16(
                 cast[Ptr[uint8]](cast[uint64](cp) + 44))
-            _bt_parse_chunk_item(k_off, cp)
+            if _bt_parse_chunk_item(k_off, cp) < 0:
+                btrfs_dev_slot = -1
+                return -1
             # Advance: chunk_item header (48) + num_stripes*stripe(32).
             rec: uint64 = 48 + cast[uint64](num_stripes) * 32
             pos = pos + 17 + rec
@@ -452,7 +467,8 @@ def _bt_read_chunk_tree() -> int32:
         k_off:  uint64 = _bt_rd_u64(
             cast[Ptr[uint8]](cast[uint64](it) + 9))
         if k_type == BTRFS_CHUNK_ITEM_KEY:
-            _bt_parse_chunk_item(k_off, _bt_leaf_item_data(i))
+            if _bt_parse_chunk_item(k_off, _bt_leaf_item_data(i)) < 0:
+                return -1
         i = i + 1
     return 0
 

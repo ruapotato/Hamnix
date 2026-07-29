@@ -29,10 +29,123 @@ name_buf:  Array[8192, uint8]
 name_used: uint64 = 0
 
 
+# EXHAUSTION ACCOUNTING. An <img> the store refuses renders as NOTHING on a
+# page that otherwise looks complete — a wrong render with no diagnostic,
+# which is precisely the browser-parity failure mode this project cares most
+# about. The store therefore records every refusal AND why, so the driver can
+# say so instead of the page quietly losing pictures.
+#
+#   1 = MAX_IMG slots      2 = IMG_ARENA_CAP pixel bytes   3 = NAME_CAP
+IMGDROP_SLOTS: int32 = 1
+IMGDROP_BYTES: int32 = 2
+IMGDROP_NAMES: int32 = 3
+
+img_dropped:     uint64 = 0    # images refused since the last reset
+img_drop_reason: int32  = 0    # the FIRST reason hit (IMGDROP_*)
+img_drop_bytes:  uint64 = 0    # pixel bytes the refused images needed
+
+
+def htmlimg_dropped() -> uint64:
+    # Nonzero => the page you are looking at is MISSING images.
+    return img_dropped
+
+
+def htmlimg_drop_reason() -> int32:
+    return img_drop_reason
+
+
+def htmlimg_drop_bytes() -> uint64:
+    return img_drop_bytes
+
+
+def htmlimg_arena_used() -> uint64:
+    # Peak pixel bytes actually stored — the measurement that has to justify
+    # IMG_ARENA_CAP if anyone ever changes it.
+    return arena_used
+
+
+def _imgdrop(reason: int32, nbytes: uint64):
+    img_dropped = img_dropped + 1
+    img_drop_bytes = img_drop_bytes + nbytes
+    if img_drop_reason == 0:
+        img_drop_reason = reason
+
+
+htmlimg_msg_buf: Array[192, uint8]
+
+
+def _him_puts(p: uint64, t: Ptr[uint8]) -> uint64:
+    i: uint64 = 0
+    while t[i] != 0:
+        htmlimg_msg_buf[p] = t[i]
+        p = p + 1
+        i = i + 1
+    return p
+
+
+def _him_dec(p: uint64, v: uint64) -> uint64:
+    if v == 0:
+        htmlimg_msg_buf[p] = 48
+        return p + 1
+    d: Array[24, uint8]
+    n: uint64 = 0
+    while v > 0:
+        d[n] = cast[uint8](48 + (v % 10))
+        v = v / 10
+        n = n + 1
+    while n > 0:
+        n = n - 1
+        htmlimg_msg_buf[p] = d[n]
+        p = p + 1
+    return p
+
+
+def htmlimg_drop_message() -> Ptr[uint8]:
+    # NUL-terminated one-line diagnostic naming the cap that was hit, its
+    # VALUE, how many images were lost and how many pixel bytes they needed.
+    # Empty (leading NUL) when nothing was dropped. Pure — the driver writes
+    # it with whatever it has.
+    if img_dropped == 0:
+        htmlimg_msg_buf[0] = 0
+        return &htmlimg_msg_buf[0]
+    p: uint64 = _him_puts(0, "hambrowse: ")
+    p = _him_dec(p, img_dropped)
+    p = _him_puts(p, " image(s) NOT rendered - decoded-image store full: ")
+    if img_drop_reason == IMGDROP_SLOTS:
+        p = _him_puts(p, "MAX_IMG=")
+        p = _him_dec(p, MAX_IMG)
+        p = _him_puts(p, " slots")
+    elif img_drop_reason == IMGDROP_NAMES:
+        p = _him_puts(p, "NAME_CAP=")
+        p = _him_dec(p, NAME_CAP)
+        p = _him_puts(p, " name bytes")
+    else:
+        p = _him_puts(p, "IMG_ARENA_CAP=")
+        p = _him_dec(p, IMG_ARENA_CAP)
+        p = _him_puts(p, " pixel bytes (used ")
+        p = _him_dec(p, arena_used)
+        p = _him_puts(p, ", needed ")
+        p = _him_dec(p, img_drop_bytes)
+        p = _him_puts(p, " more)")
+    p = _him_puts(p, "; the page above is INCOMPLETE\n")
+    htmlimg_msg_buf[p] = 0
+    return &htmlimg_msg_buf[0]
+
+
+def htmlimg_drop_message_len() -> uint64:
+    n: uint64 = 0
+    while htmlimg_msg_buf[n] != 0:
+        n = n + 1
+    return n
+
+
 def htmlimg_reset():
     n_img = 0
     arena_used = 0
     name_used = 0
+    img_dropped = 0
+    img_drop_reason = 0
+    img_drop_bytes = 0
 
 
 def _name_eq(aoff: uint64, alen: uint64, b: Ptr[uint8], blen: uint64) -> int32:
@@ -65,12 +178,17 @@ def htmlimg_add(name: Ptr[uint8], namelen: uint64, w: int32, h: int32,
     ex: int32 = htmlimg_find(name, namelen)
     if ex >= 0:
         return ex
-    if n_img >= MAX_IMG or w <= 0 or h <= 0:
-        return -1
     nbytes: uint64 = cast[uint64](w) * cast[uint64](h) * 4
+    if w <= 0 or h <= 0:
+        return -1
+    if n_img >= MAX_IMG:
+        _imgdrop(IMGDROP_SLOTS, nbytes)
+        return -1
     if arena_used + nbytes > IMG_ARENA_CAP:
+        _imgdrop(IMGDROP_BYTES, nbytes)
         return -1
     if name_used + namelen > NAME_CAP:
+        _imgdrop(IMGDROP_NAMES, nbytes)
         return -1
     slot: uint64 = n_img
     img_off[slot] = arena_used
@@ -103,12 +221,17 @@ def htmlimg_count() -> uint64:
 # alias an earlier render. The caller draws directly through htmlimg_buf_ptr().
 def htmlimg_add_blank(name: Ptr[uint8], namelen: uint64, w: int32,
                       h: int32) -> int32:
-    if n_img >= MAX_IMG or w <= 0 or h <= 0:
-        return -1
     nbytes: uint64 = cast[uint64](w) * cast[uint64](h) * 4
+    if w <= 0 or h <= 0:
+        return -1
+    if n_img >= MAX_IMG:
+        _imgdrop(IMGDROP_SLOTS, nbytes)
+        return -1
     if arena_used + nbytes > IMG_ARENA_CAP:
+        _imgdrop(IMGDROP_BYTES, nbytes)
         return -1
     if name_used + namelen > NAME_CAP:
+        _imgdrop(IMGDROP_NAMES, nbytes)
         return -1
     slot: uint64 = n_img
     img_off[slot] = arena_used

@@ -187,7 +187,10 @@ def napi_register(napi: Ptr[NapiStruct]) -> int32:
     # Add a napi to the poll list so net_rx_action visits it. Called once
     # per RX queue at driver init (after napi_struct_init).
     if napi_poll_n >= NAPI_MAX_POLLERS:
-        printk0("[napi] poll list full — cannot register\n")
+        # NAME the limit and its value: "poll list full" alone leaves the
+        # reader guessing which constant to change and what it currently is.
+        printk1("[napi] poll list FULL (NAPI_MAX_POLLERS=%d) — cannot register; this RX queue would never be polled\n",
+                NAPI_MAX_POLLERS)
         return -1
     napi_poll_list[napi_poll_n] = cast[uint64](napi)
     napi_poll_n = napi_poll_n + 1

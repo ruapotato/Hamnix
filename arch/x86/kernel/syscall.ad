@@ -5290,8 +5290,24 @@ def do_syscall(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
                                           &ua_pu[0], 40) == 0:
                 # chan_ref = the ext4 root block slot; dir == username, so
                 # `#<name>` composes to /ext/<name>/... on that partition.
-                name_push(&ua_kname[0], cast[uint64](ua_slot),
-                          &ua_pu[0], &ua_kname[0])
+                #
+                # This dropped name_push's status and returned 0 = "user
+                # created" regardless. When the word table or the depth cap
+                # rejected the push, `#<name>` was NOT resolvable this boot,
+                # useradd printed nothing, and the user's very next action
+                # (binding their home) failed with the misleading "mount
+                # table full" this same arm's comment above already blames
+                # on a different silent skip. name_push is loud in dmesg —
+                # the syscall now carries that fact to its caller.
+                if name_push(&ua_kname[0], cast[uint64](ua_slot),
+                             &ua_pu[0], &ua_kname[0]) != 0:
+                    set_current_errstr("useradd: home server created on disk, but '#<name>' could NOT be registered live (name stack full) — it resolves after a reboot")
+                    # 1 = "created, NOT live this boot". Distinct from 0
+                    # (fully done) and from a negative errno (nothing done);
+                    # user/useradd.ad renders it as a warning, because the
+                    # on-disk half really did succeed and re-running would
+                    # not help.
+                    return 1
         return 0
     if nr == SYS_SVC_PUBLISH:
         # /proc/svc Phase 6: the userland service supervisor pushes

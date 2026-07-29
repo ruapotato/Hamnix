@@ -67,8 +67,9 @@ from fs.vfs import (
     vfs_alloc_l2_fd, vfs_fd_marker,
 )
 from kernel.printk.printk import (
-    printk0, printk1, printk2,
+    printk0, printk1, printk2, printk_set_level,
 )
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_WARN
 # F4 #449 leaf inversion: arch/x86/kernel/trap_diag.ad exposes a registration
 # entry point that plants our pagefault routine into its hook pointer. The
 # import direction is shim → native, restoring the leaf invariant.
@@ -164,6 +165,15 @@ UFFD_PAGE_SIZE: uint64 = 4096
 UFFD_MAX:        uint64 = 8       # max live uffd objects
 UFFD_MAX_RANGES: uint64 = 4       # registered ranges per uffd
 UFFD_MAX_QUEUE:  uint64 = 8       # pending messages per uffd (power of 2)
+
+# Monotonic count of PAGEFAULT messages the queue refused. A nonzero value
+# means some faulting thread was told nothing; it is printed (rate-limited)
+# and readable by the selftest, so the condition can never be silent again.
+uffd_q_drops: uint64 = 0
+
+
+def uffd_queue_drops() -> uint64:
+    return uffd_q_drops
 
 uffd_used:   Array[8, uint8]
 uffd_task:   Array[8, int32]
@@ -299,6 +309,19 @@ def _uffd_q_pop(slot: uint64, out_addr: Ptr[uint64],
     return 0
 
 
+def _uffd_q_peek(slot: uint64, out_addr: Ptr[uint64],
+                 out_flags: Ptr[uint64]) -> int32:
+    # Read the oldest message WITHOUT consuming it. Returns 0, or -1 if the
+    # queue is empty. This exists so uffd_read can commit the dequeue only
+    # after the copy_to_user has succeeded — see the comment there.
+    if _uffd_q_count(slot) == 0:
+        return -1
+    h: uint64 = uffd_q_head[slot]
+    out_addr[0]  = uffd_q_addr[slot * UFFD_MAX_QUEUE + h]
+    out_flags[0] = uffd_q_flags[slot * UFFD_MAX_QUEUE + h]
+    return 0
+
+
 # =====================================================================
 # userfaultfd(flags)  --  nr 323
 # =====================================================================
@@ -369,8 +392,20 @@ def uffd_read(fd: int32, buf: uint64, count: uint64) -> int64:
         return UFFD_EINVAL
     addr: uint64 = 0
     flags: uint64 = 0
-    if _uffd_q_pop(slot, cast[Ptr[uint64]](&addr),
-                   cast[Ptr[uint64]](&flags)) != 0:
+    # PEEK, don't pop. This used to pop the message, and on a copy_to_user
+    # failure push it BACK with the comment "Re-queue the message so it is
+    # not lost" — without checking that the re-queue succeeded. If the queue
+    # was full (UFFD_MAX_QUEUE) the message really was lost, the monitor
+    # never saw that fault, and the faulting thread blocked forever. The
+    # comment stated a guarantee the code did not provide.
+    #
+    # The fix is not to check the re-queue; it is to make the re-queue
+    # unnecessary. The dequeue is committed only once the bytes are known to
+    # have reached userspace, so there is no window in which the message is
+    # out of the queue and not yet delivered — and therefore no capacity
+    # limit to hit on the way back in.
+    if _uffd_q_peek(slot, cast[Ptr[uint64]](&addr),
+                    cast[Ptr[uint64]](&flags)) != 0:
         return UFFD_EAGAIN
     # Assemble the 32-byte uffd_msg in a kernel buffer, then copy_to_user.
     msg: Array[32, uint8]
@@ -379,8 +414,16 @@ def uffd_read(fd: int32, buf: uint64, count: uint64) -> int64:
     cast[Ptr[uint64]](cast[uint64](&msg[8]))[0]  = flags
     cast[Ptr[uint64]](cast[uint64](&msg[16]))[0] = addr
     if copy_to_user(buf, cast[uint64](&msg[0]), 32) != 0:
-        # Re-queue the message so it is not lost on a bad buffer.
-        _uffd_q_push(slot, addr, flags)
+        # Nothing to undo: the message is still at the queue head and the
+        # next read (with a good buffer) delivers it.
+        return UFFD_EFAULT
+    # Delivery is committed — now consume it.
+    d_addr: uint64 = 0
+    d_flags: uint64 = 0
+    if _uffd_q_pop(slot, cast[Ptr[uint64]](&d_addr),
+                   cast[Ptr[uint64]](&d_flags)) != 0:
+        # Unreachable: we just peeked a non-empty queue with no intervening
+        # dequeue (this fd is drained only from this task's read path).
         return UFFD_EFAULT
     return 32
 
@@ -649,10 +692,27 @@ def uffd_pagefault_hook(task_slot: uint64, fault_va: uint64,
                 if is_write != 0:
                     flags = UFFD_PAGEFAULT_FLAG_WRITE
                 # Enqueue the pagefault message for the userspace handler.
-                # If the queue is full we still claim the fault (return 1) so
-                # we never demand-zero a uffd page — the handler drains and
-                # re-arms; a dropped message degrades to the handler polling.
-                _uffd_q_push(s, fault_va, flags)
+                # A FULL queue is not a degradation to "the handler polls" —
+                # there is nothing to poll, because the message the handler
+                # would poll for is the one we just dropped. The old code
+                # returned 1 anyway, so the faulting thread parked forever on
+                # a fault the monitor was never told about: a hang with no
+                # diagnostic, which is the worst possible shape.
+                #
+                # Now the drop is reported (naming UFFD_MAX_QUEUE and its
+                # value) and the hook returns 2 = "uffd owns this fault and
+                # CANNOT deliver it". do_page_fault turns a 2 into an
+                # unhandled user fault, so the process dies with a reason
+                # instead of hanging. It must never fall through to the
+                # demand-zero path — that would hand the process a silently
+                # wrong (all-zero) page, which is worse than either.
+                if _uffd_q_push(s, fault_va, flags) != 0:
+                    uffd_q_drops = uffd_q_drops + 1
+                    if uffd_q_drops <= 8:
+                        printk_set_level(PRINTK_LEVEL_WARN)
+                        printk2("[uffd] fault queue FULL (UFFD_MAX_QUEUE=%d): dropping the PAGEFAULT message for va=%p; the handler is not draining\n",
+                                UFFD_MAX_QUEUE, fault_va)
+                    return 2
                 return 1
         s = s + 1
     return 0
@@ -939,6 +999,64 @@ def _userfaultfd_selftest_body() -> int32:
             return 0
         z = z + 1
     printk0("[USERFAULTFD] PASS UFFDIO_ZEROPAGE installs an all-zero page\n")
+
+    # --- (10) MESSAGE LOSS is impossible / reported -------------------
+    # (a) uffd_read used to POP the message, then on a copy_to_user failure
+    #     push it back with the comment "Re-queue the message so it is not
+    #     lost" and NOT check the push. A full queue meant the message really
+    #     was lost: the monitor never learned about that fault and the
+    #     faulting thread waited forever. Assert on the EFFECT — after a
+    #     FAILED read the message is STILL THERE and a good read delivers the
+    #     same address. Reverting to pop-then-requeue with a full queue
+    #     fails this.
+    third: uint64 = base + 2 * UFFD_PAGE_SIZE
+    if uffd_pagefault_hook(slot, third, 0) != 1:
+        printk0("[USERFAULTFD] FAIL hook did not claim page-3 fault\n")
+        return 0
+    # Fill the REST of the queue so a re-queue could not possibly succeed.
+    qf: uint64 = 0
+    while qf < UFFD_MAX_QUEUE:
+        if _uffd_q_push(slot, third + 0x1000 * (qf + 1), 0) != 0:
+            qf = UFFD_MAX_QUEUE
+        else:
+            qf = qf + 1
+    # A read into a bad user buffer must fail WITHOUT consuming the message.
+    bad: int64 = uffd_read(fd, 0x1, 32)
+    if bad != UFFD_EFAULT:
+        printk1("[USERFAULTFD] FAIL bad-buffer read rc=%d, expected EFAULT\n",
+                cast[uint64](bad))
+        return 0
+    rdn = uffd_read(fd, msg_p, 32)
+    if rdn != 32:
+        printk1("[USERFAULTFD] FAIL message LOST after a failed read (rc=%d)\n",
+                cast[uint64](rdn))
+        return 0
+    if _uffd_st_get64(msg_p, 16) != third:
+        printk1("[USERFAULTFD] FAIL failed read consumed/reordered the queue (got 0x%x)\n",
+                _uffd_st_get64(msg_p, 16))
+        return 0
+    printk0("[USERFAULTFD] PASS a FAILED read leaves the message queued (no re-queue, nothing to lose)\n")
+
+    # (b) a fault that CANNOT be reported must not be claimed as reported.
+    #     The queue is still full from the fill above; the hook must return 2
+    #     ("owned but undeliverable") and count the drop, so do_page_fault
+    #     fails the access loudly instead of parking the thread forever.
+    drops_before: uint64 = uffd_queue_drops()
+    qf = 0
+    while qf < UFFD_MAX_QUEUE + 2:
+        if _uffd_q_push(slot, third + 0x2000 * (qf + 1), 0) != 0:
+            qf = UFFD_MAX_QUEUE + 2
+        else:
+            qf = qf + 1
+    hook_rc: int32 = uffd_pagefault_hook(slot, base + 3 * UFFD_PAGE_SIZE, 0)
+    if hook_rc != 2:
+        printk1("[USERFAULTFD] FAIL full-queue fault claimed as delivered (hook=%d, expected 2)\n",
+                cast[uint64](hook_rc))
+        return 0
+    if uffd_queue_drops() != drops_before + 1:
+        printk0("[USERFAULTFD] FAIL the dropped PAGEFAULT message was not counted\n")
+        return 0
+    printk0("[USERFAULTFD] PASS a full queue REPORTS the undeliverable fault (hook=2) instead of hanging the thread\n")
 
     # --- cleanup -----------------------------------------------------
     uffd_close_fd(slot, fd)

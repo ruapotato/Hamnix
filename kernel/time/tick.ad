@@ -34,6 +34,7 @@
 from kernel.printk.printk import printk0, printk1, printk2
 from kernel.time.clocksource import (
     clocksource_read_ns, clocksource_register, clocksource_is_selected,
+    MAX_CLOCKSOURCES,
     clocksource_current_name,
     CS_NAME_TSC, CS_NAME_HPET, CS_NAME_JIFFIES,
 )
@@ -172,6 +173,14 @@ def _tick_sched_timer_cb(cookie: uint64) -> int64:
 
 # --- init ------------------------------------------------------------
 
+def _tick_cs_reject(name_id: uint64):
+    # A clocksource the table REFUSED. Silence here means timekeeping runs
+    # on a worse source than the hardware offers and every derived duration
+    # is wrong with no diagnostic — so name the source and the cap.
+    printk2("tick: clocksource id=%d REJECTED — table full (MAX_CLOCKSOURCES=%d); timekeeping keeps the previous, possibly worse, source\n",
+            name_id, MAX_CLOCKSOURCES)
+
+
 def tick_init() -> int32:
     # Bring the whole time subsystem online. Order matters:
     #   1. hrtimer subsystem reset
@@ -184,24 +193,34 @@ def tick_init() -> int32:
     # frequency + LAPIC timer Hz are known.
     hrtimer_init_subsys()
 
+    # Registration is LATENT-silent no longer. Three sources go into a table
+    # of MAX_CLOCKSOURCES=8, so today none of these can fail — but nothing
+    # keeps it that way, and the failure mode is the nasty kind: timekeeping
+    # quietly keeps a WORSE source (jiffies instead of the TSC) and every
+    # downstream measurement is wrong by a factor nobody can see. Name the
+    # source and the cap when it happens.
+    #
     # jiffies: always available, rating 1 (last resort).
-    clocksource_register(CS_NAME_JIFFIES, cast[uint64](&_cs_read_jiffies),
-                         0xFFFFFFFFFFFFFFFF, 100, 1)
+    if clocksource_register(CS_NAME_JIFFIES, cast[uint64](&_cs_read_jiffies),
+                            0xFFFFFFFFFFFFFFFF, 100, 1) < 0:
+        _tick_cs_reject(CS_NAME_JIFFIES)
     # HPET: rating 250 if the controller probed.
     if hpet_available() != 0:
         hz: uint64 = hpet_frequency_hz()
         if hz != 0:
             # HPET main counter is at least 32-bit (QEMU exposes 64-bit);
             # use a 64-bit mask — _hpet_read64 returns the full counter.
-            clocksource_register(CS_NAME_HPET,
-                                 cast[uint64](&_cs_read_hpet),
-                                 0xFFFFFFFFFFFFFFFF, hz, 250)
+            if clocksource_register(CS_NAME_HPET,
+                                    cast[uint64](&_cs_read_hpet),
+                                    0xFFFFFFFFFFFFFFFF, hz, 250) < 0:
+                _tick_cs_reject(CS_NAME_HPET)
     # TSC: rating 300 (ideal) if calibrated.
     if tsc_calibrated() != 0:
         thz: uint64 = tsc_hz_get()
         if thz != 0:
-            clocksource_register(CS_NAME_TSC, cast[uint64](&_cs_read_tsc),
-                                 0xFFFFFFFFFFFFFFFF, thz, 300)
+            if clocksource_register(CS_NAME_TSC, cast[uint64](&_cs_read_tsc),
+                                    0xFFFFFFFFFFFFFFFF, thz, 300) < 0:
+                _tick_cs_reject(CS_NAME_TSC)
 
     if clocksource_is_selected() == 0:
         printk0("tick: NO clocksource selected — staying on jiffies tick\n")

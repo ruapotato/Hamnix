@@ -58,7 +58,8 @@ from lib.png import png_decode, png_width, png_height, png_rgba_ptr
 from lib.jpeg import jpeg_decode, jpeg_width, jpeg_height, jpeg_rgba_ptr
 from lib.gif import gif_decode, gif_width, gif_height, gif_rgba_ptr
 from lib.svg import svg_decode, svg_width, svg_height, svg_rgba_ptr, svg_sniff
-from lib.htmlimg import htmlimg_reset, htmlimg_add
+from lib.htmlimg import htmlimg_reset, htmlimg_add, \
+    htmlimg_dropped, htmlimg_drop_message, htmlimg_drop_message_len
 from lib.font_ttf import FACE_TT_SANS, FACE_TT_SANS_BOLD, FACE_TT_SERIF, \
     FACE_TT_MONO
 
@@ -652,10 +653,15 @@ def _decode_images(htmlpath: Ptr[char]):
             _o_dec(cast[int64](iw))
             _o_ch(32)
             _o_dec(cast[int64](ih))
-            htmlimg_add(nm, nl, iw, ih, rp)
+            htmlimg_add(nm, nl, iw, ih, rp)   # ignore-result: a refusal bumps htmlimg_dropped(), reported below
         _o_ch(10)
         _o_flush()
         idx = idx + 1
+    # LOUD ON INCOMPLETE. An <img> the store refused renders as nothing on a
+    # page that otherwise looks complete — a wrong render with no diagnostic.
+    # The store counts refusals; say so, naming the cap and its value.
+    if htmlimg_dropped() > 0:
+        sys_write(2, htmlimg_drop_message(), htmlimg_drop_message_len())
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
