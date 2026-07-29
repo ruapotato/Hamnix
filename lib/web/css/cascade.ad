@@ -447,6 +447,13 @@ pos_b:    Array[64, int32]
 pos_z:    Array[64, int32]       # z-index (stacking order; 0 = auto/default)
 pos_bf0:  Array[64, int32]       # first bfill (block background) of the run
 pos_bf1:  Array[64, int32]       # one past the last bfill of the run
+# Explicit-height PIXEL PIN range of the run (hpin_* in lib/web/layout/box.ad).
+# A positioned box is laid out at its STATIC position and then relocated by
+# `drow` rows; its pins name row indices, so they must travel with it or they
+# would resize the rows the box no longer occupies — corrupting whatever IN-FLOW
+# content moved into them, and leaving the box itself unpinned.
+pos_hp0:  Array[64, int32]
+pos_hp1:  Array[64, int32]
 # width:auto marker (1) for an absolute/fixed box: with no explicit width the box
 # SHRINK-TO-FITs its content (CSS 10.3.7) instead of taking the containing-block
 # width, so a `top;right`-anchored auto-width badge is a small top-right box, not

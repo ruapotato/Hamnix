@@ -178,6 +178,8 @@ def _register_pos(seg0: int32, mode: int32, fxk: int32, ox: int32, ort: int32, \
     pos_z[ri]    = pz
     pos_bf0[ri]  = n_bfills            # backgrounds of this box start here
     pos_bf1[ri]  = n_bfills
+    pos_hp0[ri]  = n_hpins             # explicit-height pixel pins start here
+    pos_hp1[ri]  = n_hpins
     pos_bx0[ri]  = n_bboxes            # drawn border rectangles of this box
     pos_bx1[ri]  = n_bboxes
     pos_wauto[ri] = 0                  # explicit width unless the caller flags auto
@@ -451,6 +453,25 @@ def _apply_positioned():
                     total_rows = cast[uint64](nb)
             bfill_z[bf] = pos_z[i]
             bf = bf + 1
+        # Move this box's explicit-height PIXEL PINS with it. A pin names ROW
+        # INDICES, and the box was just relocated by `drow` rows; a pin left behind
+        # would size the rows the box no longer occupies — distorting whatever
+        # in-flow content now sits there — and the box itself would keep the
+        # quantised grid height the pin exists to correct.
+        if drow != 0:
+            hp: int32 = pos_hp0[i]
+            while hp < pos_hp1[i]:
+                h0: int32 = hpin_r0[hp] + drow
+                h1: int32 = hpin_r1[hp] + drow
+                if h0 < 0:
+                    h0 = 0
+                if h1 < 0:
+                    h1 = 0
+                if cast[uint64](h1) >= MAX_ROWS:
+                    h1 = cast[int32](MAX_ROWS) - 1
+                hpin_r0[hp] = h0
+                hpin_r1[hp] = h1
+                hp = hp + 1
         # z-index FIX: a positioned box paints its background as a z-sorted BLOCK
         # fill (bfill_z, stamped above). The SAME colour was also stamped on each
         # of its text runs as a per-run `seg_bg` strip, which the paint pass draws
