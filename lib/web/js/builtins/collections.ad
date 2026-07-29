@@ -28,15 +28,39 @@ def ms_find(o: int32, keyv: int32) -> int32:
     return -1
 
 
+# Allocate one Map/Set entry (free list first; see the RETENTION ARGUMENT in
+# state.ad above the mse_* block). -1 = pool genuinely full, and it SAYS so: the
+# old silent drop made `m.set(k, v)` a no-op, so the very next `m.get(k)` handed
+# the page undefined with nothing anywhere naming the cause.
+def ms_alloc() -> int32:
+    idx: int32 = mse_free_head
+    if idx >= 0:
+        mse_free_head = mse_next[idx]         # intrusive link (see state.ad)
+        mse_recycled = mse_recycled + 1
+    else:
+        if mse_n >= MS_CAP:
+            mse_overflow = mse_overflow + 1
+            if mse_noted == 0:
+                mse_noted = 1
+                js_out_note(cast[Ptr[uint8]]("[engine] CEILING Map/Set entry pool full — insertions are being DROPPED (get() will read undefined). live-entry MS_CAP="), MS_CAP)
+            set_error(cast[Ptr[uint8]]("Map/Set entry pool full"))
+            return -1
+        idx = mse_n
+        mse_n = mse_n + 1
+    mse_live = mse_live + 1
+    if mse_live > mse_live_hi:
+        mse_live_hi = mse_live
+    return idx
+
+
 def ms_put(o: int32, keyv: int32, valv: int32):
     e: int32 = ms_find(o, keyv)
     if e >= 0:
         mse_val[e] = valv
         return
-    if mse_n >= MS_CAP:
-        return                         # pool exhausted: drop silently (bounded)
-    idx: int32 = mse_n
-    mse_n = mse_n + 1
+    idx: int32 = ms_alloc()
+    if idx < 0:
+        return                         # pool full — ms_alloc REPORTED it
     mse_key[idx] = keyv
     mse_val[idx] = valv
     mse_used[idx] = cast[uint8](1)

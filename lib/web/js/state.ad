@@ -450,8 +450,51 @@ pr_onful:  Array[16384, int32]    # onFulfilled handler value (-1 = pass through
 pr_onrej:  Array[16384, int32]    # onRejected handler value (-1 = pass through)
 pr_result: Array[16384, int32]    # dependent (result) promise VALUE handle
 pr_source: Array[16384, int32]    # source promise obj id (read for state+value)
-pr_next:   Array[16384, int32]    # next reaction in the source's pending list
+pr_next:   Array[16384, int32]    # next reaction in the source's pending list;
+                                  # doubles as the FREE-LIST link while free
 pr_n: int32 = 0
+#
+# SLOT REUSE (see pr_alloc / pr_free_slot in builtins/promise.ad). This pool was
+# BUMP-ONLY too, so a `.then` chain died at PROM_REACT_CAP registrations — the
+# second silent ceiling under every async page.
+#
+# RETENTION ARGUMENT — a reaction id has exactly ONE owner at any moment, and it
+# is never the GC that decides:
+#   * REGISTERED on a still-pending promise: the id is in that promise's
+#     prom_react list (reached only from the promise, traced by obj_gc_trace).
+#   * SCHEDULED: the settle path (promise_fulfill / promise_reject) walks the list,
+#     schedules every record and then sets prom_react = -1, so a scheduled record
+#     is NOT in any list — its only reference is a NUMBER inside the microtask
+#     timer's timer_args. That number is invisible to both collectors (it is not a
+#     value handle), which is exactly why liveness here CANNOT be a GC question.
+#   * Each id is therefore scheduled AT MOST ONCE, ever: from the settle walk (the
+#     list is cleared) or from promise_then's already-settled branch (never listed).
+#   * So the free points are: the END of run_reaction (the single consumer has
+#     finished with it — after resolve_promise, which may allocate records itself)
+#     and obj_gc_free (the source promise is unreachable, so it can never settle
+#     and the records in its list can never be scheduled). The two are disjoint.
+#   * run_reaction additionally REJECTS a record whose pr_source is -1 (i.e. a
+#     freed one), so a double-schedule bug reports itself instead of silently
+#     running a recycled record.
+#
+# pr_sched SPLITS the two ownerships above, and that is what makes the OBJECT
+# collector precise here. It used to root every record over 0..pr_n WHOLESALE,
+# including a record merely REGISTERED on a promise nobody can reach any more —
+# and since the promise roots the record (prom_react) while the wholesale scan
+# rooted the promise back (pr_source), an abandoned `new Promise(() => {})` with
+# a .then on it was IMMORTAL, one dead promise + handler closure + dependent
+# promise per registration. That is the leak behind "object pool exhausted" in a
+# page that fires requests it never gets answers to. Only a SCHEDULED record is
+# rooted wholesale now (it must be: its one reference is an invisible number in
+# a timer arg); a REGISTERED one is reached through its live owner by
+# obj_gc_trace, and freed by obj_gc_free when that owner dies.
+pr_sched:  Array[16384, uint8]    # 1 = handed to the microtask queue (rooted wholesale)
+pr_free_head: int32 = -1
+pr_live:      int32 = 0           # reaction records currently outstanding
+pr_live_hi:   int32 = 0           # high-water of pr_live
+pr_recycled:  int32 = 0           # records served off the free list
+pr_overflow:  int32 = 0           # .then registrations DROPPED (pool full)
+pr_noted:     int32 = 0           # one-shot latch for the CEILING report
 
 # ---- Promise combinator cells (Promise.all / race / allSettled shared state) ----
 COMB_CAP: int32 = 4096
@@ -486,8 +529,33 @@ MS_CAP: int32 = 131072
 mse_key:  Array[131072, int32]    # entry key value handle
 mse_val:  Array[131072, int32]    # entry value handle (Set: same as key)
 mse_used: Array[131072, uint8]    # 1 = live, 0 = deleted
-mse_next: Array[131072, int32]    # next entry index in insertion order (-1)
+mse_next: Array[131072, int32]    # next entry index in insertion order (-1);
+                                  # doubles as the FREE-LIST link while free
 mse_n: int32 = 0
+#
+# SLOT REUSE (see ms_alloc in builtins/collections.ad, obj_gc_free in gc.ad).
+# Entries owned by a DEAD Map/Set go on a free list, so the `new Map()` per turn
+# shape stops being a hard ceiling.
+#
+# RETENTION ARGUMENT — and what is deliberately NOT reclaimed:
+#   * Freed ONLY from obj_gc_free, i.e. when the owning Map/Set object is proven
+#     unreachable by the tracing object collector. obj_gc_free then clears
+#     obj_ms_head/tail, so no live list can reach the freed entries, and
+#     obj_gc_trace only ever walks a LIVE owner's list.
+#   * A `.delete()`d entry is still only marked mse_used = 0 and LEFT IN the
+#     owner's list. That is not an oversight: ms_forEach / the iterators hold a
+#     raw entry index in an Adder local across arbitrary JS (the callback), and
+#     `m.delete(k)` from inside a forEach is ordinary JS. Unlinking + freeing
+#     there would repurpose mse_next as a free link under a walk in progress —
+#     a live-free. Reclaiming per-delete needs the iterators to hold something
+#     revalidatable first; until then a delete-heavy long-lived Map still counts
+#     against MS_CAP, and now says so out loud when it runs out.
+mse_free_head: int32 = -1
+mse_live:      int32 = 0          # entries currently allocated (occupancy)
+mse_live_hi:   int32 = 0          # high-water of mse_live
+mse_recycled:  int32 = 0          # entries served off the free list
+mse_overflow:  int32 = 0          # Map/Set insertions DROPPED (pool full)
+mse_noted:     int32 = 0          # one-shot latch for the CEILING report
 
 MAP_KIND_NONE: int32 = 0
 MAP_KIND_MAP:  int32 = 1
@@ -777,20 +845,68 @@ mset_in_hook: int32 = 0
 # them, capping total invocations so a self-re-enqueuing setInterval cannot spin
 # forever. This is enough for the deferred-init / "run after load" patterns real
 # pages use — it is explicitly NOT wall-clock async.
-TIMER_CAP: int32 = 4096            # max distinct registrations per js_init
+#
+# SLOT REUSE (see timer_alloc / timer_free in builtins/timers.ad). The table was
+# BUMP-ONLY: every setTimeout consumed a slot forever, so a self-rescheduling
+# setTimeout chain — the shape of every async SPA render loop — stopped dead at
+# exactly TIMER_CAP turns, SILENTLY (timer_schedule just `return`ed 0). Retired
+# slots now go on an intrusive free list, so the ceiling is the number of
+# SIMULTANEOUSLY PENDING registrations, not the number ever made.
+#
+# RETENTION ARGUMENT — a freed slot must be referable by nothing:
+#   * A slot is freed only when timer_active == 0 (fired one-shot / cancelled)
+#     AND timer_busy == 0. An INTERVAL re-arms its OWN slot, so it stays
+#     active==1 across firing and is never a free-list candidate.
+#   * timer_busy counts native frames currently executing that slot's callback
+#     (a COUNT, not a flag: drain_until_settled re-enters run_one_task, so an
+#     interval slot can legitimately be on the stack more than once). While
+#     busy > 0 the slot is off-limits, so `clearTimeout(myOwnId)` from inside the
+#     handler cannot hand the slot to a `setTimeout` the same handler makes next
+#     — which would leave run_one_task's post-callback re-arm/retire logic
+#     operating on a DIFFERENT registration.
+#   * The JS-visible id embeds a per-slot GENERATION (bumped on every free), so a
+#     stale id held by the page cannot cancel the unrelated timer that now owns
+#     the slot. This ABA hazard is the one thing a bump-only table could not have.
+#   * A freed slot's fn/args handles are CLEARED: gc_collect and gc_collect_objs
+#     root timer_fn/timer_args WHOLESALE over 0..timer_next, so a corpse holding
+#     a stale handle would pin a callback closure (and its whole subgraph) for
+#     the life of the page.
+TIMER_CAP: int32 = 4096            # max SIMULTANEOUSLY PENDING registrations
 TIMER_MAX_ARGS: int32 = 4          # captured extra args per timer
-TIMER_DRAIN_CAP: int32 = 10000     # max total callback invocations per drain
+TIMER_DRAIN_CAP: int32 = 10000     # DEFAULT per-drain invocation budget
 timer_fn:       Array[4096, int32]     # callback fn value-handle
 timer_delay:    Array[4096, float64]   # requested delay (ordering only)
-timer_seq:      Array[4096, int32]     # insertion order key (re-bumped on re-arm)
+timer_seq:      Array[4096, int32]     # insertion order key (re-bumped on re-arm);
+                                       # doubles as the FREE-LIST link while the
+                                       # slot is free (an inactive slot is never
+                                       # scanned for ordering)
 timer_argc:     Array[4096, int32]     # captured arg count
 timer_args:     Array[16384, int32]    # TIMER_CAP * TIMER_MAX_ARGS flat pool
 timer_active:   Array[4096, uint8]     # 1 = pending, 0 = fired/cancelled
 timer_interval: Array[4096, uint8]     # 1 = re-arms after firing
 timer_micro:    Array[4096, uint8]     # 1 = microtask (runs before macrotasks)
 timer_raf:      Array[4096, uint8]     # 1 = requestAnimationFrame callback (frame macrotask)
-timer_next:     int32 = 0              # next free registration slot
+timer_gen:      Array[4096, int32]     # ABA generation: id = reg+1 + gen*TIMER_CAP
+timer_busy:     Array[4096, int32]     # native frames running this slot's callback
+timer_next:     int32 = 0              # bump frontier (allocated EXTENT, not "free")
 timer_seq_ctr:  int32 = 0             # monotonic insertion counter
+timer_free_head: int32 = -1            # head of the retired-slot free list
+timer_live:      int32 = 0             # registrations currently pending (occupancy)
+timer_live_hi:   int32 = 0             # high-water of timer_live (sizing evidence)
+timer_recycled:  int32 = 0             # slots served off the free list
+timer_overflow:  int32 = 0             # registrations DROPPED (table genuinely full)
+timer_noted:     int32 = 0             # one-shot latch for the CEILING report
+
+# Per-drain invocation budget (settable: js_set_drain_cap). This is a FAIRNESS
+# limit, not a capacity one: a drain that hits it leaves its remaining tasks
+# QUEUED and the next drain (the next embedder event / the next js_drain_timers)
+# continues them, so no work is lost — unlike the old TIMER_CAP, which destroyed
+# the registration. It exists because the drain is SYNCHRONOUS: without it a page
+# whose setInterval never stops would never return to the embedder. Truncation is
+# counted (timer_drain_trunc) and reported once per js_init so it is never silent.
+timer_drain_cap:   int32 = 10000
+timer_drain_trunc: int32 = 0           # drains cut short with work still pending
+timer_trunc_noted: int32 = 0           # one-shot latch for the truncation report
 
 # ---- requestAnimationFrame virtual-clock frame model ----
 # rAF callbacks are macrotasks that fire at simulated frame boundaries. There is

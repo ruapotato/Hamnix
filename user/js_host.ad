@@ -21,7 +21,7 @@ extern def sys_close(fd: int32) -> int32
 
 from lib.jsengine import js_init, js_eval, js_out_len, js_error, js_error_msg
 from lib.jsengine import js_run_module, js_set_module_resolver, js_set_fetch_transport
-from lib.jsengine import js_set_gc_stress, js_arena_stat
+from lib.jsengine import js_set_gc_stress, js_arena_stat, js_set_drain_cap
 
 
 def _slen(s: Ptr[uint8]) -> uint64:
@@ -235,7 +235,7 @@ def _env_is_set(argc: int32, argv: Ptr[uint64], key: Ptr[uint8]) -> int32:
 # each pool actually reached over the run. Exists so a pool-exhaustion report
 # can be diagnosed as leak / lifetime bug / genuine capacity need by MEASURING
 # occupancy, rather than by raising a constant and hoping.
-stat_buf: Array[512, uint8]
+stat_buf: Array[1024, uint8]
 
 
 def _ap_i32(buf: Ptr[uint8], at: int32, v: int32) -> int32:
@@ -275,6 +275,22 @@ def _dump_arena_stats():
     n = _ap_stat(n, cast[Ptr[uint8]]("propmax="), 15)
     n = _ap_stat(n, cast[Ptr[uint8]]("ax="), 16)
     n = _ap_stat(n, cast[Ptr[uint8]]("axmax="), 17)
+    # ASYNC pools (timers / promise reactions / Map-Set entries): *hi = the
+    # SIMULTANEOUS high-water (the real ceiling now that all three recycle),
+    # *ovf = work actually DROPPED, drtrunc = drains cut short by the budget.
+    n = _ap_stat(n, cast[Ptr[uint8]]("timerhi="), 21)
+    n = _ap_stat(n, cast[Ptr[uint8]]("timermax="), 25)
+    n = _ap_stat(n, cast[Ptr[uint8]]("timerrecyc="), 23)
+    n = _ap_stat(n, cast[Ptr[uint8]]("timerovf="), 24)
+    n = _ap_stat(n, cast[Ptr[uint8]]("drtrunc="), 26)
+    n = _ap_stat(n, cast[Ptr[uint8]]("prhi="), 29)
+    n = _ap_stat(n, cast[Ptr[uint8]]("prmax="), 33)
+    n = _ap_stat(n, cast[Ptr[uint8]]("prrecyc="), 31)
+    n = _ap_stat(n, cast[Ptr[uint8]]("provf="), 32)
+    n = _ap_stat(n, cast[Ptr[uint8]]("msehi="), 35)
+    n = _ap_stat(n, cast[Ptr[uint8]]("msemax="), 39)
+    n = _ap_stat(n, cast[Ptr[uint8]]("mserecyc="), 37)
+    n = _ap_stat(n, cast[Ptr[uint8]]("mseovf="), 38)
     stat_buf[n] = 10
     stat_buf[n + 1] = 0
     sys_write(2, &stat_buf[0], cast[uint64](n + 1))
@@ -295,6 +311,31 @@ def _env_gc_stress(argc: int32, argv: Ptr[uint64]) -> int32:
             return 0
         k = k + 1
     return 0
+
+
+# HAMNIX_JS_DRAIN_CAP=<n> — override the engine's per-drain invocation budget
+# (0 = unlimited). Exists so a gate can MEASURE the real timer/reaction slot
+# ceiling instead of the fairness budget that stops one synchronous turn; the
+# default is untouched, so every existing run stays byte-identical in behavior.
+def _env_drain_cap(argc: int32, argv: Ptr[uint64]) -> int32:
+    key: Ptr[uint8] = cast[Ptr[uint8]]("HAMNIX_JS_DRAIN_CAP=")
+    k: int32 = argc + 1
+    while argv[k] != 0:
+        e: Ptr[uint8] = cast[Ptr[uint8]](argv[k])
+        i: int32 = 0
+        while key[i] != 0 and e[i] == key[i]:
+            i = i + 1
+        if key[i] == 0:
+            v: int32 = 0
+            j: int32 = i
+            if e[j] == 0:
+                return -1                     # set but empty: leave the default
+            while e[j] >= 48 and e[j] <= 57:
+                v = v * 10 + cast[int32](e[j] - 48)
+                j = j + 1
+            return v
+        k = k + 1
+    return -1
 
 
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
@@ -323,6 +364,9 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     js_init()
     if _env_gc_stress(argc, argv) != 0:
         js_set_gc_stress(1)                   # force frequent GC (root-set stress gate)
+    dcap: int32 = _env_drain_cap(argc, argv)
+    if dcap >= 0:
+        js_set_drain_cap(dcap)
     if fetch_net != 0:
         js_set_fetch_transport(cast[Fn[Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[int64], Ptr[int32], Ptr[uint8]]](cast[uint64](_canned_transport)))
     out: Ptr[uint8]

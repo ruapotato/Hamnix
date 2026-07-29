@@ -74,6 +74,12 @@ def js_init():
         ax_free[axc] = -1
         axc = axc + 1
     mse_n = 0
+    mse_free_head = -1
+    mse_live = 0
+    mse_live_hi = 0
+    mse_recycled = 0
+    mse_overflow = 0
+    mse_noted = 0
     n_envs = 0
     n_binds = 0
     ax_top = 0
@@ -94,8 +100,26 @@ def js_init():
     json_emitted_any = 0
     timer_next = 0
     timer_seq_ctr = 0
+    # Timer slots are RECYCLED (free list + per-slot generation), so a fresh page
+    # must start from an empty list and generation 0 — timer_alloc initialises
+    # timer_gen/timer_busy the first time it bumps a slot into the extent, which
+    # is why the arrays themselves need no clearing pass here.
+    timer_free_head = -1
+    timer_live = 0
+    timer_live_hi = 0
+    timer_recycled = 0
+    timer_overflow = 0
+    timer_noted = 0
+    timer_drain_trunc = 0
+    timer_trunc_noted = 0
     raf_sched_gen = 0
     pr_n = 0
+    pr_free_head = -1
+    pr_live = 0
+    pr_live_hi = 0
+    pr_recycled = 0
+    pr_overflow = 0
+    pr_noted = 0
     comb_n = 0
     res_flag_n = 0
     fx_n = 0

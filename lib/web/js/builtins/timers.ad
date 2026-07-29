@@ -7,16 +7,74 @@
 
 
 # ====================================================================
+# Timer-slot allocator (free list + ABA generations).
+# ====================================================================
+# See the RETENTION ARGUMENT above the timer_* block in state.ad. Returns a slot
+# index, or -1 when TIMER_CAP registrations are pending SIMULTANEOUSLY — which,
+# unlike the old bump-only table, is a genuine capacity wall and therefore says
+# so (latched CEILING note + a catchable engine error) instead of returning 0 and
+# letting the page just stop updating.
+def timer_alloc() -> int32:
+    reg: int32 = timer_free_head
+    if reg >= 0:
+        timer_free_head = timer_seq[reg]      # intrusive link (see state.ad)
+        timer_recycled = timer_recycled + 1
+    else:
+        if timer_next >= TIMER_CAP:
+            timer_overflow = timer_overflow + 1
+            if timer_noted == 0:
+                timer_noted = 1
+                js_out_note(cast[Ptr[uint8]]("[engine] CEILING timer table full — setTimeout/setInterval/queueMicrotask registrations are being DROPPED. simultaneously-pending TIMER_CAP="), TIMER_CAP)
+            set_error(cast[Ptr[uint8]]("timer table full"))
+            return -1
+        reg = timer_next
+        timer_next = timer_next + 1
+        timer_gen[reg] = 0
+        timer_busy[reg] = 0
+    timer_live = timer_live + 1
+    if timer_live > timer_live_hi:
+        timer_live_hi = timer_live
+    return reg
+
+
+# The JS-visible id for slot `reg`: monotonic per slot and never reused, so a
+# stale id cannot cancel the registration that inherits the slot. Stays exact in
+# a float64 (TIMER_CAP * 2^31 << 2^53).
+def timer_id_of(reg: int32) -> int64:
+    return cast[int64](reg) + 1 + cast[int64](timer_gen[reg]) * cast[int64](TIMER_CAP)
+
+
+# Retire slot `reg` onto the free list. ONLY legal when timer_active == 0 and
+# timer_busy == 0 (every call site below establishes both). Clears the handle
+# fields because both collectors root timer_fn/timer_args wholesale.
+def timer_free(reg: int32):
+    timer_fn[reg] = 0
+    i: int32 = 0
+    while i < TIMER_MAX_ARGS:
+        timer_args[reg * TIMER_MAX_ARGS + i] = 0
+        i = i + 1
+    timer_argc[reg] = 0
+    timer_delay[reg] = 0.0
+    timer_active[reg] = cast[uint8](0)
+    timer_interval[reg] = cast[uint8](0)
+    timer_micro[reg] = cast[uint8](0)
+    timer_raf[reg] = cast[uint8](0)
+    timer_gen[reg] = timer_gen[reg] + 1        # invalidate every id handed out
+    timer_seq[reg] = timer_free_head
+    timer_free_head = reg
+    timer_live = timer_live - 1
+
+
+# ====================================================================
 # Deferred-callback task queue (setTimeout/setInterval/queueMicrotask).
 # ====================================================================
 # Register one pending callback. `base`/`argc` are the native call frame:
 # arg0 = callback, arg1 = delay (skipped for microtasks), rest = captured args.
 # Returns the numeric timer id (reg+1) — non-zero + monotonic while allocating.
 def timer_schedule(base: int32, argc: int32, is_interval: int32, is_micro: int32) -> int32:
-    if timer_next >= TIMER_CAP:
-        return v_number(0.0)                # table full — drop silently
-    reg: int32 = timer_next
-    timer_next = timer_next + 1
+    reg: int32 = timer_alloc()
+    if reg < 0:
+        return v_number(0.0)                # table full — timer_alloc REPORTED it
     fnv: int32 = v_undef()
     if argc > 0:
         fnv = call_args[base]
@@ -47,15 +105,37 @@ def timer_schedule(base: int32, argc: int32, is_interval: int32, is_micro: int32
     while i < na:
         timer_args[reg * TIMER_MAX_ARGS + i] = call_args[base + argstart + i]
         i = i + 1
-    return v_number(cast[float64](reg + 1))
+    return v_number(cast[float64](timer_id_of(reg)))
 
 
 # clearTimeout(id) / clearInterval(id): cancel a pending registration by id.
+#
+# Decodes the generation the id was minted with and cancels ONLY if the slot is
+# still on that generation: with slot reuse, a page that keeps an id past the
+# timer's death (React's cleanup functions do this routinely) would otherwise
+# cancel a completely unrelated later timer.
+#
+# A pending, not-currently-running registration is freed immediately. Clearing
+# the timer whose callback is ON THE STACK (`clearInterval(myId)` from inside the
+# handler — the standard way to stop an interval) only marks it inactive;
+# run_one_task frees it when the last frame running it returns, so the slot
+# cannot be re-handed out underneath its own post-callback re-arm logic.
 def timer_clear(idval: int32):
-    idn: int32 = cast[int32](to_number(idval))
-    reg: int32 = idn - 1
-    if reg >= 0 and reg < timer_next:
-        timer_active[reg] = cast[uint8](0)
+    idn: int64 = cast[int64](to_number(idval))
+    k: int64 = idn - 1
+    if k < 0:
+        return
+    reg: int32 = cast[int32](k % cast[int64](TIMER_CAP))
+    gen: int64 = k / cast[int64](TIMER_CAP)
+    if reg >= timer_next:
+        return
+    if cast[int64](timer_gen[reg]) != gen:
+        return                              # stale id: the slot moved on
+    if cast[int32](timer_active[reg]) == 0:
+        return
+    timer_active[reg] = cast[uint8](0)
+    if timer_busy[reg] == 0:
+        timer_free(reg)
 
 
 # requestAnimationFrame(cb): register a one-shot frame callback on the shared
@@ -66,10 +146,9 @@ def timer_clear(idval: int32):
 # time. Returns the numeric request id (reg+1); cancelAnimationFrame reuses
 # timer_clear. NOT wall-clock — the frame counter IS the clock.
 def raf_schedule(base: int32, argc: int32) -> int32:
-    if timer_next >= TIMER_CAP:
-        return v_number(0.0)                # table full — drop silently
-    reg: int32 = timer_next
-    timer_next = timer_next + 1
+    reg: int32 = timer_alloc()
+    if reg < 0:
+        return v_number(0.0)                # table full — timer_alloc REPORTED it
     fnv: int32 = v_undef()
     if argc > 0:
         fnv = call_args[base]
@@ -82,7 +161,7 @@ def raf_schedule(base: int32, argc: int32) -> int32:
     timer_micro[reg] = cast[uint8](0)
     timer_raf[reg] = cast[uint8](1)
     timer_argc[reg] = 0                      # timestamp is injected at fire time
-    return v_number(cast[float64](reg + 1))
+    return v_number(cast[float64](timer_id_of(reg)))
 
 
 # Schedule an already-resolved callback VALUE as a macrotask. Unlike
@@ -91,10 +170,9 @@ def raf_schedule(base: int32, argc: int32) -> int32:
 # React 18's scheduler's "yield back to the event loop" primitive. Returns the
 # timer id (reg+1), or 0 when the table is full.
 def timer_schedule_fn(fnv: int32, delay: float64) -> int32:
-    if timer_next >= TIMER_CAP:
-        return 0
-    reg: int32 = timer_next
-    timer_next = timer_next + 1
+    reg: int32 = timer_alloc()
+    if reg < 0:
+        return 0                             # table full — timer_alloc REPORTED it
     timer_fn[reg] = fnv
     timer_delay[reg] = delay
     timer_seq[reg] = timer_seq_ctr
@@ -104,7 +182,7 @@ def timer_schedule_fn(fnv: int32, delay: float64) -> int32:
     timer_micro[reg] = cast[uint8](0)
     timer_raf[reg] = cast[uint8](0)
     timer_argc[reg] = 0
-    return reg + 1
+    return cast[int32](timer_id_of(reg))
 
 
 # Drain the task queue: pop due callbacks in (microtask-first, delay, insertion)
@@ -156,6 +234,12 @@ def run_one_task() -> int32:
         if timer_delay[reg] == pending:
             raf_sched_gen = raf_sched_gen + 1
     fnv: int32 = timer_fn[reg]
+    # PIN the slot for the whole callback: while timer_busy > 0 nothing may hand
+    # it to another registration, so `reg` still names THIS timer when the
+    # re-arm/retire logic below runs, even if the callback cancelled it and
+    # scheduled something new. A COUNT because drain_until_settled (`await`)
+    # re-enters run_one_task and can legitimately stack the same interval slot.
+    timer_busy[reg] = timer_busy[reg] + 1
     if is_callable(fnv) != 0:
         b: int32 = call_top
         na: int32 = timer_argc[reg]
@@ -172,6 +256,7 @@ def run_one_task() -> int32:
                 j = j + 1
         invoke(fnv, v_undef(), b, na)
         call_top = b
+    timer_busy[reg] = timer_busy[reg] - 1
     # re-arm intervals / retire one-shots — but only if not cancelled by the
     # callback itself (clearInterval(id) inside the handler flips active=0).
     if cast[int32](timer_active[reg]) != 0:
@@ -180,7 +265,41 @@ def run_one_task() -> int32:
             timer_seq_ctr = timer_seq_ctr + 1
         else:
             timer_active[reg] = cast[uint8](0)
+            if timer_busy[reg] == 0:
+                timer_free(reg)               # one-shot done: RECYCLE the slot
+    else:
+        # cancelled (by this callback, or by a nested drain that already ran and
+        # retired it). The LAST frame out does the free.
+        if timer_busy[reg] == 0:
+            timer_free(reg)
     return 1
+
+
+# A drain hit its per-turn invocation budget with tasks STILL QUEUED. No work is
+# lost (the next drain continues it) but the turn ended early, which used to be
+# completely invisible — the same silent-ceiling shape as DOM_MAX handing back
+# `undefined`. Count it always, say it once per js_init.
+def note_drain_trunc():
+    timer_drain_trunc = timer_drain_trunc + 1
+    if timer_trunc_noted == 0:
+        timer_trunc_noted = 1
+        js_out_note(cast[Ptr[uint8]]("[engine] NOTE drain hit its per-turn invocation budget with tasks still queued (they resume on the next drain; raise it with js_set_drain_cap). budget="), timer_drain_cap)
+
+
+# Raise/lower the per-drain invocation budget. NOT reset by js_init (like
+# drain_enabled), so an embedder sets it once. 0 or negative means UNLIMITED —
+# only safe for an embedder that can tolerate a page whose timer chain never ends
+# blocking the caller forever (the gates use it to measure the real slot ceiling).
+def js_set_drain_cap(n: int32):
+    timer_drain_cap = n
+
+
+def drain_budget_ok(count: int32) -> int32:
+    if timer_drain_cap <= 0:
+        return 1
+    if count < timer_drain_cap:
+        return 1
+    return 0
 
 
 # Drain the queue until the promise `po` (object id) settles, or the queue is
@@ -188,16 +307,17 @@ def run_one_task() -> int32:
 # deterministic microtask/timer drain stands in for suspending the call stack.
 def drain_until_settled(po: int32):
     count: int32 = 0
-    while count < TIMER_DRAIN_CAP:
+    while drain_budget_ok(count) != 0:
         if cast[int32](prom_state[po]) != 0:
-            break
+            return
         if run_one_task() == 0:
-            break
+            return
         count = count + 1
         # an uncaught throw from an unrelated task ends the turn (rare; a promise
         # reaction converts its own throw into a rejection and never leaks CTL_THROW).
         if ctl == CTL_THROW or err_flag != 0:
-            break
+            return
+    note_drain_trunc()
 
 
 # End-of-turn drain toggle. Default ON. A host/front-end may flip it OFF (via
@@ -220,13 +340,14 @@ def js_set_drain(on: int32):
 
 def drain_timers():
     count: int32 = 0
-    while count < TIMER_DRAIN_CAP:
+    while drain_budget_ok(count) != 0:
         if run_one_task() == 0:
-            break
+            return
         count = count + 1
         # a callback that threw stops the drain, like a host runtime's turn.
         if ctl == CTL_THROW or err_flag != 0:
-            break
+            return
+    note_drain_trunc()
 
 
 # Restrict run_one_task to MICROTASKS only. Set while the page is still being
@@ -251,11 +372,16 @@ task_micro_only: int32 = 0
 def drain_microtasks():
     task_micro_only = 1
     count: int32 = 0
-    while count < TIMER_DRAIN_CAP:
+    trunc: int32 = 1
+    while drain_budget_ok(count) != 0:
         if run_one_task() == 0:
+            trunc = 0
             break
         count = count + 1
         if ctl == CTL_THROW or err_flag != 0:
+            trunc = 0
             break
     task_micro_only = 0
+    if trunc != 0:
+        note_drain_trunc()
 
