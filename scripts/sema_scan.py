@@ -11,6 +11,8 @@ STRUCTURALLY BLIND to the bug class that hurt most:
                          A symbol is therefore checked in the programs it
                          actually appears in, with the signature that link
                          unit actually sees.
+                         *** READ THE COVERAGE WARNING BELOW BEFORE YOU
+                         *** BUILD A NEW ANALYSIS ON THIS MODE.
   conflicts            — whole-tree SIGNATURE-CONFLICT detector: every public
                          name whose DECLARATIONS disagree across modules
                          (arity or parameter/return types), with all sites,
@@ -22,6 +24,33 @@ STRUCTURALLY BLIND to the bug class that hurt most:
                          severity policy. UNSOUND for finding bugs: it drops
                          every ambiguous public name, which is exactly the
                          bug class `conflicts` reports.
+
+COVERAGE WARNING FOR `entry` MODE — IT CANNOT SEE THE KERNEL.
+An entry point is discovered by `def main` (see entry_points()). The KERNEL
+HAS NO `def main`: init/main.ad is entered as `kmain` from the boot stub, and
+arch/arm64 spells it `kmain` too. Nothing imports the kernel either, so the
+kernel and everything reachable only from it fall outside every closure.
+
+Measured on 2026-07-28: 749 of 1127 tracked .ad files are reachable from some
+`def main`. The other 378 — 33% of the tree — are INVISIBLE to this mode:
+
+    linux_abi 128   drivers 73   sys 37   kernel 26   tests 24   fs 23
+    adder 21        arch 20      mm 14    lib 9       init 2     net 1
+
+That includes all of sys/src/9, every driver, the whole Linux-ABI shim AND
+adder/compiler/*.ad (codegen.ad, ssa.ad, regalloc.ad — the compiler itself).
+This is how the first must_use sweep came to be written as a separate
+whole-tree scanner (scripts/sema_must_use_scan.py): run through `entry`
+mode it would have reported a clean kernel, and 13 of the 13 confirmed bugs
+it found live in files this mode never opens.
+
+If you add an analysis, either resolve whole-tree the way
+sema_must_use_scan.py does, or pass `--entries` with a list that includes
+init/main.ad explicitly. Do NOT assume a green `--mode entry` covers the OS.
+(Today the only gate touching this mode, test_sema_signature_conflicts.sh,
+uses it as a smoke test on one named fixture, so nothing currently in CI is
+silently under-covered by it — but nothing warns the next caller either,
+which is what this paragraph is for.)
 
 Why the old default lied: `sys_open` was declared 1-arg in `runtime.S`'s
 extern and 3-arg in `linux-runtime.S`'s. In one merged program that is two
