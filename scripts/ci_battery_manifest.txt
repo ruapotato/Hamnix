@@ -4041,9 +4041,17 @@ if [ "${HAMNIX_SOAK:-0}" = "1" ]; then bash scripts/ci_run_gate.sh scripts/test_
 # test_userfaultfd is NOT registered here: it is RED at step (2), the UFFDIO_API
 # handshake ("[USERFAULTFD] FAIL UFFDIO_API handshake"), on a boot of main.
 # That is a pre-existing failure in a gate that was DARK
-# (ci_ondemand_baseline.txt) — nobody was running it, so nobody saw it. It is
-# NOT reachable from the must_use fixes in this leaf: those touch uffd_read,
-# _uffd_q_peek, uffd_pagefault_hook and step (10) of the selftest, all of
-# which run after step (2) stops it. Promoting it now would only turn the
-# whole battery red for someone else's bug. Fix the handshake, then move this
-# line into the manifest and drop it from ci_ondemand_baseline.txt.
+# (ci_ondemand_baseline.txt) — nobody was running it, so nobody saw it.
+#
+# PROVEN BY EXPERIMENT, not by reading the diff: reverting BOTH
+# linux_abi/u_userfaultfd.ad and arch/x86/kernel/trap_diag.ad to the branch
+# point and re-booting reproduces the identical failure, same step, same
+# line ("[USERFAULTFD] PASS userfaultfd() -> fd 3" then "[USERFAULTFD] FAIL
+# UFFDIO_API handshake"). Consistent with the diff: the must_use fixes touch
+# uffd_read, _uffd_q_peek, uffd_pagefault_hook and step (10) of the
+# selftest, every one of which runs after step (2) stops it, and
+# _uffd_ioctl_api is untouched.
+#
+# Promoting it now would only turn the whole battery red for someone else's
+# bug. Fix the handshake, then move this line into the manifest and drop it
+# from ci_ondemand_baseline.txt.
