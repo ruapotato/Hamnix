@@ -257,3 +257,192 @@ Ordered by value/effort; each stays opt-in + kernel-bypassable.
 
 Everything above preserves the two invariants: **kernel opt-out** and
 **byte-inert when off.**
+
+---
+
+# Increment 4 — checked integer arithmetic (`--check-arith`)
+
+**Status: SHIPPED (2026-07-28), opt-in, default OFF.**
+Gate: `scripts/test_adder_check_arith.sh` (host-only, no QEMU).
+
+## The defect that motivated it
+
+`cyc_to_ns()` computed `(cycles * mult) >> shift` in `uint64`. On this TSC
+(`freq=4009555700 Hz mult=4184308 shift=24`) the product passes 2^64 at
+`2^64/mult = 4.409e12` cycles = **1099.5 seconds** of uptime, after which the
+monotonic clock jumped **backwards** by 1099 s. `hrtimer_start_rel` arms against
+that clock, so past the wrap **every bounded wait in the kernel became
+unbounded** — 13 kernel sites on `wq_wait_commit_timeout` (pipe, 9p, AHCI, HDA,
+TCP, devfd) and 16 userland programs parked on `sys_waitfds`. The DE panel
+wedged after 18 minutes and leaked a 16 MiB framebuffer while it was at it.
+
+One silent multiply, four days invisible. Bounds checking would not have found
+it: nothing was out of bounds. Arithmetic checking finds it the first time the
+kernel runs past 18 minutes.
+
+## Where it lives — NOT in the code generator
+
+`codegen.ad` and the frozen Python seed are **untouched** by this feature.
+`--check-arith` is a pure **AST → AST rewrite** (`adder/compiler/checkarith.ad`)
+that runs in the host driver between `parse_program()` and
+`gen_program_with_globals()`. For each checked operation it inserts an ordinary
+Adder guard statement immediately before the statement containing it:
+
+```
+if <overflow predicate over a, b>:
+    __ck_arith_trap(<code>, cast[uint64](a), cast[uint64](b), <line>)
+<the original statement>
+```
+
+The instrumented program is ordinary Adder, so the existing backend compiles it
+with no new emitters. Consequences:
+
+* with the flag off, `ck_instrument_program` is never called and the emitted
+  bytes are **identical** to the pre-feature compiler (41 units — the whole
+  bare-metal kernel plus 40 userland programs — verified byte-for-byte against a
+  pre-feature `host_ac.elf`);
+* `test_native_vs_seed_kobjdiff.sh` is unaffected because neither backend
+  changed;
+* the mode works on the native x86-64 backend **and** the optional LLVM backend
+  for free, because it is upstream of both.
+
+The runtime (`__ck_arith_trap` and its formatter) is appended as **source text**
+to the merged import closure by `drv_emit_ck_runtime` in
+`fused_driver_host_main.ad`, again only when the flag is on.
+
+## What is checked
+
+| operation | unsigned predicate | signed predicate |
+|---|---|---|
+| `a + b` | `(a+b) < a` | `((a^(a+b)) & (b^(a+b))) < 0` |
+| `a - b` | `a < b` | `((a^b) & (a^(a-b))) < 0` |
+| `a * b` | `b != 0 and (a*b)//b != a` | `(b == -1 and a == MIN)` or `(b != 0 and b != -1 and (a*b)//b != a)` |
+| `a << b` | `b >= W or ((a<<b)>>b) != a` | `b < 0 or b >= W or ((a<<b)>>b) != a` |
+| `a / b`, `a // b`, `a % b` | `b == 0` | `b == 0 or (b == -1 and a == MIN)` |
+
+Augmented assignment (`x += y`, `x *= y`, …) is checked with the same
+predicates. `a == MIN` is expressed width-independently as
+`a != 0 and (0 - a) == a` (the minimum is the only non-zero value that is its
+own negation), so no width-specific literal is needed. Adder's `and`/`or`
+short-circuit, so the division inside the multiply predicate is never reached
+with a zero (or, when signed, a `-1`) divisor: **the check itself can never
+fault.**
+
+## What a detected overflow does
+
+A **loud, non-optional stop**, naming the operation, both operands, the type and
+the source line — the opposite of the four-day silence that motivated the mode:
+
+```
+[check-arith] mul overflow lhs=5000000000001 rhs=4184308 ty=uint64 line=9
+```
+
+* **Userspace:** the message goes to fd 2, then `exit_group(134)`.
+  134 is deliberately distinct from `--check-bounds`' 132 (`SIGILL`) so a run
+  with both modes on tells the two apart.
+* **Kernel:** there is no `write(2)`. The operands and line are latched into the
+  globals `ck_arith_code / ck_arith_lhs / ck_arith_rhs / ck_arith_line` (readable
+  from a crash dump) and the kernel's own `panic()` is called with the formatted
+  message. A kernel **cannot** quietly continue past a detected overflow — that
+  is precisely the failure mode being fixed. `--check-arith-warn` (below) is the
+  escape hatch when continuing is what you want.
+
+**The kernel is NOT exempt.** This is the one deliberate departure from the
+`--check-bounds` shape, and it is the whole point: the defect is kernel code.
+Exempting the kernel would exempt exactly the arithmetic that hurt most.
+
+### `--check-arith-warn` — survey mode
+
+Reports each **site** (source line) once and continues, capped at 512 distinct
+sites. A fatal first hit tells you about exactly one site per run, which makes
+surveying a tree for intentional-wrap sites impossibly slow. Kernel builds route
+the report to `printk0()` instead of `panic()`.
+
+## The opt-out — `unsafe:`
+
+Intentional wrapping is legitimate: hashes, checksums, PRNGs, ring arithmetic
+and alignment masks all rely on it. The opt-out is the **existing `unsafe:`
+block** — everything lexically inside one is left completely uninstrumented,
+exactly as with `--check-bounds`. The whole-file `# adder: unsafe` pragma
+suppresses the pass entirely.
+
+**Why not a dedicated wrapping operator** (`a &+ b`, `wrapping_mul(a, b)`)? Any
+new *syntax* would have to be understood by the **frozen Python seed**, which
+compiles the same tree and is the bootstrap trust root. Adding a token to the
+seed is exactly the change this increment is forbidden to make. `unsafe:` needs
+no new syntax on either side and is already the project's established
+"I meant that" marker.
+
+## Coverage limits (deliberate, conservative, documented)
+
+These cost recall, never soundness — an instrumented site **never** traps on a
+program that did not actually overflow.
+
+1. **Operands must be pure.** Literals, identifiers, casts and unary/binary
+   combinations of those. A guard *re-evaluates* its operands, so calls, pointer
+   and array dereferences (which may be **volatile MMIO**), member reads and
+   `?`/`!` disqualify a site. Re-reading an MMIO register to check arithmetic
+   would be a bug far worse than the one being caught.
+2. **Both operand types must be known and equal** (a bare integer literal adapts
+   to the other side). `checkarith.ad` carries a small local type classifier
+   over declarations, params and function return types; mixed-width /
+   mixed-signedness arithmetic, pointers, floats, enums and struct fields are
+   skipped rather than guessed at.
+3. **Loop and `elif` conditions are not instrumented**, nor is the RHS of
+   `and`/`or`, nor the arms of a conditional expression. Hoisting a guard out of
+   a loop condition would check it once instead of per iteration; hoisting it
+   out of a short-circuit or an `elif` would evaluate arithmetic on a path the
+   program deliberately avoids (the classic `x != 0 and y // x` false positive).
+4. **Sub-64-bit types are under-sensitive by construction.** Both Adder backends
+   evaluate narrow integer arithmetic in 64-bit registers and truncate on
+   *assignment*, so a `uint32 + uint32` intermediate does not wrap at 32 bits at
+   run time and the (correct) predicate stays quiet. For narrow types only the
+   shift-count check and the divide/modulo-by-zero check are load-bearing.
+   Detecting **truncation on store** (`c: uint32 = <expr wider than 2^32>`) is a
+   separate, valuable increment, deliberately not attempted here: the tree is
+   full of *intentional* narrowing and the compiler already warns about the
+   undeclared cases.
+
+The compiler reports its own coverage on every instrumented build:
+
+```
+[check-arith] instrumented 24677 site(s), skipped 2868 (impure or untyped operands)
+```
+
+## Turning it on across the tree
+
+```
+HAMNIX_CHECK_ARITH=1     bash scripts/build_installer_img.sh   # trap
+HAMNIX_CHECK_ARITH=warn  bash scripts/build_installer_img.sh   # survey
+```
+
+`scripts/_adder_cc.sh` forwards the flag to every unit it builds, kernel object
+included. Unset (the default) it is never passed and the build is byte-identical
+to an unchecked one.
+
+## Triage of the sites found so far
+
+| site | verdict | note |
+|---|---|---|
+| `codegen.ad layout_emit_field`: `cg_layout_offset & cast[uint32](0 - align)` | **intentional wrap** | two's-complement alignment mask. Wants an `unsafe:` block; not applied because `codegen.ad` is frozen for this increment. |
+| `elf_emit.ad`: `eb64(cast[uint64](0) - cast[uint64](4))  # r_addend = -4` | **intentional wrap** | constructing `-4` as a `uint64`. Wants an `unsafe:` block. |
+
+Both were found by running the compiler *itself* built with
+`--check-arith-warn` over a full bare-metal kernel compile (1813 instrumented
+sites, ~1.7 M tokens of input); the instrumented compiler produced a kernel
+object **byte-identical** to the unchecked one, which is independent evidence
+that the instrumentation is semantics-preserving.
+
+## Cost
+
+Measured on the bare-metal kernel (`init/main.ad`, 13.9 MB merged closure) with
+the native backend:
+
+| | unchecked | `--check-arith` |
+|---|---|---|
+| guards emitted | 0 | 24,677 (2,868 sites skipped) |
+| compile time (user) | 71 s | 90 s (+27 %) |
+| kernel object | 8.61 MB | 11.69 MB (+36 %) |
+
+This is a **debug/soak mode**, not a shipping configuration — the same posture
+as `--check-bounds`.
