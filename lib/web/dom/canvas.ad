@@ -2163,6 +2163,28 @@ def _lazy_el_accessor(rel: int32) -> int32:
         js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, cv)
         dom_clsobj[idx] = cv                              # maps the token list back
         return cv
+    if rel == NID_KIDS_ACC or rel == NID_NODES_ACC:
+        # Wire the tree NOW. _dom_wire_tree installs children/childNodes (and
+        # parent/sibling/first/last) as own data properties, which shadow this
+        # accessor from here on — so the work happens once, for the elements a
+        # page actually traverses from.
+        if idx < 0 or tx_built == 0:
+            return js_undefined()
+        _dom_wire_tree(idx)
+        # _dom_wire_tree is a NO-OP for an element that is not in the tree
+        # index — e.g. anything inside a <noscript>, which is RAWTEXT when
+        # scripting is on and so has no tx entry. Reading the property back
+        # with js_get_prop would then walk the prototype chain, re-enter THIS
+        # accessor, and recurse until the stack died (measured: SIGSEGV on
+        # tests/fixtures/hambrowse_noscriptdom.html). Ask for the OWN property
+        # only, and answer undefined when the wiring installed nothing.
+        if rel == NID_KIDS_ACC:
+            if js_has_own(thisv, cast[Ptr[uint8]]("children"), 8) == 0:
+                return js_undefined()
+            return js_get_prop(thisv, cast[Ptr[uint8]]("children"), 8)
+        if js_has_own(thisv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+            return js_undefined()
+        return js_get_prop(thisv, cast[Ptr[uint8]]("childNodes"), 10)
     if rel == NID_DS_ACC:
         if idx < 0:
             return js_undefined()
@@ -2177,6 +2199,12 @@ def _lazy_el_accessor(rel: int32) -> int32:
     wv: int32 = js_undefined()
     if js_arg_count() > 0:
         wv = js_arg(0)
+    if rel == NID_KIDS_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("children"), 8, wv)
+        return js_undefined()
+    if rel == NID_NODES_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("childNodes"), 10, wv)
+        return js_undefined()
     if rel == NID_STYLE_ACC_SET:
         js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, wv)
     elif rel == NID_CLS_ACC_SET:
@@ -2296,6 +2324,8 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel >= NID_TC_GET and rel <= NID_IH_SET:
         return _inner_accessor(rel)
     if rel >= NID_STYLE_ACC and rel <= NID_DS_ACC_SET:
+        return _lazy_el_accessor(rel)
+    if rel >= NID_KIDS_ACC and rel <= NID_NODES_ACC_SET:
         return _lazy_el_accessor(rel)
     if rel >= NID_F_GETCTX and rel <= NID_F_SUBMIT_S:
         return _feat_accessor(rel)
@@ -3984,6 +4014,15 @@ def _build_dom_interfaces():
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("dataset"), 7, \
                        js_new_native_fn(js_hbase + NID_DS_ACC), \
                        js_new_native_fn(js_hbase + NID_DS_ACC_SET))
+    # children / childNodes: the tree wiring is done on FIRST ACCESS (see the
+    # NID_KIDS_ACC comment) so document.body.children stops being `undefined`
+    # without eagerly registering the whole document.
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("children"), 8, \
+                       js_new_native_fn(js_hbase + NID_KIDS_ACC), \
+                       js_new_native_fn(js_hbase + NID_KIDS_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("childNodes"), 10, \
+                       js_new_native_fn(js_hbase + NID_NODES_ACC), \
+                       js_new_native_fn(js_hbase + NID_NODES_ACC_SET))
     # el.style / el.classList carry per-element STATE, but their methods do not:
     # one shared copy each on the real interface prototype (which also makes
     # `el.style instanceof CSSStyleDeclaration` and
@@ -5033,16 +5072,8 @@ def _run_scripts() -> int32:
     js_hbase = js_host_base()
     js_set_host_dispatch(cast[Fn[int32, int32]](cast[uint64](_js_host_dispatch)))
     js_set_member_hook(cast[Fn[int32, int32]](cast[uint64](_js_member_set_hook)))
-    # The tree overlay must exist BEFORE the first element object is minted.
-    # _dom_wire_tree — which is what gives an element .children/.childNodes/
-    # .firstElementChild/.parentNode — returns immediately while tx_built == 0,
-    # and _js_build_document registers document.documentElement/head/body. Built
-    # in the other order, those three (the roots every traversal starts from)
-    # were the ONLY elements on the page with no children: measured against
-    # chromium --headless, `document.body.children` was `undefined` where a
-    # browser answers an HTMLCollection of length 4.
-    _dom_build_tree_index()                               # parent/child overlay (round 2)
     _js_build_document()
+    _dom_build_tree_index()                               # parent/child overlay (round 2)
     js_ctx_live = 1
     # PRE-LAYOUT: lay out the (pre-script) source once so a page's <script>s can
     # read box geometry (getBoundingClientRect / offsetWidth / getComputedStyle).

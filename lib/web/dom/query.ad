@@ -1338,8 +1338,13 @@ def _dom_wire_tree(idx: int32):
             lasto = co
             nchild = nchild + 1
         k = k + 1
-    js_set_prop(o, cast[Ptr[uint8]]("children"), 8, ch)
-    js_set_prop(o, cast[Ptr[uint8]]("childNodes"), 10, ch)
+    # js_set_own, NOT js_set_prop: children/childNodes are LAZY accessors on
+    # HTMLElement.prototype now (see NID_KIDS_ACC), so a plain set would walk
+    # the prototype chain and call the native setter for every wired element —
+    # measured at ~1.35x on a 9000-element page. The own data property is
+    # exactly what the setter would have installed, and it shadows the accessor.
+    js_set_own(o, cast[Ptr[uint8]]("children"), 8, ch)
+    js_set_own(o, cast[Ptr[uint8]]("childNodes"), 10, ch)
     js_set_prop(o, cast[Ptr[uint8]]("childElementCount"), 17, \
                 js_number(cast[float64](nchild)))
     js_set_prop(o, cast[Ptr[uint8]]("firstElementChild"), 17, firsto)

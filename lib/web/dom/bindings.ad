@@ -942,6 +942,28 @@ NID_CLS_ACC:      int32 = 130        # get el.classList  (lazy DOMTokenList)
 NID_CLS_ACC_SET:  int32 = 131        # set el.classList
 NID_DS_ACC:       int32 = 132        # get el.dataset    (lazy, parsed from data-*)
 NID_DS_ACC_SET:   int32 = 133        # set el.dataset
+# --- LAZY el.children / el.childNodes (2026-07-28) ---------------------------
+# _dom_wire_tree installs children/childNodes as own data properties at
+# REGISTRATION time — but it returns immediately while tx_built == 0, and
+# _js_build_document (which registers document.documentElement/head/body) runs
+# BEFORE _dom_build_tree_index. So the three roots every traversal starts from
+# were the only elements on the page whose .children was `undefined`; chromium
+# answers an HTMLCollection.
+#
+# Building the tree index FIRST fixes it and is a 600x DISASTER: wiring <body>
+# registers every one of its children, each of which re-scans the whole tx
+# table, so tests/fixtures/hambrowse_ceilings.html (10 000 flat <i> under
+# <body>) went from 0.98 s to 9 m 51 s. MEASURED, not estimated.
+#
+# So the wiring stays lazy, in the shape style/classList/dataset already use:
+# an accessor pair on HTMLElement.prototype that wires the element on FIRST
+# ACCESS and memoises through js_set_own, which then shadows the accessor. A
+# page that never asks for a root's children pays nothing, and ceilings stays
+# at 0.98 s.
+NID_KIDS_ACC:     int32 = 144        # get el.children   (wire the tree on demand)
+NID_KIDS_ACC_SET: int32 = 145        # set el.children
+NID_NODES_ACC:    int32 = 146        # get el.childNodes (wire the tree on demand)
+NID_NODES_ACC_SET: int32 = 147       # set el.childNodes
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every
