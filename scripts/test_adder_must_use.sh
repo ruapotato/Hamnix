@@ -181,4 +181,43 @@ for spec in "user/hamsh.ad:_argv_push_cstr" \
 done
 ok "annotated functions still exist and still carry their markers"
 
+# ---- (9) the whole-tree ledger is SHRINK-ONLY ----------------------------
+# sema_scan's per-entry sweep resolves link units by finding `def main`. The
+# KERNEL has none — its entry is `kmain` — so the kernel, every driver and
+# all of sys/src/9 are invisible to it. `must-use` does not need a resolved
+# link unit (the marker is on the callee's `def`, the violation is a bare
+# statement), so a whole-tree scan sees strictly more, and it is what found
+# the devwsys_keys_write short-write and the never-polled NAPI queue.
+BASE="scripts/sema_must_use_baseline.txt"
+python3 scripts/sema_must_use_scan.py --quiet --baseline "$BASE" \
+    > "$WORK/ledger" 2>&1 \
+    || { cat "$WORK/ledger"; fail "new unchecked-result site(s) vs $BASE"; }
+grep -q "ok: no new unchecked-result sites" "$WORK/ledger" \
+    || { cat "$WORK/ledger"; fail "baseline check did not run"; }
+ok "$(grep -oE '[0-9]+ known' "$WORK/ledger") unchecked-result sites, none new"
+
+# MUTATION TEST: the gate must actually be able to go red. Introduce one new
+# unchecked call to an annotated callee and confirm the ledger rejects it.
+MUT="lib/hampkgcore.ad"
+cp "$MUT" "$WORK/mut.bak"
+cat >> "$MUT" <<'ADEOF'
+
+
+def _must_use_mutation_probe() -> int32:
+    hampkg_add_pkg(cast[Ptr[uint8]]("x"), 1, cast[Ptr[uint8]]("1"), 1,
+                   cast[Ptr[uint8]]("d"), 1, 0)
+    return 0
+ADEOF
+python3 scripts/sema_must_use_scan.py --quiet --baseline "$BASE" \
+    > "$WORK/mut" 2>&1; mrc=$?
+cp "$WORK/mut.bak" "$MUT"
+[ "$mrc" -ne 0 ] || { cat "$WORK/mut"
+    fail "MUTATION SURVIVED: a new unchecked-result site did not fail the gate"; }
+grep -q "NEW UNCHECKED RESULT: lib/hampkgcore.ad:.*_must_use_mutation_probe() drops the result of hampkg_add_pkg()" \
+    "$WORK/mut" || { cat "$WORK/mut"
+    fail "mutation was rejected, but not with a site-naming diagnostic"; }
+# ...and the restore must be exact, or the next gate inherits a dirty tree.
+cmp -s "$WORK/mut.bak" "$MUT" || fail "mutation probe did not restore $MUT"
+ok "mutation test: a NEW unchecked-result site fails the gate, by name"
+
 echo "[must-use] PASS"
