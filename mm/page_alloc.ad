@@ -304,6 +304,24 @@ def page_alloc_owns(phys: uint64) -> int32:
 #
 # So it lives here, permanently, DEFAULT-OFF, with STABLE site ids.
 #
+# IT REPRODUCES THE KNOWN RESULT (2026-07-28, 57-cycle DE soak, 228 apps
+# launched and closed, `HAMNIX_TRACK_ALLOCS=1 scripts/test_de_stress_soak.sh`,
+# sloped by scripts/leakprobe_slopes.py). Total drift PagesInUse +8.38
+# pg/cycle. Per site, `live` slope, steady estimator:
+#
+#     cow_resolve_pte   +7.19   (7.19 / 7.19 / 7.18 — all three agree)
+#     vma_anon          +1.97
+#     pgtable            0.00     slab       0.00    wsys      0.00
+#     execve             0.00     kstack     0.00    pml4      0.00
+#     tmpfs              0.00     ustack     0.00    fork_copy 0.00
+#     ... and every remaining site at exactly 0.00
+#
+# 86% of the leak on ONE site, with page tables / slab / region / wsys
+# exonerated at 0.00 apiece — the same verdict the hand-rolled passes
+# reached, now reachable in one soak with one environment variable. Note
+# how loud the exoneration is: slab churns 1896 frames/cycle and wsys
+# 4096 frames/cycle, and BOTH hold flat. Rate is not leak.
+#
 # WHY A RUNTIME CTL AND NOT A BUILD FLAG
 # ======================================
 # A build flag would mean: rebuild the kernel, rebuild the initramfs,
