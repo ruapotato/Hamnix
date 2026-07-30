@@ -380,9 +380,34 @@ hpm --repo=file:///iso-packages install hamnix-base
 hpm --repo=file:///iso-packages install linux-debian-12   # optional
 ```
 
-After install + reboot, `hpm` defaults back to the network repo
-(`https://255.one/`) and `hpm update` pulls newer versions from
-upstream. A trimmed install (embedded / headless) can name
+The installer also **mirrors** that repo onto the target, so the
+installed system has a working repository with no network. It is
+laid down file-by-file from a build-time manifest
+(`scripts/build_initramfs.py::_stage_installed_pkg_repo` emits
+`/etc/install/packages.manifest`;
+`user/install.ad::install_package_repo` pushes it through
+`/bin/install_rootfs_from_manifest`, the same transport the `#distro`
+tree uses):
+
+```
+/var/lib/hpm/repo/main/index.json + packages/*.tar.gz    the mirror
+/etc/hpm/repo -> file:///var/lib/hpm/repo/               hpm's default
+```
+
+`linux-debian-12` is deliberately excluded — `install_distro_tree`
+already installs that payload as files under `distro/`.
+
+This is what makes the repo-ONLY apps (`hamnix-hamaudiobook`,
+`hamnix-hampaint`, `hamnix-hamclock`, `hamnix-hammark`,
+`hamnix-hamangrybirds`) reachable after an install: they are excluded
+from the `hamnix-base` closure by design, so without a repo on the
+installed root `hpm search` and the Software app had nothing to offer.
+
+`hpm`'s repo-base precedence is therefore: `/etc/hpm/repo` →
+on-image `/iso-packages/` → on-disk `/var/lib/hpm/repo/` →
+`https://255.one/`. Point `/etc/hpm/repo` at the network repo (or
+delete it) to track upstream instead; `hpm update` then pulls newer
+versions from there. A trimmed install (embedded / headless) can name
 components individually instead of `hamnix-base`:
 
 ```
