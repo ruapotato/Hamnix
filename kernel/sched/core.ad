@@ -31,7 +31,7 @@ from mm.page_alloc import (
     page_alloc_census_orphans, PA_SITE_COW_RESOLVE,
     page_alloc_orphan_collect, page_alloc_orphan_va,
     page_alloc_orphan_phys, page_alloc_orphan_owner,
-    page_alloc_track_mode,
+    page_alloc_track_mode, page_alloc_owns,
 )
 from mm.slab import kfree
 from mm.cow import (
@@ -7456,6 +7456,39 @@ def mm_stale_leaves_total() -> uint64:
     return _mm_stale_leaves_total
 
 
+def _mm_leaf_unreclaimed(su: uint64, phys: uint64) -> int32:
+    # 1 iff NOTHING will reclaim `phys` after this reap finishes.
+    #
+    # The audit's first cut counted every present non-identity leaf and got a
+    # flat 66 per reap — which is not a leak at all: 64 of them are the eager
+    # user-stack prefix and 2 the ELF image, both about to be returned
+    # WHOLESALE by physical base (free_pages(ustack_phys) /
+    # region_free_cow_safe(image_phys)), which deliberately leaves their PTEs
+    # present because the task is dying. A leaf inside one of those runs is
+    # accounted for; the interesting leaf is the one that is NOT.
+    #
+    # So: the frame must be BUDDY-owned (a region-pool frame is reclaimed by
+    # its owner wholesale and is not the buddy allocator's to lose) and must
+    # lie outside every run this task is about to hand back by base address.
+    if phys == 0:
+        return 0
+    if page_alloc_owns(phys) == 0:
+        return 0
+    ip: uint64 = task_table[su].image_phys
+    if ip != 0 and phys >= ip and phys < ip + task_table[su].image_phys_sz:
+        return 0
+    np: uint64 = task_table[su].interp_phys
+    if np != 0 and phys >= np and phys < np + task_table[su].interp_phys_sz:
+        return 0
+    up: uint64 = task_table[su].ustack_phys
+    if up != 0 and phys >= up and phys < up + task_table[su].ustack_phys_sz:
+        return 0
+    ub: uint64 = task_table[su].ustack_base
+    if ub != 0 and phys >= ub and phys < ub + USTACK_SIZE:
+        return 0
+    return 1
+
+
 def _mm_reap_stale_leaf_audit(su: uint64):
     # Count the USER leaves this task still maps at the instant its page
     # tables are destroyed — the references that die un-dropped.
@@ -7524,7 +7557,10 @@ def _mm_reap_stale_leaf_audit(su: uint64):
                                 if (te & PT_P) != 0:
                                     lva: uint64 = (li << 39) | (pi << 30) \
                                         | (di << 21) | (ti << 12)
-                                    if (te & PT_ADDR) != lva:
+                                    lph: uint64 = te & PT_ADDR
+                                    if lph != lva \
+                                            and _mm_leaf_unreclaimed(su, lph) \
+                                                != 0:
                                         if stale == 0:
                                             s0 = lva
                                         elif stale == 1:
@@ -8255,6 +8291,13 @@ def task_reap(slot: int32):
                                 task_table[su].ustack_phys,
                                 task_table[su].ustack_phys
                                 + task_table[su].ustack_phys_sz)
+    # 0e. STALE-LEAF AUDIT (leak pass 12), default-off. Every RANGE walk is
+    #     done (VmaNodes, brk, forked spans, owner-span COW strays) and the
+    #     WHOLESALE frees below have not run yet, so image_phys / interp_phys
+    #     / ustack_phys still name the runs that ARE about to be reclaimed.
+    #     That makes this the one moment where "a leaf nothing will reclaim"
+    #     is exactly computable — see _mm_reap_stale_leaf_audit.
+    _mm_reap_stale_leaf_audit(su)
     # 1. ELF image region (physical) — back to the region pool, COW-safely.
     #    region_free_cow_safe drops this owner's per-PFN COW reference on
     #    every image frame BEFORE pooling: a frame a live forked relative
@@ -8298,19 +8341,6 @@ def task_reap(slot: int32):
     #    (Skipped via cr3==0 when the shared-mm guard above found a
     #    surviving thread-group sharer — the heir's final reap frees.)
     if task_table[su].cr3 != 0:
-        # STALE-LEAF AUDIT (leak pass 12). Every teardown arm above walks a
-        # RANGE — VmaNodes, brk, image, interp, ustack. Anything this task
-        # still maps OUTSIDE all of those ranges is about to have its page
-        # tables destroyed with the leaf PTE still PRESENT, which silently
-        # discards whatever COW reference that leaf held. The frame then has
-        # a per-PFN count with no mapper behind it, and every reclaimer
-        # refuses it forever: exactly the "cow_refcount == 1, zero mappers,
-        # owner still alive" population the orphan census reports.
-        #
-        # So count them, right here, at the last moment they are still
-        # visible. Default-off (armed with the allocator tracker) because it
-        # is an O(page tables) walk on the reap path.
-        _mm_reap_stale_leaf_audit(su)
         _free_task_user_pagetables(su)
         pml4_pg: uint64 = task_table[su].cr3 & 0x000FFFFFFFFFF000
         # Defence-in-depth: never hand the pristine boot snapshot or
