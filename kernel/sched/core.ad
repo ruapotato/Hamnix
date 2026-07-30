@@ -2572,6 +2572,94 @@ wklat_over:    uint64 = 0     # >   60 ms  — a visible freeze
 # Wake timestamps, one per task slot. 0 = no wake in flight.
 g_wake_stamp_ns: Array[512, uint64]
 
+# --- outlier CONTEXT capture ------------------------------------------
+#
+# A histogram says a tail exists; it cannot say WHOSE. The real-DE arm of
+# test_de_motion_to_photon.sh found a 90-120 ms worst case against a 4.5 ms
+# worst case for the same kernel on a lightweight boot, with the tail IDENTICAL
+# idle and loaded (1 sample >25 ms and 3 >60 ms in both arms of ~14k wakes).
+# "Identical under load and idle" rules out CPU contention by itself, so the
+# next question is not "how big" but "which task, woken by what, and what was
+# the cpu doing meanwhile" — none of which a bucket count can answer.
+#
+# WHAT EACH FIELD DISCRIMINATES (this is the whole point; a field that cannot
+# change a conclusion is not worth the store):
+#
+#   dispd  dispatches (globally, == this cpu on the 1-vcpu DE boot) between the
+#          wake and the dispatch. NEAR ZERO means the cpu never switched tasks
+#          at all for the whole interval — a long non-preemptible section, and
+#          the histogram's "scheduler" framing would be wrong. LARGE means the
+#          scheduler ran repeatedly and passed this task over every time, which
+#          is an eligibility/ordering question instead. One number, two
+#          completely different bugs; without it both stories fit the histogram.
+#   kickd  wakeup_preempt_kicks delta. Zero means the wakeup-preemption path
+#          never even asked for a reschedule on this task's behalf, i.e. its
+#          vruntime did not out-rank the incumbent — a fairness answer, not a
+#          preemption-point answer.
+#   oncpu  the waitee's on_cpu at wake time. _pick_next REFUSES a task with
+#          on_cpu != 0 (the sleep-window fence: it has entered schedule() but
+#          not yet committed its sp in __switch_to_asm). A wake that lands in
+#          that window is deferred to the next tick/IPI/steal by design, and a
+#          live DE has far more tasks in flight to land in it than a
+#          lightweight boot does. This is the cheapest test of that hypothesis
+#          and it costs one load.
+#   prev   who held the cpu immediately before the late dispatch — read BEFORE
+#          sched_note_dispatch overwrites g_rq_current, which is why
+#          _wklat_account takes it as a parameter rather than reading it.
+#
+# Threshold 25 ms: the measured tail past 25 ms is 4 samples per ~14k-wake arm,
+# so an 8-deep ring cannot overflow on the distribution that motivated it — and
+# `seq` is reported anyway so an overflow is visible rather than silent.
+WKLAT_OUT_RING:      uint64 = 8
+WKLAT_OUT_THRESH_NS: uint64 = 25000000
+
+# Per-slot wake context, parallel to g_wake_stamp_ns. Written on the same
+# already-taken branch as the timestamp, so an armed instrument costs a handful
+# of stores per wake and a disarmed one still costs a single compare.
+g_wake_waker: Array[512, uint64]   # who held the cpu when the wake was raised
+g_wake_scpu:  Array[512, uint64]   # which cpu raised it
+g_wake_disp:  Array[512, uint64]   # g_dispatch_count at wake
+g_wake_jif:   Array[512, uint64]   # jiffies at wake
+g_wake_kick:  Array[512, uint64]   # wakeup_preempt_kicks at wake
+g_wake_oncpu: Array[512, uint64]   # waitee's on_cpu at wake (sleep-window)
+
+wko_seq:   uint64 = 0              # total captures; > ring size == overflowed
+wko_us:    Array[8, uint64]
+wko_wpid:  Array[8, uint64]        # waitee
+wko_wnm:   Array[8, uint64]
+wko_kpid:  Array[8, uint64]        # incumbent when the wake was raised
+wko_knm:   Array[8, uint64]
+wko_ppid:  Array[8, uint64]        # incumbent immediately before the dispatch
+wko_pnm:   Array[8, uint64]
+wko_dispd: Array[8, uint64]
+wko_jifd:  Array[8, uint64]
+wko_kickd: Array[8, uint64]
+wko_oncpu: Array[8, uint64]
+wko_scpu:  Array[8, uint64]
+wko_dcpu:  Array[8, uint64]
+wko_rqcpu: Array[8, uint64]
+
+
+def _wklat_out_clear():
+    wko_seq = 0
+    i: uint64 = 0
+    while i < WKLAT_OUT_RING:
+        wko_us[i]    = 0
+        wko_wpid[i]  = 0
+        wko_wnm[i]   = 0
+        wko_kpid[i]  = 0
+        wko_knm[i]   = 0
+        wko_ppid[i]  = 0
+        wko_pnm[i]   = 0
+        wko_dispd[i] = 0
+        wko_jifd[i]  = 0
+        wko_kickd[i] = 0
+        wko_oncpu[i] = 0
+        wko_scpu[i]  = 0
+        wko_dcpu[i]  = 0
+        wko_rqcpu[i] = 0
+        i = i + 1
+
 
 def wklat_reset():
     wklat_n      = 0
@@ -2586,7 +2674,14 @@ def wklat_reset():
     i: uint64 = 0
     while i < NTASKS:
         g_wake_stamp_ns[i] = 0
+        g_wake_waker[i]    = 0
+        g_wake_scpu[i]     = 0
+        g_wake_disp[i]     = 0
+        g_wake_jif[i]      = 0
+        g_wake_kick[i]     = 0
+        g_wake_oncpu[i]    = 0
         i = i + 1
+    _wklat_out_clear()
 
 
 def wklat_enable(on: int32):
@@ -2605,9 +2700,23 @@ def _wklat_stamp(slot: uint64):
     if clocksource_is_selected() == 0:
         return
     g_wake_stamp_ns[slot] = clocksource_read_ns()
+    # Context, for the outlier ring. Captured HERE and not at dispatch because
+    # every one of these is a "what did the machine look like when the wake was
+    # raised" quantity: read it later and you get the state after the delay you
+    # are trying to explain.
+    cid: uint64 = get_cpu_id()
+    g_wake_scpu[slot]  = cid
+    if g_rq_current_init != 0 and cid < NR_RQ:
+        g_wake_waker[slot] = g_rq_current[cid]
+    else:
+        g_wake_waker[slot] = RQ_CUR_NONE
+    g_wake_disp[slot]  = g_dispatch_count
+    g_wake_jif[slot]   = get_jiffies()
+    g_wake_kick[slot]  = wakeup_preempt_kicks
+    g_wake_oncpu[slot] = task_table[slot].on_cpu
 
 
-def _wklat_account(slot: uint64):
+def _wklat_account(slot: uint64, prev: uint64):
     # `slot` is being dispatched. If it has a wake in flight, close the
     # interval. A task that was preempted and re-dispatched has no stamp, so
     # ordinary round-robin churn does not pollute the histogram — only genuine
@@ -2642,6 +2751,69 @@ def _wklat_account(slot: uint64):
         wklat_b60 = wklat_b60 + 1
     else:
         wklat_over = wklat_over + 1
+    if d > WKLAT_OUT_THRESH_NS:
+        _wklat_out_capture(slot, prev, d)
+
+
+def _wklat_out_capture(slot: uint64, prev: uint64, d: uint64):
+    # Record one tail sample's context. Called only on the >25 ms branch, i.e.
+    # a handful of times per run, so nothing here is on a hot path.
+    i: uint64 = wko_seq % WKLAT_OUT_RING
+    wko_seq = wko_seq + 1
+    wko_us[i]    = d / 1000
+    wko_wpid[i]  = task_table[slot].pid
+    wko_wnm[i]   = task_table[slot].name0
+    k: uint64 = g_wake_waker[slot]
+    if k < NTASKS:
+        wko_kpid[i] = task_table[k].pid
+        wko_knm[i]  = task_table[k].name0
+    else:
+        wko_kpid[i] = RQ_CUR_NONE
+        wko_knm[i]  = 0
+    if prev < NTASKS:
+        wko_ppid[i] = task_table[prev].pid
+        wko_pnm[i]  = task_table[prev].name0
+    else:
+        wko_ppid[i] = RQ_CUR_NONE
+        wko_pnm[i]  = 0
+    wko_dispd[i] = g_dispatch_count - g_wake_disp[slot]
+    wko_jifd[i]  = get_jiffies() - g_wake_jif[slot]
+    wko_kickd[i] = wakeup_preempt_kicks - g_wake_kick[slot]
+    wko_oncpu[i] = g_wake_oncpu[slot]
+    wko_scpu[i]  = g_wake_scpu[slot]
+    wko_dcpu[i]  = get_cpu_id()
+    wko_rqcpu[i] = task_table[slot].rq_cpu
+
+
+def wklat_out_report():
+    # One block per captured outlier, EMERG like the rest of the instrument
+    # (INFO is suppressed once a shell is interactive, which silently ate two
+    # entire runs of the histogram report before anyone noticed). Names are
+    # printed as the raw 8-byte name0 word in hex and decoded host-side; the
+    # kernel has no %s and building one for a debug path is not worth it.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] outliers seq=%d thresh_us=%d\n", wko_seq,
+            WKLAT_OUT_THRESH_NS / 1000)
+    n: uint64 = wko_seq
+    if n > WKLAT_OUT_RING:
+        n = WKLAT_OUT_RING
+    i: uint64 = 0
+    while i < n:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d us=%d pid=%d\n", i, wko_us[i], wko_wpid[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d nm=%x waker=%d\n", i, wko_wnm[i], wko_kpid[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d wnm=%x prev=%d\n", i, wko_knm[i], wko_ppid[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d pnm=%x dispd=%d\n", i, wko_pnm[i], wko_dispd[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d jifd=%d kickd=%d\n", i, wko_jifd[i], wko_kickd[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d oncpu=%d scpu=%d\n", i, wko_oncpu[i], wko_scpu[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] o%d dcpu=%d rqcpu=%d\n", i, wko_dcpu[i], wko_rqcpu[i])
+        i = i + 1
 
 
 def wklat_report():
@@ -2750,6 +2922,7 @@ def wklat_ctl(verb: int64) -> int32:
     #   2 = reset histogram + enable instrument
     #   3 = print report
     #   4 = disable instrument
+    #   6 = print the outlier CONTEXT ring (waker / waitee / what held the cpu)
     # ACK every accepted verb. Without this a control write that is silently
     # refused (a permission gate, a parse miss) looks exactly like a working
     # one from userland, and the A/B measurement runs BOTH arms in the same
@@ -2777,6 +2950,9 @@ def wklat_ctl(verb: int64) -> int32:
     if verb == 4:
         wklat_enable(0)
         wklat_probe_run = 0
+        return 1
+    if verb == 6:
+        wklat_out_report()
         return 1
     if verb == 5:
         if _wklat_probe_start() == 0:
@@ -3750,11 +3926,16 @@ def sched_note_dispatch(slot: uint64):
     # not remotely readable). Also close any wake->dispatch interval.
     if g_rq_current_init == 0:
         _rq_current_init()
+    # Who held this cpu immediately before us. Read BEFORE the store below
+    # overwrites it — that is the whole reason _wklat_account takes it as an
+    # argument instead of reading g_rq_current itself.
+    prev: uint64 = RQ_CUR_NONE
     if cid < NR_RQ:
+        prev = g_rq_current[cid]
         g_rq_current[cid] = slot
         # This dispatch satisfies whatever wakeup asked for a reschedule.
         g_need_resched[cid] = 0
-    _wklat_account(slot)
+    _wklat_account(slot, prev)
 
 
 def sched_cpu_runs(slot: uint64, cpu: uint64) -> uint64:
