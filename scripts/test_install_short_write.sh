@@ -118,14 +118,26 @@ blinded() {
     [ -n "$1" ] && [ "${mutated#*,${1},}" != "$mutated" ]
 }
 
+# Sourced up front: cleanup() calls kernel_image_compile, so the helper
+# must be available before the EXIT trap can ever fire.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
+
 DISK=$(mktemp --suffix=.shortwrite.img)
 LOG=$(mktemp)
 cleanup() {
     rm -f "$LOG" "$LOG.build" "$DISK"
-    # Restore a DEFAULT initramfs so the next gate on this tree does not
-    # inherit the 4 MiB fixture.
+    # Restore a DEFAULT initramfs AND RELINK the kernel image.
+    #
+    # Rebuilding only the initramfs is not enough and the omission bit us:
+    # the cpio is linked INTO build/hamnix-kernel.elf, so leaving the ELF
+    # alone leaves the next gate on this tree booting hamsh-as-init with
+    # /etc/write-smallbounce-test still armed. That is exactly how a first
+    # run of this gate turned scripts/test_installed_system_parity.sh red
+    # (3 MISSes on the #distro step) on a tree whose code was fine — a
+    # cross-gate false red manufactured by this file's own leftovers.
     INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py \
         >/dev/null 2>&1 || true
+    kernel_image_compile "$ELF" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -148,7 +160,6 @@ ENABLE_SHORTWRITE_TEST=1 \
     python3 scripts/build_initramfs.py >/dev/null \
     || verdict_inconclusive "$TAG" "build_initramfs.py failed"
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_kernel_image.sh"
 kernel_image_compile "$ELF" >/dev/null \
     || verdict_inconclusive "$TAG" "kernel compile failed"
 
