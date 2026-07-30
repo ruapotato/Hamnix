@@ -537,6 +537,58 @@ cs_buf:  Array[4194304, uint8]
 cs_done: int32 = 0
 
 
+# Does a <script> or <style> START TAG open at src_ptr[i] (which is '<')?
+def _cs_raw_open(i: uint64) -> int32:
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("script"), 6) != 0:
+        return 1
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("style"), 5) != 0:
+        return 1
+    return 0
+
+
+# Case-insensitive tag-name match at src_ptr[i..], followed by a tag-name
+# terminator (whitespace, '>' or '/').
+def _cs_word_at(i: uint64, w: Ptr[uint8], n: int32) -> int32:
+    k: int32 = 0
+    while k < n:
+        if i + cast[uint64](k) >= src_len:
+            return 0
+        c: uint8 = src_ptr[i + cast[uint64](k)]
+        if c >= 65 and c <= 90:
+            c = c + 32
+        if c != w[k]:
+            return 0
+        k = k + 1
+    if i + cast[uint64](n) >= src_len:
+        return 0
+    t: uint8 = src_ptr[i + cast[uint64](n)]
+    if t == 32 or t == 9 or t == 10 or t == 13 or t == 62 or t == 47:
+        return 1
+    return 0
+
+
+# End offset (exclusive) of the raw-text element opening at src_ptr[i],
+# INCLUDING its close tag. An unterminated one runs to end of source.
+def _cs_raw_close(i: uint64) -> uint64:
+    nm: Ptr[uint8] = cast[Ptr[uint8]]("script")
+    nl: int32 = 6
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("style"), 5) != 0:
+        nm = cast[Ptr[uint8]]("style")
+        nl = 5
+    j: uint64 = i + 1
+    while j < src_len:
+        if src_ptr[j] == 60 and j + 1 < src_len and src_ptr[j + 1] == 47 and \
+           _cs_word_at(j + 2, nm, nl) != 0:
+            k2: uint64 = j + 2 + cast[uint64](nl)
+            while k2 < src_len and src_ptr[k2] != 62:
+                k2 = k2 + 1
+            if k2 < src_len:
+                return k2 + 1
+            return src_len
+        j = j + 1
+    return src_len
+
+
 def _strip_comments():
     # Idempotent: safe to call again on an already-stripped buffer.
     if src_len == 0:
@@ -544,6 +596,20 @@ def _strip_comments():
     w: uint64 = 0
     i: uint64 = 0
     while i < src_len and w < CS_CAP - 1:
+        # <script> and <style> bodies are RAW TEXT: "<!--" inside them opens
+        # nothing. Stripping them anyway silently destroyed any JS string
+        # containing the sequence — MEASURED on dom/nodes/ChildNode-before.html,
+        # whose `test_before(document.createComment('test'), 'Comment',
+        # '<!--test-->')` had its third argument rewritten to "" before the
+        # parser ever saw it, so 15 subtests were comparing against the wrong
+        # expectation. Copy the whole element through untouched.
+        if src_ptr[i] == 60 and _cs_raw_open(i) != 0:
+            e: uint64 = _cs_raw_close(i)
+            while i < e and w < CS_CAP - 1:
+                cs_buf[w] = src_ptr[i]
+                w = w + 1
+                i = i + 1
+            continue
         # A comment opens with the exact 4-byte lead-in "<!--".
         if src_ptr[i] == 60 and i + 3 < src_len and \
            src_ptr[i + 1] == 33 and src_ptr[i + 2] == 45 and \
@@ -1103,6 +1169,7 @@ NID_CN_AFTER:      int32 = 174       # node.after(...nodes)
 NID_CN_REPLWITH:   int32 = 175       # node.replaceWith(...nodes)
 NID_PN_PREPEND:    int32 = 176       # parent.prepend(...nodes)
 NID_PN_REPLKIDS:   int32 = 187       # parent.replaceChildren(...nodes)
+NID_CREATEPI:      int32 = 188       # document.createProcessingInstruction(t,d)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1186,6 +1253,7 @@ g_proto_doc:   int32 = 0             # Document.prototype
 g_proto_doctype: int32 = 0           # DocumentType.prototype
 g_proto_impl:  int32 = 0             # DOMImplementation.prototype
 g_proto_attr:  int32 = 0             # Attr.prototype
+g_proto_pi:    int32 = 0             # ProcessingInstruction.prototype
 g_proto_nnm:   int32 = 0             # NamedNodeMap.prototype
 g_proto_html:  int32 = 0             # HTMLHtmlElement.prototype
 g_proto_head:  int32 = 0             # HTMLHeadElement.prototype
@@ -1287,6 +1355,7 @@ def _dom_reset():
     g_proto_doctype = 0
     g_proto_impl = 0
     g_proto_attr = 0
+    g_proto_pi = 0
     g_proto_nnm = 0
     g_proto_html = 0
     g_proto_head = 0

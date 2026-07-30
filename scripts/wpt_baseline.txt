@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 2136
+#!PASS_FLOOR 2226
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -642,11 +642,6 @@ dom/lists/DOMTokenList-iteration.html	classList.keys
 dom/lists/DOMTokenList-iteration.html	classList.values
 dom/lists/DOMTokenList-stringifier.html	Untitled
 dom/lists/DOMTokenList-value.html	Untitled
-dom/nodes/CharacterData-appendChild.html	Comment.appendChild(ProcessingInstruction)
-dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Comment)
-dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(ProcessingInstruction)
-dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Text)
-dom/nodes/CharacterData-appendChild.html	Text.appendChild(ProcessingInstruction)
 dom/nodes/CharacterData-appendData.html	Comment.appendData('')
 dom/nodes/CharacterData-appendData.html	Comment.appendData('', 'bar')
 dom/nodes/CharacterData-appendData.html	Comment.appendData('bar')
@@ -668,7 +663,6 @@ dom/nodes/CharacterData-data.html	Comment.data = '🌠 test 🌠 TEST'
 dom/nodes/CharacterData-data.html	Comment.data = 0
 dom/nodes/CharacterData-data.html	Comment.data = null
 dom/nodes/CharacterData-data.html	Comment.data = undefined
-dom/nodes/CharacterData-data.html	Comment.data initial value
 dom/nodes/CharacterData-data.html	Text.data = ''
 dom/nodes/CharacterData-data.html	Text.data = '--'
 dom/nodes/CharacterData-data.html	Text.data = '資料'
@@ -713,7 +707,18 @@ dom/nodes/CharacterData-insertData.html	Text.insertData() negative out of bounds
 dom/nodes/CharacterData-insertData.html	Text.insertData() out of bounds
 dom/nodes/CharacterData-insertData.html	Text.insertData() with non-BMP data
 dom/nodes/CharacterData-insertData.html	Text.insertData() with non-ascii data
-dom/nodes/CharacterData-remove.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/CharacterData-remove.html	PI should support remove()
+dom/nodes/CharacterData-remove.html	comment should support remove()
+dom/nodes/CharacterData-remove.html	remove() should work if PI does have a parent
+dom/nodes/CharacterData-remove.html	remove() should work if PI does have a parent and siblings
+dom/nodes/CharacterData-remove.html	remove() should work if PI doesn't have a parent
+dom/nodes/CharacterData-remove.html	remove() should work if comment does have a parent
+dom/nodes/CharacterData-remove.html	remove() should work if comment does have a parent and siblings
+dom/nodes/CharacterData-remove.html	remove() should work if comment doesn't have a parent
+dom/nodes/CharacterData-remove.html	remove() should work if text does have a parent
+dom/nodes/CharacterData-remove.html	remove() should work if text does have a parent and siblings
+dom/nodes/CharacterData-remove.html	remove() should work if text doesn't have a parent
+dom/nodes/CharacterData-remove.html	text should support remove()
 dom/nodes/CharacterData-replaceData.html	Comment.replaceData() at the end (longer)
 dom/nodes/CharacterData-replaceData.html	Comment.replaceData() at the end (same length)
 dom/nodes/CharacterData-replaceData.html	Comment.replaceData() at the end (shorter)
@@ -785,83 +790,41 @@ dom/nodes/CharacterData-surrogates.html	Text.insertData() splitting and creating
 dom/nodes/CharacterData-surrogates.html	Text.replaceData() splitting and creating surrogate pairs
 dom/nodes/CharacterData-surrogates.html	Text.substringData() splitting surrogate pairs
 dom/nodes/ChildNode-after.html	Comment.after() on a child without any parent.
-dom/nodes/ChildNode-after.html	Comment.after() when pre-insert behaves like append.
-dom/nodes/ChildNode-after.html	Comment.after() with all siblings of child as arguments.
-dom/nodes/ChildNode-after.html	Comment.after() with context object itself as the argument.
-dom/nodes/ChildNode-after.html	Comment.after() with null as an argument.
-dom/nodes/ChildNode-after.html	Comment.after() with one element and text as arguments.
-dom/nodes/ChildNode-after.html	Comment.after() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-after.html	Comment.after() with only one element as an argument.
-dom/nodes/ChildNode-after.html	Comment.after() with only text as an argument.
 dom/nodes/ChildNode-after.html	Comment.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Comment.after() with undefined as an argument.
 dom/nodes/ChildNode-after.html	Element.after() on a child without any parent.
-dom/nodes/ChildNode-after.html	Element.after() when pre-insert behaves like append.
-dom/nodes/ChildNode-after.html	Element.after() with all siblings of child as arguments.
-dom/nodes/ChildNode-after.html	Element.after() with context object itself and node as the arguments, switching positions.
-dom/nodes/ChildNode-after.html	Element.after() with context object itself as the argument.
-dom/nodes/ChildNode-after.html	Element.after() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-after.html	Element.after() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-after.html	Element.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Element.after() with undefined as an argument.
-dom/nodes/ChildNode-after.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-after.html	Text.after() on a child without any parent.
-dom/nodes/ChildNode-after.html	Text.after() when pre-insert behaves like append.
-dom/nodes/ChildNode-after.html	Text.after() with all siblings of child as arguments.
-dom/nodes/ChildNode-after.html	Text.after() with context object itself and node as the arguments, switching positions.
-dom/nodes/ChildNode-after.html	Text.after() with context object itself as the argument.
-dom/nodes/ChildNode-after.html	Text.after() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-after.html	Text.after() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-after.html	Text.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Text.after() with undefined as an argument.
-dom/nodes/ChildNode-after.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Comment.before() on a child without any parent.
-dom/nodes/ChildNode-before.html	Comment.before() when pre-insert behaves like prepend.
-dom/nodes/ChildNode-before.html	Comment.before() with all siblings of child as arguments.
-dom/nodes/ChildNode-before.html	Comment.before() with context object itself as the argument.
-dom/nodes/ChildNode-before.html	Comment.before() with null as an argument.
-dom/nodes/ChildNode-before.html	Comment.before() with one element and text as arguments.
-dom/nodes/ChildNode-before.html	Comment.before() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-before.html	Comment.before() with only one element as an argument.
-dom/nodes/ChildNode-before.html	Comment.before() with only text as an argument.
 dom/nodes/ChildNode-before.html	Comment.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Comment.before() with undefined as an argument.
 dom/nodes/ChildNode-before.html	Element.before() on a child without any parent.
-dom/nodes/ChildNode-before.html	Element.before() when pre-insert behaves like prepend.
-dom/nodes/ChildNode-before.html	Element.before() with all siblings of child as arguments.
-dom/nodes/ChildNode-before.html	Element.before() with context object itself and node as the arguments, switching positions.
-dom/nodes/ChildNode-before.html	Element.before() with context object itself as the argument.
-dom/nodes/ChildNode-before.html	Element.before() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree.
-dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Element.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Element.before() with undefined as an argument.
 dom/nodes/ChildNode-before.html	Text.before() on a child without any parent.
-dom/nodes/ChildNode-before.html	Text.before() when pre-insert behaves like prepend.
-dom/nodes/ChildNode-before.html	Text.before() with all siblings of child as arguments.
-dom/nodes/ChildNode-before.html	Text.before() with context object itself and node as the arguments, switching positions.
-dom/nodes/ChildNode-before.html	Text.before() with context object itself as the argument.
-dom/nodes/ChildNode-before.html	Text.before() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree.
-dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Text.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Text.before() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with null as an argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one element and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only one element as an argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only text as an argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and child itself as arguments.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and child itself as arguments.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with undefined as an argument.
-dom/nodes/Comment-constructor.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/Comment-constructor.html	new Comment(): ""
+dom/nodes/Comment-constructor.html	new Comment(): "&amp;"
+dom/nodes/Comment-constructor.html	new Comment(): "-"
+dom/nodes/Comment-constructor.html	new Comment(): "--"
+dom/nodes/Comment-constructor.html	new Comment(): "-->"
+dom/nodes/Comment-constructor.html	new Comment(): "<!--"
+dom/nodes/Comment-constructor.html	new Comment(): "\0"
+dom/nodes/Comment-constructor.html	new Comment(): "\0test"
+dom/nodes/Comment-constructor.html	new Comment(): 42
+dom/nodes/Comment-constructor.html	new Comment(): instanceof
+dom/nodes/Comment-constructor.html	new Comment(): no arguments
+dom/nodes/Comment-constructor.html	new Comment(): null
+dom/nodes/Comment-constructor.html	new Comment(): prototype chain
+dom/nodes/Comment-constructor.html	new Comment(): two arguments
+dom/nodes/Comment-constructor.html	new Comment(): undefined
 dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,null,false,function "function () { [native code] }"
 dom/nodes/DOMImplementation-createDocument.html	createDocument with missing arguments
 dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:>", "", "") should throw INVALID_CHARACTER_ERR
@@ -948,17 +911,9 @@ dom/nodes/Document-createEvent.https.html	createEvent('TOUCHEVENT') should be in
 dom/nodes/Document-createEvent.https.html	createEvent('TouchEvent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	createEvent('touchevent') should be initialized correctly.
 dom/nodes/Document-createEvent.https.html	touchevent should be an alias for TouchEvent.
-dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "A·A" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "a0" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "xml:fail" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "0" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "A" and data "?>".
 dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "A×" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "\\A" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "\f" and data "x".
 dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "·A" and data "x".
 dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "×A" and data "x".
-dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target 0 and data "x".
 dom/nodes/Document-createTextNode.html	createTextNode("-b")
 dom/nodes/Document-createTextNode.html	createTextNode("\v")
 dom/nodes/Document-createTextNode.html	createTextNode("a -- b")
@@ -1278,7 +1233,6 @@ dom/nodes/Node-cloneNode.html	node with children
 dom/nodes/Node-compareDocumentPosition.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Node-contains.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node DocumentType must throw HIERARCHY_REQUEST_ERR.
-dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node ProcessingInstruction must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node Comment must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node DocumentType must throw TypeError.
@@ -1307,13 +1261,7 @@ dom/nodes/Node-isConnected.html	Test with ordinary child nodes
 dom/nodes/Node-isEqualNode.html	documents should not be compared based on properties
 dom/nodes/Node-isEqualNode.html	elements should be compared on attribute namespace, local name, and value
 dom/nodes/Node-isEqualNode.html	node equality testing should test descendant equality too
-dom/nodes/Node-isEqualNode.html	processing instructions should be compared on target and data
 dom/nodes/Node-isSameNode.html	attributes should be compared on reference
-dom/nodes/Node-isSameNode.html	processing instructions should be compared on reference
-dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit  baz namespace
-dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit bar namespace
-dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit baz namespace
-dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit namespace URI matching prefix
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix ""
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix "foo"
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix "xmlns"
@@ -1323,9 +1271,6 @@ dom/nodes/Node-lookupNamespaceURI.html	DocumentType should have null namespace, 
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType should have null namespace, prefix "xml"
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType should have null namespace, prefix "xmlns"
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType should have null namespace, prefix null
-dom/nodes/Node-lookupNamespaceURI.html	For comment, empty namespace is not default, prefix ""
-dom/nodes/Node-lookupNamespaceURI.html	For comment, empty namespace is not default, prefix null
-dom/nodes/Node-lookupNamespaceURI.html	For comment, inherited baz namespace is default
 dom/nodes/Node-mutation-adoptNode.html	Adopting an element into a different document update's the element's owner doc as well as the owner docs of it's attributes
 dom/nodes/Node-mutation-adoptNode.html	simple append of foreign div with text
 dom/nodes/Node-nodeName.html	For DocumentType nodes, nodeName should return the name.
@@ -1338,7 +1283,6 @@ dom/nodes/Node-nodeValue.html	ProcessingInstruction.nodeValue
 dom/nodes/Node-nodeValue.html	Text.nodeValue
 dom/nodes/Node-normalize.html	Non-text nodes with empty textContent values.
 dom/nodes/Node-normalize.html	Untitled
-dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (comment)
 dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (doctype)
 dom/nodes/Node-parentElement.html	When the parent is null, parentElement should be null
 dom/nodes/Node-parentElement.html	parentElement should return null for children of DocumentFragments (element)
@@ -1401,7 +1345,6 @@ dom/nodes/Node-replaceChild.html	Should check the 'parent' type before checking 
 dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' can be inserted into the document given the kids the document has right now.
 dom/nodes/Node-replaceChild.html	replaceChild should work in the presence of mutation events.
 dom/nodes/Node-textContent.html	DocumentFragment with children
-dom/nodes/Node-textContent.html	DocumentFragment with children set to ""
 dom/nodes/Node-textContent.html	DocumentFragment with children set to "<b>xyz</b>"
 dom/nodes/Node-textContent.html	DocumentFragment with children set to "abc"
 dom/nodes/Node-textContent.html	DocumentFragment with children set to "d\0e"
@@ -1429,8 +1372,6 @@ dom/nodes/Node-textContent.html	DocumentFragment without children set to "d\0e"
 dom/nodes/Node-textContent.html	DocumentFragment without children set to 42
 dom/nodes/Node-textContent.html	DocumentFragment without children set to null
 dom/nodes/Node-textContent.html	DocumentFragment without children set to undefined
-dom/nodes/Node-textContent.html	Element with children
-dom/nodes/Node-textContent.html	Element with children set to ""
 dom/nodes/Node-textContent.html	Element with children set to "<b>xyz</b>"
 dom/nodes/Node-textContent.html	Element with children set to "abc"
 dom/nodes/Node-textContent.html	Element with children set to "d\0e"
@@ -1470,11 +1411,9 @@ dom/nodes/Node-textContent.html	For Documents created by createHTMLDocument, tex
 dom/nodes/Node-textContent.html	For Documents created by parser, setting textContent should do nothing
 dom/nodes/Node-textContent.html	For Documents created by parser, textContent should be null
 dom/nodes/Node-textContent.html	For a Comment, textContent should set the data
-dom/nodes/Node-textContent.html	For a ProcessingInstruction with data, textContent should be that data
 dom/nodes/Node-textContent.html	For a ProcessingInstruction, textContent should set the data
 dom/nodes/Node-textContent.html	For a Text, textContent should set the data
 dom/nodes/Node-textContent.html	For an empty DocumentFragment, textContent should be the empty string
-dom/nodes/Node-textContent.html	For an empty ProcessingInstruction, textContent should be the empty string
 dom/nodes/NodeList-Iterable.html	NodeList has Symbol.iterator.
 dom/nodes/NodeList-Iterable.html	NodeList has entries method.
 dom/nodes/NodeList-Iterable.html	NodeList has values method.
@@ -1522,7 +1461,21 @@ dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() wit
 dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() without any argument, on a parent having a child.
 dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() without any argument, on a parent having no child.
 dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() should move nodes in the right order
-dom/nodes/Text-constructor.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/Text-constructor.html	new Text(): ""
+dom/nodes/Text-constructor.html	new Text(): "&amp;"
+dom/nodes/Text-constructor.html	new Text(): "-"
+dom/nodes/Text-constructor.html	new Text(): "--"
+dom/nodes/Text-constructor.html	new Text(): "-->"
+dom/nodes/Text-constructor.html	new Text(): "<!--"
+dom/nodes/Text-constructor.html	new Text(): "\0"
+dom/nodes/Text-constructor.html	new Text(): "\0test"
+dom/nodes/Text-constructor.html	new Text(): 42
+dom/nodes/Text-constructor.html	new Text(): instanceof
+dom/nodes/Text-constructor.html	new Text(): no arguments
+dom/nodes/Text-constructor.html	new Text(): null
+dom/nodes/Text-constructor.html	new Text(): prototype chain
+dom/nodes/Text-constructor.html	new Text(): two arguments
+dom/nodes/Text-constructor.html	new Text(): undefined
 dom/nodes/Text-splitText.html	Split child
 dom/nodes/Text-splitText.html	Split empty text
 dom/nodes/Text-splitText.html	Split root
@@ -1702,7 +1655,6 @@ dom/nodes/moveBefore/Node-moveBefore.html	moveBefore on a paragraph's Text node 
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore with reference child whose parent is NOT the destination parent (context node) throws a NotFoundError.
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() CharacterData into a Document
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() into a Document throws a HierarchyRequestError
-dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() method does not exist on non-ParentNode Nodes
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() on a cross-document target node throws a HierarchyRequestError
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() on disconnected parent throws a HierarchyRequestError
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() returns undefined
@@ -1770,7 +1722,19 @@ dom/nodes/moveBefore/slotchange-events.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/style-applies.html	Moving a style inside the document should not affect whether it's applied
 dom/nodes/moveBefore/throws-exception.html	moveBefore() on a cross-document target node
 dom/nodes/name-validation.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/node-creation-realm.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/node-creation-realm.html	DOMImplementation.createDocument() creates the document in the target realm
+dom/nodes/node-creation-realm.html	DOMImplementation.createDocumentType() creates a node in the associated document's realm
+dom/nodes/node-creation-realm.html	DOMImplementation.createHTMLDocument() creates the document and its contents in the target realm
+dom/nodes/node-creation-realm.html	Document.createAttribute() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Document.createCDATASection() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Document.createComment() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Document.createDocumentFragment() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Document.createProcessingInstruction() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Document.createTextNode() creates a node in the target document's realm
+dom/nodes/node-creation-realm.html	Range.cloneContents() builds the fragment in the range's node document realm
+dom/nodes/node-creation-realm.html	cloneNode() clones into the node's node document realm
+dom/nodes/node-creation-realm.html	importNode() imports into the target document's realm
+dom/nodes/node-creation-realm.html	innerHTML parses Text and Comment nodes in the node document's realm after adoption
 dom/nodes/node-realm-adoption-after-frame-removal.html	Never-wrapped node keeps its creation realm: iframe removed before adoption (subtree not pre-detached)
 dom/nodes/node-realm-adoption-after-frame-removal.html	Never-wrapped node keeps its creation realm: subtree detached, iframe removed, then adopted
 dom/nodes/node-realm-adoption-after-frame-removal.html	Node reached through the adopting document still reports its creation realm (frame removed before adoption)
@@ -1934,11 +1898,8 @@ dom/nodes/remove-unscopable.html	before() should be unscopable
 dom/nodes/remove-unscopable.html	prepend() should be unscopable
 dom/nodes/remove-unscopable.html	remove() should be unscopable
 dom/nodes/remove-unscopable.html	replaceWith() should be unscopable
-dom/nodes/rootNode.html	getRootNode() must return a document fragment when a node is in the fragment
 dom/nodes/rootNode.html	getRootNode() must return context object's shadow-including root if options's composed is true, and context object's root otherwise
-dom/nodes/rootNode.html	getRootNode() must return the context object when it does not have any parent
 dom/nodes/rootNode.html	getRootNode() must return the document when a node is in document
-dom/nodes/rootNode.html	getRootNode() must return the parent node of the context object when the context object has a single ancestor not in a document
 dom/nodes/svg-template-querySelector.html	querySelector works on template contents fragments with HTML elements (sanity check)
 dom/nodes/svg-template-querySelector.html	querySelector works on template contents fragments with SVG elements
 dom/nodes/svg-template-querySelector.html	querySelector works on template contents fragments with nested SVG elements
@@ -2013,7 +1974,23 @@ dom/ranges/Range-selectNode.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/Range-set.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/Range-stringifier.html	Untitled
 dom/ranges/Range-surroundContents.html	<FILE PRODUCED NO RESULTS>
-dom/ranges/StaticRange-constructor.html	<FILE PRODUCED NO RESULTS>
+dom/ranges/StaticRange-constructor.html	Construct collapsed static range
+dom/ranges/StaticRange-constructor.html	Construct inverted static range
+dom/ranges/StaticRange-constructor.html	Construct static range with CDATASection container
+dom/ranges/StaticRange-constructor.html	Construct static range with Comment container
+dom/ranges/StaticRange-constructor.html	Construct static range with Document container
+dom/ranges/StaticRange-constructor.html	Construct static range with DocumentFragment container
+dom/ranges/StaticRange-constructor.html	Construct static range with Element container
+dom/ranges/StaticRange-constructor.html	Construct static range with Element startContainer and Text endContainer
+dom/ranges/StaticRange-constructor.html	Construct static range with ProcessingInstruction container
+dom/ranges/StaticRange-constructor.html	Construct static range with Text container
+dom/ranges/StaticRange-constructor.html	Construct static range with Text startContainer and Element endContainer
+dom/ranges/StaticRange-constructor.html	Construct static range with endpoints in disconnected documents
+dom/ranges/StaticRange-constructor.html	Construct static range with endpoints in disconnected trees
+dom/ranges/StaticRange-constructor.html	Construct static range with offset greater than length
+dom/ranges/StaticRange-constructor.html	Construct static range with standalone Node container
+dom/ranges/StaticRange-constructor.html	Throw on DocumentType or Attr container
+dom/ranges/StaticRange-constructor.html	Throw on missing or invalid arguments
 dom/ranges/tentative/OpaqueRange-auto-disconnect.html	All OpaqueRanges disconnected on element removal (input)
 dom/ranges/tentative/OpaqueRange-auto-disconnect.html	All OpaqueRanges disconnected on element removal (textarea)
 dom/ranges/tentative/OpaqueRange-auto-disconnect.html	Element accepts new OpaqueRanges after re-insertion (input)
@@ -3203,54 +3180,116 @@ url/failure.html	Loading data…
 +dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/2000/svg namespace should be undefined.
 +dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in null namespace should be undefined.
 +dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Comment)
++dom/nodes/CharacterData-appendChild.html	Comment.appendChild(ProcessingInstruction)
 +dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Text)
++dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Comment)
++dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(ProcessingInstruction)
++dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Text)
 +dom/nodes/CharacterData-appendChild.html	Text.appendChild(Comment)
++dom/nodes/CharacterData-appendChild.html	Text.appendChild(ProcessingInstruction)
 +dom/nodes/CharacterData-appendChild.html	Text.appendChild(Text)
++dom/nodes/CharacterData-data.html	Comment.data initial value
++dom/nodes/ChildNode-after.html	Comment.after() when pre-insert behaves like append.
++dom/nodes/ChildNode-after.html	Comment.after() with all siblings of child as arguments.
 +dom/nodes/ChildNode-after.html	Comment.after() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-after.html	Comment.after() with context object itself as the argument.
++dom/nodes/ChildNode-after.html	Comment.after() with null as an argument.
++dom/nodes/ChildNode-after.html	Comment.after() with one element and text as arguments.
++dom/nodes/ChildNode-after.html	Comment.after() with one sibling of child and text as arguments.
++dom/nodes/ChildNode-after.html	Comment.after() with only one element as an argument.
++dom/nodes/ChildNode-after.html	Comment.after() with only text as an argument.
 +dom/nodes/ChildNode-after.html	Comment.after() with some siblings of child as arguments; no changes in tree.
 +dom/nodes/ChildNode-after.html	Comment.after() without any argument.
 +dom/nodes/ChildNode-after.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
++dom/nodes/ChildNode-after.html	Element.after() when pre-insert behaves like append.
++dom/nodes/ChildNode-after.html	Element.after() with all siblings of child as arguments.
++dom/nodes/ChildNode-after.html	Element.after() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-after.html	Element.after() with context object itself as the argument.
 +dom/nodes/ChildNode-after.html	Element.after() with null as an argument.
 +dom/nodes/ChildNode-after.html	Element.after() with one element and text as arguments.
++dom/nodes/ChildNode-after.html	Element.after() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-after.html	Element.after() with only one element as an argument.
 +dom/nodes/ChildNode-after.html	Element.after() with only text as an argument.
++dom/nodes/ChildNode-after.html	Element.after() with some siblings of child as arguments; no changes in tree.
 +dom/nodes/ChildNode-after.html	Element.after() without any argument.
++dom/nodes/ChildNode-after.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
++dom/nodes/ChildNode-after.html	Text.after() when pre-insert behaves like append.
++dom/nodes/ChildNode-after.html	Text.after() with all siblings of child as arguments.
++dom/nodes/ChildNode-after.html	Text.after() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-after.html	Text.after() with context object itself as the argument.
 +dom/nodes/ChildNode-after.html	Text.after() with null as an argument.
 +dom/nodes/ChildNode-after.html	Text.after() with one element and text as arguments.
++dom/nodes/ChildNode-after.html	Text.after() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-after.html	Text.after() with only one element as an argument.
 +dom/nodes/ChildNode-after.html	Text.after() with only text as an argument.
++dom/nodes/ChildNode-after.html	Text.after() with some siblings of child as arguments; no changes in tree.
 +dom/nodes/ChildNode-after.html	Text.after() without any argument.
++dom/nodes/ChildNode-after.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
++dom/nodes/ChildNode-before.html	Comment.before() when pre-insert behaves like prepend.
++dom/nodes/ChildNode-before.html	Comment.before() with all siblings of child as arguments.
 +dom/nodes/ChildNode-before.html	Comment.before() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-before.html	Comment.before() with context object itself as the argument.
++dom/nodes/ChildNode-before.html	Comment.before() with null as an argument.
++dom/nodes/ChildNode-before.html	Comment.before() with one element and text as arguments.
++dom/nodes/ChildNode-before.html	Comment.before() with one sibling of child and text as arguments.
++dom/nodes/ChildNode-before.html	Comment.before() with only one element as an argument.
++dom/nodes/ChildNode-before.html	Comment.before() with only text as an argument.
 +dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree.
 +dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 +dom/nodes/ChildNode-before.html	Comment.before() without any argument.
++dom/nodes/ChildNode-before.html	Element.before() when pre-insert behaves like prepend.
++dom/nodes/ChildNode-before.html	Element.before() with all siblings of child as arguments.
++dom/nodes/ChildNode-before.html	Element.before() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-before.html	Element.before() with context object itself as the argument.
 +dom/nodes/ChildNode-before.html	Element.before() with null as an argument.
 +dom/nodes/ChildNode-before.html	Element.before() with one element and text as arguments.
++dom/nodes/ChildNode-before.html	Element.before() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-before.html	Element.before() with only one element as an argument.
 +dom/nodes/ChildNode-before.html	Element.before() with only text as an argument.
++dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree.
++dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 +dom/nodes/ChildNode-before.html	Element.before() without any argument.
++dom/nodes/ChildNode-before.html	Text.before() when pre-insert behaves like prepend.
++dom/nodes/ChildNode-before.html	Text.before() with all siblings of child as arguments.
++dom/nodes/ChildNode-before.html	Text.before() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-before.html	Text.before() with context object itself as the argument.
 +dom/nodes/ChildNode-before.html	Text.before() with null as an argument.
 +dom/nodes/ChildNode-before.html	Text.before() with one element and text as arguments.
++dom/nodes/ChildNode-before.html	Text.before() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-before.html	Text.before() with only one element as an argument.
 +dom/nodes/ChildNode-before.html	Text.before() with only text as an argument.
++dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree.
++dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 +dom/nodes/ChildNode-before.html	Text.before() without any argument.
 +dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() on a parentless child with two elements as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with empty string as an argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with null as an argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one element and text as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and child itself as arguments.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and text as arguments.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only one element as an argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only text as an argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with sibling of child as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() without any argument.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() on a parentless child with two elements as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with empty string as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with null as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one element and text as arguments.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and child itself as arguments.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only one element as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only text as an argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with sibling of child as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() without any argument.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() on a parentless child with two elements as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with empty string as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with null as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one element and text as arguments.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and child itself as arguments.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and text as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only one element as an argument.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only text as an argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with sibling of child as arguments.
 +dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() without any argument.
 +dom/nodes/DOMImplementation-createDocument.html	Untitled
 +dom/nodes/DOMImplementation-createDocument.html	createDocument test: "",":foo",null,"INVALID_CHARACTER_ERR"
@@ -4192,6 +4231,14 @@ url/failure.html	Loading data…
 +dom/nodes/Document-createEvent.https.html	textevent should be an alias for TextEvent.
 +dom/nodes/Document-createEvent.https.html	uievent should be an alias for UIEvent.
 +dom/nodes/Document-createEvent.https.html	uievents should be an alias for UIEvent.
++dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "A·A" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "a0" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should get a ProcessingInstruction for target "xml:fail" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "0" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "A" and data "?>".
++dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "\\A" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target "\f" and data "x".
++dom/nodes/Document-createProcessingInstruction.html	Should throw an INVALID_CHARACTER_ERR for target 0 and data "x".
 +dom/nodes/Document-createProcessingInstruction.html	Untitled
 +dom/nodes/Document-getElementById.html	Calling document.getElementById with a null argument.
 +dom/nodes/Document-getElementById.html	Document.getElementById with a script-inserted element
@@ -4319,6 +4366,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-constants.html	Constants for nodeType on Node prototype object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Text object.
 +dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Comment must throw HIERARCHY_REQUEST_ERR.
++dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node ProcessingInstruction must throw HIERARCHY_REQUEST_ERR.
 +dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Text must throw HIERARCHY_REQUEST_ERR.
 +dom/nodes/Node-insertBefore.html	Calling insertBefore with a reference child whose parent is not the context node must throw a NotFoundError.
 +dom/nodes/Node-insertBefore.html	Calling insertBefore with an inclusive ancestor of the context object must throw HIERARCHY_REQUEST_ERR.
@@ -4339,6 +4387,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-isEqualNode.html	doctypes should be compared on name, public ID, and system ID
 +dom/nodes/Node-isEqualNode.html	document fragments should not be compared based on properties
 +dom/nodes/Node-isEqualNode.html	elements should be compared on namespace, namespace prefix, local name, and number of attributes
++dom/nodes/Node-isEqualNode.html	processing instructions should be compared on target and data
 +dom/nodes/Node-isEqualNode.html	text nodes should be compared on data
 +dom/nodes/Node-isSameNode.html	comments should be compared on reference
 +dom/nodes/Node-isSameNode.html	doctypes should be compared on reference
@@ -4346,11 +4395,16 @@ url/failure.html	Loading data…
 +dom/nodes/Node-isSameNode.html	documents should be compared on reference
 +dom/nodes/Node-isSameNode.html	elements should be compared on reference (namespaced attribute)
 +dom/nodes/Node-isSameNode.html	elements should be compared on reference (namespaced element)
++dom/nodes/Node-isSameNode.html	processing instructions should be compared on reference
 +dom/nodes/Node-isSameNode.html	text nodes should be compared on reference
 +dom/nodes/Node-lookupNamespaceURI.html	Child element has namespace URI matching prefix
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should have XMLNS namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should have null namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should inherit baz namespace
++dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit  baz namespace
++dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit bar namespace
++dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit baz namespace
++dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit namespace URI matching prefix
 +dom/nodes/Node-lookupNamespaceURI.html	Document has bar namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Document has no namespace URI matching prefix
 +dom/nodes/Node-lookupNamespaceURI.html	Document should have xhtml namespace, prefix ""
@@ -4382,8 +4436,11 @@ url/failure.html	Loading data…
 +dom/nodes/Node-lookupNamespaceURI.html	Empty namespace is not default on fooElem, prefix null
 +dom/nodes/Node-lookupNamespaceURI.html	Empty namespace is not default, prefix ""
 +dom/nodes/Node-lookupNamespaceURI.html	Empty namespace is not default, prefix null
++dom/nodes/Node-lookupNamespaceURI.html	For comment, empty namespace is not default, prefix ""
++dom/nodes/Node-lookupNamespaceURI.html	For comment, empty namespace is not default, prefix null
 +dom/nodes/Node-lookupNamespaceURI.html	For comment, fooNamespace is not default
 +dom/nodes/Node-lookupNamespaceURI.html	For comment, inherited bar namespace is not default
++dom/nodes/Node-lookupNamespaceURI.html	For comment, inherited baz namespace is default
 +dom/nodes/Node-lookupNamespaceURI.html	For comment, xmlns namespace is not default
 +dom/nodes/Node-lookupNamespaceURI.html	For document, bar namespace is not default
 +dom/nodes/Node-lookupNamespaceURI.html	For document, baz namespace is not default
@@ -4408,6 +4465,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-nodeName.html	For Text nodes, nodeName should return "#text".
 +dom/nodes/Node-normalize.html	Empty text nodes
 +dom/nodes/Node-normalize.html	Empty text nodes separated by a non-empty text node
++dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (comment)
 +dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (element)
 +dom/nodes/Node-replaceChild.html	If child's parent is not the context node, a NotFoundError exception should be thrown
 +dom/nodes/Node-replaceChild.html	If node is an inclusive ancestor of the context node, a HierarchyRequestError should be thrown.
@@ -4420,11 +4478,16 @@ url/failure.html	Loading data…
 +dom/nodes/Node-replaceChild.html	Should check that 'node' is not an ancestor of 'parent' before checking whether 'child' is a child of 'parent'
 +dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
 +dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
++dom/nodes/Node-textContent.html	DocumentFragment with children set to ""
 +dom/nodes/Node-textContent.html	DocumentFragment without children set to ""
++dom/nodes/Node-textContent.html	Element with children
++dom/nodes/Node-textContent.html	Element with children set to ""
 +dom/nodes/Node-textContent.html	For a Comment with data, textContent should be that data
++dom/nodes/Node-textContent.html	For a ProcessingInstruction with data, textContent should be that data
 +dom/nodes/Node-textContent.html	For a Text with data, textContent should be that data
 +dom/nodes/Node-textContent.html	For an empty Comment, textContent should be the empty string
 +dom/nodes/Node-textContent.html	For an empty Element, textContent should be the empty string
++dom/nodes/Node-textContent.html	For an empty ProcessingInstruction, textContent should be the empty string
 +dom/nodes/Node-textContent.html	For an empty Text, textContent should be the empty string
 +dom/nodes/NodeList-Iterable.html	NodeList has forEach method.
 +dom/nodes/NodeList-Iterable.html	NodeList has length method.
@@ -4844,6 +4907,10 @@ url/failure.html	Loading data…
 +dom/nodes/getElementsByClassName-32.html	does not get confused by numeric IDs
 +dom/nodes/getElementsByClassName-32.html	finds the class name
 +dom/nodes/getElementsByClassName-32.html	finds the same element with multiple class names
++dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() method does not exist on non-ParentNode Nodes
++dom/nodes/rootNode.html	getRootNode() must return a document fragment when a node is in the fragment
++dom/nodes/rootNode.html	getRootNode() must return the context object when it does not have any parent
++dom/nodes/rootNode.html	getRootNode() must return the parent node of the context object when the context object has a single ancestor not in a document
 +dom/ranges/Range-commonAncestorContainer-2.html	Normal Ranges
 +dom/svg-insert-crash.html	The renderer should not crash.
 +dom/window-extends-event-target.html	window.addEventListener respects custom `this`

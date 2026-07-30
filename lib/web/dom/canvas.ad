@@ -549,6 +549,41 @@ def _cre_make_text(sval: int32) -> int32:
     return tco
 
 
+# A created Comment (kind 2) or ProcessingInstruction (kind 3). Both are real
+# members of the created-node pool, which is what lets them be APPENDED: a
+# comment used to be a bare JS object with no cre_* row, so appendChild could
+# not find it, parentNode stayed null, childNodes stayed empty, and every
+# ChildNode test that uses a Comment as its context object was unreachable.
+def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
+    if cre_n >= CRE_MAX:
+        return js_null()
+    ccid: int32 = cre_n
+    cre_tag_off[ccid] = dom_idbuf_len
+    cre_tag_len[ccid] = 0
+    cre_is_text[ccid] = kind
+    cre_gone[ccid] = 0
+    co2: int32 = js_new_object_v()
+    if kind == 2:
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(8.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#comment"), 8))
+        _node_identity(co2, g_proto_comm)
+    else:
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(7.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, targetv)
+        js_set_prop(co2, cast[Ptr[uint8]]("target"), 6, targetv)
+        _node_identity(co2, g_proto_pi)
+    js_set_prop(co2, cast[Ptr[uint8]]("nodeValue"), 9, sval)
+    js_set_prop(co2, cast[Ptr[uint8]]("data"), 4, sval)
+    js_set_prop(co2, cast[Ptr[uint8]]("textContent"), 11, sval)
+    js_set_prop(co2, cast[Ptr[uint8]]("length"), 6, \
+                js_number(cast[float64](js_str_bytelen(sval))))
+    js_set_prop(co2, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    cre_obj[ccid] = co2
+    cre_n = ccid + 1
+    return co2
+
+
 # Parse the attributes region sp[a..b) of a fragment start tag onto node obj
 # `co`: class -> className, id -> id, everything else name->value verbatim.
 def _frag_set_attrs(co: int32, sp: Ptr[uint8], a: int32, b: int32):
@@ -2277,7 +2312,10 @@ def _frag_clear(fragv: int32):
 # the readback flatten the whole subtree to escaped text.
 def _append_sync_text(parentv: int32, childv: int32):
     cid2: int32 = _find_cre_by_obj(childv)
-    if cid2 < 0 or cre_is_text[cid2] == 0:
+    # cre_is_text is a KIND now (1 text, 2 comment, 3 processing instruction).
+    # Only a real Text child contributes to the parent's textContent: a comment
+    # or a PI must not, or `<div><!--x--></div>`.textContent reads back "x".
+    if cid2 < 0 or cre_is_text[cid2] != 1:
         return
     tsbuf: Array[8192, uint8]
     tw: int32 = 0
@@ -2307,6 +2345,7 @@ def _append_sync_text(parentv: int32, childv: int32):
 # parent.appendChild(child) with explicit values — shared by the NID_APPEND
 # dispatch and the DocumentFragment flush (which replays each child through it).
 def _append_child_v(parentv: int32, childv: int32):
+    _detach_from_parent_v(childv)
     ch: int32 = _find_cre_by_obj(childv)
     if ch >= 0:
         cre_gone[ch] = 0                                  # (re)attach
@@ -2381,16 +2420,36 @@ def _mount_dispatch(rel: int32) -> int32:
         cval: int32 = js_new_string(&dom_txtbuf[0], 0)
         if js_arg_count() >= 1:
             cval = js_arg(0)
-        cmt: int32 = js_new_object_v()
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeType"), 8, js_number(8.0))
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeName"), 8, \
-                    js_new_string(cast[Ptr[uint8]]("#comment"), 8))
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeValue"), 9, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("data"), 4, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("textContent"), 11, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("parentNode"), 10, js_null())
-        _node_identity(cmt, g_proto_comm)
-        return cmt
+        return _cre_make_chardata(cval, 2, js_undefined())
+    if rel == NID_CREATEPI:
+        # document.createProcessingInstruction(target, data). The target must be
+        # an XML Name and the data must not contain "?>" — WPT
+        # Document-createProcessingInstruction.js is 11 rows of exactly that,
+        # and it wants an InvalidCharacterError, not a TypeError.
+        pitv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        pidv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            pitn: int32 = _js_str_to_cbuf(js_arg(0), &pi_tbuf[0], 255)
+            pitv = js_new_string(&pi_tbuf[0], cast[uint64](pitn))
+            if _validate_pi_target(&pi_tbuf[0], pitn) == 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidCharacterError"), \
+                                     21, \
+                                     cast[Ptr[uint8]]("invalid PI target"), 17)
+        else:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                                 cast[Ptr[uint8]]("invalid PI target"), 17)
+        if js_arg_count() >= 2:
+            pidv = js_arg(1)
+            pidp: Ptr[uint8] = js_str_bytes(pidv)
+            pidn: int32 = js_str_bytelen(pidv)
+            pk2: int32 = 0
+            while pk2 + 1 < pidn:
+                if pidp[pk2] == 63 and pidp[pk2 + 1] == 62:        # "?>"
+                    return _throw_domexc( \
+                        cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                        cast[Ptr[uint8]]("PI data contains ?>"), 19)
+                pk2 = pk2 + 1
+        return _cre_make_chardata(pidv, 3, pitv)
     if rel == NID_CREATEFRAG:
         frag: int32 = js_new_object_v()
         js_set_prop(frag, cast[Ptr[uint8]]("nodeType"), 8, js_number(11.0))
@@ -3334,12 +3393,49 @@ def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
     return 0
 
 
+# Mark every parent->child edge pointing at created node `cid` as unlinked.
+def _unlink_cre_edges(cid: int32):
+    b: int32 = 0
+    while b < cc_n:
+        if cc_child[b] == cid:
+            cc_removed[b] = 1
+        b = b + 1
+    a: int32 = 0
+    while a < ap_n:
+        if ap_child[a] == cid:
+            ap_removed[a] = 1
+        a = a + 1
+
+
+# Spec step "if node's parent is non-null, remove node" — an insertion MOVES a
+# node rather than duplicating it. Without this the WPT ChildNode/ParentNode
+# files, which deliberately re-append ONE child object into a series of fresh
+# parents, saw it accumulate in every parent at once
+# ("text<!--test--><!--test-->").
+#
+# Deliberately does NOT set cre_gone: the caller is about to re-insert, and a
+# node that is only ever unlinked here must stay renderable at its new home.
+def _detach_from_parent_v(childv: int32):
+    if js_type_of(childv) != TAG_OBJ:
+        return
+    par: int32 = js_get_prop(childv, cast[Ptr[uint8]]("parentNode"), 10)
+    cid: int32 = _find_cre_by_obj(childv)
+    if cid >= 0:
+        _unlink_cre_edges(cid)
+    if js_type_of(par) == TAG_OBJ:
+        _dom_children_drop(par, childv)
+        _wire_sibling_links(js_get_prop(par, cast[Ptr[uint8]]("children"), 8), par)
+    js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+
+
 # parent.insertBefore(newv, refv) with EXPLICIT values (refv == js_null()
 # appends). Factored out of the NID_INSBEF handler so the ChildNode /
 # ParentNode mutation methods (before / after / replaceWith / prepend /
 # replaceChildren) can reuse the one insertion path instead of growing a second
 # copy of the source-element vs created-node bookkeeping.
 def _insert_before_v(parentv: int32, newv: int32, refv: int32):
+    _detach_from_parent_v(newv)
     nch: int32 = _find_cre_by_obj(newv)
     if nch >= 0:
         cre_gone[nch] = 0
@@ -3433,6 +3529,17 @@ def _nd_insert_nodes(parentv: int32, refv: int32, from_arg: int32):
         i = i + 1
 
 
+# Is `v` one of the current call's arguments?
+def _nd_arg_is(v: int32) -> int32:
+    i: int32 = 0
+    n: int32 = js_arg_count()
+    while i < n:
+        if js_arg(i) == v:
+            return 1
+        i = i + 1
+    return 0
+
+
 def _child_parent_dispatch(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_PN_PREPEND or rel == NID_PN_REPLKIDS:
@@ -3461,18 +3568,58 @@ def _child_parent_dispatch(rel: int32) -> int32:
     par: int32 = _nd_parent(thisv)
     if js_type_of(par) != TAG_OBJ:
         return js_undefined()
-    if rel == NID_CN_BEFORE:
-        _nd_insert_nodes(par, thisv, 0)
-        return js_undefined()
+    # The "viable sibling" step. before/after/replaceWith do NOT insert next to
+    # `this`: they insert next to the first sibling that is NOT itself one of
+    # the arguments, computed BEFORE the arguments are unlinked. Skipping it
+    # reversed the result whenever a page passed existing siblings back in
+    # (`child.after(x, y)` where x is already child.nextSibling produced
+    # "<y><z><x>" instead of leaving the tree alone).
+    kids: int32 = _nd_kids(par)
+    idx: int32 = _nd_child_index(par, thisv)
+    vs: int32 = js_null()
+    if kids != 0 and idx >= 0:
+        kn2: int32 = js_array_len(kids)
+        if rel == NID_CN_AFTER:
+            k2: int32 = idx + 1
+            while k2 < kn2:
+                if _nd_arg_is(js_array_get(kids, k2)) == 0:
+                    vs = js_array_get(kids, k2)
+                    k2 = kn2
+                else:
+                    k2 = k2 + 1
+        else:
+            k3: int32 = idx - 1
+            while k3 >= 0:
+                if _nd_arg_is(js_array_get(kids, k3)) == 0:
+                    vs = js_array_get(kids, k3)
+                    k3 = -1
+                else:
+                    k3 = k3 - 1
+    # Unlink every node argument now (the spec turns them into one fragment,
+    # which removes them), so the reference below is resolved against the tree
+    # as it will actually be at insertion time.
+    ai: int32 = 0
+    an2: int32 = js_arg_count()
+    while ai < an2:
+        if js_type_of(js_arg(ai)) == TAG_OBJ and _nd_type(js_arg(ai)) != 0:
+            _detach_from_parent_v(js_arg(ai))
+        ai = ai + 1
+    if rel == NID_CN_REPLWITH:
+        _remove_child_v(par, thisv)
+    ref: int32 = js_null()
     if rel == NID_CN_AFTER:
-        nxt: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("nextSibling"), 11)
-        if js_type_of(nxt) != TAG_OBJ:
-            nxt = js_null()
-        _nd_insert_nodes(par, nxt, 0)
-        return js_undefined()
-    # NID_CN_REPLWITH
-    _nd_insert_nodes(par, thisv, 0)
-    _remove_child_v(par, thisv)
+        ref = vs
+    elif js_type_of(vs) != TAG_OBJ:
+        # no viable previous sibling: insert at the front
+        kids2: int32 = _nd_kids(par)
+        if kids2 != 0 and js_array_len(kids2) > 0:
+            ref = js_array_get(kids2, 0)
+    else:
+        kids3: int32 = _nd_kids(par)
+        vi: int32 = _nd_child_index(par, vs)
+        if kids3 != 0 and vi >= 0 and vi + 1 < js_array_len(kids3):
+            ref = js_array_get(kids3, vi + 1)
+    _nd_insert_nodes(par, ref, 0)
     return js_undefined()
 
 
@@ -3538,6 +3685,8 @@ def _js_host_dispatch(id: int32) -> int32:
         g_dom_gen = g_dom_gen + 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
+    if rel == NID_CREATEPI:
+        return _mount_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
         return _mount_dispatch(rel)
     if rel == NID_COOKIE_GET:
@@ -5697,6 +5846,8 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
@@ -5825,6 +5976,23 @@ def _validate_qname(qp: Ptr[uint8], qn: int32, nsp: Ptr[uint8], nsn: int32) -> i
     if xmlns_ns != 0 and pfx_xmlns == 0 and is_xmlns_q == 0:
         return 2
     return 0
+
+
+pi_tbuf: Array[256, uint8]           # createProcessingInstruction target
+
+
+# Is p[0..n) a legal XML Name (the ProcessingInstruction target production)?
+def _validate_pi_target(p: Ptr[uint8], n: int32) -> int32:
+    if n <= 0:
+        return 0
+    if _xml_name_start(p[0]) == 0:
+        return 0
+    i: int32 = 1
+    while i < n:
+        if _xml_name_char(p[i]) == 0:
+            return 0
+        i = i + 1
+    return 1
 
 
 def _throw_qname(code: int32) -> int32:
@@ -5996,6 +6164,8 @@ def _impl_dispatch(rel: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
@@ -6398,6 +6568,9 @@ def _build_dom_interfaces():
     _attach_childnode_mixin(chard)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
+    g_proto_pi = _dom_interface(cast[Ptr[uint8]]("ProcessingInstruction"), 21, \
+                                chard)
+    _attach_childnode_mixin(g_proto_pi)
     g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
                                   g_proto_node)
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
@@ -6635,6 +6808,8 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_CREATE_NS))
     js_set_prop(doc, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(doc, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(doc, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     # A document's ownerDocument is null (it IS the document) — code that walks
@@ -7748,6 +7923,20 @@ def _rw_dec(v: int32):
 
 
 # Emit escaped text (rewriting '<' and '&') from a JS string value.
+# Write a JS string to the rewrite buffer with NO markup escaping. Comment and
+# processing-instruction data are serialised verbatim (chromium:
+# document.createComment("a<b").parentElement.innerHTML is "<!--a<b-->").
+def _rw_verbatim(v: int32):
+    p: Ptr[uint8] = js_str_ptr(v)
+    n: int32 = _cstr_len(p)
+    if _is_undef_str(p, n) != 0:
+        return
+    i: int32 = 0
+    while i < n:
+        _rw_ch(p[i])
+        i = i + 1
+
+
 def _rw_js_escaped(v: int32):
     p: Ptr[uint8] = js_str_ptr(v)
     n: int32 = _cstr_len(p)
@@ -7862,6 +8051,19 @@ def _emit_created(cid: int32):
     if cre_gone[cid] != 0:
         return
     co: int32 = cre_obj[cid]
+    if cre_is_text[cid] == 2:
+        # <!--data-->, verbatim: comment data is NOT escaped.
+        _rw_cstr(cast[Ptr[uint8]]("<!--"))
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("data"), 4))
+        _rw_cstr(cast[Ptr[uint8]]("-->"))
+        return
+    if cre_is_text[cid] == 3:
+        _rw_cstr(cast[Ptr[uint8]]("<?"))
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("target"), 6))
+        _rw_ch(32)
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("data"), 4))
+        _rw_cstr(cast[Ptr[uint8]]("?>"))
+        return
     if cre_is_text[cid] != 0:
         _rw_js_escaped(js_get_prop(co, cast[Ptr[uint8]]("textContent"), 11))
         return
