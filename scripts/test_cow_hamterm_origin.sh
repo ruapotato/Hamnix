@@ -423,7 +423,8 @@ python3 - "$LOG" > "$KMSUM" 2>&1 <<'PY'
 import re, sys
 log = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').replace('\r', '')
 NAMES = {0: 'unknown', 1: 'vfs', 2: 'vma', 3: 'wsys', 4: 'vk', 5: 'task',
-         6: 'abi', 7: 'net', 8: 'block', 9: 'snd', 10: 'tmpfs', 11: 'selftest'}
+         6: 'abi', 7: 'net', 8: 'block', 9: 'snd', 10: 'tmpfs', 11: 'selftest',
+         12: 'pipe', 13: 'pgrp'}
 dumps, cur = [], None
 for ln in log.splitlines():
     m = re.search(r'\[kmtrack\] mode=(\d+) blocks=(\d+) exhausted=(\d+)', ln)
