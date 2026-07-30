@@ -185,6 +185,32 @@ is byte-identical armed or disarmed.
 
 ---
 
+## 5b. Gates — what was run, and what was NOT
+
+Run, twice, on two separately-built images:
+
+```
+[cow_vma_origin] u_mmap_fork PASS x3 (COW semantics intact)
+[cow_vma_origin] arm=19  run2 net=0  | run3 net=0
+[cow_vma_origin] arm=21  run2 born=64 died=64 net=0 | run3 born=64 died=64 net=0
+[cow_vma_origin] arm=23  run2 born=17 died=16 net=1 | run3 born=17 died=16 net=1
+[cow_vma_origin] arm=24  run2 net=0  | run3 net=0
+[orgl] org=23 owner-dead=0   [orgl] org=24 owner-dead=0   [orgl] org=5 owner-dead=0
+```
+
+**NOT run in this pass, and stated rather than implied:**
+`scripts/test_native_vs_seed_kobjdiff.sh`, `test_cow_fork`, `test_mmap_fork`
+as a standalone, `scripts/test_de_visual_gate.sh`, and a DE soak. The kernel
+change is instrumentation confined to gated paths plus two disarmed-returning
+accessors, and `u_mmap_fork` itself passed three times per boot inside the new
+gate — but that is an argument, not those gates, and the difference is exactly
+the one `feedback_host_gate_green_not_device_working` is about. The verdict
+line the adjudicating gate prints for a non-zero net (`RESIDENCY` vs `LEAK`)
+was added after the two measured boots and has not itself been executed
+end-to-end; the numbers above were read from the serial log directly.
+
+---
+
 ## 6. What was ruled out
 
 * **The mmap-VMA owner-fork share (arm 23) strands frames** — disproved:
