@@ -283,7 +283,6 @@ IDLE_MOVES=$(inject_motion "$MOVE_SECS")
 echo "$TAG idle arm: injected $IDLE_MOVES motion packets."
 report_instruments
 cp "$LOG" "$OUT_DIR/serial.idle.log"
-IDLE_END=$(wc -l < "$LOG")
 
 # ======================================================================
 # ARM 2 -- LOADED. The user's literal scenario.
@@ -311,12 +310,31 @@ start_hogs || verdict_inconclusive "$VTAG" \
 echo "$TAG $HOGS pure-CPU hogs confirmed running."
 
 arm_instruments loaded
-# Launch the syscall storm in the BACKGROUND so motion injection overlaps it:
+# The storm runs in the guest's FOREGROUND; the motion injection runs on the
+# HOST through the monitor, so the two overlap without typing anything on the
+# serial line mid-window (the guest shell echoes typed input character by
+# character and typing under load garbles commands). The overlap is the point:
 # the freeze the user reports happens DURING app launches, not after them.
-printf '%s\n' "/bin/find /bin | /bin/head -40 | /bin/xargs -n 1 /bin/true ; echo STORM_DONE &" >&3
+#
+# Bounded with head -40 for the same reason test_de_pointer_irqoff.sh is: a
+# full /bin walk does not finish on a KVM guest carrying four 100%-CPU hogs,
+# and an unfinished storm is a window that never closes.
+printf '%s\n' "/bin/find /bin | /bin/head -40 | /bin/xargs -n 1 /bin/true ; echo STORM_DONE" >&3
 sleep 1
 LOAD_MOVES=$(inject_motion "$MOVE_SECS")
 echo "$TAG loaded arm: injected $LOAD_MOVES motion packets."
+# Let the storm finish before typing the report verbs. TWO occurrences, not
+# one: hamsh echoes the command line itself, so a single match is the gate
+# recognising its own echo about 0.2 s after issuing it.
+storm_ok=0
+d=$(( SECONDS + 420 ))
+while [ "$SECONDS" -lt "$d" ]; do
+    [ "$(grep -ac 'STORM_DONE' "$LOG")" -ge 2 ] && { storm_ok=1; break; }
+    kill -0 "$QEMU_PID" 2>/dev/null || break
+    sleep 2
+done
+[ "$storm_ok" -eq 1 ] || verdict_inconclusive "$VTAG" \
+    "the syscall storm never completed -- the loaded measurement window did not close, so the numbers would describe a partially-loaded machine"
 report_instruments
 
 kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null; QEMU_PID=""
