@@ -608,6 +608,16 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # a demand-zero VMA by the caller (do_execve) and never costs a
     # contiguous physical region here. file_hi_rel == mem_hi_rel for the
     # interpreter or any image with no BSS tail (eager == legacy).
+    # WHOSE IMAGE IS THIS (leak pass 18). Pass 17 taught region_alloc to
+    # stamp a per-frame SITE (PA_SITE_REGION) but nothing ever named an
+    # OWNER, so COW arms 1 (W^X verbatim share) and 19 (ELF image span) still
+    # reported owner-unrecorded = 101 of 101 and 20 of 20 — and `owner-dead =
+    # 0` over a population whose owner was never recorded means "nobody wrote
+    # an owner down", not "no owner is dead". Their inter-cycle nets are zero,
+    # which is the assertion that actually clears them, but half the
+    # discriminator was blind. The pending-slot protocol is already wired
+    # through _pa_trk_stamp_region; it just needed a caller to name itself.
+    pa_set_owner(current_idx_get())
     region: uint64 = region_alloc(file_hi_rel)
     if region == 0:
         # ERR level: this is the message that must survive
@@ -1255,6 +1265,9 @@ def elf_load_blob(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # which is enough (verified: panels + apps render under -m 1G).
     # Freeable region (see the ELF64 path): task_reap reclaims it so
     # native ELF32 spawns recycle their backing instead of leaking it.
+    # Same as the ELF64 path above: name the execve'ing task so arms 1/19
+    # have a real owner to adjudicate against.
+    pa_set_owner(current_idx_get())
     region: uint64 = region_alloc(span)
     if region == 0:
         printk_set_level(PRINTK_LEVEL_ERR)
