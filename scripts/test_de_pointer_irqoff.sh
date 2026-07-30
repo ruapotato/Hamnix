@@ -52,6 +52,25 @@
 # same requirements. The CI-safe half of this measurement is
 # scripts/test_syscall_irqoff.sh, which is registered and needs no KVM.
 #
+# MEASURED, first run of this gate (shipped build/hamnix-installer.img under
+# UEFI/OVMF + KVM, -cpu host, DE live past the rl5 flip, four /bin/preempt_hog
+# at 100% CPU plus a 40-deep execve/ELF-load/virtio-block storm):
+#
+#   n=25041  delayed=0  max_us=0  spanning=1491 (worst 235 us, unattributable)
+#
+# ZERO. Not one of 25,041 syscalls delayed a due timer IRQ by a single
+# nanosecond. The hypothesis this gate was built to test -- "the cursor-glyph
+# half is interrupt latency in the syscall path; IA32_FMASK clears IF for
+# ~10-14 ms on KVM" -- is DISPROVED on the real desktop under the reported
+# conditions. Under KVM the syscall path masks interrupts for less than the
+# tick slack, always. (The lightweight TCG gate sees ~1 ms worst case for
+# write(2); TCG inflates syscall duration by one to two orders of magnitude,
+# which is exactly why that number could not be used to clear KVM.)
+#
+# WHAT THIS DOES NOT RULE OUT: an unattributable 235 us in windows that
+# spanned a context switch, and anything outside the syscall path entirely
+# (IRQ handlers, the pre-rl5 window where the cursor is not kernel-composited).
+#
 # VERDICTS
 #   PASS          measured, under bound
 #   FAIL          measured, over bound
