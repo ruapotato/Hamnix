@@ -4268,20 +4268,111 @@ def _ext4_dirent_padded_size(name_len: uint64) -> uint64:
     return (raw + 3) & ~cast[uint64](3)
 
 
+def _ext4_dirent_is_csum_tail(e: uint64, e_inum: uint32,
+                              e_rec_len: uint16) -> int32:
+    # Is the record at byte address `e` the metadata_csum dir_entry_tail
+    # (inum 0, rec_len 12, name_len 0, file_type 0xDE)? That fake record
+    # holds the block's crc32c and must never be overwritten by an
+    # insert. The old ">= needed" test alone did NOT protect it: a name
+    # of 1..4 chars needs exactly 12 bytes, so a short name would land
+    # on top of the tail and silently destroy the block's checksum.
+    if e_inum != 0:
+        return 0
+    if e_rec_len != 12:
+        return 0
+    if cast[Ptr[uint8]](e + 6)[0] != 0:
+        return 0                                   # a real tombstone
+    if cast[Ptr[uint8]](e + 7)[0] != 0xDE:
+        return 0
+    return 1
+
+
+def _ext4_dir_try_insert_in_block(inode_buf: Ptr[uint8], lb: uint64,
+                                  parent_inum: uint64, parent_gen: uint32,
+                                  name: Ptr[char], name_len: uint64,
+                                  child_inum: uint32,
+                                  file_type: uint8) -> int32:
+    # Read directory logical block `lb` into ext4_blk_buf and try to
+    # place (name, child_inum) in it (tombstone reuse or slack split).
+    # On success the block is checksum-stamped and written back and 0 is
+    # returned; -1 means "no room here / unreadable, try another block".
+    phys: uint64 = _ext4_logical_to_physical(inode_buf, lb)
+    if phys == 0:
+        return -1                                  # sparse hole — skip
+    if _ext4_read_block(phys, &ext4_blk_buf[0]) != 0:
+        return -1
+    if _ext4_leaf_dirent_insert(cast[uint64](&ext4_blk_buf[0]), name,
+                                name_len, child_inum, file_type) != 0:
+        return -1
+    _ext4_dirblock_stamp_in_buf(parent_inum, parent_gen)
+    return _ext4_write_block(phys, &ext4_blk_buf[0])
+
+
+def _ext4_dir_grow_insert(parent_inum: uint64, parent_gen: uint32,
+                          inode_buf: Ptr[uint8], new_logical: uint64,
+                          name: Ptr[char], name_len: uint64,
+                          child_inum: uint32, file_type: uint8) -> int32:
+    # GROW a LINEAR directory by one block and place (name, child_inum)
+    # in it. Allocates a fresh data block, appends it to the directory
+    # inode's extent tree as logical block `new_logical`, formats it as
+    # an empty dirent leaf (one inum=0 record spanning the block, plus a
+    # dir_entry_tail when metadata_csum is on), writes our record into
+    # it, then publishes the block by extending i_size.
+    #
+    # Ordering is deliberate: the block's CONTENT is written before
+    # i_size grows, so a failure part-way never exposes an unformatted
+    # block to a reader (readers bound their walk by i_size).
+    #
+    # Returns 0 on success, -1 on out-of-space / I/O error.
+    new_phys: uint64 = ext4_alloc_block()
+    if new_phys == 0:
+        printk0("ext4: dir grow: no free block\n")
+        return -1
+    if _ext4_extent_append_block(inode_buf, new_logical, new_phys) != 0:
+        printk0("ext4: dir grow: extent append failed\n")
+        ext4_free_block(new_phys)
+        return -1
+    # Format the new block and slot our record into it. (The extent
+    # append above works out of its own scratch buffers, so building the
+    # dir block in ext4_blk_buf afterwards is safe.)
+    buf: uint64 = cast[uint64](&ext4_blk_buf[0])
+    _ext4_leaf_init_empty(buf)
+    if _ext4_leaf_dirent_insert(buf, name, name_len, child_inum,
+                                file_type) != 0:
+        # Only reachable for a name too long to fit an EMPTY block.
+        printk0("ext4: dir grow: name does not fit an empty block\n")
+        return -1
+    _ext4_dirblock_stamp_in_buf(parent_inum, parent_gen)
+    if _ext4_write_block(new_phys, &ext4_blk_buf[0]) != 0:
+        return -1
+    # Publish: i_size covers the new block, i_blocks re-derived from the
+    # extent tree (data blocks + extent-tree metadata, as e2fsck counts).
+    _ext4_write_u32(cast[Ptr[uint8]](cast[uint64](inode_buf) + 4),
+                    cast[uint32]((new_logical + 1) * ext4_block_size))
+    _ext4_htins_restamp_iblocks(inode_buf)
+    _ext4_stamp_mtime(inode_buf)
+    return ext4_write_inode(parent_inum, inode_buf)
+
+
 def ext4_dir_insert(parent_inum: uint64, name: Ptr[char],
                     child_inum: uint32, file_type: uint8) -> int32:
-    # Append a dirent for (name, child_inum) to the LAST block of
-    # parent_inum's directory. Splits the existing last entry's
-    # padding to make room. M16.63 does NOT grow the directory by
-    # allocating a new block — if the last block has no slack, this
-    # fails with -1.
+    # Insert a dirent for (name, child_inum) into parent_inum's LINEAR
+    # directory. Tries the last block first (the natural append point),
+    # then every other block (picking up tombstones freed by unlink),
+    # and if no block has slack GROWS the directory by allocating a new
+    # data block — so a linear directory is no longer capped at the
+    # ~1-block / ~100-entry ceiling it used to fail at.
+    #
+    # NOT implemented here: converting an overflowing linear directory
+    # into a hash-indexed (htree) one. A directory created by this
+    # kernel therefore stays LINEAR and its lookups stay O(blocks).
+    # Directories that ALREADY carry EXT4_INDEX_FL (Linux built them)
+    # are routed to ext4_htree_dir_insert below and keep their index.
     if parent_inum == 0:
         return -1
     name_len: uint64 = _ext4_strlen(name)
     if name_len == 0 or name_len > 255:
         return -1
-    needed: uint64 = _ext4_dirent_padded_size(name_len)
-
     parent_inode: Array[256, uint8]
     if ext4_read_inode(parent_inum, &parent_inode[0]) != 0:
         return -1
@@ -4301,83 +4392,42 @@ def ext4_dir_insert(parent_inum: uint64, name: Ptr[char],
     dir_size: uint64 = cast[uint64](ext4_inode_size_lo(&parent_inode[0]))
     if dir_size == 0:
         return -1
-    last_lb: uint64 = dir_size / ext4_block_size - 1
-    phys: uint64 = _ext4_logical_to_physical(&parent_inode[0], last_lb)
-    if phys == 0:
-        return -1
-    if _ext4_read_block(phys, &ext4_blk_buf[0]) != 0:
-        return -1
+    nblocks: uint64 = (dir_size + ext4_block_size - 1) / ext4_block_size
 
-    # Walk every entry looking for an insertion slot. Two slot
-    # shapes accept a new entry (Linux's ext4_add_entry uses the
-    # same rule):
+    # Slot-finding rule (identical to Linux's ext4_add_entry, and shared
+    # with the htree leaf path via _ext4_leaf_dirent_insert):
     #
-    #   (1) An entry with inum == 0 (tombstone) whose rec_len is
-    #       big enough for our padded footprint — overwrite in
-    #       place, keep its rec_len.
-    #   (2) A live entry whose declared rec_len is at least its
-    #       own true (padded) size + our `needed` — split: shrink
-    #       this entry to its true size, append our new entry in
-    #       the freed tail.
+    #   (1) An entry with inum == 0 (tombstone) whose rec_len is big
+    #       enough for our padded footprint — overwrite in place, keep
+    #       its rec_len. (The metadata_csum dir_entry_tail looks like a
+    #       tombstone but is explicitly excluded.)
+    #   (2) A live entry whose declared rec_len is at least its own true
+    #       (padded) size + ours — split: shrink it to its true size and
+    #       append our record in the freed tail.
     #
-    # The terminal entry of a dir block typically carries large
-    # excess rec_len from the last split — that's the natural
-    # insertion point as the dir grows. Walking ALL entries (not
-    # just the last) also handles the common tombstone-after-the-
-    # last-real-entry layout debugfs/mkfs leaves behind.
-    pos: uint64 = 0
-    while pos < ext4_block_size:
-        e: uint64 = cast[uint64](&ext4_blk_buf[0]) + pos
-        e_inum:    uint32 = _ext4_read_u32(cast[Ptr[uint8]](e + 0))
-        e_rec_len: uint16 = _ext4_read_u16(cast[Ptr[uint8]](e + 4))
-        if e_rec_len == 0:
-            return -1                              # malformed
-        if e_inum == 0:
-            if cast[uint64](e_rec_len) >= needed:
-                # Reuse this tombstone in place — keep its rec_len.
-                _ext4_write_u32(cast[Ptr[uint8]](e + 0), child_inum)
-                cast[Ptr[uint8]](e + 6)[0] = cast[uint8](name_len)
-                cast[Ptr[uint8]](e + 7)[0] = file_type
-                i: uint64 = 0
-                while i < name_len:
-                    cast[Ptr[uint8]](e + 8 + i)[0] = cast[uint8](name[i])
-                    i = i + 1
-                # Zero the name's trailing pad.
-                pp: uint64 = 8 + name_len
-                while pp < cast[uint64](e_rec_len):
-                    cast[Ptr[uint8]](e + pp)[0] = 0
-                    pp = pp + 1
-                _ext4_dirblock_stamp_in_buf(parent_inum, parent_gen)
-                return _ext4_write_block(phys, &ext4_blk_buf[0])
-        else:
-            e_name_len: uint8 = cast[Ptr[uint8]](e + 6)[0]
-            true_e: uint64 = _ext4_dirent_padded_size(
-                cast[uint64](e_name_len))
-            if cast[uint64](e_rec_len) >= true_e + needed:
-                # Split: shrink to true size, append new in the tail.
-                new_rec_len: uint64 = cast[uint64](e_rec_len) - true_e
-                _ext4_write_u16(cast[Ptr[uint8]](e + 4),
-                                cast[uint16](true_e))
-                new_off: uint64 = pos + true_e
-                new_e: uint64 = cast[uint64](&ext4_blk_buf[0]) + new_off
-                _ext4_write_u32(cast[Ptr[uint8]](new_e + 0), child_inum)
-                _ext4_write_u16(cast[Ptr[uint8]](new_e + 4),
-                                cast[uint16](new_rec_len))
-                cast[Ptr[uint8]](new_e + 6)[0] = cast[uint8](name_len)
-                cast[Ptr[uint8]](new_e + 7)[0] = file_type
-                i: uint64 = 0
-                while i < name_len:
-                    cast[Ptr[uint8]](new_e + 8 + i)[0] = cast[uint8](name[i])
-                    i = i + 1
-                pp: uint64 = 8 + name_len
-                while pp < new_rec_len:
-                    cast[Ptr[uint8]](new_e + pp)[0] = 0
-                    pp = pp + 1
-                _ext4_dirblock_stamp_in_buf(parent_inum, parent_gen)
-                return _ext4_write_block(phys, &ext4_blk_buf[0])
-        pos = pos + cast[uint64](e_rec_len)
-    printk0("ext4: dir block full (no slack for insert)\n")
-    return -1
+    # Try the LAST block first: its terminal entry carries the block's
+    # unused slack, so an appending workload (the common case) hits on
+    # the first block read instead of walking the whole directory.
+    last_lb: uint64 = nblocks - 1
+    if _ext4_dir_try_insert_in_block(&parent_inode[0], last_lb,
+                                     parent_inum, parent_gen, name,
+                                     name_len, child_inum,
+                                     file_type) == 0:
+        return 0
+    # No slack at the end — walk the earlier blocks, which may hold
+    # tombstones left by unlink.
+    lb: uint64 = 0
+    while lb < last_lb:
+        if _ext4_dir_try_insert_in_block(&parent_inode[0], lb,
+                                         parent_inum, parent_gen, name,
+                                         name_len, child_inum,
+                                         file_type) == 0:
+            return 0
+        lb = lb + 1
+    # Every block is full: GROW the directory by one block.
+    return _ext4_dir_grow_insert(parent_inum, parent_gen,
+                                 &parent_inode[0], nblocks, name,
+                                 name_len, child_inum, file_type)
 
 
 # === htree (dir_index) directory INSERT — the WRITE path ==========
@@ -4409,8 +4459,8 @@ def _ext4_leaf_dirent_insert(leaf: uint64, name: Ptr[char],
     # the buffer at byte address `leaf`. Uses the same tombstone-reuse /
     # slack-split rule as ext4_dir_insert. Returns 0 on success, -1 if
     # the block has no room (caller must split). A metadata_csum tail
-    # (fake dirent rec_len=12, ft=0xDE) is treated as an unusable record
-    # by the >= needed test, so it is preserved automatically.
+    # (fake dirent rec_len=12, name_len=0, ft=0xDE) is explicitly skipped
+    # by _ext4_dirent_is_csum_tail below, so it is preserved.
     needed: uint64 = _ext4_dirent_padded_size(name_len)
     pos: uint64 = 0
     while pos < ext4_block_size:
@@ -4419,9 +4469,11 @@ def _ext4_leaf_dirent_insert(leaf: uint64, name: Ptr[char],
         e_rec_len: uint16 = _ext4_read_u16(cast[Ptr[uint8]](e + 4))
         if e_rec_len == 0:
             return -1
+        if _ext4_dirent_is_csum_tail(e, e_inum, e_rec_len) != 0:
+            pos = pos + cast[uint64](e_rec_len)
+            continue
         if e_inum == 0:
-            # tombstone (or csum tail, which has rec_len 12 < needed for
-            # any real name so it is skipped). Reuse in place if it fits.
+            # A real tombstone: reuse in place if our record fits.
             if cast[uint64](e_rec_len) >= needed:
                 _ext4_write_u32(cast[Ptr[uint8]](e + 0), child_inum)
                 cast[Ptr[uint8]](e + 6)[0] = cast[uint8](name_len)
