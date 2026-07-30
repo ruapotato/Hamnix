@@ -212,31 +212,48 @@ fi
 echo "$TAG   alone: $solo"
 
 for i in 1 2 3; do
-    # THE RIVAL. Exactly what a second run does to this directory, concentrated:
-    # write the colliding legacy work names, and sweep. Not a synthetic poke --
-    # both actions are ones scripts/wpt_reftest_run.py itself performs.
+    # THE RIVAL. A faithful model of a SECOND RUN of this harness over the same
+    # pair, concentrated onto one directory. It does only the two things
+    # scripts/wpt_reftest_run.py itself does to a vendored directory:
+    #
+    #   * writes work files at the paths ITS OWN work_name() hands it -- the
+    #     module's real name generator, so whether those paths collide with the
+    #     first run's is decided by the code under test and not by this script;
+    #   * calls the module's real sweep_stale().
+    #
+    # Nothing here reaches for a name the harness would not produce. If the two
+    # runs' names are process-scoped and the sweep respects ownership, the rival
+    # is invisible to the victim; if they are not, it is exactly the other run.
     python3 - "$TEST" <<'PY' &
 import os, sys, time
 sys.path.insert(0, "scripts")
 import wpt_reftest_run as R
 
-d = os.path.join(R.TESTS, os.path.dirname(sys.argv[1]))
-base = [f for f in os.listdir(d) if f.endswith(".html")][:8]
-end = time.time() + 12
+test = sys.argv[1]
+d = os.path.join(R.TESTS, os.path.dirname(test))
+docs = {os.path.basename(test)}
+for t, _kind, refs in R.load_manifest():
+    if t == test:
+        docs.update(os.path.basename(r) for r in refs)
+docs = sorted(docs)
+end = time.time() + 120                      # cap; the parent kills us by pid
 while time.time() < end:
-    for n in range(1, 24):
-        for b in base:
-            try:
-                open(os.path.join(d, "%s%d_%s" % (R.WORK_PREFIX, n, b)),
-                     "wb").write(b"<html>rival garbage</html>")
-            except OSError:
-                pass
+    for _ in range(25):
+        R._work_seq = 0                      # cover the victim's counter range
+        for _n in range(20):
+            for b in docs:
+                try:
+                    with open(os.path.join(d, R.work_name(b)), "wb") as f:
+                        f.write(b"<html>rival run's document</html>")
+                except OSError:
+                    pass
     R.sweep_stale(d)
 PY
     rival=$!
     conc="$(python3 scripts/wpt_reftest_run.py "$TEST" 2>/dev/null \
             | awk -v t="$TEST" '$3 == t {print $1}')"
-    wait $rival 2>/dev/null
+    kill "$rival" 2>/dev/null      # by the pid we recorded. NEVER by pattern:
+    wait "$rival" 2>/dev/null      # sibling gates run their own QEMU/python.
     if [ "$conc" != "$solo" ]; then
         echo "$TAG PART 3 FAIL: run $i under a concurrent rival said"
         echo "$TAG   '${conc:-<no verdict>}' where the same run alone said '$solo'."

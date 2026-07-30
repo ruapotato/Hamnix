@@ -4228,6 +4228,37 @@ bash scripts/test_wpt_ratchet_host.sh
 # comparator (scripts/wpt_reftest_chromium_check.py, on-demand): chromium passes
 # 98/102 of the pre-exclusion set, 0 strict false passes. ~40 s, QEMU-free.
 bash scripts/test_wpt_reftest_ratchet_host.sh
+# BACKGROUND-IMAGE url() WITH NO <img> (2026-07-29). Landed with 08a5bd40 (the
+# reftest floor 42->45) but never registered, which is the exact hole
+# test_gate_registration.sh exists to catch and which it was reporting as its
+# only FAIL. Asserts the url() is registered and decoded and that the box
+# interior is the background image while the page stays white. ~25 s, QEMU-free;
+# serial with the other pixel gates (shared build/host/hambrowse_gfx).
+bash scripts/test_hambrowse_bgimg_url_host.sh
+# THE REFTEST HARNESS MUST SURVIVE BEING RUN TWICE AT ONCE (2026-07-30).
+# scripts/wpt_reftest_run.py writes each preprocessed document NEXT TO the
+# vendored original (565 vendored documents carry a relative
+# `../support/green.png`, so the work file must sit at the document's own path
+# depth). Those files were named `.hamnix_reftest_<n>_<basename>` with `n` a
+# per-Renderer counter — IDENTICAL in every process — and sweep_stale() deleted
+# every file with that prefix, at startup and again in the `finally`. Two
+# concurrent runs therefore wrote each other's paths AND deleted each other's
+# IN-FLIGHT documents. Measured, both runs exiting 0, against a serial baseline
+# of PASS 45 / WEAK-PASS 206 / FAIL 1079 / ND 111 / ERROR 1:
+#   run A  PASS 46  WEAK-PASS 205   — a PHANTOM GREEN on an external ratchet
+#   run B  WEAK-PASS 203  ERROR 5   — a PHANTOM RED, breaching two markers
+# i.e. this manufactured exactly the "red that is not a bug" class that cost
+# this project six of seven investigated reds in one sweep, and the false-green
+# class that is worse. It also capped throughput: a harness that cannot run
+# twice at once cannot be parallelised, and the plan is to scale this lane
+# toward all ~6,265 CSS2 reftests. Work-file names now carry the owning pid and
+# sweep_stale() reaps only what it can prove is not in flight. This gate asserts
+# both halves directly, plus END TO END on the real corpus: a run executed
+# against a rival process doing exactly what a second run does must produce the
+# same verdict as that run alone. MUTATION-TESTED — revert the fix and all three
+# legs go red. ~30 s, QEMU-free; serial with the other pixel gates (shared
+# build/host/hambrowse_gfx).
+bash scripts/test_wpt_reftest_concurrency_host.sh
 # DESKTOP = A LIVE VIEW OF ~/Desktop (2026-07-29). Three USER-reported DE
 # failures, one root cause each. (a) A ~1 s host gate on the shared home
 # resolver: hamdesktop watched a HARDCODED /home/live/Desktop because
