@@ -211,11 +211,18 @@ def install_one(ctl_fd: int32, target_path: Ptr[uint8],
         k = k + 1
     pos = pos + body_len
 
+    # #464: a SHORT write is data loss too. The ctl verb is a single
+    # framed message ("install_file <path> <len>\n<body>") — the kernel
+    # either consumes the whole frame or the file did not land. Checking
+    # only `wn < 0` let every partial transfer count as an install and
+    # print "install: <path> (N bytes)".
     wn: int64 = sys_write(ctl_fd, &write_buf[0], pos)
-    if wn < 0:
+    if wn < 0 or cast[uint64](wn) != pos:
         write_str(2,
             "install_rootfs_from_manifest: kernel rejected install of ")
         write_str(2, target_path)
+        if wn >= 0:
+            write_str(2, " (short write)")
         write_str(2, "\n")
         return -1
     return 0

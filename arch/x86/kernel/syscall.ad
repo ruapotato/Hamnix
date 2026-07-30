@@ -4281,6 +4281,50 @@ def _sysarm_read_nb(a0: uint64, a1: uint64, a2: uint64) -> uint64:
     return cast[uint64](n)
 
 
+def _write_err_reports_progress(e: int64) -> int32:
+    # #464: which write(2) errnos may be SWALLOWED in favour of a
+    # positive short count when an internal chunk of ONE write(2) fails
+    # after earlier chunks succeeded.
+    #
+    # Linux's rule — "return the short count, report the error on the
+    # NEXT write" — only makes sense when the caller is *expected* to
+    # write again and can therefore still learn the error. That is true
+    # for flow-control / peer-state conditions:
+    #
+    #   -EAGAIN/-EWOULDBLOCK  the sink is momentarily full; the caller's
+    #                         write loop retries and gets the errno then
+    #   -EINTR                a signal landed; the caller retries
+    #   -EPIPE                all readers are gone; the NEXT write both
+    #                         re-reports EPIPE and raises SIGPIPE, which
+    #                         is the contract the call sites watch for
+    #
+    # It is NOT true for a hard failure of the sink (-EIO, -ENOSPC,
+    # -EFBIG, -ENOMEM, -EINVAL, -EFAULT, ...). Our chunk boundary is an
+    # implementation detail invisible to userspace: userland asked for
+    # ONE write of `count` bytes and there is no defined "next write"
+    # on which the error would resurface. Worse, for a staging sink the
+    # bytes we already counted are not durable — devblk's install_file
+    # verb accumulates the body in a kmalloc'd buffer and only commits
+    # to ext4 in the FINAL chunk, so an -EIO from that last chunk means
+    # every earlier "written" byte is gone too. Returning a positive
+    # count there converts a total data loss into a success indication
+    # with no way at all to retrieve the error, and that is exactly how
+    # the installer came to print "install complete" over files it had
+    # never written.
+    #
+    # So: hard errors PROPAGATE as the errno even when earlier chunks
+    # succeeded. A genuine short write (wn >= 0 but < chunk) still
+    # returns the partial count — that is a real POSIX outcome and the
+    # caller detects it as `ret != count`.
+    if e == -11:                             # -EAGAIN / -EWOULDBLOCK
+        return 1
+    if e == -4:                              # -EINTR
+        return 1
+    if e == -32:                             # -EPIPE
+        return 1
+    return 0
+
+
 def _sysarm_write(a0: uint64, a1: uint64, a2: uint64) -> uint64:
     # SYS_WRITE: write(2) via copy_from_user + a kernel BOUNCE buffer,
     # NOT a raw read of the user vaddr. copy_from_user WALKS the current
@@ -4335,9 +4379,13 @@ def _sysarm_write(a0: uint64, a1: uint64, a2: uint64) -> uint64:
             set_current_errstr("write: bad fd")
             if wr_big_addr != 0:
                 kfree(wr_big_addr)
-            if wr_total == 0:
-                return cast[uint64](wn)
-            return wr_total
+            # #464: only flow-control / peer-gone errnos are allowed to
+            # hide behind a positive short count (see
+            # _write_err_reports_progress). A hard sink failure survives
+            # as the errno so the caller cannot mistake it for success.
+            if wr_total > 0 and _write_err_reports_progress(wn) != 0:
+                return wr_total
+            return cast[uint64](wn)
         wr_total = wr_total + cast[uint64](wn)
         # A short write means the sink could not take more right now;
         # stop and report what we've sent so far.

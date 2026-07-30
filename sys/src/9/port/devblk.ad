@@ -550,7 +550,16 @@ def _devblk_ctl_install_body(buf: Ptr[uint8], count: uint64) -> int64:
     remain: uint64 = devblk_inst_size - devblk_inst_got
     take: uint64 = count
     if take > remain:
-        take = remain                             # ignore any tail slop
+        # #464: the wire declared <SIZE> bytes of body and MORE than
+        # that arrived. We used to drop the overflow on the floor and
+        # still report `count` consumed — a silent truncation that also
+        # leaves the caller's next verb half-eaten. There is no correct
+        # recovery (we cannot tell body slop from the head of the next
+        # command), so abort the stream and report the desync.
+        printk2("[devblk] install_file: body overrun size=%d extra=%d\n",
+                devblk_inst_size, count - remain)
+        _devblk_install_reset()
+        return -22                                # -EINVAL
     dst: uint64 = devblk_inst_buf + devblk_inst_got
     i: uint64 = 0
     while i < take:

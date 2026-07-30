@@ -3912,10 +3912,17 @@ def _dev_install_file(rel_path: Ptr[uint8], body: Ptr[uint8],
         dev_wire_buf[pos + k] = body[k]
         k = k + 1
     pos = pos + body_len
+    # #464: `wn < 0` alone is not enough. The ctl verb is ONE framed
+    # message ("install_file <path> <len>\n<body>") — a SHORT write means
+    # the file did not land on the target. hpm's other writers already
+    # check `wn != length`; this one did not, and it is the path every
+    # package file takes onto a fresh disk.
     wn: int64 = sys_write(fd, &dev_wire_buf[0], pos)
-    if wn < 0:
+    if wn < 0 or cast[uint64](wn) != pos:
         write_str(2, "hpm: target-dev install_file rejected for ")
         write_str(2, rel_path)
+        if wn >= 0:
+            write_str(2, " (short write)")
         write_str(2, "\n")
         return -1
     return 0
@@ -3944,7 +3951,16 @@ def _dev_mkdir(rel_path: Ptr[uint8]) -> int32:
         ri = ri + 1
     line[pos] = 10
     pos = pos + 1
-    sys_write(fd, &line[0], pos)
+    # #464: this used to discard the write result and return 0
+    # unconditionally — a mkdir that the kernel rejected was structurally
+    # unable to report failure, and the file installs that followed then
+    # failed for a reason nobody could see.
+    wn: int64 = sys_write(fd, &line[0], pos)
+    if wn < 0 or cast[uint64](wn) != pos:
+        write_str(2, "hpm: target-dev mkdir rejected for ")
+        write_str(2, rel_path)
+        write_str(2, "\n")
+        return -1
     return 0
 
 
@@ -4494,7 +4510,9 @@ def _stage_extract_files(tar_len: uint64, target_prefix: Ptr[uint8]) -> int32:
         if typeflag == 53:                               # '5' = dir
             if target_dev_buf[0] != 0:
                 # mkdir -p on the target ext4 partition via the ctl verb.
-                _dev_mkdir(&safe_buf[0])
+                # #464: the result used to be discarded here.
+                if _dev_mkdir(&safe_buf[0]) != 0:
+                    return -1
             else:
                 _mkdir_p(&extract_path_buf[0])
                 sys_mkdir(cast[Ptr[char]](&extract_path_buf[0]))
