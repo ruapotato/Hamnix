@@ -1306,6 +1306,15 @@ NID_NSIB_ACC_SET: int32 = 244        # set el.nextSibling
 # HTML "named access on the Window object": an id in the document is a global.
 # Answered only after ordinary scope lookup misses (see g_named_lookup_nid).
 NID_NAMED_GLOBAL: int32 = 245        # resolve a bare identifier as an element id
+# --- Attr as a real node (2026-07-30) ----------------------------------------
+# element.attributes already hands back Attr nodes; the FACTORY and the
+# node-valued getters were missing, and WPT counts them: 49 subtests on
+# "createAttribute is not a function" and 33 on "getAttributeNode is not a
+# function", across Document-createAttribute / attributes / Range-attribute-nodes.
+NID_CREATEATTR:   int32 = 246        # document.createAttribute(localName)
+NID_CREATEATTRNS: int32 = 247        # document.createAttributeNS(ns, qualifiedName)
+NID_GETATTRNODE:  int32 = 248        # element.getAttributeNode(name)
+NID_GETATTRNODENS: int32 = 249       # element.getAttributeNodeNS(ns, localName)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries

@@ -1456,6 +1456,11 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_CONTAINS))
     js_set_prop(o, cast[Ptr[uint8]]("getAttributeNames"), 17, \
                 js_new_native_fn(js_hbase + NID_GETATTRNAMES))
+    # Attr-node getters (the NamedNodeMap already hands back real Attr nodes).
+    js_set_prop(o, cast[Ptr[uint8]]("getAttributeNode"), 16, \
+                js_new_native_fn(js_hbase + NID_GETATTRNODE))
+    js_set_prop(o, cast[Ptr[uint8]]("getAttributeNodeNS"), 18, \
+                js_new_native_fn(js_hbase + NID_GETATTRNODENS))
     # namespace-aware attribute + tag-name API
     js_set_prop(o, cast[Ptr[uint8]]("setAttributeNS"), 14, \
                 js_new_native_fn(js_hbase + NID_SETATTRNS))
