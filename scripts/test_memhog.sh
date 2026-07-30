@@ -53,6 +53,30 @@
 # that scene to the framebuffer is the compositor's separate job, covered by
 # the DE visual gates.
 #
+# WHAT THE (B) HALF ACTUALLY FOUND (2026-07-29)
+# ============================================
+# The report this gate was written to reproduce — "the ram is returned but not
+# until you restart the monitor app" — DID NOT REPRODUCE on this tree. The
+# monitor's own displayed figure tracks both the allocation and the release,
+# including the process-EXIT release, with no restart. Measured twice:
+#
+#   bare kernel, 512 MiB, one never-restarted /bin/hammonscene:
+#     A 39383 kB used -> B 138347 (96 MiB hog held) -> C 39431 (hog exited)
+#
+#   the SHIPPED build/hamnix-installer.img under UEFI/OVMF + KVM, -m 1G, the
+#   real scene DE, System Monitor launched once (pid 41, visible in its own
+#   process list), a 200 MiB `memhog --no-free`:
+#     A "Memory  205159 / 865939 kB (23%)"
+#     B "Memory  410811 / 865939 kB (47%)"   (+205652 kB, hog held)
+#     C "Memory  205199 / 865939 kB (23%)"   (hog process exited)
+#
+# Both earlier RED runs of this gate were the GATE's own timing, not the
+# monitor's: first the hog ran in the foreground (so hamsh blocked and sample B
+# read the post-release state), then sample C raced the hog's exit. That is why
+# C's validity is now proven from the log instead of assumed — see the ordering
+# check in the verdict. The gate stays registered as the regression guard for
+# the property the report doubted, with the numbers above as its baseline.
+#
 # INCONCLUSIVE (125) — never PASS — when the gate could not observe its
 # assertion at all: no guest markers, hammonscene never took a window, or the
 # scene file was unreadable. A gate that cannot see the thing it asserts must
