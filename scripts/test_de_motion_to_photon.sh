@@ -7,6 +7,17 @@
 # freze, it would be nice if the mouse would keep working even if a process is
 # taking up 100% cpu."
 #
+# Not in ci_battery_manifest.txt because it needs /dev/kvm, OVMF and a built
+# installer image, none of which a GitHub runner has, and because it drives
+# pointer motion through the QEMU monitor across a two-arm boot that runs for
+# minutes -- well past what the 12-way sharded 50-minute battery can absorb.
+# Registered, it would report INCONCLUSIVE on every GitHub run and contribute
+# nothing but noise. It is a HOST-RUN gate: invoke it directly on a KVM
+# machine, alongside scripts/test_de_pointer_irqoff.sh and
+# scripts/test_pointer_latency_under_load.sh, which have identical needs.
+# Without /dev/kvm it reports INCONCLUSIVE (exit 125) rather than exiting 0,
+# so it can never be mistaken for coverage it did not provide.
+#
 # WHY THIS GATE EXISTS
 # --------------------
 # Three instruments already measure this bug, and all three measure a PROXY:
@@ -81,14 +92,6 @@
 #   INCONCLUSIVE  nothing measured (no DE, no ingest, no report, injection
 #                 dropped). An unobserved assertion is never a pass.
 #
-# NOT IN ci_battery_manifest.txt: it needs /dev/kvm, OVMF and a built installer
-# image, none of which a GitHub runner has. Registered, it would bail at the
-# `[ -e /dev/kvm ]` gate on every CI run and become one more permanently-green
-# gate that never asserts -- the population scripts/test_gate_kvmdark.sh exists
-# to shrink. It is a HOST-RUN gate, run on a KVM machine alongside
-# scripts/test_de_pointer_irqoff.sh and
-# scripts/test_pointer_latency_under_load.sh, which have identical needs.
-#
 # Env overrides:
 #   INSTALLER_IMG     image path      (default: build/hamnix-installer.img)
 #   OVMF_FD           OVMF firmware   (default: auto-resolved)
@@ -141,7 +144,11 @@ need sys/src/9/port/devwsys.ad  '"wklat"'              'the wsys-side wklat surf
 echo "$TAG structural markers OK."
 
 # --- environment gates ------------------------------------------------
-[ -e /dev/kvm ] || { echo "$TAG SKIP-RUNTIME: /dev/kvm absent" >&2; exit 0; }
+# INCONCLUSIVE, not exit 0: the structural half above HAS been checked, but the
+# distribution this gate exists to produce needs a KVM boot of the shipped
+# image. An unobserved assertion is never a pass.
+[ -e /dev/kvm ] || verdict_inconclusive "$VTAG" \
+    "/dev/kvm absent: the structural seams were checked, but no motion-to-photon distribution was measured. Run this on a KVM host."
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then
     for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd \
