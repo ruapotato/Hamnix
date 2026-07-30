@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_ni_natives, _attach_range_natives, _attach_tw_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -3656,6 +3656,632 @@ def _chardata_dispatch(rel: int32) -> int32:
     return js_undefined()
 
 
+# ---- Range + TreeWalker + NodeIterator ---------------------------------------
+# Boundary points and traversal state live as OWN PROPERTIES on the JS object
+# (startContainer/startOffset/endContainer/endOffset, root/whatToShow/filter/
+# currentNode), read back through js_this(). No parallel arrays: a Range is not
+# a scarce resource here and the object IS the state, so nothing can go stale.
+#
+# The two DERIVED attributes are accessors, not snapshots: `collapsed` and
+# `commonAncestorContainer` must track the boundary points as they move, and
+# 26 of the 54 range files register ZERO subtests today because createRange()
+# throws during setup and takes the whole file with it.
+
+# The "length" of a node for boundary-point purposes: character length for
+# CharacterData, child count for anything else.
+def _rng_node_len(n: int32) -> int32:
+    k: int32 = _nd_type(n)
+    if k == 3 or k == 4 or k == 7 or k == 8:
+        return js_str_u16_len(_cd_get(n))
+    ks: int32 = _nd_kids(n)
+    if ks == 0:
+        return 0
+    return js_array_len(ks)
+
+
+# Compare boundary points (na, oa) and (nb, ob) in document order:
+# -1 before, 0 equal, 1 after.
+def _rng_cmp_bp(na: int32, oa: int32, nb: int32, ob: int32) -> int32:
+    if na == nb:
+        if oa < ob:
+            return -1
+        if oa > ob:
+            return 1
+        return 0
+    # If one container contains the other, compare the offset against the index
+    # of the containing chain's child.
+    if _nd_is_ancestor(na, nb) != 0:
+        c: int32 = nb
+        d: int32 = 0
+        while d < 256 and js_type_of(c) == TAG_OBJ:
+            p: int32 = _nd_parent(c)
+            if p == na:
+                ci: int32 = _nd_child_index(na, c)
+                if ci < oa:
+                    return 1
+                return -1
+            c = p
+            d = d + 1
+    if _nd_is_ancestor(nb, na) != 0:
+        c2: int32 = na
+        d2: int32 = 0
+        while d2 < 256 and js_type_of(c2) == TAG_OBJ:
+            p2: int32 = _nd_parent(c2)
+            if p2 == nb:
+                ci2: int32 = _nd_child_index(nb, c2)
+                if ci2 < ob:
+                    return -1
+                return 1
+            c2 = p2
+            d2 = d2 + 1
+    dp: int32 = _nd_compare_pos(na, nb)
+    if (dp & 4) != 0:                                      # nb FOLLOWS na
+        return -1
+    if (dp & 2) != 0:
+        return 1
+    return 0
+
+
+def _rng_get(r: int32, nm: Ptr[uint8], n: uint64) -> int32:
+    return js_get_prop(r, nm, n)
+
+
+def _rng_off(r: int32, nm: Ptr[uint8], n: uint64) -> int32:
+    return cast[int32](js_to_number(js_get_prop(r, nm, n)))
+
+
+def _rng_set_start(r: int32, node: int32, off: int32):
+    js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, node)
+    js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, js_number(cast[float64](off)))
+    ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if js_type_of(ec) != TAG_OBJ or _nd_root(ec) != _nd_root(node) or \
+       _rng_cmp_bp(node, off, ec, eo) > 0:
+        js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, node)
+        js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, \
+                   js_number(cast[float64](off)))
+
+
+def _rng_set_end(r: int32, node: int32, off: int32):
+    js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, node)
+    js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, js_number(cast[float64](off)))
+    sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    if js_type_of(sc) != TAG_OBJ or _nd_root(sc) != _nd_root(node) or \
+       _rng_cmp_bp(sc, so, node, off) > 0:
+        js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, node)
+        js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, \
+                   js_number(cast[float64](off)))
+
+
+# A fresh Range, collapsed at (document, 0) as the spec requires.
+def _rng_new() -> int32:
+    r: int32 = js_new_object_v()
+    if g_proto_range != 0:
+        js_set_proto_v(r, g_proto_range)
+    js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, js_doc)
+    js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, js_number(0.0))
+    js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, js_doc)
+    js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, js_number(0.0))
+    return r
+
+
+# Accumulate the text a range covers into rw_buf (range.toString()).
+def _rng_stringify(r: int32) -> int32:
+    sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if js_type_of(sc) != TAG_OBJ:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    if sc == ec and _nd_type(sc) == 3:
+        return js_str_sub_u16(_cd_get(sc), so, eo)
+    out: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+    cur: int32 = sc
+    if _nd_type(sc) == 3:
+        out = js_str_sub_u16(_cd_get(sc), so, js_str_u16_len(_cd_get(sc)))
+    steps: int32 = 0
+    while steps < 4096:
+        cur = _rng_next_in_order(cur)
+        if js_type_of(cur) != TAG_OBJ:
+            return out
+        if cur == ec:
+            if _nd_type(ec) == 3:
+                out = _nd_concat(out, js_str_sub_u16(_cd_get(ec), 0, eo))
+            return out
+        if _nd_type(cur) == 3:
+            out = _nd_concat(out, _cd_get(cur))
+        steps = steps + 1
+    return out
+
+
+# The next node in document order (pre-order), or js_null() at the end.
+def _rng_next_in_order(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks != 0 and js_array_len(ks) > 0:
+        return js_array_get(ks, 0)
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        p: int32 = _nd_parent(cur)
+        if js_type_of(p) != TAG_OBJ:
+            return js_null()
+        pk2: int32 = _nd_kids(p)
+        ix: int32 = _nd_child_index(p, cur)
+        if pk2 != 0 and ix >= 0 and ix + 1 < js_array_len(pk2):
+            return js_array_get(pk2, ix + 1)
+        cur = p
+        d = d + 1
+    return js_null()
+
+
+# ---- traversal ---------------------------------------------------------------
+# whatToShow is a bitmask over (1 << (nodeType - 1)); NodeFilter.SHOW_ALL is
+# 0xFFFFFFFF. The filter is a function OR an object with an acceptNode method,
+# and both forms appear in the WPT files.
+def _tv_show_ok(w: int32, node: int32) -> int32:
+    k: int32 = _nd_type(node)
+    if k <= 0 or k > 32:
+        return 0
+    if (w & (1 << (k - 1))) != 0:
+        return 1
+    return 0
+
+
+# 1 = FILTER_ACCEPT, 2 = FILTER_REJECT, 3 = FILTER_SKIP.
+def _tv_filter(tv: int32, node: int32) -> int32:
+    w: int32 = cast[int32](js_to_number(js_get_prop(tv, \
+                           cast[Ptr[uint8]]("whatToShow"), 10)))
+    if _tv_show_ok(w, node) == 0:
+        return 3                                           # SKIP, never REJECT
+    f: int32 = js_get_prop(tv, cast[Ptr[uint8]]("filter"), 6)
+    if js_type_of(f) != TAG_OBJ:
+        return 1
+    fn: int32 = f
+    if js_is_callable(f) == 0:
+        fn = js_get_prop(f, cast[Ptr[uint8]]("acceptNode"), 10)
+        if js_is_callable(fn) == 0:
+            return 1
+    g_argv1[0] = node
+    rv: int32 = js_call_fn(fn, f, &g_argv1[0], 1)
+    r: int32 = cast[int32](js_to_number(rv))
+    if r == 2:
+        return 2
+    if r == 3:
+        return 3
+    return 1
+
+
+def _tv_root(tv: int32) -> int32:
+    return js_get_prop(tv, cast[Ptr[uint8]]("root"), 4)
+
+
+def _tv_first_child(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or js_array_len(ks) == 0:
+        return js_null()
+    return js_array_get(ks, 0)
+
+
+def _tv_last_child(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or js_array_len(ks) == 0:
+        return js_null()
+    return js_array_get(ks, js_array_len(ks) - 1)
+
+
+def _tv_sibling(n: int32, dir: int32) -> int32:
+    p: int32 = _nd_parent(n)
+    if js_type_of(p) != TAG_OBJ:
+        return js_null()
+    ks: int32 = _nd_kids(p)
+    ix: int32 = _nd_child_index(p, n)
+    if ks == 0 or ix < 0:
+        return js_null()
+    j: int32 = ix + dir
+    if j < 0 or j >= js_array_len(ks):
+        return js_null()
+    return js_array_get(ks, j)
+
+
+# TreeWalker child traversal (spec "traverse children"): descend, skipping
+# SKIP nodes into their own children and stepping over REJECTed subtrees.
+def _tw_traverse_children(tv: int32, first: int32) -> int32:
+    cur: int32 = js_get_prop(tv, cast[Ptr[uint8]]("currentNode"), 11)
+    n: int32 = _tv_first_child(cur)
+    if first == 0:
+        n = _tv_last_child(cur)
+    steps: int32 = 0
+    while steps < 4096 and js_type_of(n) == TAG_OBJ:
+        steps = steps + 1
+        f: int32 = _tv_filter(tv, n)
+        if f == 1:
+            js_set_own(tv, cast[Ptr[uint8]]("currentNode"), 11, n)
+            return n
+        if f == 3:
+            c: int32 = _tv_first_child(n)
+            if first == 0:
+                c = _tv_last_child(n)
+            if js_type_of(c) == TAG_OBJ:
+                n = c
+                continue
+        # step sideways, climbing while there is no sibling
+        d: int32 = 0
+        while d < 256:
+            sib: int32 = _tv_sibling(n, 1)
+            if first == 0:
+                sib = _tv_sibling(n, -1)
+            if js_type_of(sib) == TAG_OBJ:
+                n = sib
+                d = 256
+            else:
+                pn: int32 = _nd_parent(n)
+                if js_type_of(pn) != TAG_OBJ or pn == _tv_root(tv) or pn == cur:
+                    return js_null()
+                n = pn
+                d = d + 1
+    return js_null()
+
+
+def _tw_traverse_siblings(tv: int32, dir: int32) -> int32:
+    cur: int32 = js_get_prop(tv, cast[Ptr[uint8]]("currentNode"), 11)
+    n: int32 = cur
+    if n == _tv_root(tv):
+        return js_null()
+    steps: int32 = 0
+    while steps < 4096:
+        steps = steps + 1
+        sib: int32 = _tv_sibling(n, dir)
+        while js_type_of(sib) == TAG_OBJ:
+            f: int32 = _tv_filter(tv, sib)
+            if f == 1:
+                js_set_own(tv, cast[Ptr[uint8]]("currentNode"), 11, sib)
+                return sib
+            n = sib
+            inner: int32 = _tv_first_child(sib)
+            if dir < 0:
+                inner = _tv_last_child(sib)
+            if f == 2 or js_type_of(inner) != TAG_OBJ:
+                sib = _tv_sibling(sib, dir)
+            else:
+                sib = inner
+        n = _nd_parent(n)
+        if js_type_of(n) != TAG_OBJ or n == _tv_root(tv):
+            return js_null()
+        if _tv_filter(tv, n) == 1:
+            return js_null()
+    return js_null()
+
+
+def _rng_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_CREATERANGE or rel == NID_RNG_CTOR:
+        return _rng_new()
+    if rel == NID_STATICRANGE_CTOR:
+        sr: int32 = js_new_object_v()
+        if js_arg_count() >= 1 and js_type_of(js_arg(0)) == TAG_OBJ:
+            init: int32 = js_arg(0)
+            js_set_prop(sr, cast[Ptr[uint8]]("startContainer"), 14, \
+                        js_get_prop(init, cast[Ptr[uint8]]("startContainer"), 14))
+            js_set_prop(sr, cast[Ptr[uint8]]("startOffset"), 11, \
+                        js_get_prop(init, cast[Ptr[uint8]]("startOffset"), 11))
+            js_set_prop(sr, cast[Ptr[uint8]]("endContainer"), 12, \
+                        js_get_prop(init, cast[Ptr[uint8]]("endContainer"), 12))
+            js_set_prop(sr, cast[Ptr[uint8]]("endOffset"), 9, \
+                        js_get_prop(init, cast[Ptr[uint8]]("endOffset"), 9))
+        return sr
+    if rel == NID_CREATETW or rel == NID_CREATENI:
+        tv: int32 = js_new_object_v()
+        rootv: int32 = js_null()
+        if js_arg_count() >= 1:
+            rootv = js_arg(0)
+        showv: int32 = -1
+        if js_arg_count() >= 2:
+            showv = cast[int32](js_to_number(js_arg(1)))
+        filtv: int32 = js_null()
+        if js_arg_count() >= 3:
+            filtv = js_arg(2)
+        js_set_prop(tv, cast[Ptr[uint8]]("root"), 4, rootv)
+        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, \
+                    js_number(cast[float64](showv)))
+        js_set_prop(tv, cast[Ptr[uint8]]("filter"), 6, filtv)
+        if rel == NID_CREATETW:
+            js_set_prop(tv, cast[Ptr[uint8]]("currentNode"), 11, rootv)
+            if g_proto_tw != 0:
+                js_set_proto_v(tv, g_proto_tw)
+        else:
+            js_set_prop(tv, cast[Ptr[uint8]]("referenceNode"), 13, rootv)
+            js_set_prop(tv, cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26, \
+                        js_bool(1))
+            if g_proto_ni != 0:
+                js_set_proto_v(tv, g_proto_ni)
+        return tv
+    # ---- Range instance methods ----
+    if rel >= NID_RNG_SETSTART and rel <= NID_RNG_CAC:
+        return _rng_method(rel, thisv)
+    # ---- TreeWalker ----
+    if rel == NID_TW_PARENT:
+        cur: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        n: int32 = _nd_parent(cur)
+        d: int32 = 0
+        while d < 256 and js_type_of(n) == TAG_OBJ:
+            if _tv_filter(thisv, n) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, n)
+                return n
+            if n == _tv_root(thisv):
+                return js_null()
+            n = _nd_parent(n)
+            d = d + 1
+        return js_null()
+    if rel == NID_TW_FIRSTCHILD:
+        return _tw_traverse_children(thisv, 1)
+    if rel == NID_TW_LASTCHILD:
+        return _tw_traverse_children(thisv, 0)
+    if rel == NID_TW_NEXTSIB:
+        return _tw_traverse_siblings(thisv, 1)
+    if rel == NID_TW_PREVSIB:
+        return _tw_traverse_siblings(thisv, -1)
+    if rel == NID_TW_NEXTNODE:
+        cur2: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        s2: int32 = 0
+        while s2 < 4096 and js_type_of(cur2) == TAG_OBJ:
+            s2 = s2 + 1
+            nx: int32 = _tv_next_within(cur2, _tv_root(thisv))
+            if js_type_of(nx) != TAG_OBJ:
+                return js_null()
+            cur2 = nx
+            if _tv_filter(thisv, cur2) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, cur2)
+                return cur2
+        return js_null()
+    if rel == NID_TW_PREVNODE:
+        cur3: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        s3: int32 = 0
+        while s3 < 4096 and js_type_of(cur3) == TAG_OBJ:
+            s3 = s3 + 1
+            pv: int32 = _tv_prev_within(cur3, _tv_root(thisv))
+            if js_type_of(pv) != TAG_OBJ:
+                return js_null()
+            cur3 = pv
+            if _tv_filter(thisv, cur3) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, cur3)
+                return cur3
+        return js_null()
+    if rel == NID_NI_DETACH:
+        return js_undefined()
+    # ---- NodeIterator next/previous ----
+    fwd: int32 = 0
+    if rel == NID_NI_NEXTNODE:
+        fwd = 1
+    ref: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("referenceNode"), 13)
+    before: int32 = js_to_bool(js_get_prop(thisv, \
+                    cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26))
+    s4: int32 = 0
+    while s4 < 8192 and js_type_of(ref) == TAG_OBJ:
+        s4 = s4 + 1
+        if fwd != 0:
+            if before != 0:
+                before = 0
+            else:
+                ref = _tv_next_within(ref, _tv_root(thisv))
+                if js_type_of(ref) != TAG_OBJ:
+                    return js_null()
+        else:
+            if before == 0:
+                before = 1
+            else:
+                ref = _tv_prev_within(ref, _tv_root(thisv))
+                if js_type_of(ref) != TAG_OBJ:
+                    return js_null()
+        if _tv_filter(thisv, ref) == 1:
+            js_set_own(thisv, cast[Ptr[uint8]]("referenceNode"), 13, ref)
+            js_set_own(thisv, cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26, \
+                       js_bool(before))
+            return ref
+    return js_null()
+
+
+# Pre-order successor of `n` that stays inside `root`.
+def _tv_next_within(n: int32, root: int32) -> int32:
+    c: int32 = _tv_first_child(n)
+    if js_type_of(c) == TAG_OBJ:
+        return c
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        if cur == root:
+            return js_null()
+        sib: int32 = _tv_sibling(cur, 1)
+        if js_type_of(sib) == TAG_OBJ:
+            return sib
+        cur = _nd_parent(cur)
+        d = d + 1
+    return js_null()
+
+
+# Pre-order predecessor of `n` that stays inside `root`.
+def _tv_prev_within(n: int32, root: int32) -> int32:
+    if n == root:
+        return js_null()
+    sib: int32 = _tv_sibling(n, -1)
+    if js_type_of(sib) != TAG_OBJ:
+        p: int32 = _nd_parent(n)
+        if js_type_of(p) != TAG_OBJ:
+            return js_null()
+        return p
+    d: int32 = 0
+    while d < 256:
+        last: int32 = _tv_last_child(sib)
+        if js_type_of(last) != TAG_OBJ:
+            return sib
+        sib = last
+        d = d + 1
+    return sib
+
+
+def _rng_method(rel: int32, r: int32) -> int32:
+    a0: int32 = js_null()
+    if js_arg_count() >= 1:
+        a0 = js_arg(0)
+    if rel == NID_RNG_COLLAPSED:
+        sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+        if sc == ec and _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11) == \
+           _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9):
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_RNG_RO_SET:
+        return js_undefined()
+    if rel == NID_RNG_CAC:
+        sc2: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        ec2: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+        cur: int32 = sc2
+        d: int32 = 0
+        while d < 256 and js_type_of(cur) == TAG_OBJ:
+            if _nd_is_ancestor(cur, ec2) != 0:
+                return cur
+            cur = _nd_parent(cur)
+            d = d + 1
+        return sc2
+    if rel == NID_RNG_DETACH:
+        return js_undefined()
+    if rel == NID_RNG_TOSTRING:
+        return _rng_stringify(r)
+    if rel == NID_RNG_CLONERANGE:
+        c2: int32 = _rng_new()
+        js_set_own(c2, cast[Ptr[uint8]]("startContainer"), 14, \
+                   _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14))
+        js_set_own(c2, cast[Ptr[uint8]]("startOffset"), 11, \
+                   _rng_get(r, cast[Ptr[uint8]]("startOffset"), 11))
+        js_set_own(c2, cast[Ptr[uint8]]("endContainer"), 12, \
+                   _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12))
+        js_set_own(c2, cast[Ptr[uint8]]("endOffset"), 9, \
+                   _rng_get(r, cast[Ptr[uint8]]("endOffset"), 9))
+        return c2
+    if rel == NID_RNG_COLLAPSE:
+        tostart: int32 = 0
+        if js_arg_count() >= 1 and js_to_bool(a0) != 0:
+            tostart = 1
+        if tostart != 0:
+            js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, \
+                       _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14))
+            js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, \
+                       _rng_get(r, cast[Ptr[uint8]]("startOffset"), 11))
+        else:
+            js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, \
+                       _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12))
+            js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, \
+                       _rng_get(r, cast[Ptr[uint8]]("endOffset"), 9))
+        return js_undefined()
+    if js_type_of(a0) != TAG_OBJ:
+        return js_undefined()
+    if rel == NID_RNG_SETSTART or rel == NID_RNG_SETEND:
+        off: int32 = 0
+        if js_arg_count() >= 2:
+            off = cast[int32](js_to_number(js_arg(1)))
+        if off < 0 or off > _rng_node_len(a0):
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        if rel == NID_RNG_SETSTART:
+            _rng_set_start(r, a0, off)
+        else:
+            _rng_set_end(r, a0, off)
+        return js_undefined()
+    if rel == NID_RNG_SELNODECONT:
+        _rng_set_start(r, a0, 0)
+        _rng_set_end(r, a0, _rng_node_len(a0))
+        return js_undefined()
+    par: int32 = _nd_parent(a0)
+    if js_type_of(par) != TAG_OBJ:
+        if rel == NID_RNG_INTERSECTS or rel == NID_RNG_ISPOINTIN:
+            return js_bool(0)
+        if rel == NID_RNG_COMPAREPOINT:
+            return js_number(0.0)
+        if rel == NID_RNG_SELNODE or rel == NID_RNG_SETSTARTBEF or \
+           rel == NID_RNG_SETSTARTAFT or rel == NID_RNG_SETENDBEF or \
+           rel == NID_RNG_SETENDAFT:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidNodeTypeError"), 20, \
+                                 cast[Ptr[uint8]]("node has no parent"), 18)
+    ix: int32 = _nd_child_index(par, a0)
+    if rel == NID_RNG_SELNODE:
+        _rng_set_start(r, par, ix)
+        _rng_set_end(r, par, ix + 1)
+        return js_undefined()
+    if rel == NID_RNG_SETSTARTBEF:
+        _rng_set_start(r, par, ix)
+        return js_undefined()
+    if rel == NID_RNG_SETSTARTAFT:
+        _rng_set_start(r, par, ix + 1)
+        return js_undefined()
+    if rel == NID_RNG_SETENDBEF:
+        _rng_set_end(r, par, ix)
+        return js_undefined()
+    if rel == NID_RNG_SETENDAFT:
+        _rng_set_end(r, par, ix + 1)
+        return js_undefined()
+    sc3: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so3: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    ec3: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo3: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if rel == NID_RNG_INTERSECTS:
+        if _rng_cmp_bp(par, ix, ec3, eo3) < 0 and \
+           _rng_cmp_bp(par, ix + 1, sc3, so3) > 0:
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_RNG_COMPAREPOINT or rel == NID_RNG_ISPOINTIN:
+        poff: int32 = 0
+        if js_arg_count() >= 2:
+            poff = cast[int32](js_to_number(js_arg(1)))
+        cs: int32 = _rng_cmp_bp(a0, poff, sc3, so3)
+        ce: int32 = _rng_cmp_bp(a0, poff, ec3, eo3)
+        if rel == NID_RNG_ISPOINTIN:
+            if cs >= 0 and ce <= 0:
+                return js_bool(1)
+            return js_bool(0)
+        if cs < 0:
+            return js_number(-1.0)
+        if ce > 0:
+            return js_number(1.0)
+        return js_number(0.0)
+    if rel == NID_RNG_COMPAREBP:
+        how: int32 = 0
+        if js_arg_count() >= 1:
+            how = cast[int32](js_to_number(js_arg(0)))
+        other: int32 = js_null()
+        if js_arg_count() >= 2:
+            other = js_arg(1)
+        if js_type_of(other) != TAG_OBJ:
+            return js_number(0.0)
+        na: int32 = sc3
+        oa: int32 = so3
+        nb: int32 = _rng_get(other, cast[Ptr[uint8]]("startContainer"), 14)
+        ob: int32 = _rng_off(other, cast[Ptr[uint8]]("startOffset"), 11)
+        if how == 1 or how == 3:                           # START_TO_END/END_TO_END
+            na = ec3
+            oa = eo3
+        if how == 1 or how == 2:                           # START_TO_END/END_TO_START
+            nb = _rng_get(other, cast[Ptr[uint8]]("endContainer"), 12)
+            ob = _rng_off(other, cast[Ptr[uint8]]("endOffset"), 9)
+        if how == 0 or how == 3:
+            return js_number(cast[float64](_rng_cmp_bp(na, oa, nb, ob)))
+        return js_number(cast[float64](_rng_cmp_bp(na, oa, nb, ob)))
+    if rel == NID_RNG_INSERTNODE:
+        _insert_before_v(sc3, a0, _rng_child_at(sc3, so3))
+        return js_undefined()
+    # NID_RNG_DELETECONT
+    if sc3 == ec3 and _nd_type(sc3) == 3:
+        _cd_splice(sc3, so3, eo3 - so3, js_new_string(cast[Ptr[uint8]](""), 0))
+        return js_undefined()
+    return js_undefined()
+
+
+def _rng_child_at(n: int32, i: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or i < 0 or i >= js_array_len(ks):
+        return js_null()
+    return js_array_get(ks, i)
+
+
 def _child_parent_dispatch(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_PN_PREPEND or rel == NID_PN_REPLKIDS:
@@ -3801,6 +4427,8 @@ def _js_host_dispatch(id: int32) -> int32:
         g_dom_gen = g_dom_gen + 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
+    if rel >= NID_CREATERANGE and rel <= NID_NI_DETACH:
+        return _rng_dispatch(rel)
     if rel >= NID_CD_DATA_GET and rel <= NID_TEXT_SPLIT:
         return _chardata_dispatch(rel)
     if rel == NID_TEXT_CTOR or rel == NID_COMMENT_CTOR:
@@ -5969,6 +6597,12 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(d, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(d, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
     js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
@@ -6287,6 +6921,12 @@ def _impl_dispatch(rel: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(d, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(d, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
     js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
@@ -6572,6 +7212,33 @@ def _brand_by_tag(o: int32):
 # Swap a DOM interface object's backing native for a real constructor, keeping
 # the prototype identity _dom_interface already established (so
 # `x instanceof Text` and `Text.prototype` both keep working).
+# The NodeFilter namespace object: SHOW_* bit constants and the three
+# FILTER_* return codes. Scripts read them off the global, and the interface
+# object is also usable as `NodeFilter.SHOW_ELEMENT` inside a filter callback.
+def _build_nodefilter():
+    nf: int32 = js_new_object_v()
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_ACCEPT"), 13, js_number(1.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_REJECT"), 13, js_number(2.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_SKIP"), 11, js_number(3.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ALL"), 8, js_number(4294967295.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ELEMENT"), 12, js_number(1.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ATTRIBUTE"), 14, js_number(2.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_TEXT"), 9, js_number(4.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_CDATA_SECTION"), 18, js_number(8.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ENTITY_REFERENCE"), 21, js_number(16.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ENTITY"), 11, js_number(32.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_PROCESSING_INSTRUCTION"), 27, \
+                js_number(64.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_COMMENT"), 12, js_number(128.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT"), 13, js_number(256.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT_TYPE"), 18, js_number(512.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT_FRAGMENT"), 22, \
+                js_number(1024.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_NOTATION"), 13, js_number(2048.0))
+    js_global_set(cast[Ptr[uint8]]("NodeFilter"), 10, nf)
+    g_nodefilter = nf
+
+
 def _rebrand_ctor(proto: int32, nid: int32) -> int32:
     c: int32 = js_new_native_fn(js_hbase + nid)
     js_set_fn_prototype(c, proto)
@@ -6725,6 +7392,22 @@ def _build_dom_interfaces():
                                      g_proto_node)
     _attach_childnode_mixin(g_proto_doctype)
     g_proto_attr = _dom_interface(cast[Ptr[uint8]]("Attr"), 4, g_proto_node)
+    # Range / StaticRange / TreeWalker / NodeIterator / NodeFilter.
+    g_proto_range = _dom_interface(cast[Ptr[uint8]]("Range"), 5, 0)
+    js_global_set(cast[Ptr[uint8]]("Range"), 5, \
+                  _rebrand_ctor(g_proto_range, NID_RNG_CTOR))
+    _attach_range_natives(g_proto_range)
+    js_tag_object(g_proto_range, cast[Ptr[uint8]]("Range"))
+    sproto: int32 = _dom_interface(cast[Ptr[uint8]]("StaticRange"), 11, 0)
+    js_global_set(cast[Ptr[uint8]]("StaticRange"), 11, \
+                  _rebrand_ctor(sproto, NID_STATICRANGE_CTOR))
+    g_proto_tw = _dom_interface(cast[Ptr[uint8]]("TreeWalker"), 10, 0)
+    _attach_tw_natives(g_proto_tw)
+    js_tag_object(g_proto_tw, cast[Ptr[uint8]]("TreeWalker"))
+    g_proto_ni = _dom_interface(cast[Ptr[uint8]]("NodeIterator"), 12, 0)
+    _attach_ni_natives(g_proto_ni)
+    js_tag_object(g_proto_ni, cast[Ptr[uint8]]("NodeIterator"))
+    _build_nodefilter()
     g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
     g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
     js_tag_object(g_proto_doctype, cast[Ptr[uint8]]("DocumentType"))
@@ -6951,6 +7634,12 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_CREATE_NS))
     js_set_prop(doc, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(doc, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(doc, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(doc, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
     js_set_prop(doc, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(doc, cast[Ptr[uint8]]("createDocumentFragment"), 22, \

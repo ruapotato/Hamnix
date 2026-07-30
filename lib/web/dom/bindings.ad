@@ -1187,6 +1187,51 @@ NID_CD_REPLACED:   int32 = 197       # replaceData(offset, count, data)
 NID_TEXT_SPLIT:    int32 = 198       # text.splitText(offset)
 NID_TEXT_CTOR:     int32 = 199       # new Text(data)
 NID_COMMENT_CTOR:  int32 = 200       # new Comment(data)
+# --- Range + Traversal -------------------------------------------------------
+# A contiguous block [201..230]; _js_host_dispatch delegates the whole span to
+# _rng_dispatch (canvas.ad). Boundary points live as own properties on the JS
+# object (startContainer/startOffset/endContainer/endOffset, and
+# root/whatToShow/filter/currentNode on the traversal objects), read back via
+# js_this() inside each method -- no parallel arrays. The DERIVED attributes
+# (collapsed, commonAncestorContainer) are accessors, because they must track
+# the boundary points rather than be snapshots.
+NID_CREATERANGE:      int32 = 201     # document.createRange() -> Range
+NID_RNG_CTOR:         int32 = 202     # new Range()
+NID_RNG_SETSTART:     int32 = 203     # range.setStart(node, offset)
+NID_RNG_SETEND:       int32 = 204     # range.setEnd(node, offset)
+NID_RNG_SETSTARTBEF:  int32 = 205     # range.setStartBefore(node)
+NID_RNG_SETSTARTAFT:  int32 = 206     # range.setStartAfter(node)
+NID_RNG_SETENDBEF:    int32 = 207     # range.setEndBefore(node)
+NID_RNG_SETENDAFT:    int32 = 208     # range.setEndAfter(node)
+NID_RNG_SELNODE:      int32 = 209     # range.selectNode(node)
+NID_RNG_SELNODECONT:  int32 = 210     # range.selectNodeContents(node)
+NID_RNG_COLLAPSE:     int32 = 211     # range.collapse(toStart)
+NID_RNG_CLONERANGE:   int32 = 212     # range.cloneRange()
+NID_RNG_COMPAREBP:    int32 = 213     # range.compareBoundaryPoints(how, other)
+NID_RNG_COMPAREPOINT: int32 = 214     # range.comparePoint(node, offset)
+NID_RNG_ISPOINTIN:    int32 = 215     # range.isPointInRange(node, offset)
+NID_RNG_INTERSECTS:   int32 = 216     # range.intersectsNode(node)
+NID_RNG_INSERTNODE:   int32 = 217     # range.insertNode(node)
+NID_RNG_DELETECONT:   int32 = 218     # range.deleteContents()
+NID_RNG_DETACH:       int32 = 219     # range.detach() (no-op per modern spec)
+NID_RNG_TOSTRING:     int32 = 220     # range.toString()
+NID_RNG_COLLAPSED:    int32 = 221     # range.collapsed getter
+NID_RNG_CAC:          int32 = 222     # range.commonAncestorContainer getter
+NID_RNG_RO_SET:       int32 = 223     # shared no-op setter for the two above
+NID_STATICRANGE_CTOR: int32 = 224     # new StaticRange(init)
+# TreeWalker / NodeIterator
+NID_CREATETW:         int32 = 225     # document.createTreeWalker(root, show, f)
+NID_CREATENI:         int32 = 226     # document.createNodeIterator(root, show, f)
+NID_TW_PARENT:        int32 = 227     # walker.parentNode()
+NID_TW_FIRSTCHILD:    int32 = 228     # walker.firstChild()
+NID_TW_LASTCHILD:     int32 = 229     # walker.lastChild()
+NID_TW_NEXTSIB:       int32 = 230     # walker.nextSibling()
+NID_TW_PREVSIB:       int32 = 231     # walker.previousSibling()
+NID_TW_NEXTNODE:      int32 = 232     # walker.nextNode()
+NID_TW_PREVNODE:      int32 = 233     # walker.previousNode()
+NID_NI_NEXTNODE:      int32 = 234     # iterator.nextNode()
+NID_NI_PREVNODE:      int32 = 235     # iterator.previousNode()
+NID_NI_DETACH:        int32 = 236     # iterator.detach() (no-op per modern spec)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1271,6 +1316,10 @@ g_proto_doctype: int32 = 0           # DocumentType.prototype
 g_proto_impl:  int32 = 0             # DOMImplementation.prototype
 g_proto_attr:  int32 = 0             # Attr.prototype
 g_proto_pi:    int32 = 0             # ProcessingInstruction.prototype
+g_proto_range: int32 = 0             # Range.prototype (createRange() links here)
+g_proto_tw:    int32 = 0             # TreeWalker.prototype
+g_proto_ni:    int32 = 0             # NodeIterator.prototype
+g_nodefilter:  int32 = 0             # the global NodeFilter constants object
 g_proto_nnm:   int32 = 0             # NamedNodeMap.prototype
 g_proto_html:  int32 = 0             # HTMLHtmlElement.prototype
 g_proto_head:  int32 = 0             # HTMLHeadElement.prototype
@@ -1373,6 +1422,10 @@ def _dom_reset():
     g_proto_impl = 0
     g_proto_attr = 0
     g_proto_pi = 0
+    g_proto_range = 0
+    g_proto_tw = 0
+    g_proto_ni = 0
+    g_nodefilter = 0
     g_proto_nnm = 0
     g_proto_html = 0
     g_proto_head = 0
