@@ -476,10 +476,6 @@ pr_n: int32 = 0
 #   * run_reaction additionally REJECTS a record whose pr_source is -1 (i.e. a
 #     freed one), so a double-schedule bug reports itself instead of silently
 #     running a recycled record.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> d4a321b0 (fix(web/js/gc): an abandoned pending promise with a .then was IMMORTAL; gate the async pools)
 #
 # pr_sched SPLITS the two ownerships above, and that is what makes the OBJECT
 # collector precise here. It used to root every record over 0..pr_n WHOLESALE,
@@ -493,11 +489,6 @@ pr_n: int32 = 0
 # a timer arg); a REGISTERED one is reached through its live owner by
 # obj_gc_trace, and freed by obj_gc_free when that owner dies.
 pr_sched:  Array[16384, uint8]    # 1 = handed to the microtask queue (rooted wholesale)
-<<<<<<< HEAD
-=======
->>>>>>> 4ee5bfa1 (feat(web/js): recycle timer / promise-reaction / Map-Set slots — an async page no longer stops at 4,096 turns)
-=======
->>>>>>> d4a321b0 (fix(web/js/gc): an abandoned pending promise with a .then was IMMORTAL; gate the async pools)
 pr_free_head: int32 = -1
 pr_live:      int32 = 0           # reaction records currently outstanding
 pr_live_hi:   int32 = 0           # high-water of pr_live
