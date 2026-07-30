@@ -436,6 +436,234 @@ def ptrlat_get_over() -> uint64:
 
 
 # ======================================================================
+# m2p — MOTION-TO-PHOTON FOR THE POINTER
+# ======================================================================
+#
+# WHY THIS EXISTS AND WHY ptrlat IS NOT IT.
+#
+# Everything measured for the user's report so far has been a PROXY:
+#   * wklat  — how long a woken task waits for the CPU.
+#   * sysirq — how long EFLAGS.IF stays clear inside a syscall.
+#   * ptrlat — the wall-clock GAP between two consecutive cursor services.
+#
+# All three can look perfect while the user still sees a stuttering pointer.
+# ptrlat is the closest, but it is a gap between SERVICES, not the age of an
+# EVENT: a pump that runs punctually every 10 ms and each time re-blits a
+# cursor whose position came from a packet that has been sitting in the ring
+# for 200 ms scores a flawless ptrlat and looks broken on screen. Nothing has
+# ever measured the number the user actually perceives, which is the age of a
+# mouse packet at the moment its pixels reach scanout.
+#
+# WHAT IS MEASURED. One interval per pointer event, split at the two seams
+# that separate the candidate explanations from one another:
+#
+#   t0  m2p_note_ingest()   the packet lands in the mouse ring
+#                           (drivers/input/auxmouse.ad, all three push paths:
+#                            PS/2 relative, HID wheel, HID absolute/tablet)
+#   t1  m2p_note_service()  _wsys_route_common begins — the pump has picked
+#                           the packet up and cursor work is starting
+#   t2  m2p_note_photon()   _wsys_present_cursor_locked has finished flushing
+#                           both the restored old footprint and the new
+#                           sprite to scanout
+#
+#   total   = t2 - t0   the user's symptom
+#   deliver = t1 - t0   INPUT DELIVERY: ring wait — the pump is not running
+#                       (tick starved, IF masked, DE not live, device polling
+#                       starved). This is the half wklat/sysirq speak to.
+#   render  = t2 - t1   COMPOSITOR: recompose of the old footprint, cursor
+#                       rasterize, keyed blit, two flush_rects, and any wait
+#                       for wsys_present_lock behind a full-screen present.
+#
+# The split is the whole point. A large `deliver` and a small `render`
+# indicts input delivery / the tick; a small `deliver` and a large `render`
+# indicts the compositor redraw path, which no instrument here has ever been
+# able to see. Whichever it is, the other is RULED OUT by the same run.
+#
+# OLDEST-EVENT ATTRIBUTION. If several packets arrive before one pump, t0 is
+# the arrival of the FIRST unserviced one and is not overwritten — the number
+# reported is the worst age in that batch, which is what the user feels. The
+# interval is only accounted when a present actually followed a route
+# (m2p_t1_ns != 0), so an unrelated cursor re-blit (window close, outline
+# erase) cannot manufacture a sample.
+#
+# DEFAULT OFF. Unlike ptrlat this costs an RDTSC on the input path, and it is
+# only meaningful across a window someone deliberately opened. `m2p 1` on
+# /dev/wsys/ctl arms and resets; `m2p 2` reports.
+m2p_on:        int32  = 0
+m2p_pending:   int32  = 0
+m2p_t0_ns:     uint64 = 0
+m2p_t1_ns:     uint64 = 0
+m2p_ingest:    uint64 = 0        # events stamped (armed only)
+m2p_n:         uint64 = 0        # intervals completed
+m2p_sum_ns:    uint64 = 0
+m2p_max_ns:    uint64 = 0
+m2p_dsum_ns:   uint64 = 0        # deliver = t1 - t0
+m2p_dmax_ns:   uint64 = 0
+m2p_rsum_ns:   uint64 = 0        # render  = t2 - t1
+m2p_rmax_ns:   uint64 = 0
+m2p_b15:       uint64 = 0        # <= 15 ms — one healthy tick
+m2p_b30:       uint64 = 0
+m2p_b60:       uint64 = 0
+m2p_b120:      uint64 = 0
+m2p_b250:      uint64 = 0
+m2p_over:      uint64 = 0        # > 250 ms — a visible freeze
+
+
+def m2p_reset():
+    m2p_pending = 0
+    m2p_t0_ns = 0
+    m2p_t1_ns = 0
+    m2p_ingest = 0
+    m2p_n = 0
+    m2p_sum_ns = 0
+    m2p_max_ns = 0
+    m2p_dsum_ns = 0
+    m2p_dmax_ns = 0
+    m2p_rsum_ns = 0
+    m2p_rmax_ns = 0
+    m2p_b15 = 0
+    m2p_b30 = 0
+    m2p_b60 = 0
+    m2p_b120 = 0
+    m2p_b250 = 0
+    m2p_over = 0
+
+
+def m2p_enable(on: int32):
+    m2p_on = on
+
+
+def m2p_enabled() -> int32:
+    return m2p_on
+
+
+def m2p_note_ingest():
+    # t0. Called from the mouse ring push paths. Latches the OLDEST unserviced
+    # packet; a later packet in the same batch does not overwrite it.
+    if m2p_on == 0:
+        return
+    m2p_ingest = m2p_ingest + 1
+    if m2p_pending != 0:
+        return
+    m2p_pending = 1
+    m2p_t1_ns = 0
+    m2p_t0_ns = tsc_monotonic_ns()
+
+
+def m2p_note_service():
+    # t1. Called at the top of _wsys_route_common: the pump has the packet and
+    # cursor work is about to begin. First route of a batch wins, matching the
+    # oldest-event t0.
+    if m2p_on == 0:
+        return
+    if m2p_pending == 0:
+        return
+    if m2p_t1_ns != 0:
+        return
+    m2p_t1_ns = tsc_monotonic_ns()
+
+
+def m2p_note_photon():
+    # t2. Called at the very end of _wsys_present_cursor_locked, after BOTH
+    # flush_rects — i.e. once the restored old footprint and the new sprite
+    # are in scanout. Requires a t1 so an unrelated cursor re-blit cannot
+    # fabricate a sample.
+    if m2p_on == 0:
+        return
+    if m2p_pending == 0:
+        return
+    if m2p_t1_ns == 0:
+        return
+    now: uint64 = tsc_monotonic_ns()
+    m2p_pending = 0
+    if now <= m2p_t0_ns:
+        return
+    total: uint64 = now - m2p_t0_ns
+    deliver: uint64 = 0
+    if m2p_t1_ns > m2p_t0_ns:
+        deliver = m2p_t1_ns - m2p_t0_ns
+    render: uint64 = 0
+    if now > m2p_t1_ns:
+        render = now - m2p_t1_ns
+    m2p_n = m2p_n + 1
+    m2p_sum_ns = m2p_sum_ns + total
+    if total > m2p_max_ns:
+        m2p_max_ns = total
+    m2p_dsum_ns = m2p_dsum_ns + deliver
+    if deliver > m2p_dmax_ns:
+        m2p_dmax_ns = deliver
+    m2p_rsum_ns = m2p_rsum_ns + render
+    if render > m2p_rmax_ns:
+        m2p_rmax_ns = render
+    if total <= 15000000:
+        m2p_b15 = m2p_b15 + 1
+    elif total <= 30000000:
+        m2p_b30 = m2p_b30 + 1
+    elif total <= 60000000:
+        m2p_b60 = m2p_b60 + 1
+    elif total <= 120000000:
+        m2p_b120 = m2p_b120 + 1
+    elif total <= 250000000:
+        m2p_b250 = m2p_b250 + 1
+    else:
+        m2p_over = m2p_over + 1
+
+
+def _m2p_mean_us(sum_ns: uint64) -> uint64:
+    if m2p_n == 0:
+        return 0
+    return (sum_ns / m2p_n) / 1000
+
+
+def m2p_report():
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[m2p] armed=%d ingest=%d n=%d\n",
+            cast[uint64](m2p_on), m2p_ingest, m2p_n)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[m2p] total_max_us=%d total_mean_us=%d\n",
+            m2p_max_ns / 1000, _m2p_mean_us(m2p_sum_ns))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[m2p] deliver_max_us=%d deliver_mean_us=%d\n",
+            m2p_dmax_ns / 1000, _m2p_mean_us(m2p_dsum_ns))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[m2p] render_max_us=%d render_mean_us=%d\n",
+            m2p_rmax_ns / 1000, _m2p_mean_us(m2p_rsum_ns))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[m2p] le15ms=%d le30ms=%d le60ms=%d\n",
+            m2p_b15, m2p_b30, m2p_b60)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[m2p] le120ms=%d le250ms=%d over250ms=%d\n",
+            m2p_b120, m2p_b250, m2p_over)
+
+
+def m2p_ctl(verb: int64) -> int32:
+    # 0 disarm   1 arm + reset   2 report   3 reset (stay armed)
+    # Every accepted verb ACKs, for the reason spelled out on wklat_ctl: a
+    # silently refused control write is indistinguishable from a working one
+    # and turns an A/B into two identical arms.
+    if verb == 0:
+        m2p_enable(0)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[m2p] ack armed=0\n")
+        return 1
+    if verb == 1:
+        m2p_reset()
+        m2p_enable(1)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[m2p] ack armed=1\n")
+        return 1
+    if verb == 2:
+        m2p_report()
+        return 1
+    if verb == 3:
+        m2p_reset()
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[m2p] ack reset\n")
+        return 1
+    return 0
+
+
+# ======================================================================
 # sysirq — INTERRUPT-MASKED (EFLAGS.IF=0) DURATION, ATTRIBUTED BY SYSCALL
 # ======================================================================
 #
