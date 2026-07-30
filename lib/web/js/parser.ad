@@ -739,7 +739,14 @@ def parse_new() -> int32:
 
 
 def parse_member_only(base: int32) -> int32:
-    # member access without calls (for `new X.Y()` callee)
+    # member access without calls, for the callee of `new`. The grammar is
+    # `new MemberExpression Arguments`, and MemberExpression covers BOTH
+    # `X.Y` and `X[y]`. Only the dot form was handled, so `new window[name]()`
+    # parsed as `new window` with a stray index — and window is not a
+    # constructor, so it threw "value is not a constructor" while
+    # `new window.Text()` on the identical value worked. WPT's
+    # Comment-Text-constructor.js opens every one of its 15 subtests with
+    # `new window[ctor]()`.
     e: int32 = base
     while True:
         if pk() == TK_DOT:
@@ -749,6 +756,14 @@ def parse_member_only(base: int32) -> int32:
             n_str[m] = tk_str[tk_pos]
             tk_pos = tk_pos + 1
             e = m
+        elif pk() == TK_LBRACK:
+            tk_pos = tk_pos + 1
+            ix: int32 = nd_new(ND_INDEX)
+            n_a[ix] = e
+            n_d[ix] = 0
+            n_b[ix] = parse_expr()
+            pexpect(TK_RBRACK)
+            e = ix
         else:
             break
     return e

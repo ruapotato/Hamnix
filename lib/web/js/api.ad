@@ -527,6 +527,24 @@ def js_fn_prototype(fnv: int32) -> int32:
     return ext_pin(proto)
 
 
+# Point an interface object's `prototype` at an EXISTING prototype object, so a
+# host constructor can be swapped in without losing the identity
+# js_fn_prototype already handed out (`Text.prototype` must stay the same object
+# that every text node is linked to, or `x instanceof Text` goes false).
+def js_set_fn_prototype(fnv: int32, protov: int32):
+    ext_pin(fnv)
+    ext_pin(protov)
+    if tag_of(fnv) != TAG_OBJ or tag_of(protov) != TAG_OBJ:
+        return
+    obj_set(objid_of(fnv), str_from_cstr(cast[Ptr[uint8]]("prototype")), protov)
+
+
+# Raise a plain TypeError from inside a host native, unwinding through the
+# interpreter's CTL_THROW path exactly as a script-level `throw` would.
+def js_throw_type_error(msg: Ptr[uint8]):
+    throw_error(cast[Ptr[uint8]]("TypeError"), msg)
+
+
 def js_set_proto_v(objv: int32, protov: int32):
     ext_pin(objv)
     ext_pin(protov)
@@ -588,6 +606,25 @@ def js_str_bytes(val: int32) -> Ptr[uint8]:
     if tag_of(val) == TAG_STR:
         return &sp_buf[st_off[strid_of(val)]]
     return js_to_display(val)
+
+
+# UTF-16 code-unit length and substring, the units the DOM specifies for
+# CharacterData offsets (data.length, substringData, insertData, deleteData,
+# replaceData, splitText) and the ones a browser reports: ".length" of
+# "\u8cc7\u6599" is 2 and of a string with two astral emoji is 15, not their
+# UTF-8 byte counts. The interpreter already models strings this way for
+# String.prototype; these expose the same view to the DOM bindings so the two
+# can never disagree.
+def js_str_u16_len(val: int32) -> int32:
+    if tag_of(val) != TAG_STR:
+        return 0
+    return str_u16_len(strid_of(val))
+
+
+def js_str_sub_u16(val: int32, u0: int32, u1: int32) -> int32:
+    if tag_of(val) != TAG_STR:
+        return val
+    return ext_pin(v_string_id(str_sub_u16(strid_of(val), u0, u1)))
 
 
 def js_str_bytelen(val: int32) -> int32:

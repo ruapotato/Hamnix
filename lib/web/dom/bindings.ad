@@ -1170,6 +1170,23 @@ NID_CN_REPLWITH:   int32 = 175       # node.replaceWith(...nodes)
 NID_PN_PREPEND:    int32 = 176       # parent.prepend(...nodes)
 NID_PN_REPLKIDS:   int32 = 187       # parent.replaceChildren(...nodes)
 NID_CREATEPI:      int32 = 188       # document.createProcessingInstruction(t,d)
+# --- CharacterData (Text / Comment / ProcessingInstruction) ------------------
+# data / nodeValue / textContent / length are ONE piece of state, exposed as
+# accessors on CharacterData.prototype (an own data property would shadow them
+# and let the four drift apart). Offsets are UTF-16 code units, as the DOM
+# specifies and as js_str_u16_len / js_str_sub_u16 model them.
+NID_CD_DATA_GET:   int32 = 189       # characterData.data / nodeValue / textContent
+NID_CD_DATA_SET:   int32 = 190
+NID_CD_LEN_GET:    int32 = 191       # characterData.length
+NID_CD_LEN_SET:    int32 = 192
+NID_CD_SUBSTR:     int32 = 193       # substringData(offset, count)
+NID_CD_APPENDD:    int32 = 194       # appendData(data)
+NID_CD_INSERTD:    int32 = 195       # insertData(offset, data)
+NID_CD_DELETED:    int32 = 196       # deleteData(offset, count)
+NID_CD_REPLACED:   int32 = 197       # replaceData(offset, count, data)
+NID_TEXT_SPLIT:    int32 = 198       # text.splitText(offset)
+NID_TEXT_CTOR:     int32 = 199       # new Text(data)
+NID_COMMENT_CTOR:  int32 = 200       # new Comment(data)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries

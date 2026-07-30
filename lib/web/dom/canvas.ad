@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -537,12 +537,13 @@ def _cre_make_text(sval: int32) -> int32:
     cre_is_text[tcid] = 1
     cre_gone[tcid] = 0
     tco: int32 = js_new_object_v()
-    js_set_prop(tco, cast[Ptr[uint8]]("textContent"), 11, sval)
     js_set_prop(tco, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](3)))
     js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#text"), 5))
-    js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, sval)
-    js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, sval)
+    # data / nodeValue / textContent / length are ACCESSORS on
+    # CharacterData.prototype over this one backing field; setting them as own
+    # data properties here would shadow the accessors and let the four drift.
+    js_set_prop(tco, cast[Ptr[uint8]]("__cd"), 4, sval)
     _node_identity(tco, g_proto_text)
     cre_obj[tcid] = tco
     cre_n = tcid + 1
@@ -573,11 +574,7 @@ def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
         js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, targetv)
         js_set_prop(co2, cast[Ptr[uint8]]("target"), 6, targetv)
         _node_identity(co2, g_proto_pi)
-    js_set_prop(co2, cast[Ptr[uint8]]("nodeValue"), 9, sval)
-    js_set_prop(co2, cast[Ptr[uint8]]("data"), 4, sval)
-    js_set_prop(co2, cast[Ptr[uint8]]("textContent"), 11, sval)
-    js_set_prop(co2, cast[Ptr[uint8]]("length"), 6, \
-                js_number(cast[float64](js_str_bytelen(sval))))
+    js_set_prop(co2, cast[Ptr[uint8]]("__cd"), 4, sval)
     js_set_prop(co2, cast[Ptr[uint8]]("parentNode"), 10, js_null())
     cre_obj[ccid] = co2
     cre_n = ccid + 1
@@ -3540,6 +3537,125 @@ def _nd_arg_is(v: int32) -> int32:
     return 0
 
 
+# ---- CharacterData -----------------------------------------------------------
+# One backing field (__cd) behind data / nodeValue / textContent / length, plus
+# the five mutation methods and splitText. Offsets and counts are UTF-16 code
+# units, which is both what the DOM specifies and what our String.prototype
+# already models (js_str_u16_len / js_str_sub_u16 expose the interpreter's own
+# view, so the two can never disagree — "\u8cc7\u6599".length is 2 in both).
+def _cd_get(node: int32) -> int32:
+    v: int32 = js_get_prop(node, cast[Ptr[uint8]]("__cd"), 4)
+    if js_type_of(v) != TAG_STR:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    return v
+
+
+# Store new data and fire a MutationObserver characterData record.
+def _cd_set(node: int32, v: int32):
+    js_set_own(node, cast[Ptr[uint8]]("__cd"), 4, v)
+    if mreg_n != 0:
+        _mo_record_chardata(node)
+
+
+# Coerce an argument the way a DOMString parameter does: null becomes "null",
+# undefined becomes "undefined", 0 becomes "0" — MEASURED in chromium
+# (CharacterData-data.html asserts all three).
+def _cd_arg_str(i: int32) -> int32:
+    if js_arg_count() <= i:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    a: int32 = js_arg(i)
+    if js_type_of(a) == TAG_STR:
+        return a
+    if js_type_of(a) == TAG_NULL:
+        return js_new_string(cast[Ptr[uint8]]("null"), 4)
+    return js_new_string(js_str_bytes(a), cast[uint64](js_str_bytelen(a)))
+
+
+# Splice: data[0,off) + ins + data[off+count, len).
+def _cd_splice(node: int32, off: int32, count: int32, ins: int32) -> int32:
+    cur: int32 = _cd_get(node)
+    n: int32 = js_str_u16_len(cur)
+    if off > n or off < 0:
+        _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                      cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        return 1
+    if count < 0 or off + count > n:
+        count = n - off
+    head: int32 = js_str_sub_u16(cur, 0, off)
+    tail: int32 = js_str_sub_u16(cur, off + count, n)
+    _cd_set(node, _nd_concat(_nd_concat(head, ins), tail))
+    return 0
+
+
+def _chardata_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_CD_DATA_GET:
+        return _cd_get(thisv)
+    if rel == NID_CD_DATA_SET:
+        _cd_set(thisv, _cd_arg_str(0))
+        return js_undefined()
+    if rel == NID_CD_LEN_GET:
+        return js_number(cast[float64](js_str_u16_len(_cd_get(thisv))))
+    if rel == NID_CD_LEN_SET:
+        return js_undefined()                              # readonly
+    # Every remaining method takes at least one numeric offset. An arity that is
+    # too short is a TypeError, not an IndexSizeError (the WPT files check the
+    # distinction explicitly).
+    need: int32 = 2
+    if rel == NID_CD_APPENDD or rel == NID_TEXT_SPLIT:
+        need = 1
+    if rel == NID_CD_REPLACED:
+        need = 3
+    if js_arg_count() < need:
+        js_throw_type_error(cast[Ptr[uint8]]("not enough arguments"))
+        return js_undefined()
+    if rel == NID_CD_APPENDD:
+        cur: int32 = _cd_get(thisv)
+        _cd_set(thisv, _nd_concat(cur, _cd_arg_str(0)))
+        return js_undefined()
+    off: int32 = cast[int32](js_to_number(js_arg(0)))
+    if rel == NID_TEXT_SPLIT:
+        # text.splitText(offset): this keeps [0,offset), a NEW Text node with
+        # the remainder is inserted as this node's next sibling and returned.
+        cur2: int32 = _cd_get(thisv)
+        n2: int32 = js_str_u16_len(cur2)
+        if off < 0 or off > n2:
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        rest: int32 = js_str_sub_u16(cur2, off, n2)
+        _cd_set(thisv, js_str_sub_u16(cur2, 0, off))
+        newt: int32 = _cre_make_text(rest)
+        par2: int32 = _nd_parent(thisv)
+        if js_type_of(par2) == TAG_OBJ:
+            kids: int32 = _nd_kids(par2)
+            ix: int32 = _nd_child_index(par2, thisv)
+            ref: int32 = js_null()
+            if kids != 0 and ix >= 0 and ix + 1 < js_array_len(kids):
+                ref = js_array_get(kids, ix + 1)
+            _insert_before_v(par2, newt, ref)
+        return newt
+    if rel == NID_CD_SUBSTR:
+        cur3: int32 = _cd_get(thisv)
+        n3: int32 = js_str_u16_len(cur3)
+        cnt: int32 = cast[int32](js_to_number(js_arg(1)))
+        if off < 0 or off > n3:
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        if cnt < 0 or off + cnt > n3:
+            cnt = n3 - off
+        return js_str_sub_u16(cur3, off, off + cnt)
+    if rel == NID_CD_INSERTD:
+        _cd_splice(thisv, off, 0, _cd_arg_str(1))
+        return js_undefined()
+    if rel == NID_CD_DELETED:
+        _cd_splice(thisv, off, cast[int32](js_to_number(js_arg(1))), \
+                   js_new_string(cast[Ptr[uint8]](""), 0))
+        return js_undefined()
+    # NID_CD_REPLACED
+    _cd_splice(thisv, off, cast[int32](js_to_number(js_arg(1))), _cd_arg_str(2))
+    return js_undefined()
+
+
 def _child_parent_dispatch(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_PN_PREPEND or rel == NID_PN_REPLKIDS:
@@ -3685,6 +3801,15 @@ def _js_host_dispatch(id: int32) -> int32:
         g_dom_gen = g_dom_gen + 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
+    if rel >= NID_CD_DATA_GET and rel <= NID_TEXT_SPLIT:
+        return _chardata_dispatch(rel)
+    if rel == NID_TEXT_CTOR or rel == NID_COMMENT_CTOR:
+        cdv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            cdv = _cd_arg_str(0)
+        if rel == NID_TEXT_CTOR:
+            return _cre_make_text(cdv)
+        return _cre_make_chardata(cdv, 2, js_undefined())
     if rel == NID_CREATEPI:
         return _mount_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
@@ -4588,15 +4713,14 @@ def _js_host_dispatch(id: int32) -> int32:
         tval: int32 = js_new_string(&dom_txtbuf[0], 0)
         if js_arg_count() >= 1:
             tval = js_arg(0)
-        js_set_prop(tco, cast[Ptr[uint8]]("textContent"), 11, tval)
-        # a text node: nodeType 3 (TEXT_NODE), nodeName "#text", nodeValue == data.
+        # a text node: nodeType 3 (TEXT_NODE), nodeName "#text". data /
+        # nodeValue / textContent / length all read this one backing field
+        # through CharacterData.prototype's accessors — which is what makes
+        # React's `u.stateNode.nodeValue = …` visible through `.data`.
         js_set_prop(tco, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](3)))
         js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
-        js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, tval)
-        # `data` is the CharacterData alias React writes when it updates a text
-        # host (`u.stateNode.nodeValue = …` reads back through .data).
-        js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, tval)
+        js_set_prop(tco, cast[Ptr[uint8]]("__cd"), 4, tval)
         _node_identity(tco, g_proto_text)
         cre_obj[tcid] = tco
         cre_n = tcid + 1
@@ -5794,8 +5918,7 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeType"), 8, js_number(3.0))
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
-        js_set_prop(tnode, cast[Ptr[uint8]]("data"), 4, titlev)
-        js_set_prop(tnode, cast[Ptr[uint8]]("nodeValue"), 9, titlev)
+        js_set_prop(tnode, cast[Ptr[uint8]]("__cd"), 4, titlev)
         js_set_prop(tnode, cast[Ptr[uint8]]("textContent"), 11, titlev)
         _bare_append(titleel, tnode)
         _bare_append(headel, titleel)
@@ -6446,6 +6569,16 @@ def _brand_by_tag(o: int32):
     if ii >= 0 and g_iface_proto[ii] != 0:
         js_set_proto_v(o, g_iface_proto[ii])
 
+# Swap a DOM interface object's backing native for a real constructor, keeping
+# the prototype identity _dom_interface already established (so
+# `x instanceof Text` and `Text.prototype` both keep working).
+def _rebrand_ctor(proto: int32, nid: int32) -> int32:
+    c: int32 = js_new_native_fn(js_hbase + nid)
+    js_set_fn_prototype(c, proto)
+    js_set_prop(proto, cast[Ptr[uint8]]("constructor"), 11, c)
+    return c
+
+
 def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32:
     ctor: int32 = js_new_native_fn(js_hbase + NID_NODE_CTOR)
     js_global_set(name, nlen, ctor)
@@ -6566,8 +6699,18 @@ def _build_dom_interfaces():
     _attach_parentnode_mixin(g_proto_elem)
     chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
     _attach_childnode_mixin(chard)
+    _attach_chardata_natives(chard)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
+    js_set_prop(g_proto_text, cast[Ptr[uint8]]("splitText"), 9, \
+                js_new_native_fn(js_hbase + NID_TEXT_SPLIT))
+    # `new Text(data)` / `new Comment(data)` — the interface objects _dom_interface
+    # minted are generic NID_NODE_CTOR stubs, which threw "value is not a
+    # constructor"; point them at real factories instead.
+    js_global_set(cast[Ptr[uint8]]("Text"), 4, \
+                  _rebrand_ctor(g_proto_text, NID_TEXT_CTOR))
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
+    js_global_set(cast[Ptr[uint8]]("Comment"), 7, \
+                  _rebrand_ctor(g_proto_comm, NID_COMMENT_CTOR))
     g_proto_pi = _dom_interface(cast[Ptr[uint8]]("ProcessingInstruction"), 21, \
                                 chard)
     _attach_childnode_mixin(g_proto_pi)

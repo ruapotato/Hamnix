@@ -1260,6 +1260,35 @@ def _attach_node_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_ISDEFAULTNS))
 
 
+# CharacterData.prototype: data / nodeValue / textContent / length as accessors
+# over one backing field, plus the five mutation methods. Accessors, not data
+# properties, because the four names are ONE piece of state -- as own data
+# properties they drifted apart the moment anything wrote one of them.
+def _attach_chardata_natives(p: int32):
+    js_define_accessor(p, cast[Ptr[uint8]]("data"), 4, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("nodeValue"), 9, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("length"), 6, \
+                       js_new_native_fn(js_hbase + NID_CD_LEN_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_LEN_SET))
+    js_set_prop(p, cast[Ptr[uint8]]("substringData"), 13, \
+                js_new_native_fn(js_hbase + NID_CD_SUBSTR))
+    js_set_prop(p, cast[Ptr[uint8]]("appendData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_APPENDD))
+    js_set_prop(p, cast[Ptr[uint8]]("insertData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_INSERTD))
+    js_set_prop(p, cast[Ptr[uint8]]("deleteData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_DELETED))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceData"), 11, \
+                js_new_native_fn(js_hbase + NID_CD_REPLACED))
+
+
 # The ChildNode mixin: before / after / replaceWith. Per the DOM spec these live
 # on Element, CharacterData (Text/Comment/ProcessingInstruction) and
 # DocumentType — NOT on Node, Document or DocumentFragment, and WPT's
