@@ -4330,3 +4330,15 @@ bash scripts/test_installed_pkg_repo.sh
 # ACKs every accepted verb and the acks are required). INCONCLUSIVE (125),
 # never FAIL, when nothing was observed. ~8 min incl. builds, one QEMU.
 bash scripts/ci_run_gate.sh scripts/test_wakeup_latency.sh
+
+# Leak pass 15 — the mmap-VMA fork COW share, COUNTED. Three identical
+# u_mmap_fork runs with a `track origin` dump after each, so the assertion
+# lands on an INTER-RUN delta. An absolute born==died is deliberately NOT
+# asserted: cow_share_page takes a frame 0 -> 2 and the child's death returns
+# it to 1, so a live parent's frames read born-without-died forever and the
+# absolute form would be a permanent false red. A non-zero net is adjudicated
+# with `track org N`'s owner discriminator — a dead owner or a survivor its
+# live owner no longer maps is a LEAK; everything else is residency. Also
+# re-asserts pass 14's user-stack fix (arm 21 must close exactly) on a
+# workload unrelated to the one that found it. ~1 boot + builds, one QEMU.
+bash scripts/ci_run_gate.sh scripts/test_cow_vma_fork_origin.sh
