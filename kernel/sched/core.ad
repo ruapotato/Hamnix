@@ -39,6 +39,7 @@ from mm.page_alloc import (
 from mm.slab import kfree
 from mm.cow import (
     cow_boot_cr3, cow_refcount, cow_refs_added, cow_refs_dropped,
+    cow_ledger_dump,
 )
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
@@ -7901,6 +7902,12 @@ def mm_orphan_census() -> uint64:
     printk2("[census] declined to mark: %d huge leaves, %d identity PTEs\n",
             _cens_skip_huge, _cens_skip_ident)
     page_alloc_census_report(total)
+    # PER-ARM REFERENCE LEDGER (pass 13). Printed on EVERY census, including
+    # a zero-orphan one: the arm balances are the quantity a fix is validated
+    # against, and they are per-frame counts rather than a PagesInUse delta,
+    # so they survive the 6.4 pg/cycle run-to-run spread that makes a single
+    # before/after soak pair worthless.
+    cow_ledger_dump()
     # PASS-12 DETAIL PASS. The tally + four sample VAs that pass 11 shipped
     # proved cow_resolve_pte leaks; they could not say WHICH SPAN or WHOSE.
     # Dump every live task's spans and describe each orphan (VA, phys,

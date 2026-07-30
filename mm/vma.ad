@@ -117,8 +117,13 @@ from mm.page_alloc import (
     PA_SITE_VMA_FILE, PA_SITE_VMA_HUGE, PA_SITE_VMA_ANON,
     PA_SITE_VMA_SWAPIN, PA_SITE_VMA_GROW,
 )
-from mm.cow import cow_drop_page, cow_pte_bit, cow_boot_cr3, \
-    cow_ref_inc, cow_refcount
+from mm.cow import (
+    cow_drop_page, cow_pte_bit, cow_boot_cr3,
+    cow_ref_inc, cow_refcount, cow_set_arm,
+    COW_ARM_DROP_VMA_RANGE, COW_ARM_DROP_FORKED, COW_ARM_DROP_STRAYS,
+    COW_ARM_DROP_FILEMAP, COW_ARM_DROP_UNMAP, COW_ARM_DROP_PGC_FAIL,
+    COW_ARM_REFINC_PGC_HIT, COW_ARM_REFINC_PGC_RACE, COW_ARM_REFINC_PGC_PUB,
+)
 from mm.swap import (
     swap_out_page, swap_make_pte, swap_ready,
     swap_pte_is_swap, swap_pte_slot, swap_in_page,
@@ -1738,6 +1743,7 @@ def _vma_free_cow_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
                 # exactly what free_page would take — this is the release-only
                 # (_cow_release_forked_range) semantics for the non-buddy case,
                 # applied per-frame instead of per-range.
+                cow_set_arm(COW_ARM_DROP_VMA_RANGE)
                 last: int32 = cow_drop_page(phys)
                 if last != 0 and _pa_link_ok(phys) != 0:
                     free_page(phys)
@@ -1872,6 +1878,7 @@ def _cow_release_forked_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
                 # is returned, so a mis-set refcount alone can never push a
                 # region frame onto a buddy free list.
                 rc: uint64 = cow_refcount(phys)
+                cow_set_arm(COW_ARM_DROP_FORKED)
                 last: int32 = cow_drop_page(phys)
                 if last != 0 and rc == 1 and page_alloc_owns(phys) != 0 \
                         and task_phys_in_live_owner_run(phys) == 0:
@@ -1924,6 +1931,7 @@ def vma_free_cow_strays(slot: uint64, vlo: uint64, vhi: uint64,
                         and task_phys_in_live_owner_run(phys) == 0:
                     _vma_pte_raw_write(pml4, va, 0)
                     invlpg_one(va)
+                    cow_set_arm(COW_ARM_DROP_STRAYS)
                     cow_drop_page(phys)
                     free_page(phys)
                     n = n + 1
@@ -2140,6 +2148,7 @@ def _vma_node_free(slot: uint64, node: uint64, pml4_phys: uint64):
                     # exists to forbid (the next allocator hand-out of that
                     # PFN is then aliased by a stale user leaf).
                     _vma_pte_raw_write(pml4_phys, fsa, 0)
+                    cow_set_arm(COW_ARM_DROP_FILEMAP)
                     if cow_drop_page(fphys) != 0:
                         vma_pgc_drop_frame(fphys)
                         free_page(fphys)
@@ -4884,12 +4893,14 @@ def _vma_demand_fault_file_shared(slot: uint64, pml4_phys: uint64,
         # so teardown frees it only when the LAST mapper drops it, then
         # map the SAME frame here. Coherence is automatic — both VAs now
         # translate to the one physical page.
+        cow_set_arm(COW_ARM_REFINC_PGC_HIT)
         cow_ref_inc(phys)
         spinlock_unlock(&vma_pgc_lock)
         va_al: uint64 = page_va
         if elf_map_one_page(pml4_phys, va_al, phys, want_write,
                             _vma_nx_flag(prot)) < 0:
             # Couldn't install the PTE — release the ref we just took.
+            cow_set_arm(COW_ARM_DROP_PGC_FAIL)
             if cow_drop_page(phys) != 0:
                 vma_pgc_drop_frame(phys)
                 free_page(phys)
@@ -4921,12 +4932,14 @@ def _vma_demand_fault_file_shared(slot: uint64, pml4_phys: uint64,
     spinlock_lock(&vma_pgc_lock)
     existing: uint64 = _vma_pgc_lookup(f_marker, f_back, frd_off)
     if existing != 0:
+        cow_set_arm(COW_ARM_REFINC_PGC_RACE)
         cow_ref_inc(existing)
         spinlock_unlock(&vma_pgc_lock)
         free_page(newp)
         phys = existing
     else:
         # First publisher: refcount 1 (this single mapper) and record it.
+        cow_set_arm(COW_ARM_REFINC_PGC_PUB)
         cow_ref_inc(newp)
         if _vma_pgc_insert(f_marker, f_back, frd_off, newp) == 0:
             # Table full: fall back to a private (still correct for THIS
@@ -4937,6 +4950,7 @@ def _vma_demand_fault_file_shared(slot: uint64, pml4_phys: uint64,
             va_al2: uint64 = page_va
             if elf_map_one_page(pml4_phys, va_al2, newp, want_write,
                                 _vma_nx_flag(prot)) < 0:
+                cow_set_arm(COW_ARM_DROP_PGC_FAIL)
                 if cow_drop_page(newp) != 0:
                     free_page(newp)
                 return -1
@@ -4947,6 +4961,7 @@ def _vma_demand_fault_file_shared(slot: uint64, pml4_phys: uint64,
     va_al3: uint64 = page_va
     if elf_map_one_page(pml4_phys, va_al3, phys, want_write,
                         _vma_nx_flag(prot)) < 0:
+        cow_set_arm(COW_ARM_DROP_PGC_FAIL)
         if cow_drop_page(phys) != 0:
             vma_pgc_drop_frame(phys)
             free_page(phys)
@@ -6690,6 +6705,7 @@ def vma_release_brk_overlap(slot: uint64, vlo: uint64, vhi: uint64):
                     if (pte & VMA_PT_FLAG_P) != 0:
                         phys: uint64 = pte & VMA_PT_ADDR_MASK
                         if phys != 0:
+                            cow_set_arm(COW_ARM_DROP_UNMAP)
                             if cow_drop_page(phys) != 0:
                                 free_page(phys)
                         _vma_pte_raw_write(pml4, vaddr, 0)

@@ -50,6 +50,9 @@ from mm.page_alloc import (
 from mm.cow import (
     cow_share_page, cow_page_is_shared, cow_drop_page,
     cow_ref_inc, cow_boot_cr3,
+    cow_set_arm,
+    COW_ARM_SHARE_WX_RO, COW_ARM_SHARE_COW, COW_ARM_SHARE_WRITABLE,
+    COW_ARM_REFINC_OWNER, COW_ARM_REFINC_RESOLVE, COW_ARM_DROP_RESOLVE,
 )
 from kernel.printk.printk import (
     printk0, printk1, printk2, printk_set_level,
@@ -3322,6 +3325,7 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
             and (parent_pte & PT_FLAG_COW) == 0:
         ro_flags: uint64 = parent_pte & ~PT_ADDR_MASK
         cast[Ptr[uint64]](cslot)[0] = phys | ro_flags
+        cow_set_arm(COW_ARM_SHARE_WX_RO)
         cow_share_page(phys)
         return 0
 
@@ -3340,6 +3344,7 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
     # Account the new sharer. If the parent page was already COW
     # (refcount >= 2) this bumps it by one; otherwise it goes 0 -> 2
     # (parent + child).
+    cow_set_arm(COW_ARM_SHARE_COW)
     cow_share_page(phys)
 
     # The parent's old TLB entry was writable; flush it so the parent's
@@ -3410,6 +3415,7 @@ def _share_one_page(parent_pml4: uint64, child_pml4: uint64,
     cast[Ptr[uint64]](cslot)[0] = phys | shared_flags
     # The parent keeps its existing writable PTE untouched — we only
     # add a sharer. Account the new reference in the per-PFN table.
+    cow_set_arm(COW_ARM_SHARE_WRITABLE)
     cow_share_page(phys)
     return 0
 
@@ -3590,6 +3596,7 @@ def _vm_pin_range_locked(pml4_phys: uint64, vlo_in: uint64,
             return -1
         pte: uint64 = cast[Ptr[uint64]](pslot)[0]
         if (pte & PT_FLAG_P) != 0:
+            cow_set_arm(COW_ARM_REFINC_OWNER)
             cow_ref_inc(pte & PT_ADDR_MASK)
         vaddr = vaddr + PAGE_SIZE_4K
     return 0
@@ -3832,8 +3839,10 @@ def cow_resolve_pte(pte_slot: uint64, fault_va: uint64) -> int32:
     # write still takes the no-copy sole-owner branch above), and
     # _vma_free_cow_range's cow_drop_page 1 -> 0 still returns "last
     # holder", so ordinary VMA/brk teardown is byte-for-byte unchanged.
+    cow_set_arm(COW_ARM_REFINC_RESOLVE)
     cow_ref_inc(new_phys)
     # Drop our reference to the shared page.
+    cow_set_arm(COW_ARM_DROP_RESOLVE)
     cow_drop_page(old_phys)
     invlpg_one(page_va)
     return 1

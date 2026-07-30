@@ -33,7 +33,10 @@
 # large-kmalloc path in slab.ad uses order >0 for blocks > 2 KiB.
 
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
-from mm.cow import cow_boot_cr3, cow_refcount, cow_drop_page
+from mm.cow import (
+    cow_boot_cr3, cow_refcount, cow_drop_page,
+    cow_set_arm, COW_ARM_DROP_REGION,
+)
 from kernel.printk.printk import printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 # #mm-parity: reset a frame's struct-page descriptor (LRU membership,
@@ -2132,6 +2135,7 @@ def region_free_cow_safe(addr: uint64, size: uint64):
         frame: uint64 = addr + off
         if cow_refcount(frame) > 0:
             any_cow = 1
+            cow_set_arm(COW_ARM_DROP_REGION)
             cow_drop_page(frame)
         off = off + 4096
     if any_cow == 0:

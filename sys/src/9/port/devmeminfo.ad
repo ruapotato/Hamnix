@@ -49,6 +49,7 @@ from mm.page_alloc import (
 )
 from kernel.printk.printk import printk0, printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
+from mm.cow import cow_ledger_enable, cow_ledger_dump
 from mm.slab import (
     kmalloc_live_objects, kmalloc_live_slabs, kmalloc, kfree, km_set_site,
     KM_SITE_SELFTEST, KM_SITE_VFS, KM_SITE_UNKNOWN,
@@ -478,16 +479,29 @@ def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
 
 
 def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
+    # The COW reference ledger's PER-ARM split is armed by the same verbs as
+    # the page tracker: a leak hunt wants both, and a second knob is a second
+    # thing a soak script can forget. The two cumulative TOTALS stay
+    # unconditional (mm/cow.ad); only the per-call-site attribution is gated.
     if _mi_wmatch(line, n, "track on") != 0:
         if page_alloc_track_enable(1) == 0:
             return -1
+        cow_ledger_enable(1)
         return cast[int64](count)
     if _mi_wmatch(line, n, "track full") != 0:
         if page_alloc_track_enable(2) == 0:
             return -1
+        cow_ledger_enable(1)
         return cast[int64](count)
     if _mi_wmatch(line, n, "track off") != 0:
         page_alloc_track_enable(0)
+        cow_ledger_enable(0)
+        return cast[int64](count)
+    # Per-arm ledger on its own, without a census walk: this is the cheap
+    # per-cycle sample a soak slopes. O(arms), no page-table walk, no frame
+    # scan — so unlike `track census` it can be taken every cycle.
+    if _mi_wmatch(line, n, "track ledger") != 0:
+        cow_ledger_dump()
         return cast[int64](count)
     if _mi_wmatch(line, n, "track reset") != 0:
         page_alloc_track_reset()
