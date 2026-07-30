@@ -78,32 +78,35 @@ obody="$(awk '
 
 [ -n "$obody" ] || fail "task_free_owner_regions not found in $CORE"
 
-echo "$obody" | grep -q 'vma_restore_kernel_identity_range' \
-  || fail "task_free_owner_regions no longer restores kernel identity over the user stack before free_pages"
+# Strip comments before asserting: the previous version of this guard
+# grepped the raw body and MATCHED THE WORD INSIDE A COMMENT, so its
+# first assertion passed on prose after the call it was guarding had
+# already been deleted. Assert on code, never on commentary.
+ocode="$(echo "$obody" | sed 's/#.*$//')"
 
-# Order: the identity restore must precede free_pages of ustack_phys, so the
-# freed buddy frame is kernel-writable (US=0 identity) and carries no live
-# US=1 user mapping at the instant it returns to the free pool.
-zap_line="$(echo "$obody"  | grep -n 'vma_restore_kernel_identity_range' | head -1 | cut -d: -f1)"
-fpg_line="$(echo "$obody"  | grep -n 'free_pages(task_table\[slot\].ustack_phys' | head -1 | cut -d: -f1)"
-[ -n "$zap_line" ] && [ -n "$fpg_line" ] \
-  || fail "could not locate restore / free_pages lines in task_free_owner_regions"
-[ "$zap_line" -lt "$fpg_line" ] \
-  || fail "vma_restore_kernel_identity_range (line $zap_line) must precede free_pages of ustack_phys (line $fpg_line)"
+# The invariant here changed with leak pass 14, and the code documents why:
+# the decoupled user stack is NEVER identity-mapped, so there is no
+# US=1-low-identity alias to restore -- vma_restore_kernel_identity_range
+# is genuinely obsolete on this path. What replaced it is a STRICTER
+# requirement: the outgoing stack may have been COW-shared into a fork
+# child by vm_cow_share_all, so returning it with a raw free_pages() pools
+# the frame with stale per-PFN refcounts. That was the leak pass 14 fixed
+# (census orphans 191 -> 1).
+echo "$ocode" | grep -q 'ustack_free_cow_safe(' \
+  || fail "task_free_owner_regions must return the user stack through ustack_free_cow_safe (COW-aware), not a raw free"
 
-# The restore helper must write a US=0 kernel identity leaf (RW|P, NOT US),
-# not clear to 0 — clearing to 0 unmaps the frame in the live CR3 and the
-# next kernel alloc_pages write faults "not present".
-rbody="$(awk '
-  /^def vma_restore_kernel_identity_range\(/ { grab=1 }
-  grab && /^def / && !/^def vma_restore_kernel_identity_range\(/ { if (seen) exit }
+echo "$ocode" | grep -qE 'free_pages\(task_table\[slot\]\.ustack_phys' \
+  && fail "task_free_owner_regions returns ustack_phys via a RAW free_pages -- a COW-shared stack frame would be pooled with stale refcounts (the leak pass 14 bug)"
+
+# task_reap carries the same arm and the same requirement.
+rpbody="$(awk '
+  /^def task_reap\(/ { grab=1 }
+  grab && /^def / && !/^def task_reap\(/ { if (seen) exit }
   grab { print; seen=1 }
-' "$VMA")"
-[ -n "$rbody" ] || fail "vma_restore_kernel_identity_range not found in $VMA"
-echo "$rbody" | grep -qE 'vaddr \| 0x2 \| VMA_PT_FLAG_P' \
-  || fail "vma_restore_kernel_identity_range must write a US=0 kernel identity leaf (vaddr | RW | P)"
-echo "$rbody" | grep -q 'invlpg_one(vaddr)' \
-  || fail "vma_restore_kernel_identity_range must flush the TLB after rewriting the leaf"
+' "$CORE" | sed 's/#.*$//')"
+[ -n "$rpbody" ] || fail "task_reap not found in $CORE"
+echo "$rpbody" | grep -qE 'free_pages\(task_table\[slot\]\.ustack_phys' \
+  && fail "task_reap returns ustack_phys via a RAW free_pages -- same stale-refcount pooling bug"
 
 echo "[mm-zap] PASS: _vma_free_cow_range zaps + flushes the PTE before freeing the frame"
-echo "[mm-zap] PASS: task_free_owner_regions restores kernel identity over the user stack before free_pages"
+echo "[mm-zap] PASS: task_free_owner_regions + task_reap return the user stack COW-safely (no raw free_pages)"
