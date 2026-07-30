@@ -16,14 +16,22 @@
 # direction announces itself. c9585fd2 fixed ONE unresolved base (a `Ptr[T]`
 # local/parameter indexed `p[i]`); the very same arm still fell through for a
 # cast base, a call base, a struct-member base, and ssa_expr_sgn had no
-# ND_CAST arm at all.  Measured blast radius of that single missing base:
-# 360 instruction sites in 132 functions across 123 of 266 userland apps plus
-# 95 sites in 20 kernel functions.  The loud casualties were
+# ND_CAST arm at all.  MEASURED blast radius of that one missing base (LLVM IR
+# emitted at c9585fd2^ vs c9585fd2 for every app scripts/build_user.sh builds):
+# 271 instruction sites in 112 distinct functions, 684 sites counted across the
+# 123 of 266 shipped binaries that changed, plus 95 sites in 20 functions on the
+# kernel LLVM lane.  258 of the 265 changed COMPARES are provably benign (the
+# value is zero-extended from < 64 bits, so signed and unsigned agree); the
+# loud casualties were
 # lib/ed25519.ad::_car25519/_modL (`c: int64 = o[i] >> 16` on a `Ptr[int64]`
 # emitted `lshr`, so ed25519_verify rejected EVERY valid signature and /bin/hpm
 # refused its own correctly-signed index) and lib/ec/p256.ad::p256_ge (four
 # SIGNED compares on `Ptr[uint64]` 256-bit limbs -- wrong whenever a limb has
 # bit 63 set, i.e. about half of all P-256 field elements, in ssh/sshd).
+# Fixing the remaining sibling bases (this commit's siblings: cast value, cast
+# base, call base, Ptr[Struct] member) moved another 71 sites in 58 functions
+# across 112 apps -- almost all benign by range, which is the point: the
+# default was silently wrong everywhere and loud in exactly two places.
 #
 # WHY NOTHING CAUGHT IT: the differential fuzzer never generated signed
 # arithmetic through a pointer-typed parameter with a NEGATIVE value in range,
