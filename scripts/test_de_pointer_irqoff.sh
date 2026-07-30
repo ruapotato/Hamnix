@@ -162,8 +162,13 @@ wait_for "$HANDOFF_MARKER" "$BOOT_WAIT" || {
 # The kernel only composites the cursor once the DE owns the screen. Before
 # the rl5 flip there is no DE pointer path to measure, so a measurement taken
 # earlier would describe a different machine.
-wait_for "\[init\] entering runlevel 5" 60 \
-    || verdict_inconclusive "$VTAG" "never entered runlevel 5 -- the DE pointer path is not live"
+# Wait for the rl5 FLIP itself, not for an init log line: the flip is the
+# event that makes the kernel own the cursor, and its marker is stable
+# ("[scene_de] kernel scene compositor owns /dev/fb (rl5 flip)"). The init-side
+# wording varies between boots — one run printed "[init] entering runlevel 5"
+# and the next "rc.boot: entered runlevel 5", which cost a whole boot.
+wait_for "rl5 flip|entered runlevel 5|entering runlevel 5" 120 \
+    || verdict_inconclusive "$VTAG" "never reached the runlevel-5 flip -- the DE pointer path is not live"
 sleep 8
 
 ready=0
