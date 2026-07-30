@@ -1,0 +1,39 @@
+# /etc/shortwrite.hamsh — #464 silent-data-loss reproducer.
+#
+# Planted as /etc/hamsh.rc (HAMNIX_HAMSH_RC) by
+# scripts/test_install_short_write.sh, which boots hamsh AS init. It
+# drives the REAL installer path — the same /bin/install_rootfs_from_-
+# manifest that install.ad's install_distro_tree / install_package_repo /
+# install_home_skeleton run — against a manifest whose second row cannot
+# possibly land on disk (its parent path component is a regular file, so
+# ext4's mkdir -p walker refuses it).
+#
+# The whole point is WHERE the failure surfaces. The victim body is 4 MiB
+# = MAX_BODY, so the ctl frame exceeds the kernel's 4 MiB write bounce and
+# write(2) must chunk. Chunk 1 only STAGES the body (devblk prints
+# "install_file: streaming"); the -EIO arrives on the FINAL chunk, by
+# which time the syscall has already accumulated 4 MiB of "written" bytes.
+# Before the fix, write(2) discarded that errno and returned the positive
+# count, install_rootfs_from_manifest's `wn < 0` test passed, and it
+# printed "install: swblocker/victim (4194304 bytes)" and exited 0 having
+# written nothing.
+#
+# Markers the gate keys off are all prefixed [shortwrite].
+
+echo '[shortwrite] begin'
+
+# Format the whole scratch disk as one ext4 filesystem.
+echo '[shortwrite] mkfs_ext4 /dev/blk/vdb'
+mkfs_ext4 /dev/blk/vdb
+
+# Row 1 installs `swblocker` as a regular FILE; row 2 then tries to
+# install `swblocker/victim` underneath it.
+echo '[shortwrite] run install_rootfs_from_manifest'
+try {
+    install_rootfs_from_manifest /dev/blk/vdb /etc/shortwrite/sw.manifest
+    echo '[shortwrite] tool-exit: ZERO'
+} except {
+    echo '[shortwrite] tool-exit: NONZERO'
+}
+
+echo '[shortwrite] end'

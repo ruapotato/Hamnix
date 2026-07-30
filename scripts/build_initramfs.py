@@ -2328,6 +2328,40 @@ if os.environ.get("ENABLE_EXT4_LARGEDIR_TEST") == "1":
 if os.environ.get("ENABLE_EXT4_DIRGROW_TEST") == "1":
     FILES.append(("/etc/ext4-dirgrow-test", b"1\n"))
 
+# #464 SHORT-WRITE / silent-data-loss fixture. scripts/test_install_short_-
+# write.sh sets ENABLE_SHORTWRITE_TEST=1 to plant a manifest whose SECOND
+# row is guaranteed to fail INSIDE the kernel, on the LAST chunk of a
+# multi-chunk write(2).
+#
+# The shape matters, so spelling it out:
+#
+#   row 1  swblocker <- a tiny body.  Installs fine, as a regular FILE.
+#   row 2  swblocker/victim <- SW_SRC_BYTES of body. `swblocker` is a
+#          FILE, not a directory, so ext4's mkdir -p walker refuses the
+#          parent ("[ext4_mkdir_p] component is not a dir") and
+#          ext4_install_file_to_slot returns -1, which devblk reports as
+#          -EIO.
+#
+# SW_SRC_BYTES is >= install_rootfs_from_manifest's MAX_BODY (4 MiB), which
+# is what forces the multi-chunk write: the ctl frame is header + 4 MiB,
+# i.e. strictly larger than arch/x86/kernel/syscall.ad's UA_WR_BOUNCE_SZ
+# heap bounce, so _sysarm_write must loop. Chunk 1 stages the body and is
+# reported as fully consumed; the -EIO only appears on the FINAL chunk,
+# with wr_total already at 4 MiB. That is precisely the condition under
+# which write(2) used to discard the errno and return the positive count,
+# turning total data loss into "install: swblocker/victim (4194304 bytes)"
+# and exit 0. A single-chunk write would NOT reproduce it — the old code
+# propagated a first-chunk errno correctly.
+if os.environ.get("ENABLE_SHORTWRITE_TEST") == "1":
+    SW_SRC_BYTES = 4 * 1024 * 1024                  # == MAX_BODY
+    FILES.append(("/etc/shortwrite/blocker.bin", b"sw-blocker\n"))
+    FILES.append(("/etc/shortwrite/victim.bin",
+                  (b"HAMNIX-SHORTWRITE-VICTIM-PAYLOAD" * 131072)[:SW_SRC_BYTES]))
+    FILES.append(("/etc/shortwrite/sw.manifest",
+                  b"# #464 short-write fixture (see build_initramfs.py)\n"
+                  b"swblocker /etc/shortwrite/blocker.bin\n"
+                  b"swblocker/victim /etc/shortwrite/victim.bin\n"))
+
 # ext4 extent-FREE / no-leak self-test. scripts/test_ext4_extent_free.sh
 # sets ENABLE_EXT4EXTFREE_TEST=1 to plant /etc/ext4extfree-test.
 # init/main.ad detects the marker after the ext4 mount and calls
