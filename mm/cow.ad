@@ -208,6 +208,21 @@ COW_ARM_DROP_PGC_FAIL:    uint64 = 16  # vma: shared-mmap install failed, undo
 COW_ARM_DROP_VMA_RANGE_WX: uint64 = 17
 COW_ARM_DROP_FORKED_WX:    uint64 = 18
 
+# The general COW share (arm 2), split by WHICH RANGE vm_cow_share_all was
+# walking. Pass 14's origin tag proved arm 2 owns the entire leaked-frame
+# population (arm 1 closes at born==died exactly), and the burst is a
+# hamtermscene launch — the one app in the soak's pool that spawns a child, so
+# the one that runs this share at all. vm_cow_share_all shares THREE fixed
+# spans and the teardown that must drain them is assembled from separate,
+# individually-gated steps (task_reap step 0b for brk, step 0c for
+# image/interp/ustack), so "arm 2 leaks" still names a walk rather than a span.
+# Arm 2 stays the DEFAULT, which makes the split total and lossless: whatever
+# remains at arm 2 is the mmap-VMA fork path (vma_fork_copy), and a residual
+# arm-2 population is a real answer rather than a gap.
+COW_ARM_SHARE_COW_IMG:  uint64 = 19
+COW_ARM_SHARE_COW_BRK:  uint64 = 20
+COW_ARM_SHARE_COW_USTK: uint64 = 21
+
 _cow_ledger_on: uint64 = 0
 _cow_arm:       uint64 = 0
 _cow_arm_add:   Array[24, uint64]

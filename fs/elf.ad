@@ -52,6 +52,7 @@ from mm.cow import (
     cow_ref_inc, cow_boot_cr3,
     cow_set_arm,
     COW_ARM_SHARE_WX_RO, COW_ARM_SHARE_COW, COW_ARM_SHARE_WRITABLE,
+    COW_ARM_SHARE_COW_IMG, COW_ARM_SHARE_COW_BRK, COW_ARM_SHARE_COW_USTK,
     COW_ARM_REFINC_OWNER, COW_ARM_REFINC_RESOLVE, COW_ARM_DROP_RESOLVE,
 )
 from kernel.printk.printk import (
@@ -3344,7 +3345,11 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
     # Account the new sharer. If the parent page was already COW
     # (refcount >= 2) this bumps it by one; otherwise it goes 0 -> 2
     # (parent + child).
-    cow_set_arm(COW_ARM_SHARE_COW)
+    # Attribute this share to the SPAN vm_cow_share_all is currently walking
+    # (leak pass 14). Defaults to the unsplit arm 2 for every other caller —
+    # notably vma_fork_copy's mmap-VMA share — so the split is total and a
+    # residual arm-2 population is an answer, not a gap.
+    cow_set_arm(_elf_cow_share_arm)
     cow_share_page(phys)
 
     # The parent's old TLB entry was writable; flush it so the parent's
@@ -3352,6 +3357,17 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
     # has never run, so its TLB holds nothing for this CR3.
     invlpg_one(vaddr)
     return 0
+
+
+# Which span of vm_cow_share_all the general COW share is currently serving.
+# A pending global, exactly the cow_set_arm / pa_set_site pattern, and for the
+# same reason: threading it through vm_cow_share_range would change a public
+# signature in two modules for a debug knob. Costs one global load on a path
+# that already pays a CR3 reload per fork.
+# Literal 2 rather than COW_ARM_SHARE_COW: the x86 backend requires an integer
+# initializer for a global, and an imported constant is an Identifier. Kept in
+# sync by the reset assignments below, which DO use the named constant.
+_elf_cow_share_arm: uint64 = 2
 
 
 def vm_cow_share_range(parent_pml4: uint64, child_pml4: uint64,
@@ -3648,23 +3664,38 @@ def _vm_cow_share_all_locked(parent_pml4: uint64, child_pml4: uint64,
     #
     # Any region whose range is unset is skipped (same rules as
     # vm_fork_install_all). Returns 0 on success, -1 on OOM.
+    # Per-SPAN attribution for the origin tag (leak pass 14). Each of these
+    # three spans drains through a DIFFERENT, separately-gated teardown step
+    # (task_reap 0b for brk via vma_free_reserved_range; 0c for image / interp
+    # / ustack via vma_release_forked_range), so lumping them under one arm
+    # names a walk instead of a span. Restored to the default before returning
+    # so nothing downstream inherits a stale arm.
     if img_lo != 0 and img_hi > img_lo:
+        _elf_cow_share_arm = COW_ARM_SHARE_COW_IMG
         if vm_cow_share_range(parent_pml4, child_pml4,
                               img_lo, img_hi) < 0:
+            _elf_cow_share_arm = COW_ARM_SHARE_COW
             return -1
     if brk_lo != 0 and brk_max > brk_lo:
+        _elf_cow_share_arm = COW_ARM_SHARE_COW_BRK
         if vm_cow_share_range(parent_pml4, child_pml4,
                               brk_lo, brk_max) < 0:
+            _elf_cow_share_arm = COW_ARM_SHARE_COW
             return -1
     if ust_lo != 0 and ust_sz != 0:
+        _elf_cow_share_arm = COW_ARM_SHARE_COW_USTK
         if vm_cow_share_range(parent_pml4, child_pml4,
                               ust_lo, ust_lo + ust_sz) < 0:
+            _elf_cow_share_arm = COW_ARM_SHARE_COW
             return -1
     elif sp_fallback != 0:
+        _elf_cow_share_arm = COW_ARM_SHARE_COW_USTK
         sp_pg: uint64 = sp_fallback & ~cast[uint64](PAGE_SIZE_4K - 1)
         if vm_cow_share_range(parent_pml4, child_pml4,
                               sp_pg, sp_pg + PAGE_SIZE_4K) < 0:
+            _elf_cow_share_arm = COW_ARM_SHARE_COW
             return -1
+    _elf_cow_share_arm = COW_ARM_SHARE_COW
     # The COW share dropped RW on every page it touched in the PARENT's
     # (== caller's, == current) PML4. Each _cow_share_one_page already
     # invlpg'd its page, but a per-page invlpg can leave a stale
