@@ -2650,11 +2650,19 @@ def wklat_ctl(verb: int64) -> int32:
     #   2 = reset histogram + enable instrument
     #   3 = print report
     #   4 = disable instrument
+    # ACK every accepted verb. Without this a control write that is silently
+    # refused (a permission gate, a parse miss) looks exactly like a working
+    # one from userland, and the A/B measurement runs BOTH arms in the same
+    # configuration and reports "the fix makes no difference". That happened
+    # on this instrument's first run; the ack is what makes it impossible to
+    # repeat, and the gate requires the ack lines to be present.
     if verb == 0:
         wakeup_preempt_set_enabled(0)
+        printk0("[wklat] ack wakeup_preempt=0\n")
         return 1
     if verb == 1:
         wakeup_preempt_set_enabled(1)
+        printk0("[wklat] ack wakeup_preempt=1\n")
         return 1
     if verb == 2:
         wklat_enable(1)

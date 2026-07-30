@@ -2103,7 +2103,13 @@ def devproc_write(file_idx: uint32, buf: Ptr[uint8],
         # Matched BEFORE `pri` only for readability; the verbs do not collide.
         wkl_arg: int64 = _ctl_match_verb(buf, count, "wklat")
         if wkl_arg >= 0:
-            if task_is_hostowner(ctl_caller_uid) == 0:
+            # Privileged: it changes SYSTEM-WIDE scheduling behaviour, so an
+            # ordinary task must not be able to turn the fix off for everyone.
+            # uid 0 as well as the hostowner — the reproducer runs from a
+            # plain hamsh, which is root but is not the host owner, and a gate
+            # that cannot reach its own control surface measures nothing (the
+            # first run of this test silently ran BOTH arms with the fix on).
+            if task_is_hostowner(ctl_caller_uid) == 0 and ctl_caller_uid != 0:
                 set_current_errstr("ctl: permission denied")
                 return -1
             if _ctl_parse_signed(buf, count, cast[uint64](wkl_arg),
