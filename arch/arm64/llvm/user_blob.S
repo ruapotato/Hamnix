@@ -28,14 +28,26 @@
  * (`undefined reference to arm64_a10_blob_base/_size`). Arch-specific foreign
  * symbols get resolved in the ARCH LAYER (head.S), never declared in shared
  * Adder source.
+ *
+ * A11 UPDATE — ONE ARCHIVE INSTEAD OF ONE BLOB
+ * --------------------------------------------
+ * Through A10 the kernel carried exactly one image, so "load the user program"
+ * and "load THE blob" were the same operation and nothing in the lane could
+ * tell a by-NAME loader from a loader that ignores the name entirely. A11
+ * embeds `user_archive.bin` (built by scripts/pack_arm64_user_archive.py in
+ * build step 3a2): a magic + count + fixed-width name table + payloads, walked
+ * by init/main.ad's arm64_a11_load_named_arm64().
+ *
+ * The A10 rung keeps working unchanged because its member is still in there
+ * under the name "a10"; head.S now asks for it by name like everything else.
  */
 
     .section .rodata
     .balign 16
-    .globl arm64_a10_blob_start
-arm64_a10_blob_start:
-    .incbin "a10_user.bin"
-    .globl arm64_a10_blob_end
-arm64_a10_blob_end:
+    .globl arm64_a11_archive_start
+arm64_a11_archive_start:
+    .incbin "user_archive.bin"
+    .globl arm64_a11_archive_end
+arm64_a11_archive_end:
 
     .section .note.GNU-stack,"",%progbits

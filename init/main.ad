@@ -4710,7 +4710,15 @@ def arm64_do_syscall_arm64(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
         printk1("[arm64-llvm] EL0 write serviced (%d bytes to console)\n", a2)
         return a2
     elif nr == ARM64_LLVM_NR_READ:
-        return cast[uint64](0)          # no stdin on this lane -> EOF
+        # A11: a REAL read(2). Through A10 this arm returned 0 (EOF) because the
+        # lane had no input path at all, which made every EL0 program a banner
+        # printer. It now reads actual bytes off the PL011 receive FIFO.
+        if a0 != cast[uint64](0):
+            return cast[uint64](0) - cast[uint64](9)      # -EBADF: only stdin
+        printk1("[arm64-llvm] EL0 svc: read(fd=0, buf, len=%d) <- PL011\n", a2)
+        got: uint64 = arm64_a11_read_stdin_arm64(cast[Ptr[uint8]](a1), a2)
+        printk1("[arm64-llvm] EL0 read serviced (%d bytes from the PL011)\n", got)
+        return got
     elif nr == ARM64_LLVM_NR_EXIT or nr == ARM64_LLVM_NR_EXITGRP:
         arm64_llvm_el0_exit_code = cast[int64](a0)
         arm64_llvm_el0_exit_pending = 1
@@ -4880,37 +4888,20 @@ ARM64_A10_EXPECT_STATUS: int64 = 17        # 965649 % 256
 # and passes them in as ordinary AAPCS64 arguments.
 
 
-def arm64_a10_load_arm64(blob_base: uint64, blob_size: uint64) -> uint64:
-    # exec()-shaped image load: copy the embedded flat user image from the
-    # kernel's .rodata into its link VA inside the fine EL0-RW/EL0-X window. The
-    # crt0 zeroes .bss itself, so only the file-backed bytes are copied here.
-    src: Ptr[uint8] = cast[Ptr[uint8]](blob_base)
-    n: uint64 = blob_size
+def arm64_a10_load_arm64(arch_base: uint64, arch_size: uint64) -> uint64:
+    # exec()-shaped image load for the A10 rung. Since A11 this is a thin
+    # wrapper over the by-name archive walk: the A10 program is simply the
+    # member named "a10". Keeping the wrapper (rather than open-coding the load
+    # in head.S) preserves A10's own serial contract -- its gate asserts the
+    # loaded byte count against the on-disk image -- while there is now exactly
+    # ONE image-load implementation in the lane instead of two that could drift.
+    name: Ptr[uint8] = "a10"
+    n: uint64 = arm64_a11_load_named_arm64(arch_base, arch_size, name)
     if n == cast[uint64](0):
         printk0("A10: FAIL embedded user image is EMPTY (blob not linked in)\n")
         return cast[uint64](0)
-    if ARM64_A10_LOAD_VA + n >= ARM64_A10_WINDOW_END:
-        printk1("A10: FAIL user image too large (%d bytes) for the EL0 window\n", n)
-        return cast[uint64](0)
-    dst: Ptr[uint8] = cast[Ptr[uint8]](ARM64_A10_LOAD_VA)
-    i: uint64 = cast[uint64](0)
-    while i < n:
-        dst[i] = src[i]
-        i = i + cast[uint64](1)
-    # Read the image back through the EL0-RW mapping and checksum it, so a
-    # silently-failed copy is caught BEFORE we eret into garbage.
-    sum: uint64 = cast[uint64](0)
-    j: uint64 = cast[uint64](0)
-    while j < n:
-        sum = sum + cast[uint64](dst[j])
-        j = j + cast[uint64](1)
     printk2("A10: loaded EL0 user image: %d bytes -> 0x48010000 (byte-sum %d)\n",
-            n, sum)
-    # The A8 EL0 task already called exit(), latching the exit-pending flag; the
-    # A9 tasks cleared it the same way. Clear it again or the A10 program's very
-    # first write() would be mistaken for an exit.
-    arm64_llvm_el0_exit_pending = 0
-    arm64_llvm_el0_exit_code = 0
+            n, arm64_a11_last_bytesum)
     printk0("A10: running a REAL Adder-compiled EL0 program (not hand-written asm)\n")
     return n
 
@@ -4930,6 +4921,183 @@ def arm64_a10_verify_arm64() -> int64:
             arm64_llvm_el0_exit_code, ARM64_A10_EXPECT_STATUS)
     printk1("A10 PASS: checksum cross-checked (expected a10_checksum() = %d)\n",
             ARM64_A10_EXPECT_CHECKSUM)
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# A11 (docs/arm64_llvm_scoping.md): SEVERAL compiled EL0 images in an EMBEDDED
+# ARCHIVE, loaded BY NAME, plus a REAL read() on the PL011.
+#
+# A10 embedded exactly ONE image, so "load the user program" and "load THE blob"
+# were the same operation and no assertion in the lane could tell a by-name
+# loader from a loader that ignores the name. A11 embeds an archive
+# (scripts/pack_arm64_user_archive.py; arch/arm64/llvm/user_blob.S) of several
+# independently compiled Adder programs with a fixed-width name table, and this
+# is the walk that selects one. Combined with the read() below, that is the last
+# structural gap before a compiled `hamsh` can run on this lane: a shell needs to
+# NAME a program and to CONSUME input, and neither existed at A10.
+#
+# HONEST SCOPE: every member links at the same VA (user.lds) and they run one at
+# a time. This is "several programs, selectable by name", NOT several concurrently
+# resident address spaces -- that needs the per-task TTBR0 + demand-paging work
+# listed in the A9/A10 plans and is deliberately not claimed here.
+#
+# ADDITIVE + aarch64-only: called ONLY from arch/arm64/llvm/head.S and from
+# arm64_do_syscall_arm64 (itself aarch64-only). The x86 start_kernel() never
+# reaches any of it. As with A10, the archive bound symbols are NOT declared
+# `extern def` here -- init/main.ad is the SHARED kernel root and an extern here
+# becomes an undefined reference in the x86_64 link too. head.S resolves them.
+# ---------------------------------------------------------------------------
+ARM64_A11_MAGIC: uint64 = 0x5648435241313141   # 'A11ARCHV', little-endian
+ARM64_A11_NAME_LEN: uint64 = 16                # fixed-width name field
+ARM64_A11_ENT_LEN: uint64 = 32                 # name[16] + off u64 + size u64
+ARM64_A11_HDR_LEN: uint64 = 16                 # magic u64 + count u64
+ARM64_A11_MAX_MEMBERS: uint64 = 64             # sanity bound on a corrupt header
+
+# 8250 ports the aarch64 intrinsic layer routes to the PL011
+# (arch/arm64/llvm/intrinsics.S): LSR.DR reports FR.RXFE, RBR pops the DR.
+ARM64_A11_UART_RBR: int32 = 0x3f8
+ARM64_A11_UART_LSR: int32 = 0x3fd
+ARM64_A11_LSR_DR: int32 = 0x01
+# A BOUNDED wait. early_getc_polled() spins forever on LSR.DR, which is right
+# for an interactive console and wrong for a boot that must terminate: with no
+# one typing, an unbounded spin turns "read returned nothing" into a hung gate
+# that reports a timeout instead of a verdict. Bounded, a starved read is a
+# SHORT READ the program can observe and report.
+ARM64_A11_READ_SPIN_LIMIT: uint64 = 4000000
+
+# Byte-sum of the most recently loaded member, read back THROUGH the EL0-RW
+# mapping. Published so the A10 wrapper can keep printing its historical line
+# without a second copy of the load logic.
+arm64_a11_last_bytesum: uint64 = 0
+
+
+def arm64_a11_read_stdin_arm64(buf: Ptr[uint8], maxlen: uint64) -> uint64:
+    # Line-oriented read(2) for the aarch64 lane, byte-at-a-time off the PL011
+    # through the SAME inb() path the kernel's own early_getc_polled() uses --
+    # the receive half of the A4 trick that gave this lane printk. Returns at a
+    # newline (kept in the buffer, like a tty in canonical mode), at maxlen, or
+    # when the bounded wait expires.
+    n: uint64 = cast[uint64](0)
+    while n < maxlen:
+        spins: uint64 = cast[uint64](0)
+        while (inb(ARM64_A11_UART_LSR) & ARM64_A11_LSR_DR) == 0:
+            spins = spins + cast[uint64](1)
+            if spins > ARM64_A11_READ_SPIN_LIMIT:
+                return n                # short read, never a hang
+        c: int32 = inb(ARM64_A11_UART_RBR)
+        if c == 13:                     # CR -> LF, so a CRLF feeder behaves
+            c = 10
+        buf[n] = cast[uint8](c & 0xFF)
+        n = n + cast[uint64](1)
+        if c == 10:
+            return n
+    return n
+
+
+def arm64_a11_put_name_arm64(name: Ptr[uint8]):
+    k: uint64 = cast[uint64](0)
+    while k < ARM64_A11_NAME_LEN:
+        if name[k] == cast[uint8](0):
+            return
+        early_putc(cast[int32](name[k]))
+        k = k + cast[uint64](1)
+
+
+def arm64_a11_load_named_arm64(arch_base: uint64, arch_size: uint64,
+                               name: Ptr[uint8]) -> uint64:
+    # Walk the embedded archive's name table, find `name`, and copy THAT member
+    # into the EL0 window at its link VA (an exec()-shaped image load, same as
+    # A10's). Returns the image size, or 0 if the name is not present -- a MISS
+    # must be observable, not a silent load of whatever was first.
+    if arch_size < ARM64_A11_HDR_LEN:
+        printk0("A11: FAIL embedded archive is truncated (no header)\n")
+        return cast[uint64](0)
+    hdr: Ptr[uint64] = cast[Ptr[uint64]](arch_base)
+    if hdr[0] != ARM64_A11_MAGIC:
+        printk0("A11: FAIL embedded archive magic mismatch (blob not linked in?)\n")
+        return cast[uint64](0)
+    count: uint64 = hdr[1]
+    if count == cast[uint64](0) or count > ARM64_A11_MAX_MEMBERS:
+        printk1("A11: FAIL archive member count %d is implausible\n", count)
+        return cast[uint64](0)
+    # length of the requested name (bounded by the fixed-width name field)
+    nlen: uint64 = cast[uint64](0)
+    while nlen < ARM64_A11_NAME_LEN:
+        if name[nlen] == cast[uint8](0):
+            break
+        nlen = nlen + cast[uint64](1)
+    i: uint64 = cast[uint64](0)
+    while i < count:
+        ent: uint64 = arch_base + ARM64_A11_HDR_LEN + i * ARM64_A11_ENT_LEN
+        nm: Ptr[uint8] = cast[Ptr[uint8]](ent)
+        hit: int64 = 1
+        k: uint64 = cast[uint64](0)
+        while k < nlen:
+            if nm[k] != name[k]:
+                hit = 0
+                break
+            k = k + cast[uint64](1)
+        # Require the stored name to END here too, or "sum" would match "summer".
+        if hit == 1:
+            if nlen < ARM64_A11_NAME_LEN:
+                if nm[nlen] != cast[uint8](0):
+                    hit = 0
+        if hit == 1:
+            e: Ptr[uint64] = cast[Ptr[uint64]](ent + ARM64_A11_NAME_LEN)
+            off: uint64 = e[0]
+            size: uint64 = e[1]
+            if size == cast[uint64](0) or off + size > arch_size:
+                printk2("A11: FAIL member offset/size out of range (off=%d size=%d)\n",
+                        off, size)
+                return cast[uint64](0)
+            if ARM64_A10_LOAD_VA + size >= ARM64_A10_WINDOW_END:
+                printk1("A11: FAIL member too large (%d bytes) for the EL0 window\n", size)
+                return cast[uint64](0)
+            src: Ptr[uint8] = cast[Ptr[uint8]](arch_base + off)
+            dst: Ptr[uint8] = cast[Ptr[uint8]](ARM64_A10_LOAD_VA)
+            j: uint64 = cast[uint64](0)
+            sum: uint64 = cast[uint64](0)
+            while j < size:
+                dst[j] = src[j]
+                j = j + cast[uint64](1)
+            # Read back THROUGH the EL0-RW mapping so a silently-failed copy is
+            # caught before we eret into garbage.
+            j = cast[uint64](0)
+            while j < size:
+                sum = sum + cast[uint64](dst[j])
+                j = j + cast[uint64](1)
+            arm64_a11_last_bytesum = sum
+            printk0("A11: loaded EL0 image by name '")
+            arm64_a11_put_name_arm64(name)
+            printk2("' (%d bytes, byte-sum %d) -> 0x48010000\n", size, sum)
+            # The previous EL0 task exited, latching the exit-pending flag; clear
+            # it or this program's first write() is misread as an exit.
+            arm64_llvm_el0_exit_pending = 0
+            arm64_llvm_el0_exit_code = 0
+            return size
+        i = i + cast[uint64](1)
+    printk0("A11: load-by-name MISS for '")
+    arm64_a11_put_name_arm64(name)
+    printk0("' (no such member)\n")
+    return cast[uint64](0)
+
+
+def arm64_a11_report_arm64(name: Ptr[uint8]) -> int64:
+    # Report the named program's observed exit status. Deliberately NOT compared
+    # against a constant baked in here: A10 already carries that pattern and its
+    # gate has to spend assertions defending the constant from going stale. For
+    # A11 the ORACLE lives in the gate, which compiles the SAME .ad for x86-64,
+    # feeds it the SAME stdin, and requires the aarch64 run to agree -- so there
+    # is no in-kernel expectation to rot.
+    if arm64_llvm_el0_exit_pending == 0:
+        printk0("A11: FAIL program '")
+        arm64_a11_put_name_arm64(name)
+        printk0("' never reached exit()\n")
+        return 0
+    printk0("A11: program '")
+    arm64_a11_put_name_arm64(name)
+    printk1("' exited, status=%d\n", arm64_llvm_el0_exit_code)
     return 1
 
 
