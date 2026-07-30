@@ -86,7 +86,7 @@ from fs.fcache import fcache_dcache_bump_gen
 from sys.src.port9.port.devsrv import devsrv_init
 # V2.75: real heap allocator. kzalloc gives us a zeroed region; kfree
 # returns it to the slab / page allocator.
-from mm.slab import kzalloc, kfree
+from mm.slab import kzalloc, kfree, km_set_site, KM_SITE_PGRP
 # 9P connection lifecycle. A SRV-kind mount entry is the namespace-side
 # OWNER of an in-kernel 9P connection (keyed by srvfd in 9p_client.ad's
 # p9_conns table). Cloning a SRV entry across rfork(RFNAMEG) adds an
@@ -1005,6 +1005,7 @@ def pgrp_init():
         # kzalloc returns zero-filled storage; stamp ref to the
         # sentinel value so do_exit underflow paths can't free it,
         # then plant the default namespace.
+        km_set_site(KM_SITE_PGRP)
         addr: uint64 = kzalloc(PGRP_SIZE)
         if addr != 0:
             pgrp_root_addr = addr
@@ -1100,6 +1101,7 @@ def pgrp_alloc() -> uint64:
     # zeroed region, so mtab is empty and mnt_count==0 already; we
     # just stamp ref=1. Returns 0 on allocation failure (callers
     # surface as -EAGAIN).
+    km_set_site(KM_SITE_PGRP)
     addr: uint64 = kzalloc(PGRP_SIZE)
     if addr == 0:
         return 0

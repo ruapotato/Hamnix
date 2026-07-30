@@ -192,6 +192,13 @@ KM_SITE_BLOCK:    uint64 = 8   # block layer (ahci / nvme / xhci)
 KM_SITE_SND:      uint64 = 9   # sound
 KM_SITE_TMPFS:    uint64 = 10  # tmpfs metadata
 KM_SITE_SELFTEST: uint64 = 11  # in-kernel selftest probes
+# Appended by leak pass 16. Both sit squarely on the DE TERMINAL's own fork
+# path — hamtermscene spawns /bin/hamsh over pipe Chans, and every fork clones
+# a Pgrp — and both were reporting as KM_SITE_UNKNOWN, which is the one bucket
+# whose growth cannot be acted on. A blind spot on the exact workload the leak
+# hunt is pointed at is worth two ids.
+KM_SITE_PIPE:     uint64 = 12  # fs/pipe.ad ring buffers (PIPE_CAP each)
+KM_SITE_PGRP:     uint64 = 13  # sys/../chan.ad Pgrp namespaces (per fork)
 
 # Mode: 0 = off, 1 = per-object site attribution armed.
 _km_trk_mode:      uint64 = 0
