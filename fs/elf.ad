@@ -44,7 +44,7 @@
 from mm.memblock import memblock_alloc, memblock_region_top
 from mm.page_alloc import (
     alloc_page, alloc_pages, region_alloc,
-    pa_set_site, pa_set_tag,
+    pa_set_site, pa_set_tag, pa_set_owner,
     PA_SITE_PGTABLE, PA_SITE_FORK_COPY, PA_SITE_COW_RESOLVE,
 )
 from mm.cow import (
@@ -3771,6 +3771,15 @@ def cow_resolve_pte(pte_slot: uint64, fault_va: uint64) -> int32:
     # it, repoint this task's PTE at the copy (writable, COW cleared),
     # and decrement the old page's refcount.
     pa_set_site(PA_SITE_COW_RESOLVE)
+    # RECORD THE FAULTING TASK, not just the faulting VA. A VA alone cannot
+    # separate "a dead task's teardown missed this frame" from "a live task
+    # unmapped it and lost it" — the two need opposite fixes, and eleven
+    # passes could not tell them apart. The orphan census reads this back
+    # (mm/page_alloc.ad::page_alloc_orphan_owner) and reports whether the
+    # slot is still live. Cross-module call; Adder merges all modules into
+    # one symbol table, and core.ad already imports fs.elf so an import
+    # here would close a cycle.
+    pa_set_owner(current_idx_get())
     pa_set_tag(fault_va)
     new_phys: uint64 = alloc_page()
     if new_phys == 0:

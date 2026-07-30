@@ -808,6 +808,87 @@ def page_alloc_census_orphans(site: uint64) -> uint64:
     return _pa_orphans[site]
 
 
+# --- ORPHAN DETAIL (the pass-12 question: WHICH SPAN, and WHOSE?) -----
+#
+# page_alloc_orphan_sample() names a leaking VA, which is one step short of
+# an actionable statement: a bare VA cannot say whether the frame belonged
+# to a task that has since died (so a TEARDOWN missed it) or to one that is
+# still running (so the leak is in an IN-LIFE unmap and no teardown fix can
+# ever close it). Those need different fixes, and pass 11 could not tell
+# them apart.
+#
+# So collect the whole tuple in ONE sweep — VA, phys, and the OWNING TASK
+# SLOT recorded at allocation time (cow_resolve_pte now pa_set_owner()s the
+# faulting task). kernel/sched/core.ad::_mm_census_classify turns that into
+# "pid 6, still live, inside [image_lo,image_hi)" or "slot 9, DEAD".
+#
+# One sweep, not three: page_alloc_orphan_sample is O(frames) PER SAMPLE,
+# and asking it for 16 samples x 3 fields would be 48 full scans of a
+# 512 K-frame table on a `track census` that already walks every page table.
+PA_ORPH_CAP: uint64 = 16
+_pa_orph_n:     uint64 = 0
+_pa_orph_va:    Array[16, uint64]
+_pa_orph_phys:  Array[16, uint64]
+_pa_orph_owner: Array[16, uint64]
+
+
+def page_alloc_orphan_collect(site: uint64) -> uint64:
+    # Fill the orphan-detail arrays for `site` (up to PA_ORPH_CAP entries)
+    # and return how many were collected. Uses the SAME orphan predicate as
+    # page_alloc_census_sweep, so a frame counted there is a frame described
+    # here — a detail list that disagreed with the tally would be worse than
+    # none at all.
+    _pa_orph_n = 0
+    if _pa_trk_site == 0 or _pa_reach_bm == 0:
+        return 0
+    if site >= PA_SITE_MAX:
+        return 0
+    p: uint64 = 0
+    while p < _pa_trk_frames:
+        if _pa_orph_n >= PA_ORPH_CAP:
+            return _pa_orph_n
+        if cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0]) == site:
+            reach: uint64 = 0
+            if p < _pa_reach_frames:
+                reach = cast[uint64](
+                    cast[Ptr[uint8]](_pa_reach_bm + (p >> 3))[0]) \
+                    & (cast[uint64](1) << (p & 7))
+            if reach == 0 and page_alloc_owns(p << 12) != 0:
+                k: uint64 = _pa_orph_n
+                _pa_orph_phys[k] = p << 12
+                _pa_orph_va[k] = 0
+                if _pa_trk_tag != 0:
+                    _pa_orph_va[k] = \
+                        cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0]
+                _pa_orph_owner[k] = 0
+                if _pa_trk_meta != 0:
+                    _pa_orph_owner[k] = cast[uint64](
+                        cast[Ptr[uint32]](_pa_trk_meta + (p << 2))[0]) >> 4
+                _pa_orph_n = k + 1
+        p = p + 1
+    return _pa_orph_n
+
+
+def page_alloc_orphan_va(k: uint64) -> uint64:
+    if k >= _pa_orph_n:
+        return 0
+    return _pa_orph_va[k]
+
+
+def page_alloc_orphan_phys(k: uint64) -> uint64:
+    if k >= _pa_orph_n:
+        return 0
+    return _pa_orph_phys[k]
+
+
+def page_alloc_orphan_owner(k: uint64) -> uint64:
+    # Task slot + 1 as recorded by pa_set_owner at allocation time; 0 when
+    # the site does not record an owner (or `track full` was not armed).
+    if k >= _pa_orph_n:
+        return 0
+    return _pa_orph_owner[k]
+
+
 def page_alloc_orphan_sample(site: uint64, k: uint64) -> uint64:
     # The k'th ORPHANED frame's recorded tag (the faulting VA in `full`
     # mode) for `site`. This is the payoff: it names the VA SPAN that is

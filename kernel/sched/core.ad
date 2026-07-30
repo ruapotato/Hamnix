@@ -28,6 +28,9 @@ from mm.page_alloc import (
     PA_SITE_KSTACK, PA_SITE_USTACK, PA_SITE_PML4, PA_SITE_SELFTEST,
     page_alloc_census_begin, page_alloc_census_mark,
     page_alloc_census_sweep, page_alloc_census_report,
+    page_alloc_census_orphans, PA_SITE_COW_RESOLVE,
+    page_alloc_orphan_collect, page_alloc_orphan_va,
+    page_alloc_orphan_phys, page_alloc_orphan_owner,
 )
 from mm.slab import kfree
 from mm.cow import cow_boot_cr3
@@ -35,7 +38,9 @@ from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_off
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
 # user stack at CPL=0, so the stores need RFLAGS.AC=1 under CR4.SMAP=1.
 from mm.uaccess import _ua_stac, _ua_clac, put_user_32
-from kernel.printk.printk import printk0, printk1, printk2, printk_set_level
+from kernel.printk.printk import (
+    printk0, printk1, printk2, printk3, printk_set_level,
+)
 from drivers.tty.serial.early_8250 import (
     PRINTK_LEVEL_EMERG, PRINTK_LEVEL_NOTICE,
 )
@@ -7439,6 +7444,118 @@ def _mm_census_walk_task(su: uint64):
     local_irq_restore(irq)
 
 
+def _mm_census_dump_spans():
+    # Print every live USER task's owner spans, ONCE per census.
+    #
+    # This is what makes an orphan VA actionable OFFLINE. The census reports
+    # a faulting VA; classifying it needs [image_lo,image_hi),
+    # [interp_lo,interp_hi), [ustack_lo,+sz) and [brk_base,brk_max) for the
+    # task that owned it — and if that task has already been reaped (which is
+    # the interesting case: a teardown missed the frame) those fields are
+    # gone by the time anybody reads the log. Dumping the spans of every
+    # SURVIVING task at least pins the layout the dead sibling shared, since
+    # a fork child inherits its parent's spans verbatim.
+    i: uint64 = 0
+    while i < NTASKS:
+        if task_table[i].state != STATE_FREE and task_table[i].is_user != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2] slot %d pid %d cr3=%p\n",
+                    i, task_table[i].pid, task_table[i].cr3)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2]   slot %d image  %p .. %p\n",
+                    i, task_table[i].image_lo, task_table[i].image_hi)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2]   slot %d interp %p .. %p\n",
+                    i, task_table[i].interp_lo, task_table[i].interp_hi)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2]   slot %d ustack %p +%p\n",
+                    i, task_table[i].ustack_lo, task_table[i].ustack_sz)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2]   slot %d brk    %p .. %p\n",
+                    i, task_table[i].brk_base, task_table[i].brk_max)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2]   slot %d ownphys img=%p ust=%p\n",
+                    i, task_table[i].image_phys, task_table[i].ustack_phys)
+        i = i + 1
+
+
+def _mm_census_span_of(va: uint64) -> uint64:
+    # Classify a leaked VA against every LIVE task's spans. Returns a packed
+    # (slot << 8) | kind, or 0 when NO live task claims the address — which
+    # is itself the informative answer: the owner is gone, so the frame
+    # escaped a TEARDOWN rather than an in-life unmap.
+    #
+    #   kind 1 image   2 interp   3 ustack prefix   4 brk   5 VmaNode
+    i: uint64 = 0
+    while i < NTASKS:
+        if task_table[i].state != STATE_FREE and task_table[i].is_user != 0:
+            il: uint64 = task_table[i].image_lo
+            if il != 0 and va >= il and va < task_table[i].image_hi:
+                return (i << 8) | 1
+            nl: uint64 = task_table[i].interp_lo
+            if nl != 0 and va >= nl and va < task_table[i].interp_hi:
+                return (i << 8) | 2
+            ul: uint64 = task_table[i].ustack_lo
+            if ul != 0 and va >= ul and va < ul + task_table[i].ustack_sz:
+                return (i << 8) | 3
+            bl: uint64 = task_table[i].brk_base
+            if bl != 0 and va >= bl and va < task_table[i].brk_max:
+                return (i << 8) | 4
+            # VmaNode cover. Cross-module call into mm/vma.ad (no import:
+            # mm.vma imports core, so an import here would close a cycle;
+            # Adder merges all modules into one symbol table).
+            if vma_find(i, va) != 0:
+                return (i << 8) | 5
+        i = i + 1
+    return 0
+
+
+def _mm_census_classify(site: uint64):
+    # THE PASS-12 QUESTION, answered in the census's own output: for each
+    # orphaned frame at `site`, which SPAN does its recorded fault VA belong
+    # to, and is the task that made the copy still alive?
+    n: uint64 = page_alloc_orphan_collect(site)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[cens2] site %d: describing %d orphan(s)\n", site, n)
+    k: uint64 = 0
+    while k < n:
+        va: uint64 = page_alloc_orphan_va(k)
+        ow: uint64 = page_alloc_orphan_owner(k)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[cens2] orphan[%d] va=%p phys=%p\n",
+                k, va, page_alloc_orphan_phys(k))
+        # OWNER LIVENESS. pa_set_owner records slot+1 at cow_resolve_pte
+        # time. A DEAD owner means a teardown missed the frame; a LIVE owner
+        # means the task itself dropped the mapping and lost the page, which
+        # no teardown fix could ever reach.
+        if ow == 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk1("[cens2] orphan[%d] owner: NOT RECORDED\n", k)
+        else:
+            os: uint64 = ow - 1
+            olive: uint64 = 0
+            opid: uint64 = 0
+            if os < NTASKS and task_table[os].state != STATE_FREE:
+                olive = 1
+                opid = task_table[os].pid
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2] orphan[%d] owner slot=%d live=%d\n",
+                    k, os, olive)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[cens2] orphan[%d] owner pid=%d\n", k, opid)
+        c: uint64 = _mm_census_span_of(va)
+        if c == 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk1("[cens2] orphan[%d] span: UNACCOUNTED (no live task"
+                    " claims this VA — its owner is gone)\n", k)
+        else:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2] orphan[%d] span: slot=%d kind=%d"
+                    " (1=image 2=interp 3=ustack 4=brk 5=vma)\n",
+                    k, c >> 8, c & 255)
+        k = k + 1
+
+
 def mm_orphan_census() -> uint64:
     # Mark-and-sweep reachability census over the WHOLE system: which
     # tracked frames are no longer mapped by any live task?
@@ -7479,6 +7596,14 @@ def mm_orphan_census() -> uint64:
     printk2("[census] declined to mark: %d huge leaves, %d identity PTEs\n",
             _cens_skip_huge, _cens_skip_ident)
     page_alloc_census_report(total)
+    # PASS-12 DETAIL PASS. The tally + four sample VAs that pass 11 shipped
+    # proved cow_resolve_pte leaks; they could not say WHICH SPAN or WHOSE.
+    # Dump every live task's spans and describe each orphan (VA, phys,
+    # owning slot, owner liveness, span match) so the next question is
+    # answered from the log rather than from another soak.
+    if total != 0:
+        _mm_census_dump_spans()
+        _mm_census_classify(PA_SITE_COW_RESOLVE)
     return total
 
 
