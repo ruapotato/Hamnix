@@ -4576,3 +4576,12 @@ bash scripts/test_cow_hamterm_origin.sh
 # reported success and failed at the CALL, and burned a registry slot per
 # redefinition) and the 127-byte `alias` name truncation.
 bash scripts/test_hamsh_percmd_floor_host.sh
+
+# LLVM-lane IR validity + the 278/278 lane ratchet. No QEMU, ~90 s. Runs the
+# emitted IR through `opt -passes=verify` — the check clang SKIPS when it
+# ingests textual .ll — and requires hambrowse and js to emit with zero SSA
+# bails. Added 2026-07-30 after raising SSA_BB_MAX past ssa_llvm.ad's
+# separately-spelled LL_BB_MAX made phi emission silently drop operands from
+# blocks >= 1024, producing invalid IR that clang answered with a SIGSEGV in
+# SimplifyCFG rather than a diagnostic. Nothing in the lane checked IR validity.
+bash scripts/test_llvm_ir_verify_host.sh

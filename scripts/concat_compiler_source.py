@@ -350,6 +350,11 @@ HOST_BUFFER_OVERRIDES = {
 }
 
 
+# Carries the host SSA_BB_MAX across the per-module override calls (ssa.ad is
+# concatenated before its three siblings, so it is seen first).
+_HOST_BB = [None]
+
+
 def apply_host_buffer_overrides(mod, text):
     """For the HOST driver build, scale a shared module's buffers up to
     whole-TREE size. Each (small -> large) pair MUST appear exactly once in
@@ -382,6 +387,40 @@ def apply_host_buffer_overrides(mod, text):
     # units), silently corrupting adjacent .bss. This exact bug (tok_is_float
     # missing from the list) forced ~13 units to the seed. Fail loudly if any
     # `tok_*`/`nd_*` array is still 65536-sized after the overrides ran.
+    # Guard the BLOCK-INDEXED family the same way. SSA_BB_MAX sizes ~24 arrays
+    # across four modules AND is shadowed by two independently-spelled sibling
+    # constants (ssa_opt.ad's SSA_BB_MAX_LOCAL, ssa_llvm.ad's LL_BB_MAX). Raising
+    # SSA_BB_MAX while one of those stays at 1024 is NOT a clean under-use:
+    # llvm_bb_live[] is the liveness map phi emission consults, and a block id
+    # past LL_BB_MAX reads as DEAD, so phi operands from it are silently DROPPED
+    # — the emitter then writes phis with missing/zero incoming entries. That IR
+    # is invalid, and clang-19 SIGSEGVs on it in SimplifyCFG instead of
+    # diagnosing it. This exact pairing bit once (2026-07-30). If SSA_BB_MAX was
+    # raised for the host build, fail loudly on any sibling constant or
+    # block-indexed array left at the on-device 1024.
+    if mod in ("ssa.ad", "ssa_opt.ad", "ssa_emit.ad", "ssa_llvm.ad"):
+        m = re.search(r"\nSSA_BB_MAX: uint32 = (\d+)", text)
+        host_bb = None
+        if m:
+            host_bb = int(m.group(1))
+            _HOST_BB[0] = host_bb
+        host_bb = _HOST_BB[0]
+        if host_bb is not None and host_bb != 1024:
+            stale = re.findall(
+                r"\n(SSA_BB_MAX_LOCAL|LL_BB_MAX): uint32 = 1024", text)
+            stale += re.findall(
+                r"\n(sb_[a-z0-9_]*|sccp_b[a-z0-9_]*|sccp_e[01]|licm_in_loop"
+                r"|se_bid_off|llvm_bb_live): Array\[1024,", text)
+            if stale:
+                raise SystemExit(
+                    "[concat] ERROR: host build raised SSA_BB_MAX to %d but left "
+                    "block-indexed name(s) at 1024 in %s: %s. A sibling CONSTANT "
+                    "left small makes phi emission drop operands from blocks past "
+                    "it (invalid IR, clang SIGSEGV); a sibling ARRAY left small is "
+                    "an out-of-bounds write. Add it to "
+                    "HOST_BUFFER_OVERRIDES['%s']."
+                    % (host_bb, mod, ", ".join(sorted(set(stale))), mod))
+
     prefixes = {"lexer.ad": "tok_", "parser.ad": "nd_"}.get(mod)
     if prefixes is not None:
         pat = re.compile(
