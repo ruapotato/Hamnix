@@ -38,6 +38,11 @@ marked reachable and not counted.
 
 **The census neither under- nor over-reports.** Pass 12's numbers stand.
 
+Reproduced on a second, independent 21-cycle soak (different image build,
+different orphan population -- 113 orphans of 6323 live, 112 of them at site
+11): `negctl phys=0x16fa5000 site=6 reachable=1`, `site 6: 1 orphans, live 59`,
+that one orphan again being the plant. Two runs, both controls, both green.
+
 ## 2. THE UNMATCHED ARM — it is NOT cow_resolve_pte
 
 The ledger is now per call site (16 arms; `track ledger`, O(arms), sampled
@@ -93,18 +98,63 @@ this ledger provides.
 (This run: `PagesInUse +4.85/cycle`, 18 cycles / 483 s / 72 apps. Note refs are
 not pages — a burst of shared references strands fewer frames than it counts.)
 
-## 4. Next counted question
+## 4. Soak B — the arm 1 / arm 2 split, and what it did NOT settle
 
-Arms 1 and 2 both drain into arms 9 and 10, so the imbalance names a *pair*,
-not a site. The PTE carries the answer — a W^X verbatim share leaves the COW
-bit CLEAR, a general COW share force-SETS it — so arms 17/18 now split the two
-teardown walks by the dropped PTE's COW bit. One soak then closes arm 1
-against 17+18 and arm 2 against 9+10 independently, and the residue lands on
-one of them.
+Arms 17/18 split the two teardown walks by the dropped PTE's COW bit (a W^X
+verbatim share leaves it CLEAR, a general COW share force-SETS it). Second
+soak, 21 cycle-deltas, freshly built image, `arm=0` again exactly zero:
 
-Second: the bursts. Five cycles out of eighteen carry the leak. Which app
-launch, or which reap, coincides with them? The ledger is per cycle; making it
-per *app launch* would name the event.
+| arm | site | add/cyc | drop/cyc |
+|-----|------|--------:|---------:|
+| 1 | share, W^X read-only verbatim | 1452.95 | — |
+| 2 | share, general COW | 2989.05 | — |
+| 5 | `cow_resolve_pte` copy | **59.52** | — |
+| 9 | `_vma_free_cow_range`, COW-set | — | 1718.33 |
+| 10 | `_cow_release_forked_range`, COW-set | — | 1190.29 |
+| 11 | `vma_free_cow_strays` | — | 1.57 |
+| 13 | `cow_resolve_pte` displaced | — | **59.52** |
+| 14 | `region_free_cow_safe` | — | 68.76 |
+| 17 | `_vma_free_cow_range`, COW-clear | — | 3.90 |
+| 18 | `_cow_release_forked_range`, COW-clear | — | 1414.00 |
+
+Outstanding slope **+45.14 refs/cycle** (soak A: +47.94 — reproducible), and
+**arm 5 balances arm 13 EXACTLY a second time, 59.52/59.52.** Two independent
+runs, two different absolute rates, identical to the hundredth. `cow_resolve_pte`
+is not the leak, and that is now established rather than suggested.
+
+The split did **not** cleanly isolate one share arm, and the reason is worth
+recording because it is the next obstacle:
+
+* pairing arm 1 with 17+18 and arm 2 with 9+10 leaves residue in BOTH
+  (+35.05 and +80.43);
+* `region_free_cow_safe` (arm 14, 68.76/cyc) works from a PHYSICAL base and
+  has no PTE, so the COW-bit classifier cannot bucket it. Where those 68.76
+  land decides the answer. Region frames are the ELF image, i.e. exactly what
+  the W^X verbatim share (arm 1) shares — assigning them there gives
+
+  ```
+  arm 1 bucket: 1452.95 add vs 1486.66 drop   net  -33.71
+  arm 2 bucket: 2989.05 add vs 2910.19 drop   net  +78.86
+  ```
+
+  which puts the whole leak on the **general COW share**. That is the most
+  likely reading, but it rests on an assignment the instrument did not
+  measure, so it is stated here as a lead and NOT as a result.
+
+## 5. Next counted question
+
+**Tag the frame, not the call.** The COW-bit classifier reads the PTE at drop
+time, which is a proxy for origin and breaks down exactly where it matters
+(`region_free_cow_safe` has no PTE at all). Record the ARM that first took a
+frame's reference — one byte per PFN alongside the refcount table, written on
+the 0->N transition — and every drop then reports its true origin with no
+inference. That closes arm 1 and arm 2 against their real drops and needs one
+soak.
+
+Second: the bursts. Soak B repeats the pattern with wider swings (one cycle at
+-183, one at +314). Five or six cycles out of twenty carry the whole leak. The
+ledger is per cycle; sampling it per APP LAUNCH would name the event, and a
+named event is a reproducible test case rather than a slope.
 
 ## 5. Gates
 
@@ -113,8 +163,35 @@ per *app launch* would name the event.
 [kobjdiff] PASS — zero semantic kernel divergences across 11281 matched functions
 [test_cow_fork]  PASS -- copy-on-write fork keeps parent/child private
 [test_mmap_fork] PASS -- copy-on-write fork over an mmap VMA keeps parent/child private
-[soak] 18 cycles / 483 s / 72 apps launched, 72 closed; SIGTERM audit CLEAN
+[soak A] 18 cycles / 483 s / 72 apps launched, 72 closed; SIGTERM audit CLEAN
+[soak B] 21 cycles / 605 s / 84 apps launched, 84 closed; SIGTERM audit CLEAN
 ```
+
+Both soaks still end `OVERALL FAIL` on `PagesInUse` — no fix was attempted
+this pass, deliberately. Pass 12 established that a fix under ~6 pg/cycle
+cannot be validated by a soak pair, and pass 13 has now shown why (the leak is
+bursty, so the soak MEAN is the wrong statistic even in principle). Shipping a
+speculative fix before the origin tag exists would have produced exactly the
+unfalsifiable claim the brief forbids.
+
+## 8. A build hole found in passing, and it would have poisoned this pass
+
+`scripts/_installer_img.sh`'s `_HAMNIX_IMG_INPUT_DIRS` — the list that decides
+whether the shipped image is stale — did not contain **`mm`**. The entire
+memory manager (page_alloc.ad, vma.ad, cow.ad, slab.ad, reclaim.ad), all
+inside `init/main.ad`'s compile closure, could be edited without marking the
+image stale. Soak B was launched immediately after committing the arms-17/18
+change to mm/cow.ad and mm/vma.ad and reported `image (0d00h11m old)`: it was
+about to measure the PREVIOUS build and report the numbers under the new one.
+Caught only because the timestamp was implausible.
+
+This is worse for a leak gate than for a feature gate — a leak measurement
+from the wrong build looks entirely plausible, so nothing downstream would
+have flagged it. `linux_abi` (the whole Linux syscall shim) had the same hole,
+and `adder` is compiled into shipped user binaries. All three added. It is the
+third time this list has been found short (`sys` 2026-07-25, `tests`
+2026-07-28), which is the argument for the producer-side always-overwrite
+contract that file's own comment already makes.
 
 ## 6. Cost
 
