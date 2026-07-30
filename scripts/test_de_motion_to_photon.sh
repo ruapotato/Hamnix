@@ -532,6 +532,17 @@ for i, run in enumerate(runs):
               % (g('minv'), g('minpid'), nm(g('minnm')), g('minst'), lead, g('gfloor')))
         print('        picker-list view: lnrdy=%s lminv=%s ghosts=%s | on-cpu now pid=%s vrun=%s'
               % (g('lnrdy'), g('lminv'), g('ghostn'), g('curpid'), g('curvrun')))
+        # EARNED OR FABRICATED. 256 vruntime units == one 10 ms tick at nice 0,
+        # so a lead of L units claims the waiter ran L/256*10ms more than the
+        # task at the minimum. Compare that claim against the real on-cpu
+        # ledger; a gap is vruntime the scheduler invented.
+        try:
+            dus  = int(g('viccpu_us')) - int(g('mincpu_us'))
+            claim = lead * 10000 // 256
+            print('        cpu ledger: waiter %sus vs minimum %sus (delta %sus) | the %s-unit lead CLAIMS %sus | fabricated %sus'
+                  % (g('viccpu_us'), g('mincpu_us'), dus, lead, claim, claim - dus))
+        except Exception:
+            print('        cpu ledger: waiter %s vs minimum %s' % (g('viccpu_us'), g('mincpu_us')))
 PYEOF
 echo "$TAG --- end ---"
 

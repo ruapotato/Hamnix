@@ -2383,6 +2383,25 @@ g_vover_units:   uint64 = 0
 g_wake_places:   uint64 = 0
 
 
+# REAL ON-CPU TIME, kept beside the vruntime it is supposed to represent.
+#
+# The whole tail reduces to one number: sshd carries a 14,000-73,000 unit
+# vruntime lead over hamdesktop and waits it out. That is either FAIR (sshd
+# really used that much more cpu) or FABRICATED (it was billed for time it did
+# not run) — and a vruntime alone cannot tell the two apart, which is why four
+# passes of fairness tuning could not settle it. 256 units IS one 10 ms tick at
+# nice 0, so charged-vs-run is a direct comparison once the real time is
+# recorded. Accumulated at exactly the two sites that charge vruntime, so a
+# divergence between the two ledgers is a charging bug by construction.
+g_cpu_ns: Array[512, uint64]
+
+
+def sched_cpu_ns(slot: uint64) -> uint64:
+    if slot >= NTASKS:
+        return 0
+    return g_cpu_ns[slot]
+
+
 def _sched_note_overcharge(slot: uint64, charge: uint64):
     # Called from preempt_tick immediately after `slot` was charged `charge`
     # units for the tick. Record the part of that charge the task did not earn.
@@ -2397,6 +2416,12 @@ def _sched_note_overcharge(slot: uint64, charge: uint64):
     if st == 0 or now <= st:
         return
     ran: uint64 = now - st
+    # Ledger: the real time behind this tick charge. Capped at one tick for the
+    # same reason the charge is — a longer delta can only be a missed re-stamp.
+    if ran >= TICK_NS:
+        g_cpu_ns[slot] = g_cpu_ns[slot] + TICK_NS
+    else:
+        g_cpu_ns[slot] = g_cpu_ns[slot] + ran
     if ran >= TICK_NS:
         return                       # earned the whole charge; nothing to refund
     over: uint64 = (charge * (TICK_NS - ran)) / TICK_NS
@@ -2445,6 +2470,7 @@ def _sched_charge_elapsed(slot: uint64):
     # charge a fiction.
     if d > TICK_NS:
         d = TICK_NS
+    g_cpu_ns[slot] = g_cpu_ns[slot] + d
     w: uint64 = task_table[slot].sched_weight
     if w == 0:
         w = NICE0_WEIGHT
@@ -3361,6 +3387,12 @@ wkp_minnm:   Array[4, uint64]
 wkp_minst:   Array[4, uint64]
 wkp_nbelow:  Array[4, uint64]
 wkp_floor:   Array[4, uint64]
+# The two ledgers, for the waiter and for the task holding the minimum. 256
+# vruntime units == one 10 ms tick at nice 0, so (vrun difference) and
+# (cpu_us difference / 10000 * 256) are the SAME quantity measured two ways.
+# They agree iff the lead the waiter is serving is a lead it earned.
+wkp_vicus:   Array[4, uint64]
+wkp_minus:   Array[4, uint64]
 
 
 def _wklat_probe_clear():
@@ -3391,6 +3423,8 @@ def _wklat_probe_clear():
         wkp_minst[i]   = 0
         wkp_nbelow[i]  = 0
         wkp_floor[i]   = 0
+        wkp_vicus[i]   = 0
+        wkp_minus[i]   = 0
         i = i + 1
 
 
@@ -3457,10 +3491,12 @@ def wklat_probe_stalled():
         t = t + 1
     wkp_nbelow[k] = nbel
     wkp_floor[k]  = g_sched_vruntime_floor
+    wkp_vicus[k] = g_cpu_ns[victim] / 1000
     if mins < NTASKS:
         wkp_minpid[k] = task_table[mins].pid
         wkp_minnm[k]  = task_table[mins].name0
         wkp_minst[k]  = task_table[mins].state
+        wkp_minus[k]  = g_cpu_ns[mins] / 1000
     else:
         wkp_minpid[k] = RQ_CUR_NONE
         wkp_minnm[k]  = 0
@@ -3544,6 +3580,9 @@ def wklat_probe_report():
                 wkp_nbelow[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk2("[wklat] s%d gfloor=%d\n", i, wkp_floor[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d viccpu_us=%d mincpu_us=%d\n", i, wkp_vicus[i],
+                wkp_minus[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
                 wkp_rqcpu[i])
