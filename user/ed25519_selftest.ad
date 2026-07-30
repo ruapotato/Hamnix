@@ -1,0 +1,242 @@
+# user/ed25519_selftest.ad
+#
+# ON-DEVICE self-test for lib/ed25519.ad — the crypto `hpm` trusts when it
+# decides whether an index.json may be believed.
+#
+# WHY THIS EXISTS. lib/ed25519.ad had exactly one gate,
+# scripts/test_hpm_signed_index.sh, and that gate compiles the library for
+# `--target=x86_64-linux` and runs it on the BUILD HOST. hpm ships compiled
+# for `--target=x86_64-adder-user` and runs on the device. Nothing ever ran
+# the verifier on the target it actually ships on, and every on-device hpm
+# gate passes `--allow-unsigned`, which SKIPS the verifier entirely. So a
+# verifier that returns "invalid" for every signature on device was green
+# everywhere — until `hpm refresh` ran on an installed system with a
+# file:// repo and refused to trust its own image-local index.
+#
+# Usage:
+#   ed25519_selftest                 run the built-in RFC 8032 vectors
+#   ed25519_selftest <msg> <sighex>  ...and then verify <msg> (any size)
+#                                    against the hex signature in <sighex>
+#                                    using the compiled-in LOCAL trust root
+#                                    (the exact triple `hpm refresh` uses
+#                                    for a file:// repo).
+#
+# Exit status: 0 = every check passed, 1 = at least one failed.
+
+from lib.ed25519 import ed25519_verify, sha512_init, sha512_update, \
+    sha512_final
+
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_close(fd: int32) -> int32
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+hexdig: Array[17, uint8] = "0123456789abcdef"
+hexout: Array[160, uint8]
+
+
+def put_hex(fd: int32, buf: Ptr[uint8], n: uint64):
+    i: uint64 = 0
+    while i < n and i < 78:
+        hexout[i * 2] = hexdig[cast[uint64](buf[i]) >> 4]
+        hexout[i * 2 + 1] = hexdig[cast[uint64](buf[i]) & 15]
+        i = i + 1
+    sys_write(fd, &hexout[0], i * 2)
+
+
+def put_dec(fd: int32, v: uint64):
+    d: Array[24, uint8]
+    if v == 0:
+        d[0] = 48
+        sys_write(fd, &d[0], 1)
+        return
+    n: uint64 = 0
+    x: uint64 = v
+    while x != 0:
+        d[n] = cast[uint8](x % 10) + 48
+        x = x / 10
+        n = n + 1
+    o: Array[24, uint8]
+    i: uint64 = 0
+    while n > 0:
+        n = n - 1
+        o[i] = d[n]
+        i = i + 1
+    sys_write(fd, &o[0], i)
+
+
+def _hexval(c: uint8) -> int32:
+    if c >= 48 and c <= 57:
+        return cast[int32](c) - 48
+    if c >= 97 and c <= 102:
+        return cast[int32](c) - 97 + 10
+    if c >= 65 and c <= 70:
+        return cast[int32](c) - 65 + 10
+    return -1
+
+
+def hex_decode(src: Ptr[uint8], n: uint64,
+               dst: Ptr[uint8], dst_cap: uint64) -> int64:
+    end: uint64 = n
+    while end > 0:
+        c: uint8 = src[end - 1]
+        if c == 10 or c == 13 or c == 32 or c == 9:
+            end = end - 1
+        else:
+            break
+    if (end & 1) != 0:
+        return -1
+    nbytes: uint64 = end / 2
+    if nbytes > dst_cap:
+        return -1
+    i: uint64 = 0
+    while i < nbytes:
+        hi: int32 = _hexval(src[i * 2])
+        lo: int32 = _hexval(src[i * 2 + 1])
+        if hi < 0 or lo < 0:
+            return -1
+        dst[i] = cast[uint8]((hi << 4) | lo)
+        i = i + 1
+    return cast[int64](nbytes)
+
+
+MSG_CAP: uint64 = 262144
+msg_buf:  Array[262144, uint8]
+sigf_buf: Array[512, uint8]
+pk_buf:   Array[32, uint8]
+sig_buf:  Array[64, uint8]
+dig_buf:  Array[64, uint8]
+fails:    int32 = 0
+
+
+def read_all(path: Ptr[uint8], dst: Ptr[uint8], cap: uint64) -> int64:
+    fd: int32 = sys_open(cast[Ptr[char]](path))
+    if fd < 0:
+        return -1
+    total: uint64 = 0
+    while total < cap:
+        n: int64 = sys_read(fd, cast[Ptr[uint8]](cast[uint64](dst) + total),
+                            cap - total)
+        if n < 0:
+            sys_close(fd)
+            return -1
+        if n == 0:
+            break
+        total = total + cast[uint64](n)
+    sys_close(fd)
+    return cast[int64](total)
+
+
+# --- RFC 8032 section 7.1 test vectors --------------------------------
+# TEST 1 (empty message) and TEST 2 (one-byte message 0x72). These are the
+# canonical Ed25519 vectors; a verifier that fails them is broken outright.
+def vec(name: Ptr[uint8], pk_hex: Ptr[uint8], sig_hex: Ptr[uint8],
+        msg: Ptr[uint8], msglen: uint64, want: int32):
+    if hex_decode(pk_hex, 64, &pk_buf[0], 32) != 32:
+        write_str(1, "ed25519_selftest: bad pk hex\n")
+        fails = fails + 1
+        return
+    if hex_decode(sig_hex, 128, &sig_buf[0], 64) != 64:
+        write_str(1, "ed25519_selftest: bad sig hex\n")
+        fails = fails + 1
+        return
+    got: int32 = ed25519_verify(&pk_buf[0], &sig_buf[0], msg, msglen)
+    write_str(1, name)
+    if got == want:
+        write_str(1, ": PASS\n")
+    else:
+        write_str(1, ": FAIL (verify returned ")
+        put_dec(1, cast[uint64](got))
+        write_str(1, ", wanted ")
+        put_dec(1, cast[uint64](want))
+        write_str(1, ")\n")
+        fails = fails + 1
+
+
+RFC_MSG2: Array[2, uint8] = "r"       # 0x72, one byte
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    # NB: `fails` is a module global initialised to 0 above. Assigning it
+    # here would risk shadowing it with a function-local of the same name.
+    vec(cast[Ptr[uint8]]("RFC8032-TEST1-empty"),
+        cast[Ptr[uint8]]("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+        cast[Ptr[uint8]]("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+        cast[Ptr[uint8]](""), 0, 1)
+
+    vec(cast[Ptr[uint8]]("RFC8032-TEST2-1byte"),
+        cast[Ptr[uint8]]("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"),
+        cast[Ptr[uint8]]("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+        &RFC_MSG2[0], 1, 1)
+
+    # A tampered signature must be REJECTED (guards against a verifier
+    # that returns "valid" unconditionally).
+    vec(cast[Ptr[uint8]]("RFC8032-TEST2-tampered"),
+        cast[Ptr[uint8]]("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"),
+        cast[Ptr[uint8]]("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c01"),
+        &RFC_MSG2[0], 1, 0)
+
+    if argc >= 3:
+        mpath: Ptr[uint8] = cast[Ptr[uint8]](argv[1])
+        spath: Ptr[uint8] = cast[Ptr[uint8]](argv[2])
+        mlen: int64 = read_all(mpath, &msg_buf[0], MSG_CAP)
+        if mlen < 0:
+            write_str(1, "ed25519_selftest: cannot read message file\n")
+            return 1
+        slen: int64 = read_all(spath, &sigf_buf[0], 512)
+        if slen < 0:
+            write_str(1, "ed25519_selftest: cannot read signature file\n")
+            return 1
+        write_str(1, "msglen=")
+        put_dec(1, cast[uint64](mlen))
+        write_str(1, "\n")
+        # SHA-512 of the message, so a hash bug is distinguishable from a
+        # curve bug by comparing against the build host.
+        sha512_init()
+        sha512_update(&msg_buf[0], cast[uint64](mlen))
+        sha512_final(&dig_buf[0])
+        write_str(1, "sha512=")
+        put_hex(1, &dig_buf[0], 64)
+        write_str(1, "\n")
+        if hex_decode(&sigf_buf[0], cast[uint64](slen),
+                      &sig_buf[0], 64) != 64:
+            write_str(1, "ed25519_selftest: bad signature hex\n")
+            return 1
+        write_str(1, "sig=")
+        put_hex(1, &sig_buf[0], 64)
+        write_str(1, "\n")
+        # The compiled-in LOCAL trust root — byte-for-byte what
+        # user/hpm.ad::_load_local_trusted_pub loads.
+        lp: Ptr[uint8] = \
+            "ef17a867f9c2c000080674acbb66c0b849e21032e55188032f10e4625278cbe7"
+        if hex_decode(lp, 64, &pk_buf[0], 32) != 32:
+            write_str(1, "ed25519_selftest: bad built-in local key\n")
+            return 1
+        write_str(1, "pub=")
+        put_hex(1, &pk_buf[0], 32)
+        write_str(1, "\n")
+        r: int32 = ed25519_verify(&pk_buf[0], &sig_buf[0], &msg_buf[0],
+                                  cast[uint64](mlen))
+        if r == 1:
+            write_str(1, "FILE-VERIFY: PASS\n")
+        else:
+            write_str(1, "FILE-VERIFY: FAIL\n")
+            fails = fails + 1
+
+    if fails != 0:
+        write_str(1, "ed25519_selftest: FAILED\n")
+        return 1
+    write_str(1, "ed25519_selftest: ALL PASS\n")
+    return 0
