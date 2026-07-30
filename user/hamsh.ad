@@ -5045,8 +5045,27 @@ def eval_err(msg: Ptr[uint8]) -> int32:
 # across lines (the node arena does NOT reset while a def is live), so
 # defs live in their own small arena copied out of the per-line nodes.
 FN_MAX:       uint64 = 512
-fn_name:      Array[8192, uint8]  # 512 * 16
-FN_NAME_MAX:  uint64 = 16
+# FN_NAME_MAX WAS 16, AND THAT WAS A SILENT CAP OF THE SAME CLASS AS
+# FN_MAX=32 (fixed here 2026-07-30). The copy loop below truncated at 15
+# bytes with no error, while every lookup (`call_user_fn`, `exec_def`'s own
+# replace scan, the completion scan) compares the stored TRUNCATED name
+# against the caller's FULL name with cstr_eq. So:
+#   * `def parse_configuration_file(...)` reported SUCCESS and the later
+#     call raised "call to undefined function ... — was its `def` ever
+#     run?", a diagnostic pointing miles from the cause. Measured before
+#     the fix: DEFOK 0, then the call raises.
+#   * Worse for uptime: the replace scan could never match either, so
+#     RE-defining the same long-named function took a NEW registry slot
+#     every time (measured: fns=2 after two `def`s of one name). A DE
+#     rc file that re-sources a library of long-named helpers therefore
+#     burned slots monotonically until FN_MAX, i.e. a silent cap feeding
+#     a hard one.
+# 64 bytes makes real shell-library names fit (512 * 64 = 32 KiB BSS, up
+# from 8 KiB — a measured +24576 bytes, paid once, in a process whose
+# arenas already total ~4 MiB), and a name that STILL does not fit now
+# raises at the `def` instead of mis-registering.
+fn_name:      Array[32768, uint8]  # 512 * 64
+FN_NAME_MAX:  uint64 = 64
 fn_node:      Array[512, int32]
 fn_count:     uint64 = 0
 
@@ -9232,6 +9251,17 @@ def builtin_alias(argc: int32) -> int32:
                 eq = cast[int64](j)
             j = j + 1
         if eq >= 0:
+            # SILENT-CAP GUARD (2026-07-30), the same shape as `def`'s
+            # FN_NAME_MAX: the copy below truncated a >=128-byte name into
+            # _alias_name_scratch with no error, so the alias was bound
+            # under a key nothing the user can type will ever match — and
+            # `alias` then LISTED the truncated name, so even reading the
+            # table did not reveal it. Refuse instead of mis-binding.
+            if cast[uint64](eq) + 1 > 128:
+                write_str(2, "alias: name too long (max 127 chars) — alias NOT defined\n")
+                rc = 1
+                ai = ai + 1
+                continue
             k: uint64 = 0
             while k < cast[uint64](eq) and k + 1 < 128:
                 _alias_name_scratch[k] = a[k]
@@ -12492,6 +12522,16 @@ def exec_def(node: int32) -> int32:
         rt_raise("def: too many functions (FN_MAX=512) — function NOT defined")
         return EX_NORMAL
     np: Ptr[uint8] = str_ptr(nd_str[nu])
+    # A name the registry cannot store VERBATIM must be refused HERE, at the
+    # `def`. Truncating it would register a function under a key no call can
+    # ever match (see the FN_NAME_MAX note) — success reported, failure
+    # delivered later and somewhere else.
+    nl: uint64 = 0
+    while np[nl] != 0:
+        nl = nl + 1
+    if nl + 1 > FN_NAME_MAX:
+        rt_raise("def: function name too long (max 63 chars) — function NOT defined")
+        return EX_NORMAL
     # replace if already defined
     fi: uint64 = 0
     slot: uint64 = fn_count
@@ -12997,6 +13037,18 @@ def exec_statement(node: int32) -> int32:
             # by scripts/test_hamsh_arena_soak_host.sh) instead of only
             # after it has already died with "node arena full".
             if cstr_eq(cmd, "arenas") != 0:
+                # `arenas gc` forces a collection FIRST, then prints. Plain
+                # `arenas` reads occupancy where the shell happens to be in
+                # its allocate-until-nearly-full cycle, which is a sawtooth:
+                # a rising sample there says nothing. The FLOOR — occupancy
+                # immediately after a collection — is the only quantity that
+                # separates "allocating" from "leaking", because anything
+                # the mark phase cannot reach survives it. Driving the floor
+                # on demand turns "does hamsh leak per command?" into a
+                # counted inter-sample delta instead of a soak mean.
+                if argc > 1:
+                    if cstr_eq(cast[Ptr[uint8]](argv_ptr[1]), "gc") != 0:
+                        gc_collect()
                 _builtin_arenas()
                 eval_status = 0
                 return EX_NORMAL
@@ -15574,6 +15626,17 @@ def _builtin_arenas():
     write_cstr1(render_int(cast[int64](sc_count)))
     write_cstr1(" fns=")
     write_cstr1(render_int(cast[int64](fn_count)))
+    # Two tables that grow for the LIFE of the session and had no readout at
+    # all: `fns` was printed without its cap, and the alias table not at
+    # all. A cap you cannot watch approaching is a silent cap with extra
+    # steps — the whole point of this line is that "is this shell filling
+    # up?" is answerable before it dies.
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](FN_MAX)))
+    write_cstr1(" aliases=")
+    write_cstr1(render_int(cast[int64](alias_n)))
+    write_cstr1("/")
+    write_cstr1(render_int(cast[int64](ALIAS_MAX)))
     write_cstr1(" gc=")
     write_cstr1(render_int(cast[int64](gc_runs)))
     write_cstr1(" gcstrskip=")

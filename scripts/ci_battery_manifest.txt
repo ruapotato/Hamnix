@@ -4475,3 +4475,15 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_build_integrity.sh
 # ~5 min, one QEMU. KVM-gated, so on a runner without /dev/kvm this SKIPS and
 # asserts nothing — run it on a KVM host to get a verdict.
 bash scripts/test_cow_hamterm_origin.sh
+
+# --- hamsh per-command floor (leak pass 17) ------------------------------
+# QEMU-free, ~2 min. Asserts that two IDENTICAL sweeps of 16 command classes
+# leave a BYTE-IDENTICAL post-GC floor — the counted form of "hamsh strands
+# nothing per command", which the arena-soak gate (bounded occupancy) cannot
+# see because occupancy is a sawtooth and a creeping baseline still drops on
+# every collection. Carries its own positive control: a planted live binding
+# MUST move the floor, else the equality is vacuous and the gate fails.
+# Also pins two silent caps closed: the 15-byte `def` name truncation (which
+# reported success and failed at the CALL, and burned a registry slot per
+# redefinition) and the 127-byte `alias` name truncation.
+bash scripts/test_hamsh_percmd_floor_host.sh
