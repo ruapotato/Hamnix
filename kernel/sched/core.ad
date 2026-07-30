@@ -2632,16 +2632,98 @@ def wklat_report():
     mean: uint64 = 0
     if wklat_n > 0:
         mean = wklat_sum_ns / wklat_n
+    # EMERG level on every line. The console tightens its threshold to
+    # suppress INFO once an interactive shell is up (console_set_interactive),
+    # so an INFO-level report is invisible in exactly the situation this
+    # instrument is used in — the first two runs of the gate lost the entire
+    # kernel-side report that way and nobody noticed, because a missing line
+    # and a zero line look the same to a grep that is not asserting presence.
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] n=%d preempt=%d\n", wklat_n,
             cast[uint64](wakeup_preempt_enabled))
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] max_us=%d mean_us=%d\n", wklat_max_ns / 1000,
             mean / 1000)
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] le1ms=%d le5ms=%d\n", wklat_b1, wklat_b5)
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] le12ms=%d le25ms=%d\n", wklat_b12, wklat_b25)
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] le60ms=%d over60ms=%d\n", wklat_b60, wklat_over)
+    printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] kicks=%d irqret=%d\n", wakeup_preempt_kicks,
             wakeup_preempt_irqret)
-    printk1("[wklat] tickret=%d\n", wakeup_preempt_tick_n)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] tickret=%d probe=%d\n", wakeup_preempt_tick_n,
+            wklat_probe_iters)
+
+
+# --- the IRQ-driven probe ---------------------------------------------
+#
+# WHY A KERNEL PROBE AND NOT A USERLAND ONE. Two userland reproducers were
+# built first and BOTH measured something other than the bug:
+#
+#   * a pipe ping-pong (parent writes then immediately blocks reading a
+#     reply). The write's schedule() hands the cpu straight to the woken task
+#     via the lowest-vruntime pick — a purely COOPERATIVE handoff that no CPU
+#     hog can get between. 99.8% under 1 ms with four hogs.
+#   * a "waker keeps burning cpu" variant. Better, but the waker is still a
+#     TASK, so the wake is raised in ring 0 with the incumbent's fate decided
+#     by the tick, and both A/B arms came out identical.
+#
+# The mouse is neither. Its wake is raised by an INTERRUPT HANDLER, and when
+# that handler returns the cpu goes straight back to the ring-3 code it
+# interrupted — which, in the user's report, is a process at 100% CPU issuing
+# no syscalls at all. To measure THAT, the woken party must be parked in a
+# real wait queue and woken from real interrupt context.
+#
+# This probe is exactly that, with the hrtimer ISR standing in for the mouse
+# IRQ: park on a wait queue with a one-tick timeout, get force-woken by
+# _wq_timeout_hrtimer_cb from the timer ISR, and let _wklat_account time how
+# long the dispatch took. 100 Hz, which is also about the rate a real mouse
+# reports at. Not created unless `wklat 5` asks for it, and it exits when the
+# instrument is disarmed, so a shipped kernel carries no extra kthread.
+wklat_probe_wq:      WaitQueue
+wklat_probe_started: int32  = 0
+wklat_probe_run:     int32  = 0
+wklat_probe_iters:   uint64 = 0
+
+
+def wklat_probe_iterations() -> uint64:
+    return wklat_probe_iters
+
+
+def _wklat_probe_thread():
+    wq_init(&wklat_probe_wq)
+    while wklat_probe_run != 0:
+        wq_wait_prepare(&wklat_probe_wq)
+        # One tick. Nobody ever data-wakes this queue, so every wake is the
+        # hrtimer expiry callback firing from the timer ISR — i.e. an
+        # interrupt-context wake of a wait-queue sleeper, the mouse's shape.
+        wq_wait_commit_timeout(&wklat_probe_wq, 1)
+        wklat_probe_iters = wklat_probe_iters + 1
+    wklat_probe_started = 0
+    task_exit_current(0)
+
+
+def _wklat_probe_start() -> int32:
+    if wklat_probe_started != 0:
+        return 1
+    wq_init(&wklat_probe_wq)
+    wklat_probe_run   = 1
+    wklat_probe_iters = 0
+    _wq_lock_irq()
+    slot: int32 = kthread_create(cast[uint64](&_wklat_probe_thread), 0)
+    if slot >= 0:
+        # Detached: nothing wait4s a probe thread, and a non-detached zombie
+        # would sit in the task table forever.
+        task_table[cast[uint64](slot)].detached = 1
+    _wq_unlock_irq()
+    if slot < 0:
+        wklat_probe_run = 0
+        return 0
+    wklat_probe_started = 1
+    return 1
 
 
 def wklat_ctl(verb: int64) -> int32:
@@ -2658,10 +2740,12 @@ def wklat_ctl(verb: int64) -> int32:
     # repeat, and the gate requires the ack lines to be present.
     if verb == 0:
         wakeup_preempt_set_enabled(0)
+        printk_set_level(PRINTK_LEVEL_EMERG)
         printk0("[wklat] ack wakeup_preempt=0\n")
         return 1
     if verb == 1:
         wakeup_preempt_set_enabled(1)
+        printk_set_level(PRINTK_LEVEL_EMERG)
         printk0("[wklat] ack wakeup_preempt=1\n")
         return 1
     if verb == 2:
@@ -2675,6 +2759,13 @@ def wklat_ctl(verb: int64) -> int32:
         return 1
     if verb == 4:
         wklat_enable(0)
+        wklat_probe_run = 0
+        return 1
+    if verb == 5:
+        if _wklat_probe_start() == 0:
+            return 0
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack probe started\n")
         return 1
     return 0
 

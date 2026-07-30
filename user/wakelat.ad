@@ -157,12 +157,22 @@ def now_ns() -> uint64:
 
 
 def ctl(verb: Ptr[uint8]):
+    # LOUD on failure. A control write that is silently refused looks exactly
+    # like a working one from here, and that is how the first run of this test
+    # ran both A/B arms in the same configuration and reported "no
+    # difference". Both the open and the write are checked, and the kernel
+    # ACKs every accepted verb on the console as an independent witness.
     fd: int32 = sys_open_write("/proc/self/ctl")
     if fd < 0:
-        write_str(1, "[wakelat] WARN: cannot open /proc/self/ctl\n")
+        write_str(1, "[wakelat] FAIL: cannot open /proc/self/ctl\n")
         return
-    sys_write(fd, verb, strlen_u8(verb))
+    n: int64 = sys_write(fd, verb, strlen_u8(verb))
     sys_close(fd)
+    if n != cast[int64](strlen_u8(verb)):
+        write_str(1, "[wakelat] FAIL: ctl write refused rc=")
+        write_u64_raw(1, cast[uint64](n))
+        write_str(1, " verb=")
+        write_str(1, verb)
 
 
 def phist_reset():
@@ -370,6 +380,38 @@ def run_preempt_arm(label: Ptr[uint8], preempt_on: int32) -> uint64:
     return sent
 
 
+def run_irq_arm(label: Ptr[uint8], preempt_on: int32):
+    # THE ARM THAT CARRIES THE BUG. The waker here is not a task at all: the
+    # kernel probe (`wklat 5`) parks a thread on a wait queue with a one-tick
+    # timeout, so every one of its wakes is raised by the hrtimer expiry
+    # callback running in the TIMER ISR — interrupt context, exactly like the
+    # mouse IRQ waking the DE client blocked on /dev/wsys/<wid>/pointer. When
+    # that handler returns, the cpu goes back to whatever ring-3 code it
+    # interrupted: here, four syscall-free hogs plus this process.
+    #
+    # Nothing in userland can generate that shape (a userland waker is a task
+    # and its wake is raised in ring 0), which is why the two userland arms
+    # above measure the OTHER two shapes and this one has to reach into the
+    # kernel for the third.
+    if preempt_on != 0:
+        ctl("wklat 1\n")
+    else:
+        ctl("wklat 0\n")
+    ctl("wklat 5\n")                        # idempotent probe start
+    nh: uint64 = spawn_hogs()
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" hogs=", nh)
+    write_nl()
+    # Let the hogs get through execve + ELF load before the window opens.
+    burn_until(sys_get_jiffies() + 60)
+    ctl("wklat 2\n")                        # reset the kernel histogram
+    burn_until(sys_get_jiffies() + ARM_JIFFIES)
+    ctl("wklat 3\n")
+    # Drain this arm's hogs so the next arm starts from an idle box.
+    burn_until(sys_get_jiffies() + GAP_JIFFIES)
+
+
 def main() -> int32:
     write_str(1, "[wakelat] start\n")
 
@@ -426,6 +468,13 @@ def main() -> int32:
         write_str(1, "[wakelat] FAIL: arm on posted no events\n")
         sys_exit(1)
         return 1
+
+    # --- ARMS "irqoff" / "irqon" — an INTERRUPT-context wake of a
+    # wait-queue sleeper while syscall-free hogs hold the cpu. This is the
+    # mouse's actual shape and the only arm where wakeup preemption can make
+    # a difference.
+    run_irq_arm("irqoff", 0)
+    run_irq_arm("irqon", 1)
 
     # Leave the system in the SHIPPED configuration and disarm the
     # instrument: nothing this test did may outlive it.
