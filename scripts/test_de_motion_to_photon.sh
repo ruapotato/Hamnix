@@ -134,6 +134,46 @@
 # lightweight boot and did not see this tail. On the real desktop it is 98.4%
 # (idle) / 99.4% (loaded) under 1 ms with a hard 90-120 ms tail.
 #
+# WHAT THAT TAIL TURNED OUT TO BE (fifth pass, five KVM boots, all with
+# stalls=0 and tickgap_max 10.2-13.7 ms against a host loadavg of 4.0-6.4):
+#
+#   * It is ONE TASK. sshd, in 4 of 4 idle outliers and 6 of 7 loaded ones on
+#     boot 1, and again on boot 2 under a different pid. Every one of them was
+#     woken while hampanel held the cpu and dispatched immediately after
+#     hampanel. vwake == vdisp on every sample: the waiter never runs during
+#     its own wait.
+#   * It is NOT the picker. ismin=0 for every stalled snapshot, the picker's
+#     own run-list view (lminv/lnrdy) agrees with the task-table view exactly,
+#     and ghostn=0 -- no READY task is ever off the list _pick_next walks.
+#   * It is NOT an in-place wake (a wake stamped on a task that never left the
+#     cpu, whose stamp is then closed against an unrelated later dispatch):
+#     0 of 13,216 idle and 4 of 14,233 loaded. Disproved by count.
+#   * It is NOT a stale-high placement ratchet: gfloor tracks the live runqueue
+#     minimum to within 1,280 units, exactly `thresh`.
+#
+#   * IT IS A CHARGE-RATE INVERSION. With the real-cpu ledger read beside the
+#     vruntime it is supposed to represent (wklat probe, viccpu_us/mincpu_us):
+#
+#       task                    vruntime   real cpu    charged per real us
+#       sshd (the waiter)        105,187   141,547us   0.743  = 29.0x true
+#       hamdesktop (the minimum)  63,800   596,420us   0.107  =  4.2x true
+#       correct rate at nice 0                         0.0256
+#
+#     hamdesktop had used 4.2x MORE cpu than sshd and held a LOWER vruntime, so
+#     sshd -- which had run 455 ms less -- was the task made to wait. In the
+#     loaded arm the inversion reaches 263x (waiter 4,086us of cpu against the
+#     minimum holder's 1,073,718us). preempt_tick bills a WHOLE tick to whoever
+#     is on-cpu at the 100 Hz boundary, and how often that happens tracks a
+#     short-burst poller's WAKE RATE rather than its cpu use.
+#
+#     The ledger is conservative: _sched_charge_elapsed clamps its delta at one
+#     tick, so it UNDER-counts long-slice tasks -- which understates
+#     hamdesktop's cpu and makes the inversion larger than reported, not
+#     smaller.
+#
+#   Raising VOVER_CAP so the existing refund could repay that debt was tried
+#   and REVERTED: it did not close the tail (see kernel/sched/core.ad).
+#
 # But the tail is IDENTICAL idle and loaded (1 and 3, both arms), so CPU load
 # does not create it -- and m2p in those very same windows stayed flat at
 # ~9.6 ms. A 120 ms wake stall therefore does NOT reach the pointer, which is
