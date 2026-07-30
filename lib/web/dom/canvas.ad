@@ -5173,6 +5173,14 @@ def _js_host_dispatch(id: int32) -> int32:
         return _make_event(2)
     if rel == NID_KEYBDEVENT:
         return _make_event(3)
+    if rel == NID_UIEVENT:
+        return _make_event(4)
+    if rel == NID_COMPEVENT:
+        return _make_event(6)
+    if rel == NID_FOCUSEVENT:
+        return _make_event(10)
+    if rel == NID_WHEELEVENT:
+        return _make_event(15)
     if rel == NID_IMAGE_CTOR:
         return _make_image()
     if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS:
@@ -7929,17 +7937,41 @@ def _js_build_document():
     # constructor reuses the base Event native — but each carries its OWN
     # prototype object, because createEvent brands the returned event with
     # exactly window[iface].prototype and the WPT alias test compares identity.
-    _mk_ev_iface(cast[Ptr[uint8]]("UIEvent"), 7, NID_EVENT_CTOR, 4)
+    # UIEvent / FocusEvent / CompositionEvent / WheelEvent ARE constructable and
+    # each carries its own init dictionary — they get their own natives so
+    # _make_event knows which members to read. (They also need the interface's
+    # OWN prototype on the instance, which the shared-native wiring could not
+    # give them: `new UIEvent("x") instanceof UIEvent` was false.)
+    _mk_ev_iface(cast[Ptr[uint8]]("UIEvent"), 7, NID_UIEVENT, 4)
     _mk_ev_iface(cast[Ptr[uint8]]("BeforeUnloadEvent"), 17, NID_EVENT_CTOR, 5)
-    _mk_ev_iface(cast[Ptr[uint8]]("CompositionEvent"), 16, NID_EVENT_CTOR, 6)
+    _mk_ev_iface(cast[Ptr[uint8]]("CompositionEvent"), 16, NID_COMPEVENT, 6)
     _mk_ev_iface(cast[Ptr[uint8]]("DeviceMotionEvent"), 17, NID_EVENT_CTOR, 7)
     _mk_ev_iface(cast[Ptr[uint8]]("DeviceOrientationEvent"), 22, NID_EVENT_CTOR, 8)
     _mk_ev_iface(cast[Ptr[uint8]]("DragEvent"), 9, NID_EVENT_CTOR, 9)
-    _mk_ev_iface(cast[Ptr[uint8]]("FocusEvent"), 10, NID_EVENT_CTOR, 10)
+    _mk_ev_iface(cast[Ptr[uint8]]("FocusEvent"), 10, NID_FOCUSEVENT, 10)
     _mk_ev_iface(cast[Ptr[uint8]]("HashChangeEvent"), 15, NID_EVENT_CTOR, 11)
     _mk_ev_iface(cast[Ptr[uint8]]("MessageEvent"), 12, NID_EVENT_CTOR, 12)
     _mk_ev_iface(cast[Ptr[uint8]]("StorageEvent"), 12, NID_EVENT_CTOR, 13)
     _mk_ev_iface(cast[Ptr[uint8]]("TextEvent"), 9, NID_EVENT_CTOR, 14)
+    _mk_ev_iface(cast[Ptr[uint8]]("WheelEvent"), 10, NID_WHEELEVENT, 15)
+    # Link the event interface prototypes into the spec's inheritance chain.
+    # Each _mk_ev_iface built a FREESTANDING prototype, so `new MouseEvent(…)
+    # instanceof UIEvent` (and instanceof Event) was false for every subclass.
+    _ev_inherit(1, 0)        # CustomEvent        -> Event
+    _ev_inherit(4, 0)        # UIEvent            -> Event
+    _ev_inherit(5, 0)        # BeforeUnloadEvent  -> Event
+    _ev_inherit(7, 0)        # DeviceMotionEvent  -> Event
+    _ev_inherit(8, 0)        # DeviceOrientation  -> Event
+    _ev_inherit(11, 0)       # HashChangeEvent    -> Event
+    _ev_inherit(12, 0)       # MessageEvent       -> Event
+    _ev_inherit(13, 0)       # StorageEvent       -> Event
+    _ev_inherit(2, 4)        # MouseEvent         -> UIEvent
+    _ev_inherit(3, 4)        # KeyboardEvent      -> UIEvent
+    _ev_inherit(6, 4)        # CompositionEvent   -> UIEvent
+    _ev_inherit(10, 4)       # FocusEvent         -> UIEvent
+    _ev_inherit(14, 4)       # TextEvent          -> UIEvent
+    _ev_inherit(9, 2)        # DragEvent          -> MouseEvent
+    _ev_inherit(15, 2)       # WheelEvent         -> MouseEvent
     # `new Image()` constructor — a common preload/beacon global (round: google).
     js_global_set(cast[Ptr[uint8]]("Image"), 5, \
                   js_new_native_fn(js_hbase + NID_IMAGE_CTOR))
@@ -10673,6 +10705,16 @@ def _mk_ev_iface(nm: Ptr[uint8], nlen: int32, nid: int32, flavor: int32):
                        js_new_native_fn(js_hbase + NID_CANCELBUB_SET))
 
 
+# Link one event interface's prototype onto its spec parent's, so `instanceof`
+# walks the real chain (MouseEvent -> UIEvent -> Event).
+def _ev_inherit(child: int32, parent: int32):
+    if child < 0 or child >= 16 or parent < 0 or parent >= 16:
+        return
+    if g_ev_proto[child] == 0 or g_ev_proto[parent] == 0:
+        return
+    js_set_proto_v(g_ev_proto[child], g_ev_proto[parent])
+
+
 # Map a document.createEvent() interface name to a `flavor`, or -1 if the name
 # is not in the spec's legacy event-interface table. ASCII case-INSENSITIVE, and
 # the plural legacy aliases (Events/HTMLEvents/SVGEvents -> Event, MouseEvents ->
@@ -10825,25 +10867,138 @@ def _ascii_ci_eq(a: Ptr[uint8], an: int32, b: Ptr[uint8], bn: int32) -> int32:
     return 1
 
 
+# Was the event constructor called WITHOUT `new` on the global (`Event("x")` /
+# `window.Event("x")`)? Then `this` is the window, not a fresh instance, and
+# writing the event's fields into it would scribble over the global object.
+def _ev_this_is_global(v: int32) -> int32:
+    if v == js_win or v == js_doc:
+        return 1
+    return 0
+
+
+# ---- event-constructor dictionary readers -----------------------------------
+# Per WebIDL a dictionary argument that is undefined OR null means "every member
+# absent", and an ABSENT member takes the declared default — it is not read at
+# all. Before this, the constructor read members straight off the argument, so
+# `new Event("x", null)` threw "cannot read property 'bubbles' of null" (18 WPT
+# subtests) and a supplied-but-undefined member clobbered the default.
+def _evd_get(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    if js_type_of(opt) != TAG_OBJ:
+        return js_undefined()
+    return js_get_prop(opt, name, cast[uint64](n))
+
+
+def _evd_bool(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_UNDEF:
+        return 0
+    return js_to_bool(v)
+
+
+def _evd_num(opt: int32, name: Ptr[uint8], n: int32) -> float64:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_UNDEF:
+        return 0.0
+    return js_to_number(v)
+
+
+def _evd_str(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_STR:
+        return v
+    if js_type_of(v) == TAG_UNDEF:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    sp: Ptr[uint8] = js_to_display(v)
+    return js_new_string(sp, cast[uint64](_cstr_len(sp)))
+
+
+# An interface-typed dictionary member (UIEventInit.view, MouseEventInit /
+# FocusEventInit.relatedTarget). Default null; a value of the WRONG type is a
+# TypeError when `strict` — WPT asserts `new UIEvent("x", {view: 7})` throws.
+def _evd_iface(opt: int32, name: Ptr[uint8], n: int32, strict: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    t: int32 = js_type_of(v)
+    if t == TAG_OBJ:
+        return v
+    if t == TAG_UNDEF or t == TAG_NULL:
+        return js_null()
+    if strict != 0:
+        js_throw_type_error(cast[Ptr[uint8]]( \
+            "Failed to construct event: member is not of the expected type"))
+    return js_null()
+
+
+# The four EventModifierInit booleans shared by MouseEvent / KeyboardEvent /
+# WheelEvent. Written unconditionally so `"ctrlKey" in ev` is true even when the
+# dictionary omitted them (the WPT check is `property in event`, not truthiness).
+def _ev_modifiers(ev: int32, opt: int32):
+    js_set_prop(ev, cast[Ptr[uint8]]("ctrlKey"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("ctrlKey"), 7)))
+    js_set_prop(ev, cast[Ptr[uint8]]("shiftKey"), 8, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("shiftKey"), 8)))
+    js_set_prop(ev, cast[Ptr[uint8]]("altKey"), 6, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("altKey"), 6)))
+    js_set_prop(ev, cast[Ptr[uint8]]("metaKey"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("metaKey"), 7)))
+
+
+# Does this flavor inherit UIEvent? (UIEvent itself, and every interface whose
+# spec parent chain reaches it.)
+def _ev_is_ui(flavor: int32) -> int32:
+    if flavor == 2 or flavor == 3 or flavor == 4 or flavor == 6 or \
+       flavor == 9 or flavor == 10 or flavor == 14 or flavor == 15:
+        return 1
+    return 0
+
+
+# Does this flavor inherit MouseEvent? (MouseEvent, DragEvent, WheelEvent.)
+def _ev_is_mouse(flavor: int32) -> int32:
+    if flavor == 2 or flavor == 9 or flavor == 15:
+        return 1
+    return 0
+
+
 def _make_event(flavor: int32) -> int32:
-    ev: int32 = js_new_object_v()
-    if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
-        js_set_proto_v(ev, g_ev_proto[flavor])
+    # Initialise the RECEIVER when the call gave us one. `new Event(...)` and
+    # `super(type, init)` from a `class X extends Event` constructor both arrive
+    # with `this` already linked to the correct prototype. Minting a fresh
+    # object instead — what this did before — dropped every field on the floor
+    # for the subclass case (super() discards the return value), and branded
+    # `new UIEvent()` with Event.prototype so `instanceof UIEvent` was false.
+    ev: int32 = js_this()
+    if js_type_of(ev) != TAG_OBJ or _ev_this_is_global(ev) != 0:
+        ev = js_new_object_v()
+        if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
+            js_set_proto_v(ev, g_ev_proto[flavor])
     # type (arg0) — copied into a stable buffer first (js_str_ptr shares scratch).
     tn: int32 = 0
     if js_arg_count() >= 1:
         tn = _arg_bytes(0, &dom_idtmp[0], 256)
         if _is_undef_str(&dom_idtmp[0], tn) != 0:
             tn = 0
+    opt: int32 = js_undefined()
+    if js_arg_count() >= 2:
+        opt = js_arg(1)
     js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
                 js_new_string(&dom_idtmp[0], cast[uint64](tn)))
-    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(0))
-    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(0))
+    # ---- EventInit ----------------------------------------------------------
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("bubbles"), 7)))
+    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("cancelable"), 10)))
+    js_set_prop(ev, cast[Ptr[uint8]]("composed"), 8, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("composed"), 8)))
     js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
-    js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, js_null())
+    # isTrusted is a readonly Event attribute, NOT a dictionary member: a
+    # script-constructed event is always untrusted no matter what the init says.
+    js_set_prop(ev, cast[Ptr[uint8]]("isTrusted"), 9, js_bool(0))
     js_set_prop(ev, cast[Ptr[uint8]]("target"), 6, js_null())
     js_set_prop(ev, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("srcElement"), 10, js_null())
     js_set_prop(ev, cast[Ptr[uint8]]("eventPhase"), 10, js_number(cast[float64](0)))
+    g_ev_ts_tick = g_ev_ts_tick + 1
+    js_set_prop(ev, cast[Ptr[uint8]]("timeStamp"), 9, \
+                js_number(cast[float64](g_ev_ts_tick) * 0.005))
     js_set_prop(ev, cast[Ptr[uint8]]("preventDefault"), 14, \
                 js_new_native_fn(js_hbase + NID_PREVENT))
     js_set_prop(ev, cast[Ptr[uint8]]("stopPropagation"), 15, \
@@ -10851,35 +11006,74 @@ def _make_event(flavor: int32) -> int32:
     js_set_prop(ev, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
                 js_new_native_fn(js_hbase + NID_STOPIMMED))
     _event_constants(ev)
-    if flavor == 2:
-        # basic MouseEvent geometry (defaults 0)
-        js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, js_number(cast[float64](0)))
-        js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, js_number(cast[float64](0)))
-        js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, js_number(cast[float64](0)))
-    if flavor == 3:
-        js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, \
-                    js_new_string(cast[Ptr[uint8]](""), 0))
-    # options object (arg1)
-    if js_arg_count() >= 2:
-        opt: int32 = js_arg(1)
-        js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, \
-                    js_bool(js_to_bool(js_get_prop(opt, cast[Ptr[uint8]]("bubbles"), 7))))
-        js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, \
-                    js_bool(js_to_bool(js_get_prop(opt, cast[Ptr[uint8]]("cancelable"), 10))))
+    # ---- UIEventInit (view, detail) -----------------------------------------
+    if _ev_is_ui(flavor) != 0:
+        js_set_prop(ev, cast[Ptr[uint8]]("view"), 4, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("view"), 4, 1))
+        js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("detail"), 6)))
+    else:
+        # CustomEvent's detail is `any` with default null; plain Event keeps the
+        # null the dispatcher has always seen here.
+        js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, js_null())
         if flavor == 1:
-            js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, \
-                        js_get_prop(opt, cast[Ptr[uint8]]("detail"), 6))
-        if flavor == 2:
-            js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("clientX"), 7))))
-            js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("clientY"), 7))))
-            js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("button"), 6))))
-        if flavor == 3:
-            kv: int32 = js_get_prop(opt, cast[Ptr[uint8]]("key"), 3)
-            if js_type_of(kv) == 4:
-                js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, kv)
+            dv: int32 = _evd_get(opt, cast[Ptr[uint8]]("detail"), 6)
+            if js_type_of(dv) != TAG_UNDEF:
+                js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, dv)
+    # ---- MouseEventInit -----------------------------------------------------
+    if _ev_is_mouse(flavor) != 0:
+        _ev_modifiers(ev, opt)
+        js_set_prop(ev, cast[Ptr[uint8]]("screenX"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("screenX"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("screenY"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("screenY"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("clientX"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("clientY"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("button"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("buttons"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("buttons"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("relatedTarget"), 13, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("relatedTarget"), 13, 0))
+    # ---- WheelEventInit -----------------------------------------------------
+    if flavor == 15:
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaX"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaX"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaY"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaY"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaZ"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaZ"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaMode"), 9, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaMode"), 9)))
+    # ---- KeyboardEventInit --------------------------------------------------
+    if flavor == 3:
+        _ev_modifiers(ev, opt)
+        js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, \
+                    _evd_str(opt, cast[Ptr[uint8]]("key"), 3))
+        js_set_prop(ev, cast[Ptr[uint8]]("code"), 4, \
+                    _evd_str(opt, cast[Ptr[uint8]]("code"), 4))
+        js_set_prop(ev, cast[Ptr[uint8]]("location"), 8, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("location"), 8)))
+        js_set_prop(ev, cast[Ptr[uint8]]("repeat"), 6, \
+                    js_bool(_evd_bool(opt, cast[Ptr[uint8]]("repeat"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("isComposing"), 11, \
+                    js_bool(_evd_bool(opt, cast[Ptr[uint8]]("isComposing"), 11)))
+        js_set_prop(ev, cast[Ptr[uint8]]("charCode"), 8, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("charCode"), 8)))
+        js_set_prop(ev, cast[Ptr[uint8]]("keyCode"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("keyCode"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("which"), 5, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("which"), 5)))
+    # ---- FocusEventInit -----------------------------------------------------
+    if flavor == 10:
+        js_set_prop(ev, cast[Ptr[uint8]]("relatedTarget"), 13, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("relatedTarget"), 13, 0))
+    # ---- CompositionEventInit / TextEvent -----------------------------------
+    if flavor == 6 or flavor == 14:
+        js_set_prop(ev, cast[Ptr[uint8]]("data"), 4, \
+                    _evd_str(opt, cast[Ptr[uint8]]("data"), 4))
     return ev
 
 
