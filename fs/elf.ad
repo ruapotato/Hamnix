@@ -2804,8 +2804,7 @@ def elf32_wx_span_reset_selftest(blob: Ptr[uint8],
     printk2("[rfork-cow] post-load RO spans: app_ro_n=%d interp_ro_n=%d\n",
             elf_last_app_ro_n, elf_last_interp_ro_n)
     if elf_last_app_ro_n != 0 or elf_last_interp_ro_n != 0:
-        printk0("[rfork-cow] FAIL: stale W^X RO spans survived ELF32 load "
-                "(child rfork would fault verbatim-RO)\n")
+        printk0("[rfork-cow] FAIL: stale W^X RO spans survived ELF32 load (child rfork would fault verbatim-RO)\n")
         return 0
     printk0("[rfork-cow] PASS: ELF32 load reset W^X RO spans to 0\n")
     return 1

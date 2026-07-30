@@ -820,12 +820,10 @@ def track_allocs_selftest() -> int32:
     else:
         cens: uint64 = mm_orphan_census()
         if cens == 0:
-            printk0("[TRKALLOC] FAIL: census is BLIND — it did not detect a"
-                    " planted UNMAPPED frame\n")
+            printk0("[TRKALLOC] FAIL: census is BLIND — it did not detect a planted UNMAPPED frame\n")
             ok = 0
         if page_alloc_census_orphans(PA_SITE_VMA_ANON) == 0:
-            printk0("[TRKALLOC] FAIL: planted orphan not attributed to"
-                    " its site\n")
+            printk0("[TRKALLOC] FAIL: planted orphan not attributed to its site\n")
             ok = 0
         page_alloc_census_unplant()
     page_alloc_track_enable(0)

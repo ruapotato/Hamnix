@@ -157,8 +157,7 @@ def setup_per_cpu_areas():
     gs_base: uint64 = _pcpu_gs_base(area)
     wrmsr_gsbase(gs_base)
     if gs_base != area:
-        printk2("[percpu] gs.base via page_offset: area=%p alias=%p"
-                " (KPTI #94 Brick B)\n", area, gs_base)
+        printk2("[percpu] gs.base via page_offset: area=%p alias=%p (KPTI #94 Brick B)\n", area, gs_base)
 
     # Now that %gs is anchored we can read/write Percpu[T] globals
     # safely. Stamp this CPU's logical id.

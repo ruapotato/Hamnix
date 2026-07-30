@@ -786,16 +786,13 @@ def smap_enforced_test():
     kus: uint64 = kleaf & cast[uint64](0x4)
     printk_set_level(PRINTK_LEVEL_EMERG)
     if audit_leaks == 0 and kpresent != 0 and kus == 0:
-        printk1("  [smap-enforced] PASS: kernel high half US=0 (leaf=%p),"
-                " 0 audit leaks\n", kleaf)
+        printk1("  [smap-enforced] PASS: kernel high half US=0 (leaf=%p), 0 audit leaks\n", kleaf)
     else:
-        printk2("  [smap-enforced] FAIL: kernel-VA integrity leaks=%d"
-                " hi-leaf=%p\n", audit_leaks, kleaf)
+        printk2("  [smap-enforced] FAIL: kernel-VA integrity leaks=%d hi-leaf=%p\n", audit_leaks, kleaf)
 
     if cpu_mitig_smap_active() != 1:
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("  [smap-enforced] SKIP: CR4.SMAP not active (TCG host or"
-                " SMAP_RUNTIME_ENABLE=0) — kernel-VA audit above still ran\n")
+        printk0("  [smap-enforced] SKIP: CR4.SMAP not active (TCG host or SMAP_RUNTIME_ENABLE=0) — kernel-VA audit above still ran\n")
         return
     pml4: uint64 = uaccess_current_pml4()
     pa_set_site(PA_SITE_UACCESS)
@@ -817,11 +814,9 @@ def smap_enforced_test():
     smap_probe_disarm()
     printk_set_level(PRINTK_LEVEL_EMERG)
     if faulted == 1:
-        printk1("  [smap-enforced] PASS: un-stac'd CPL=0 read of a US=1 user"
-                " page #PF'd under CR4.SMAP=1 (ret=%p)\n", ret)
+        printk1("  [smap-enforced] PASS: un-stac'd CPL=0 read of a US=1 user page #PF'd under CR4.SMAP=1 (ret=%p)\n", ret)
     else:
-        printk1("  [smap-enforced] FAIL: un-stac'd CPL=0 read of a US=1 user"
-                " page did NOT fault (ret=%p) — SMAP NOT enforcing\n", ret)
+        printk1("  [smap-enforced] FAIL: un-stac'd CPL=0 read of a US=1 user page did NOT fault (ret=%p) — SMAP NOT enforcing\n", ret)
     free_page(p_u)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk0("  [smap-enforced] done\n")

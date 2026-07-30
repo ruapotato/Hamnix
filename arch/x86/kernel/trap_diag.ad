@@ -966,8 +966,7 @@ def do_trap_diag_2(rsp: uint64, ss: uint64):
     if _kous_rsp != 0 and _kous_rsp < PF_USER_VA_LIMIT:
         _kous_cur: uint64 = current_idx_get()
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk1("[trap-diag] *** CPL0 ON USER STACK: rsp=%p is a USER VA — "
-                "kernel executed on a user stack (this is the #DF root)\n",
+        printk1("[trap-diag] *** CPL0 ON USER STACK: rsp=%p is a USER VA — kernel executed on a user stack (this is the #DF root)\n",
                 _kous_rsp)
         _kous_lo: uint64 = task_ustack_lo(_kous_cur)
         _kous_sz: uint64 = task_ustack_sz(_kous_cur)
@@ -980,8 +979,7 @@ def do_trap_diag_2(rsp: uint64, ss: uint64):
         if _kous_lo != 0 and _kous_rsp >= _kous_lo \
                 and _kous_rsp < (_kous_lo + _kous_sz):
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk0("[trap-diag]     rsp is INSIDE this task's user stack "
-                    "VMA (confirmed kernel-on-user-stack)\n")
+            printk0("[trap-diag]     rsp is INSIDE this task's user stack VMA (confirmed kernel-on-user-stack)\n")
 
     # IRET-FRAME-DIAG: dump 5 quads at rsp. For a #GP on `iretq`, rsp
     # points at the iret frame [RIP, CS, RFLAGS, RSP, SS]; a bad CS/SS

@@ -1164,9 +1164,7 @@ def page_alloc_census_report(total: uint64):
     # "nothing leaks anywhere", which is exactly the false exoneration this
     # whole exercise exists to avoid.
     printk_set_level(PRINTK_LEVEL_EMERG)
-    printk0("[census] scope: USER-MAPPED sites only. kernel sites"
-            " (pgtable/slab/kstack/pml4/wsys/tmpfs) have no user PTE by"
-            " design and are NOT judged here — use kmtrack for the heap.\n")
+    printk0("[census] scope: USER-MAPPED sites only. kernel sites (pgtable/slab/kstack/pml4/wsys/tmpfs) have no user PTE by design and are NOT judged here — use kmtrack for the heap.\n")
     # SELF-VALIDATION. If a control orphan is outstanding, the census MUST
     # have found it. Saying so in the census's own output is the difference
     # between a measurement and a hope: a reader must never have to take
@@ -1175,17 +1173,13 @@ def page_alloc_census_report(total: uint64):
     if _pa_planted != 0:
         if total == 0:
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk0("[census] CONTROL FAILED: a planted UNMAPPED frame was"
-                    " NOT detected. This census is BLIND and every clean"
-                    " verdict from it is VOID.\n")
+            printk0("[census] CONTROL FAILED: a planted UNMAPPED frame was NOT detected. This census is BLIND and every clean verdict from it is VOID.\n")
         else:
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk1("[census] control OK: planted orphan detected"
-                    " (%d orphan(s) total, control included)\n", total)
+            printk1("[census] control OK: planted orphan detected (%d orphan(s) total, control included)\n", total)
     else:
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("[census] NO CONTROL PLANTED: a 0-orphan result here is"
-                " UNVALIDATED — write `track plant` before `track census`.\n")
+        printk0("[census] NO CONTROL PLANTED: a 0-orphan result here is UNVALIDATED — write `track plant` before `track census`.\n")
     # NEGATIVE CONTROL. A mapped frame MUST be marked reachable and MUST NOT
     # be tallied. If it is not, the census over-reports and every non-zero
     # orphan count it has ever produced is suspect — which is a strictly more
@@ -1199,24 +1193,17 @@ def page_alloc_census_report(total: uint64):
                 _pa_mplanted, s, r)
         if r == 0:
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk0("[census] NEGATIVE CONTROL FAILED: a frame that IS"
-                    " mapped was NOT marked reachable, so it was counted as"
-                    " an ORPHAN. This census OVER-REPORTS and every orphan"
-                    " count from it is VOID.\n")
+            printk0("[census] NEGATIVE CONTROL FAILED: a frame that IS mapped was NOT marked reachable, so it was counted as an ORPHAN. This census OVER-REPORTS and every orphan count from it is VOID.\n")
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk2("[census]   negctl va=%p in task slot %d — the walk"
-                    " missed this live mapping.\n",
+            printk2("[census]   negctl va=%p in task slot %d — the walk missed this live mapping.\n",
                     _pa_mplant_va, _pa_mplant_slot)
         else:
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk2("[census] negative control OK: mapped frame at va=%p"
-                    " (slot %d) marked reachable, not counted.\n",
+            printk2("[census] negative control OK: mapped frame at va=%p (slot %d) marked reachable, not counted.\n",
                     _pa_mplant_va, _pa_mplant_slot)
     else:
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("[census] NO NEGATIVE CONTROL: a non-zero orphan count here"
-                " is UNVALIDATED against over-reporting — write"
-                " `track mplant` before `track census`.\n")
+        printk0("[census] NO NEGATIVE CONTROL: a non-zero orphan count here is UNVALIDATED against over-reporting — write `track mplant` before `track census`.\n")
     i: uint64 = 0
     while i < PA_SITE_MAX:
         # Report every user-mapped site with live frames, INCLUDING the ones

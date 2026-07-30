@@ -1346,8 +1346,7 @@ def _kstack_va(phys: uint64) -> uint64:
         va: uint64 = page_offset_va(phys)
         if _kstack_flip_logged == 0:
             _kstack_flip_logged = 1
-            printk2("[sched] kstack via page_offset: phys=%p alias=%p"
-                    " (KPTI #94 Brick B)\n", phys, va)
+            printk2("[sched] kstack via page_offset: phys=%p alias=%p (KPTI #94 Brick B)\n", phys, va)
         return va
     return phys
 
@@ -9092,14 +9091,12 @@ def _mm_census_classify(site: uint64):
                 if m != 0:
                     anyspan = 1
                     printk_set_level(PRINTK_LEVEL_EMERG)
-                    printk3("[cens2] orphan[%d] span slot=%d mask=%d"
-                            " (1=img 2=interp 4=ustk 8=brk 16=vma)\n",
+                    printk3("[cens2] orphan[%d] span slot=%d mask=%d (1=img 2=interp 4=ustk 8=brk 16=vma)\n",
                             k, si, m)
             si = si + 1
         if anyspan == 0:
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk1("[cens2] orphan[%d] span: UNACCOUNTED (no live task"
-                    " claims this VA — its owner is gone)\n", k)
+            printk1("[cens2] orphan[%d] span: UNACCOUNTED (no live task claims this VA — its owner is gone)\n", k)
         k = k + 1
     # REFCOUNT HISTOGRAM over every collected orphan. One line that says
     # whether the population is uniformly untracked (a declined free) or
@@ -9320,8 +9317,7 @@ def mm_census_plant_mapped() -> int32:
                         MM_NEGCTL_VA, p, 0) != 0:
         free_page(p)
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("[census] mplant REFUSED: could not crack tables for the"
-                " scratch VA\n")
+        printk0("[census] mplant REFUSED: could not crack tables for the scratch VA\n")
         return -1
     page_alloc_census_mplant_arm(p, MM_NEGCTL_VA, su)
     return 0
@@ -9373,8 +9369,7 @@ def mm_origin_live_dump(org: uint64) -> uint64:
         return 0
     if page_alloc_track_mode() < 2:
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("[orgl] NOTE: owner/tag need `track full` (mode 2);"
-                " they will read 0.\n")
+        printk0("[orgl] NOTE: owner/tag need `track full` (mode 2); they will read 0.\n")
     # THE CAP IS ON PRINTING, NOT ON COUNTING (leak pass 16).
     #
     # Pass 15 stopped the whole walk at 64 survivors, which was harmless for a
@@ -9462,8 +9457,7 @@ def mm_origin_live_dump(org: uint64) -> uint64:
         if n >= 64 and detail != 0:
             detail = 0
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk0("[orgl] ... per-frame detail capped at 64; the TOTAL and"
-                    " owner-* tallies below cover EVERY survivor\n")
+            printk0("[orgl] ... per-frame detail capped at 64; the TOTAL and owner-* tallies below cover EVERY survivor\n")
         pfn = cow_origin_next_live(org, pfn + 1)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk3("[orgl] org=%d TOTAL=%d owner-live=%d\n", org, n, nlive)
