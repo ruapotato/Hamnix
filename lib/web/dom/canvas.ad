@@ -4262,8 +4262,6 @@ def _rng_method(rel: int32, r: int32) -> int32:
         if how == 1 or how == 2:                           # START_TO_END/END_TO_START
             nb = _rng_get(other, cast[Ptr[uint8]]("endContainer"), 12)
             ob = _rng_off(other, cast[Ptr[uint8]]("endOffset"), 9)
-        if how == 0 or how == 3:
-            return js_number(cast[float64](_rng_cmp_bp(na, oa, nb, ob)))
         return js_number(cast[float64](_rng_cmp_bp(na, oa, nb, ob)))
     if rel == NID_RNG_INSERTNODE:
         _insert_before_v(sc3, a0, _rng_child_at(sc3, so3))
