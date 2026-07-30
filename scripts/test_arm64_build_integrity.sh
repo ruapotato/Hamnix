@@ -110,7 +110,7 @@ fi
 echo "[$TAG] 1) building the ARM64 LLVM whole-kernel lane"
 mkdir -p "$WORK"
 if ! bash scripts/build_kernel_llvm_arm64.sh "$ELF" >"$WORK/integrity_build.log" 2>&1; then
-    sed 's/^/[$TAG]   | /' "$WORK/integrity_build.log"
+    sed "s/^/[$TAG]   | /" "$WORK/integrity_build.log"
     verdict_fail "$TAG" "scripts/build_kernel_llvm_arm64.sh FAILED — the ARM64 lane does not build"
 fi
 
