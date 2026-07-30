@@ -4493,6 +4493,98 @@ def _ext4_dir_try_insert_in_block(inode_buf: Ptr[uint8], lb: uint64,
     return _ext4_write_block(phys, &ext4_blk_buf[0])
 
 
+def _ext4_extent_block_csum_set(buf: uint64, seed: uint32) -> int32:
+    # Stamp the ext4_extent_tail checksum of ONE extent-tree block held
+    # at byte address `buf`. Linux's ext4_extent_block_csum_set: the
+    # crc32c runs over the block from its header up to (not including)
+    # the tail, which sits at EXT4_EXTENT_TAIL_OFFSET == sizeof(header)
+    # + eh_max * sizeof(extent) == 12 + eh_max*12, and the 4-byte result
+    # is stored there. `seed` is the inode's csum seed
+    # (crc32c(uuid_seed, inum, i_generation)).
+    magic: uint16 = _ext4_read_u16(cast[Ptr[uint8]](buf + 0))
+    if magic != EXT4_EXTENT_MAGIC:
+        return -1
+    eh_max: uint16 = _ext4_read_u16(cast[Ptr[uint8]](buf + 4))
+    off: uint64 = 12 + cast[uint64](eh_max) * 12
+    if off + 4 > ext4_block_size:
+        return -1
+    c: uint32 = crc32c_update(seed, cast[Ptr[uint8]](buf), off)
+    _ext4_write_u32(cast[Ptr[uint8]](buf + off), c)
+    return 0
+
+
+def _ext4_extent_stamp_tree_csums(inode_buf: Ptr[uint8], inum: uint64,
+                                  gen: uint32) -> int32:
+    # Re-stamp the ext4_extent_tail checksum of every extent-tree BLOCK
+    # this inode owns (the inode-resident header carries no tail — it is
+    # covered by the inode checksum instead).
+    #
+    # WHY: nothing in this driver stamped extent-block checksums. On a
+    # metadata_csum filesystem — the mkfs.ext4 DEFAULT — Linux then
+    # rejects the tree: e2fsck reports "extent block passes checks, but
+    # checksum does not match extent" and debugfs refuses to list the
+    # directory at all (it fails the same check while walking). So the
+    # moment a directory outgrew its 4 inline extents, the result was
+    # unreadable by real Linux ext4 tooling.
+    #
+    # Depth 1 and 2 are walked (an interior node and its children); the
+    # dir writer never builds deeper trees for a directory. Returns 0
+    # when everything reachable was stamped, -1 if a depth-3 tree or an
+    # I/O error left some block unstamped. No-op without metadata_csum.
+    if ext4_metadata_csum == 0:
+        return 0
+    eh: uint64 = cast[uint64](inode_buf) + INODE_I_BLOCK_OFFSET
+    magic: uint16 = _ext4_read_u16(cast[Ptr[uint8]](eh + 0))
+    if magic != EXT4_EXTENT_MAGIC:
+        return -1
+    depth: uint16 = _ext4_read_u16(
+        cast[Ptr[uint8]](eh + EXT4_EH_DEPTH_OFFSET))
+    if depth == 0:
+        return 0                                   # no extent blocks
+    if depth > 2:
+        printk0("ext4: extent csum: depth>2 tree left unstamped\n")
+        return -1
+    seed: uint32 = _ext4_dirblock_csum_seed(inum, gen)
+    entries: uint16 = _ext4_read_u16(
+        cast[Ptr[uint8]](eh + EXT4_EH_ENTRIES_OFFSET))
+    i: uint16 = 0
+    while i < entries:
+        ei: uint64 = eh + 12 + cast[uint64](i) * 12
+        c_lo: uint32 = _ext4_read_u32(cast[Ptr[uint8]](ei + 4))
+        c_hi: uint16 = _ext4_read_u16(cast[Ptr[uint8]](ei + 8))
+        child: uint64 = (cast[uint64](c_hi) << 32) | cast[uint64](c_lo)
+        if _ext4_read_block(child, &ext4_extidx_buf[0]) != 0:
+            return -1
+        cbuf: uint64 = cast[uint64](&ext4_extidx_buf[0])
+        if depth == 2:
+            # `child` is an interior node: stamp ITS children (leaves)
+            # first, through a second buffer so `cbuf` stays intact.
+            c_ent: uint16 = _ext4_read_u16(
+                cast[Ptr[uint8]](cbuf + EXT4_EH_ENTRIES_OFFSET))
+            j: uint16 = 0
+            while j < c_ent:
+                cei: uint64 = cbuf + 12 + cast[uint64](j) * 12
+                l_lo: uint32 = _ext4_read_u32(cast[Ptr[uint8]](cei + 4))
+                l_hi: uint16 = _ext4_read_u16(cast[Ptr[uint8]](cei + 8))
+                leaf: uint64 = (cast[uint64](l_hi) << 32) \
+                             | cast[uint64](l_lo)
+                if _ext4_read_block(leaf, &ext4_extleaf_buf[0]) != 0:
+                    return -1
+                if _ext4_extent_block_csum_set(
+                        cast[uint64](&ext4_extleaf_buf[0]), seed) != 0:
+                    return -1
+                if _ext4_journal_write_block(leaf,
+                                             &ext4_extleaf_buf[0]) != 0:
+                    return -1
+                j = j + 1
+        if _ext4_extent_block_csum_set(cbuf, seed) != 0:
+            return -1
+        if _ext4_journal_write_block(child, &ext4_extidx_buf[0]) != 0:
+            return -1
+        i = i + 1
+    return 0
+
+
 def _ext4_dir_grow_insert(parent_inum: uint64, parent_gen: uint32,
                           inode_buf: Ptr[uint8], new_logical: uint64,
                           name: Ptr[char], name_len: uint64,
@@ -4516,6 +4608,14 @@ def _ext4_dir_grow_insert(parent_inum: uint64, parent_gen: uint32,
     if _ext4_extent_append_block(inode_buf, new_logical, new_phys) != 0:
         printk0("ext4: dir grow: extent append failed\n")
         ext4_free_block(new_phys)
+        return -1
+    # Once the dir outgrows its 4 inline extents the append builds a real
+    # extent TREE, whose blocks carry their own metadata_csum tails. Stamp
+    # them, or Linux rejects the tree (e2fsck "checksum does not match
+    # extent"; debugfs refuses to list the directory).
+    if _ext4_extent_stamp_tree_csums(inode_buf, parent_inum,
+                                     parent_gen) != 0:
+        printk0("ext4: dir grow: extent-block csum stamp failed\n")
         return -1
     # Format the new block and slot our record into it. (The extent
     # append above works out of its own scratch buffers, so building the

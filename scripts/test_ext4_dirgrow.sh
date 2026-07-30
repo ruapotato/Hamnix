@@ -228,7 +228,7 @@ check "self-test PASS banner" "[ext4-dirgrow] PASS" banner
 # count of entries a SINGLE block accepted. It must be far below the
 # number of entries we just stored (otherwise nothing was proven).
 CEIL=$(grep -a -o "measured old 1-block ceiling: [0-9]* new entries" "$LOG" \
-       | head -1 | grep -a -o "[0-9]*" | head -1)
+       | head -1 | sed -e 's/.*ceiling: //' -e 's/ new entries//')
 if blinded ceiling; then
     echo "[test_ext4_dirgrow] MUTATED(blinded): measured-ceiling assertion"
 elif [ -z "${CEIL:-}" ]; then
