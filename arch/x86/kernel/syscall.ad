@@ -2695,6 +2695,16 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     aslr_interp_vbase: uint64 = aslr_interp_bias()
     elf_set_aslr_vbases(aslr_app_vbase, aslr_interp_vbase)
     vma_set_mmap_base(exec_slot, aslr_mmap_slide())
+    # STALE-LEAF AUDIT (leak pass 12), default-off. execve is the OTHER
+    # address-space replacement: every range walk above is done and
+    # elf_load_blob is about to stamp new leaves over the outgoing ones. A
+    # leaf still present here that no wholesale free covers is a COW
+    # reference this task is about to discard rather than drop — the exact
+    # shape of the census's "refcount 1, zero mappers, owner alive" orphans.
+    # The reap-side audit reports ZERO of these, so if the leak is a lost
+    # reference at all, it is lost HERE. Cross-module call into
+    # kernel/sched/core.ad.
+    _mm_reap_stale_leaf_audit(exec_slot)
     entry: uint64 = elf_load_blob(cast[Ptr[uint8]](blob), sz)
     if entry == 0:
         # #106 GRACEFUL OOM. Two bugs converged here into a boot-wedge:
