@@ -107,6 +107,15 @@ Every positive net was adjudicated by the owner discriminator, not by its
 sign: `owner-dead = 0` and `owner-stray = 0` over 44 survivors, i.e. every
 surviving frame is still mapped by the live task that allocated it.
 
+**The whole table reproduced exactly on a second, independent boot**
+(`build/cow_deapps_origin/20260730-162048`, a different machine instance —
+its planted control landed at a different physical frame, `0x14c97000` vs
+`0x14e13000`): the same eight apps, the same three nets each, the same
+verdicts, and the same single planted orphan. Two identical readings of a
+per-frame count are worth more than any number of soak means, because passes
+14-16 established that two byte-identical builds differ by 6.4 pg/cycle on
+the aggregate.
+
 ### The census, whole-machine, after all 32 launches
 
 ```
@@ -275,10 +284,11 @@ loudly) is named below rather than attempted here.
 ```
 [cowapps]   PASS  — 8 of 8 apps adjudicated, 32 open/closes, census reports
                     ONE orphan (the plant), both controls green, run
-                    predicate clean. (The gate's first run FAILED on its own
-                    plant-in-the-growth-bucket bug, §2; re-adjudicating the
-                    UNCHANGED serial log after the fix gives PASS, and the
-                    fix is mutation-proven below.)
+                    predicate clean. Run TWICE end to end: the first run
+                    FAILED on the gate's own plant-in-the-growth-bucket bug
+                    (§2); after the fix a fresh boot passes end to end
+                    (20260730-162048) AND re-adjudicating the first run's
+                    UNCHANGED serial log also passes, with identical nets.
 [cowterm]   PASS  — 4 cycles, arms 1/19/21 adjudicated by the newly recorded
                     owner, site-20 orphan accounted for, census 1 orphan
 [kobjdiff]  PASS  — zero semantic divergences across 11380 matched kernel
