@@ -285,13 +285,29 @@ ctl verb that nothing else calls.
 * `slab` / `pgtable` / `kstack` / `pml4` / `execve` page footprints grow —
   all `+0`.
 
+## 7b. Gates actually run
+
+```
+[kobjdiff] PASS — zero semantic kernel divergences across 11362 matched functions
+[kobjdiff] PASS — native kernel codegen matches the seed (semantic).
+[test_cow_fork]  PASS -- copy-on-write fork keeps parent/child private
+[test_mmap_fork] PASS -- copy-on-write fork over an mmap VMA keeps parent/child private
+[cowterm] run 1 (4 cycles) FAIL  — census 2 orphans, 3 arms unadjudicated
+[cowterm] run 2 (6 cycles) PASS  — census 1 orphan (the plant), every arm adjudicated
+[cowterm] run 3 (6 cycles) FAIL  — census 2 orphans; owner-untagged fix confirmed
+```
+
+The pass-16 gate is RED on runs 1 and 3, and that is the honest state: the
+census sees one frame it cannot reach, and the gate refuses to call that green.
+It was not silenced and its tolerance was not touched.
+
+**NOT run, stated rather than implied:** `scripts/test_de_visual_gate.sh` and a
+DE soak with a SIGTERM audit.
+
 **NOT established, stated rather than implied:** this is a four-cycle,
 one-boot, terminal-only measurement. It does not speak to the other eight apps
 in the soak pool, to a 12-minute slope, or to anything `region_alloc` backs
-(arms 1 and 19, and the census's `USER-MAPPED sites only` scope). And
-`scripts/test_native_vs_seed_kobjdiff.sh`, `test_cow_fork`, `test_mmap_fork`,
-`scripts/test_de_visual_gate.sh` and a DE soak with a SIGTERM audit were NOT
-run in this pass.
+(arms 1 and 19, and the census's `USER-MAPPED sites only` scope). 
 
 ---
 
