@@ -1,0 +1,350 @@
+# user/wakelat.ad
+#
+# WAKEUP-LATENCY REPRODUCER — the measurement behind
+# scripts/test_wakeup_latency.sh.
+#
+# USER REPORT: "things that take up a lot of CPU make the mouse studder or
+# freze; it would be nice if the mouse would keep working even if a process is
+# taking up 100% cpu."
+#
+# The kernel-composited cursor GLYPH was already covered (devmouse.ad's tick
+# pump + inline pointer service). This measures the other half — the half a
+# user actually interacts with: an event arrives, and the APPLICATION that has
+# to respond to it is a blocked task that must be SCHEDULED first. Clicks,
+# drags, menu tracking and hover all live there.
+#
+# WHAT IS MEASURED
+#   A ping-pong round trip over two pipes against /bin/wakelat_echo, which
+#   spends its whole life parked in a kernel wait queue exactly like a DE
+#   client blocked on /dev/wsys/<wid>/pointer:
+#
+#       t0 = clock_gettime(MONOTONIC)
+#       write(req, 1 byte)          -> wakes the echo task
+#       read(rsp, 1 byte)           -> blocks until the echo task RUNS
+#       t1 = clock_gettime(MONOTONIC)
+#
+#   t1 - t0 is two wake->dispatch intervals plus a few microseconds of pipe
+#   work. It is reported as a DISTRIBUTION (n, max, mean, bucket counts) and
+#   never as an average alone: the complaint is about the tail, and a mean
+#   hides a tail completely.
+#
+# THE LOAD
+#   N copies of /bin/wakelat_hog: nice 0 (an ORDINARY process — the user did
+#   not report a high-priority one), syscall-free tight loops, one per core and
+#   then some. Each reports its own iteration count, so the SAME boot yields
+#   both halves of the trade: how much latency was won and how much throughput
+#   it cost.
+#
+# THE A/B
+#   Two arms in ONE boot, same workload, same instrument, toggled through
+#   /proc/self/ctl `wklat 0` / `wklat 1`:
+#     ARM OFF — wakeup preemption disabled: the pre-fix scheduler, where a
+#               woken task waits out the incumbent's remaining quantum.
+#     ARM ON  — wakeup preemption enabled.
+#   Measuring both here rather than across two boots makes the headline a
+#   RATIO, which host speed and QEMU accel mode cannot invalidate, and gives
+#   the gate a built-in mutation test: if turning the fix off does not make the
+#   number worse, the gate is not measuring the fix and says so.
+#
+# The kernel-side histogram (`wklat 3`, printed by the kernel itself) is the
+# independent second witness: it times wake->dispatch for EVERY task in the
+# system, including wakes raised from IRQ context that this userland round
+# trip cannot generate.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_pipe(fds: Ptr[int32]) -> int32
+extern def sys_close(fd: int32) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
+extern def sys_clock_gettime(clockid: int32, tp: Ptr[uint64]) -> int64
+extern def sys_get_jiffies() -> uint64
+extern def sys_exit(code: uint64)
+
+from lib.p9 import spawn_detached
+
+CLOCK_MONOTONIC: int32 = 1
+
+# Hogs to run. 4 fills every core of every configuration this is booted under
+# and leaves a surplus, so the measured task is genuinely contending.
+NHOGS: uint64 = 4
+
+# Per-arm measurement window in jiffies (100 Hz). Must be comfortably SHORTER
+# than wakelat_hog's own 700-jiffy window so the load is still running when
+# the window closes.
+ARM_JIFFIES: uint64 = 550
+
+# Round trips discarded at the start of an arm, while the hogs are still being
+# execve'd and the load has not reached steady state.
+WARMUP_TRIPS: uint64 = 12
+
+req_fds: Array[2, int32]
+rsp_fds: Array[2, int32]
+echo_argv: Array[2, uint64]
+hog_argv:  Array[2, uint64]
+
+ts_a: Array[2, uint64]
+ts_b: Array[2, uint64]
+
+# --- histogram --------------------------------------------------------
+h_n:    uint64 = 0
+h_sum:  uint64 = 0
+h_max:  uint64 = 0
+h_b1:   uint64 = 0      # <=   1 ms
+h_b5:   uint64 = 0      # <=   5 ms
+h_b12:  uint64 = 0      # <=  12 ms   (one 100 Hz tick + slack)
+h_b25:  uint64 = 0      # <=  25 ms
+h_b60:  uint64 = 0      # <=  60 ms   (a full nice-0 quantum)
+h_b120: uint64 = 0      # <= 120 ms
+h_over: uint64 = 0      # > 120 ms
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+numbuf: Array[24, uint8]
+
+
+def write_u64_raw(fd: int32, v: uint64):
+    tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    if x == 0:
+        tmp[0] = cast[uint8](48)
+        n = 1
+    while x > 0:
+        d: uint64 = x % 10
+        tmp[n] = cast[uint8](48 + d)
+        x = x / 10
+        n = n + 1
+    i: uint64 = 0
+    while i < n:
+        numbuf[i] = tmp[n - 1 - i]
+        i = i + 1
+    sys_write(fd, &numbuf[0], n)
+
+
+def write_nl(fd: int32):
+    nl: Array[1, uint8]
+    nl[0] = cast[uint8](10)
+    sys_write(fd, &nl[0], 1)
+
+
+def kv(name: Ptr[uint8], v: uint64):
+    write_str(1, name)
+    write_u64_raw(1, v)
+
+
+def hist_reset():
+    h_n    = 0
+    h_sum  = 0
+    h_max  = 0
+    h_b1   = 0
+    h_b5   = 0
+    h_b12  = 0
+    h_b25  = 0
+    h_b60  = 0
+    h_b120 = 0
+    h_over = 0
+
+
+def hist_add(us: uint64):
+    h_n = h_n + 1
+    h_sum = h_sum + us
+    if us > h_max:
+        h_max = us
+    if us <= 1000:
+        h_b1 = h_b1 + 1
+    elif us <= 5000:
+        h_b5 = h_b5 + 1
+    elif us <= 12000:
+        h_b12 = h_b12 + 1
+    elif us <= 25000:
+        h_b25 = h_b25 + 1
+    elif us <= 60000:
+        h_b60 = h_b60 + 1
+    elif us <= 120000:
+        h_b120 = h_b120 + 1
+    else:
+        h_over = h_over + 1
+
+
+def hist_report(label: Ptr[uint8]):
+    # One line per arm, all fields on it, so the gate parses a single regexp
+    # and a truncated serial line loses the whole sample rather than half of
+    # it (a half-parsed line is how a gate silently measures the wrong thing).
+    mean: uint64 = 0
+    if h_n > 0:
+        mean = h_sum / h_n
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" n=", h_n)
+    kv(" max_us=", h_max)
+    kv(" mean_us=", mean)
+    kv(" le1ms=", h_b1)
+    kv(" le5ms=", h_b5)
+    kv(" le12ms=", h_b12)
+    kv(" le25ms=", h_b25)
+    kv(" le60ms=", h_b60)
+    kv(" le120ms=", h_b120)
+    kv(" over120ms=", h_over)
+    write_nl(1)
+
+
+# --- kernel control ---------------------------------------------------
+
+def ctl(verb: Ptr[uint8]) -> int32:
+    fd: int32 = sys_open_write("/proc/self/ctl")
+    if fd < 0:
+        return -1
+    sys_write(fd, verb, strlen_u8(verb))
+    sys_close(fd)
+    return 0
+
+
+# --- one round trip ---------------------------------------------------
+
+def round_trip() -> uint64:
+    # Returns the round-trip time in MICROSECONDS, or 0 if the pipe broke.
+    b: Array[1, uint8]
+    b[0] = cast[uint8](88)                      # 'X'
+    ts_a[0] = 0
+    ts_a[1] = 0
+    ts_b[0] = 0
+    ts_b[1] = 0
+    if sys_clock_gettime(CLOCK_MONOTONIC, &ts_a[0]) != 0:
+        return 0
+    if sys_write(req_fds[1], &b[0], 1) != 1:
+        return 0
+    if sys_read(rsp_fds[0], &b[0], 1) != 1:
+        return 0
+    if sys_clock_gettime(CLOCK_MONOTONIC, &ts_b[0]) != 0:
+        return 0
+    t0: uint64 = ts_a[0] * 1000000000 + ts_a[1]
+    t1: uint64 = ts_b[0] * 1000000000 + ts_b[1]
+    if t1 <= t0:
+        return 0
+    return (t1 - t0) / 1000
+
+
+def spawn_hogs() -> uint64:
+    hog_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/wakelat_hog")
+    hog_argv[0] = cast[uint64](hog_path)
+    hog_argv[1] = 0
+    started: uint64 = 0
+    i: uint64 = 0
+    while i < NHOGS:
+        # Detached: this process never wait4s them, and a non-detached zombie
+        # per hog per arm would leak a whole address space (see
+        # lib/p9.ad::spawn_detached).
+        c: int32 = spawn_detached(cast[Ptr[char]](hog_path), &hog_argv[0],
+                                  -1, -1, cast[Ptr[uint64]](0))
+        if c >= 0:
+            started = started + 1
+        i = i + 1
+    return started
+
+
+def run_arm(label: Ptr[uint8], preempt_on: int32) -> uint64:
+    # Returns the number of samples collected.
+    if preempt_on != 0:
+        ctl("wklat 1\n")
+    else:
+        ctl("wklat 0\n")
+    ctl("wklat 2\n")                            # reset + arm kernel instrument
+    hist_reset()
+
+    nh: uint64 = spawn_hogs()
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" hogs=", nh)
+    write_nl(1)
+
+    # Burn the warm-up trips first — they overlap the hogs' execve + ELF load,
+    # which is a different (interrupt-latency) regime and would contaminate a
+    # scheduling measurement.
+    w: uint64 = 0
+    while w < WARMUP_TRIPS:
+        if round_trip() == 0:
+            write_str(1, "[wakelat] FAIL: round trip broke during warmup\n")
+            return 0
+        w = w + 1
+
+    deadline: uint64 = sys_get_jiffies() + ARM_JIFFIES
+    while sys_get_jiffies() < deadline:
+        us: uint64 = round_trip()
+        if us == 0:
+            write_str(1, "[wakelat] FAIL: round trip broke mid-window\n")
+            return h_n
+        hist_add(us)
+    hist_report(label)
+    ctl("wklat 3\n")                            # kernel-side histogram
+    return h_n
+
+
+def main() -> int32:
+    write_str(1, "[wakelat] start\n")
+
+    if sys_pipe(&req_fds[0]) != 0:
+        write_str(1, "[wakelat] FAIL: sys_pipe(req)\n")
+        sys_exit(1)
+        return 1
+    if sys_pipe(&rsp_fds[0]) != 0:
+        write_str(1, "[wakelat] FAIL: sys_pipe(rsp)\n")
+        sys_exit(1)
+        return 1
+
+    echo_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/wakelat_echo")
+    echo_argv[0] = cast[uint64](echo_path)
+    echo_argv[1] = 0
+    # Child reads the request pipe on fd 0 and writes the response pipe on
+    # fd 1 (spawn dup2s the two parent fds onto the child's 0/1).
+    ec: int32 = spawn_detached(cast[Ptr[char]](echo_path), &echo_argv[0],
+                               req_fds[0], rsp_fds[1],
+                               cast[Ptr[uint64]](0))
+    if ec < 0:
+        write_str(1, "[wakelat] FAIL: could not spawn /bin/wakelat_echo\n")
+        sys_exit(1)
+        return 1
+
+    # IDLE baseline: what a round trip costs with nothing else running. Any
+    # loaded number has to be read against this, not against zero.
+    ctl("wklat 1\n")
+    hist_reset()
+    i: uint64 = 0
+    while i < 60:
+        us: uint64 = round_trip()
+        if us == 0:
+            write_str(1, "[wakelat] FAIL: round trip broke while idle\n")
+            sys_exit(1)
+            return 1
+        if i >= 10:
+            hist_add(us)
+        i = i + 1
+    hist_report("idle")
+
+    # ARM 1 — fix OFF (the pre-fix scheduler).
+    if run_arm("off", 0) == 0:
+        write_str(1, "[wakelat] FAIL: arm off collected no samples\n")
+        sys_exit(1)
+        return 1
+    # ARM 2 — fix ON.
+    if run_arm("on", 1) == 0:
+        write_str(1, "[wakelat] FAIL: arm on collected no samples\n")
+        sys_exit(1)
+        return 1
+
+    # Leave the system in the shipped configuration and disarm the
+    # instrument, so nothing this test did outlives it.
+    ctl("wklat 1\n")
+    ctl("wklat 4\n")
+    write_str(1, "[wakelat] done\n")
+    sys_exit(0)
+    return 0

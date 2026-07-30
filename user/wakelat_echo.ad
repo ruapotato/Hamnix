@@ -1,0 +1,35 @@
+# user/wakelat_echo.ad
+#
+# The "application" half of the wakeup-latency reproducer
+# (scripts/test_wakeup_latency.sh). It is the stand-in for a DE client blocked
+# on /dev/wsys/<wid>/pointer: a task that spends all its time asleep in a
+# kernel wait queue and must be SCHEDULED before it can respond to an event.
+#
+# Protocol: read one byte from fd 0, write it back on fd 1, forever. The
+# parent (user/wakelat.ad) hands it a pipe on each end via spawn(), then times
+# the round trip. Every read that finds the pipe empty parks this task in
+# STATE_WAIT; the parent's write wakes it. That wake -> dispatch interval is
+# the quantity under test, and it is the one an ordinary CPU hog used to
+# stretch to a full scheduling quantum.
+#
+# Zero buffering, zero batching: one byte per syscall, so every iteration is a
+# real block/wake pair and the histogram counts events, not throughput.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_exit(code: uint64)
+
+
+def main() -> int32:
+    b: Array[1, uint8]
+    while True:
+        n: int64 = sys_read(0, &b[0], 1)
+        if n <= 0:
+            # Parent closed the pipe (or the read failed): we are done.
+            sys_exit(0)
+            return 0
+        w: int64 = sys_write(1, &b[0], 1)
+        if w <= 0:
+            sys_exit(0)
+            return 0
+    return 0

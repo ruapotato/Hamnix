@@ -27,6 +27,7 @@ extern def local_irq_disable()
 from kernel.printk.printk import printk0, printk1
 from kernel.sched.core import (
     signal_post_to_foreground, SIGINT, SIGTSTP, console_input_wake,
+    sched_irqret_preempt_check, schedule,
 )
 from drivers.tty.serial.early_8250 import (
     uart_rx_irq_service, uart_rx_irq_enable_ier,
@@ -176,6 +177,22 @@ def do_irq(vector: uint64, interrupted_cs: uint64,
             # irq_exit() -> invoke_softirq() point. Bounded loop +
             # ksoftirqd fallback live inside do_softirq.
             irq_exit_softirq()
+            # WAKEUP PREEMPTION, IRQ-return arm (Linux's
+            # preempt_schedule_irq). The handler we just ran may have woken a
+            # blocked task — the mouse IRQ waking the DE client blocked on
+            # /dev/wsys/<wid>/pointer is THE case the user reported. Before
+            # this, that task waited for the CPU-bound incumbent's slice to
+            # drain (up to 50 ms at nice 0), so a click or a drag responded a
+            # slice late even though the cursor glyph, which the kernel draws
+            # from the tick, kept moving. Switching HERE — after the EOI and
+            # after the softirq drain, and only when the interrupt caught
+            # ring 3 — services it before we return to the hog.
+            #
+            # This mirrors exactly what timer_interrupt() already does at the
+            # end of its own path, so the "schedule() out of an IRQ that
+            # interrupted userland" shape is not new to this kernel.
+            if sched_irqret_preempt_check(interrupted_cs) != 0:
+                schedule()
             return
 
     # 3) Spurious / unhandled. Still EOI to the LAPIC so the in-service
