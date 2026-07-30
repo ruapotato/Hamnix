@@ -4314,3 +4314,11 @@ bash scripts/test_memhog.sh
 # missing. The same capability is driven on a REAL installed disk by
 # test_installed_system_parity.sh's `pkgrepo` assertions.
 bash scripts/test_installed_pkg_repo.sh
+# ext4 LINEAR directory GROWTH (~4 min, one QEMU boot). ext4_dir_insert used
+# to fail once a linear directory's single block ran out of slack, capping a
+# directory at ~112 entries and silently truncating installs. This creates 600
+# files in a one-block linear dir, reports the MEASURED old ceiling, reads
+# every entry back, then re-validates the kernel-written image with debugfs
+# (all 605 entries enumerated) and e2fsck -fn (fully clean). MUTATE=<label>
+# blinds one assertion at a time.
+bash scripts/test_ext4_dirgrow.sh
