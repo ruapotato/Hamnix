@@ -266,7 +266,7 @@ from fs.elf import (
 # returns 0 → AT_SYSINFO_EHDR omitted, vdso_map_into_user becomes a no-op).
 from mm.page_alloc import (
     alloc_page, alloc_pages, free_page, region_can_alloc,
-    pages_can_alloc, free_pages, pa_set_site, PA_SITE_EXECVE,
+    pages_can_alloc, free_pages, pa_set_site, pa_set_owner, PA_SITE_EXECVE,
 )
 from mm.slab import kmalloc, kfree
 from mm.memblock import memblock_region_top
@@ -2869,6 +2869,14 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # halt the box). The caller's address space is already torn down here, so
     # -ENOMEM terminates this task cleanly rather than corrupting kernel memory.
     pa_set_site(PA_SITE_EXECVE)
+    # OWNER, for the orphan census and `track org` (leak pass 16). Without it
+    # every survivor of origin arm 21 (the user-stack span) reports "owner:
+    # NOT RECORDED", and `owner-dead = 0` there means "no owner was ever
+    # written down", not "no owner is dead" — a vacuous green on the exact arm
+    # pass 14 found the campaign's main leak in. pa_set_owner is a load, a
+    # compare and a return when the tracker is disarmed, which it is by
+    # default.
+    pa_set_owner(current_idx_get())
     new_ustack_phys: uint64 = alloc_pages(LINUX_USTACK_EAGER_ORDER)
     if new_ustack_phys == 0:
         printk_set_level(PRINTK_LEVEL_ERR)

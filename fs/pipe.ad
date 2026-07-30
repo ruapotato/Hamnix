@@ -21,7 +21,7 @@
 # what to do. Real Linux raises a signal; we'll get there when the
 # signal subsystem lands.
 
-from mm.slab import kmalloc, kfree
+from mm.slab import kmalloc, kfree, km_set_site, KM_SITE_PIPE
 from kernel.printk.printk import printk0, printk1, printk_set_level
 # Event-driven blocking: a pipe read end that finds the ring empty sleeps
 # on the pipe's per-slot read_wq instead of poll-yielding on the timer
@@ -122,6 +122,7 @@ def pipe_alloc() -> int32:
     su: uint64 = cast[uint64](slot)
 
     if pipe_table[su].buf == 0:
+        km_set_site(KM_SITE_PIPE)
         b: uint64 = kmalloc(PIPE_CAP)
         if b == 0:
             return -1
@@ -159,6 +160,7 @@ def pipe_alloc_chan() -> int32:
         return -1
     su: uint64 = cast[uint64](slot)
     if pipe_table[su].buf == 0:
+        km_set_site(KM_SITE_PIPE)
         b: uint64 = kmalloc(PIPE_CAP)
         if b == 0:
             return -1

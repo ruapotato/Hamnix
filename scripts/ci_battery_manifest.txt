@@ -4462,3 +4462,16 @@ bash scripts/ci_run_gate.sh scripts/test_install_short_write.sh
 # trips a tripwire instead of waiting on a boot. INCONCLUSIVE (125), never a soft
 # green, when the aarch64 cross toolchain or qemu-user is absent on the runner.
 bash scripts/ci_run_gate.sh scripts/test_arm64_build_integrity.sh
+# Leak pass 16. The COW share arms, COUNTED under the ONE workload that ever
+# stranded frames: the DE terminal. Pass 15 closed those arms against
+# /bin/u_mmap_fork and said in writing that a leak needing a VMA shape
+# u_mmap_fork never builds would not appear there; this drives the same
+# instrument (track origin / track org N / track census with BOTH controls)
+# from real hamtermscene open/closes. Asserts the inter-cycle delta plus the
+# owner discriminator — never a soak mean, never absolute born == died — and
+# FAILS an arm whose survivors have no recorded owner rather than reporting a
+# vacuous zero. kmtrack and the page tracker ride the same boot so "then
+# where?" is answered from the same cycles. Needs a prebuilt installer image;
+# ~5 min, one QEMU. KVM-gated, so on a runner without /dev/kvm this SKIPS and
+# asserts nothing — run it on a KVM host to get a verdict.
+bash scripts/test_cow_hamterm_origin.sh
