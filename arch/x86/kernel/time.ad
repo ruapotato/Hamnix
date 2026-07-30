@@ -24,7 +24,7 @@ from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 from kernel.sched.core import (
     schedule, signal_post_to_foreground, SIGINT, SIGTSTP, preempt_tick,
     current_task_account_tick, console_input_wake,
-    itimer_real_tick_all,
+    itimer_real_tick_all, wklat_note_tick,
 )
 # §13: real system-load accounting. loadavg_tick() folds the per-tick
 # idle / EWMA-sampling work into a self-contained module so this file
@@ -1110,6 +1110,15 @@ def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
     # NOT bumped per IRQ — otherwise the variable one-shot fire rate makes
     # uptime run fast (many hrtimers) or freeze (NO_HZ idle). See the
     # jiffies_external_drive banner.
+    if get_cpu_id() == 0:
+        # MACHINE-STALL control for the wklat instrument: the gap between two
+        # BSP ticks, read from the same clocksource the wake->dispatch
+        # histogram uses. A 90 ms gap here means the whole guest stopped (host
+        # vCPU steal under KVM), which no scheduler change could fix and which
+        # would otherwise be indistinguishable from a 90 ms dispatch delay.
+        # Disarmed cost: one compare. Placed on the BSP branch only so APs
+        # cannot interleave two clocks into one series.
+        wklat_note_tick()
     if get_cpu_id() == 0 and jiffies_external_drive == 0:
         jiffies = jiffies + 1
     # Per-CPU counter (M16.14 Percpu[T] demo path). Codegen assigns its

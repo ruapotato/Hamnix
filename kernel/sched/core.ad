@@ -2622,6 +2622,56 @@ g_wake_disp:  Array[512, uint64]   # g_dispatch_count at wake
 g_wake_jif:   Array[512, uint64]   # jiffies at wake
 g_wake_kick:  Array[512, uint64]   # wakeup_preempt_kicks at wake
 g_wake_oncpu: Array[512, uint64]   # waitee's on_cpu at wake (sleep-window)
+g_wake_stall: Array[512, uint64]   # wklat_stall_n at wake (machine-stall control)
+
+# --- the MACHINE-STALL control ----------------------------------------
+#
+# THE ALTERNATIVE EXPLANATION THAT HAS TO BE EXCLUDED BEFORE ANY OF THE ABOVE
+# MEANS ANYTHING. The 90-120 ms tail was measured on a KVM boot
+# (test_de_motion_to_photon.sh: -enable-kvm -cpu host); the 4.5 ms "same
+# kernel" baseline was measured on a TCG boot (scripts/_qemu_drive.sh passes no
+# -enable-kvm at all). Those are different ACCELERATORS, not just different
+# workloads, and under KVM the guest's vCPU is an ordinary host thread on a box
+# that routinely carries several other QEMUs. If the HOST deschedules that
+# thread for 90 ms, every in-guest clocksource read straddling the gap reports
+# 90 ms — and it would do so identically in an idle and a loaded guest arm,
+# which is precisely the signature that made the tail look load-independent and
+# interesting.
+#
+# So measure the machine itself. The BSP tick is periodic at 100 Hz; a
+# tick-to-tick gap read from the same clocksource the histogram uses is a
+# direct measure of "the whole guest stopped", attributable to no task. An
+# outlier whose wait contains a stall of the same magnitude is not evidence of
+# anything in the scheduler, and `stalld` in each record makes that
+# correlation, not an argument about it.
+wklat_tick_last_ns: uint64 = 0
+wklat_tick_gap_max_ns: uint64 = 0
+wklat_stall_n: uint64 = 0          # tick gaps over the outlier threshold
+
+
+def wklat_note_tick():
+    # Called from the BSP timer tick. One compare when disarmed.
+    if wklat_on == 0:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    last: uint64 = wklat_tick_last_ns
+    wklat_tick_last_ns = now
+    if last == 0:
+        return
+    if now <= last:
+        return
+    g: uint64 = now - last
+    if g > wklat_tick_gap_max_ns:
+        wklat_tick_gap_max_ns = g
+    if g > WKLAT_OUT_THRESH_NS:
+        wklat_stall_n = wklat_stall_n + 1
+
+
+def wklat_stall_count() -> uint64:
+    return wklat_stall_n
+
 
 wko_seq:   uint64 = 0              # total captures; > ring size == overflowed
 wko_us:    Array[8, uint64]
@@ -2638,6 +2688,7 @@ wko_oncpu: Array[8, uint64]
 wko_scpu:  Array[8, uint64]
 wko_dcpu:  Array[8, uint64]
 wko_rqcpu: Array[8, uint64]
+wko_stalld: Array[8, uint64]
 
 
 def _wklat_out_clear():
@@ -2658,6 +2709,7 @@ def _wklat_out_clear():
         wko_scpu[i]  = 0
         wko_dcpu[i]  = 0
         wko_rqcpu[i] = 0
+        wko_stalld[i] = 0
         i = i + 1
 
 
@@ -2671,6 +2723,9 @@ def wklat_reset():
     wklat_b25    = 0
     wklat_b60    = 0
     wklat_over   = 0
+    wklat_tick_last_ns    = 0
+    wklat_tick_gap_max_ns = 0
+    wklat_stall_n         = 0
     i: uint64 = 0
     while i < NTASKS:
         g_wake_stamp_ns[i] = 0
@@ -2680,6 +2735,7 @@ def wklat_reset():
         g_wake_jif[i]      = 0
         g_wake_kick[i]     = 0
         g_wake_oncpu[i]    = 0
+        g_wake_stall[i]    = 0
         i = i + 1
     _wklat_out_clear()
 
@@ -2714,6 +2770,7 @@ def _wklat_stamp(slot: uint64):
     g_wake_jif[slot]   = get_jiffies()
     g_wake_kick[slot]  = wakeup_preempt_kicks
     g_wake_oncpu[slot] = task_table[slot].on_cpu
+    g_wake_stall[slot] = wklat_stall_n
 
 
 def _wklat_account(slot: uint64, prev: uint64):
@@ -2783,6 +2840,7 @@ def _wklat_out_capture(slot: uint64, prev: uint64, d: uint64):
     wko_scpu[i]  = g_wake_scpu[slot]
     wko_dcpu[i]  = get_cpu_id()
     wko_rqcpu[i] = task_table[slot].rq_cpu
+    wko_stalld[i] = wklat_stall_n - g_wake_stall[slot]
 
 
 def wklat_out_report():
@@ -2813,6 +2871,8 @@ def wklat_out_report():
         printk3("[wklat] o%d oncpu=%d scpu=%d\n", i, wko_oncpu[i], wko_scpu[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] o%d dcpu=%d rqcpu=%d\n", i, wko_dcpu[i], wko_rqcpu[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] o%d stalld=%d\n", i, wko_stalld[i])
         i = i + 1
 
 
@@ -2846,6 +2906,12 @@ def wklat_report():
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] tickret=%d probe=%d\n", wakeup_preempt_tick_n,
             wklat_probe_iters)
+    # The machine-stall control. tickgap_max_us is how long the WHOLE guest
+    # stopped between two 100 Hz ticks; if it is the same order as max_us above
+    # then max_us is measuring the hypervisor, not this scheduler.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] stalls=%d tickgap_max_us=%d\n", wklat_stall_n,
+            wklat_tick_gap_max_ns / 1000)
 
 
 # --- the IRQ-driven probe ---------------------------------------------

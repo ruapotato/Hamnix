@@ -330,6 +330,12 @@ report_instruments() {
     sleep 3
     printf 'echo "wklat 3" > /dev/wsys/ctl\n' >&3
     sleep 4
+    # The CONTEXT behind the wklat tail. The histogram alone says a 90-120 ms
+    # wake->dispatch tail exists on a live DE and not on a lightweight boot; it
+    # cannot say which task, woken by what, or what held the cpu. Verb 6 dumps
+    # the ring the >25 ms branch fills. Costs nothing when the tail is empty.
+    printf 'echo "wklat 6" > /dev/wsys/ctl\n' >&3
+    sleep 4
     printf 'echo "m2p 0" > /dev/wsys/ctl\n' >&3
     sleep 2
 }
@@ -419,6 +425,43 @@ clean '\[wklat\]'  > "$OUT_DIR/wklat.txt"
 
 echo "$TAG --- measured (real DE, KVM) ---"
 cat "$OUT_DIR/m2p.txt" "$OUT_DIR/ptrlat.txt" "$OUT_DIR/wklat.txt"
+
+# Decode the wklat outlier ring into one readable line per tail sample. The
+# kernel prints task names as the raw 8-byte name0 word in hex (it has no %s);
+# decoding here keeps that ugliness out of the kernel and off the hot path.
+python3 - "$OUT_DIR/wklat.txt" <<'PYEOF' | tee "$OUT_DIR/wklat_outliers.txt"
+import re, sys
+def nm(h):
+    try: v = int(h, 16)
+    except Exception: return '?'
+    b = v.to_bytes(8, 'little').rstrip(b'\x00')
+    return ''.join(chr(c) if 32 <= c < 127 else '.' for c in b) or '-'
+runs, cur = [], None
+for line in open(sys.argv[1], errors='replace'):
+    m = re.search(r'\[wklat\] outliers seq=(\d+)', line)
+    if m:
+        cur = {'seq': int(m.group(1)), 'rec': {}}
+        runs.append(cur)
+        continue
+    if cur is None: continue
+    m = re.search(r'\[wklat\] o(\d+) (.*)', line)
+    if not m: continue
+    r = cur['rec'].setdefault(int(m.group(1)), {})
+    for k, v in re.findall(r'(\w+)=(\w+)', m.group(2)):
+        r[k] = v
+for i, run in enumerate(runs):
+    print('--- wklat outlier ring, report %d (captured=%d) ---' % (i + 1, run['seq']))
+    if not run['rec']:
+        print('    (empty: no wake->dispatch interval exceeded the threshold)')
+    for idx in sorted(run['rec']):
+        r = run['rec'][idx]
+        g = lambda k: r.get(k, '?')
+        print('    %8s us  waitee pid=%-5s %-8s  woken-while pid=%-5s %-8s runs'
+              % (g('us'), g('pid'), nm(g('nm')), g('waker'), nm(g('wnm'))))
+        print('              dispatched after pid=%-5s %-8s | dispatches=%s ticks=%s kicks=%s | on_cpu@wake=%s cpu %s->%s rq=%s'
+              % (g('prev'), nm(g('pnm')), g('dispd'), g('jifd'), g('kickd'),
+                 g('oncpu'), g('scpu'), g('dcpu'), g('rqcpu')))
+PYEOF
 echo "$TAG --- end ---"
 
 # nth <file> <sed-extract> <occurrence>
