@@ -246,16 +246,41 @@ at 20 — no baseline line was added.
 
 ```
 [kobjdiff]      PASS — zero semantic divergences, 11371 matched kernel functions
-[percmd-floor]  PASS — 3 identical sweeps, identical floor; control moved it;
-                       both silent caps pinned closed
+[percmd-floor]  PASS — every check; driver rc=0
+[test_cow_fork]  PASS -- copy-on-write fork keeps parent/child private
+[test_mmap_fork] PASS -- COW fork over an mmap VMA keeps parent/child private
+[mm-zap]         PASS -- _vma_free_cow_range zaps+flushes before freeing;
+                         task_reap returns the user stack COW-safely
 [gate_registration] PASS
 [gate_softgreen]    PASS
 [gate_kvmdark]      PASS (20 dark gates, population frozen) — was FAIL on base
-[test_cow_fork]      see §7b
-[test_mmap_fork]     see §7b
-[test_mm_free_cow_zap_invariant] see §7b
-[test_jsengine_asyncpools_host]  see §7b
+[js-asyncpools]     PASS (10 adversarial retention cases, gc-stress identical)
+native x86_64-adder-user hamsh                     compiles
 ```
+
+### 7a. The new gate is mutation-proven, not merely green
+
+Two mutations, each reverted after its run:
+
+| mutation | what it simulates | result |
+|---|---|---|
+| `gc_collect` roots **every** node, not just reachable ones | a collector that cannot tell garbage from live | **check1 + check1b RED**, and check1b named **all 16 classes** |
+| `FN_NAME_MAX` back to 16, length refusal disabled | the silent cap as it shipped | **check3, check3b, check4, check6 RED** — and check6 read **`fns=4`**, i.e. one `g0` plus **three** separate slots burned by what should have been one function defined and redefined. The registry burn reproduces on demand. |
+
+The gate is therefore sensitive to both things it claims to measure, and the
+working tree is clean afterwards (`git status` empty).
+
+### 7b. One host-seam caveat, recorded rather than "fixed"
+
+`hamsh --no-echo < script` **never exits** on the host build (measured: rc=124
+without a trailing `exit`, rc=0 with one). On the device the contract is
+unambiguous — `sys_read_nb` reports `>0` bytes, `0` = would-block, `-1` = EOF
+(`sys/src/9/port/devfd.ad:633`) — and `ed_readline` handles all three. The
+x86_64-linux shim cannot make that distinction for a redirected regular file,
+whose EOF read returns 0, which the editor loop reads as "stdin idle". So it
+is a host-seam artifact, **not** a device uptime bug, and the gate's driver
+ends with an explicit `exit` rather than the shell's read loop being changed
+on the strength of a host-only symptom.
 
 **NOT run, stated rather than implied:** `scripts/test_de_visual_gate.sh`, and
 a DE soak with a SIGTERM audit. The `region_alloc` stamping is verified by
