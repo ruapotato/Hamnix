@@ -39,7 +39,7 @@ from mm.page_alloc import (
 from mm.slab import kfree
 from mm.cow import (
     cow_boot_cr3, cow_refcount, cow_refs_added, cow_refs_dropped,
-    cow_ledger_dump,
+    cow_ledger_dump, cow_origin_of, cow_origin_dump,
 )
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
@@ -7711,6 +7711,13 @@ def _mm_census_classify(site: uint64):
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk2("[cens2] orphan[%d] cow_refcount=%d\n",
                 k, cow_refcount(page_alloc_orphan_phys(k)))
+        # WHICH ARM CREATED THIS FRAME (leak pass 14). Read straight out of
+        # the per-PFN origin byte — not inferred from the PTE, not inferred
+        # from the span, not inferred from which walk happens to free it.
+        # org=0 means the frame's first reference predates the arming.
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[cens2] orphan[%d] origin arm=%d\n",
+                k, cow_origin_of(page_alloc_orphan_phys(k)))
         # WHAT DOES THE OWNER MAP AT THAT VA NOW? This separates the two
         # remaining stories, which need different fixes:
         #   owner maps a DIFFERENT frame -> the copy was displaced by a
@@ -7761,6 +7768,24 @@ def _mm_census_classify(site: uint64):
         else:
             hm = hm + 1
         j = j + 1
+    # ORIGIN HISTOGRAM over EVERY collected orphan, not just the detailed 16.
+    # This is the pass-14 headline: the arm that actually created the leaked
+    # frames, counted, with no assignment step. Pass 13 could only offer a
+    # LEAD here because `region_free_cow_safe` has no PTE to classify; the
+    # per-PFN tag does not care what the freeing site holds.
+    ob: uint64 = 0
+    while ob < 24:
+        oc: uint64 = 0
+        jj: uint64 = 0
+        while jj < n:
+            if cow_origin_of(page_alloc_orphan_phys(jj)) == ob:
+                oc = oc + 1
+            jj = jj + 1
+        if oc != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens2] orphan origins: arm=%d count=%d (of %d)\n",
+                    ob, oc, n)
+        ob = ob + 1
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk3("[cens2] orphan refcounts: rc0=%d rc1=%d rc2=%d\n", h0, h1, h2)
     printk_set_level(PRINTK_LEVEL_EMERG)
@@ -7908,6 +7933,11 @@ def mm_orphan_census() -> uint64:
     # so they survive the 6.4 pg/cycle run-to-run spread that makes a single
     # before/after soak pair worthless.
     cow_ledger_dump()
+    # ORIGIN-KEYED LEDGER (pass 14). The same references bucketed by the arm
+    # that created each FRAME. Where the per-arm ledger above names a PAIR
+    # (its drop side is keyed on the executing call, and one big drop site has
+    # no PTE to classify), this closes each arm against its own frames.
+    cow_origin_dump()
     # PASS-12 DETAIL PASS. The tally + four sample VAs that pass 11 shipped
     # proved cow_resolve_pte leaks; they could not say WHICH SPAN or WHOSE.
     # Dump every live task's spans and describe each orphan (VA, phys,

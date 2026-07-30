@@ -213,6 +213,54 @@ _cow_arm:       uint64 = 0
 _cow_arm_add:   Array[24, uint64]
 _cow_arm_drop:  Array[24, uint64]
 
+# --- PER-FRAME ORIGIN TAG (leak pass 14) ------------------------------------
+#
+# TAG THE FRAME, NOT THE CALL. Pass 13's per-arm ledger keys both sides on the
+# arm that happened to be executing, which is exact on the ADD side and a proxy
+# on the DROP side. Pass 13 tried to close arm 1 (the W^X verbatim share)
+# against arm 2 (the general COW share) by reading the COW bit out of the PTE
+# being dropped, and the attempt failed for a structural reason it recorded as
+# the next obstacle: `region_free_cow_safe` drops ~68.76 refs/cycle working
+# from a PHYSICAL base with NO PTE in hand, so the classifier cannot bucket
+# them at all. Assigning those 68.76 to arm 1 (region frames are the ELF image,
+# which is what the W^X share shares) moves the entire leak onto arm 2 — and
+# pass 13 correctly published that as a LEAD, not a result, because the
+# instrument did not measure it.
+#
+# One byte per PFN removes the inference entirely. The byte records the arm
+# that took a frame's FIRST reference (the 0 -> N transition). Every later add
+# and every drop on that frame is then tallied against that arm no matter which
+# call site executes it and no matter whether a PTE is available. Per origin:
+#
+#   _cow_org_add / _cow_org_drop   references, keyed by the frame's origin
+#   _cow_org_born / _cow_org_died  FRAMES entering / leaving refcount > 0
+#
+# `born - died` per arm is the count of frames still holding a reference that
+# the arm created — i.e. the leaked-frame population, attributed, as a COUNT
+# rather than a slope. That is the quantity a fix must move, and it cannot be
+# confounded by the burst timing that makes a soak MEAN the wrong statistic.
+#
+# BUCKET 0 is "untagged": a frame whose first reference predates the ledger
+# being armed. cow_ledger_enable(1) zeroes the whole origin table, so after
+# arming every live frame reads 0 and its eventual drop lands in bucket 0. That
+# makes `died > born` NORMAL for bucket 0 and meaningless there; for arms >= 1
+# both sides are complete and `born - died` is exact. Reporting the raw pair
+# instead of a difference keeps that visible rather than papering over it.
+#
+# COST. The tallies are gated with the rest of the ledger. The TABLE itself is
+# one byte per frame allocated once from memblock in cow_init — measured on
+# this host at boot: see the "[cow] origin table:" line, 1 byte per 4 KiB frame
+# = 0.024% of RAM (512 KiB on a 2 GiB machine), alongside the refcount table's
+# existing 2 bytes per frame. It is allocated unconditionally because memblock
+# is closed by the time any ctl write could arm the ledger; nothing WRITES it
+# while disarmed, so the runtime cost stays exactly zero. _build_meminfo is
+# untouched.
+_cow_origin_base: uint64 = 0
+_cow_org_add:  Array[24, uint64]
+_cow_org_drop: Array[24, uint64]
+_cow_org_born: Array[24, uint64]
+_cow_org_died: Array[24, uint64]
+
 
 def cow_ledger_enable(on: uint64):
     _cow_ledger_on = on
@@ -222,7 +270,16 @@ def cow_ledger_enable(on: uint64):
     while i < COW_ARM_MAX:
         _cow_arm_add[i] = 0
         _cow_arm_drop[i] = 0
+        _cow_org_add[i] = 0
+        _cow_org_drop[i] = 0
+        _cow_org_born[i] = 0
+        _cow_org_died[i] = 0
         i = i + 1
+    # Re-baseline the tags too: a frame tagged by a PREVIOUS arming would
+    # otherwise contribute a drop with no matching born, silently making one
+    # arm look like it over-drops.
+    if _cow_origin_base != 0:
+        memset(cast[Ptr[uint8]](_cow_origin_base), 0, cow_nr_frames)
 
 
 def cow_ledger_on() -> uint64:
@@ -263,21 +320,110 @@ def cow_ledger_drop(a: uint64) -> uint64:
     return _cow_arm_drop[a]
 
 
-def _cow_ledger_note_add(n: uint64):
-    # Called with _cow_lock HELD, so the per-arm tallies move atomically with
-    # the refcount they describe — a ledger that could disagree with the table
-    # it audits would be worse than no ledger.
+def _cow_org_at(pfn: uint64) -> uint64:
+    if _cow_origin_base == 0:
+        return 0
+    if pfn >= cow_nr_frames:
+        return 0
+    p: Ptr[uint8] = cast[Ptr[uint8]](_cow_origin_base + pfn)
+    return cast[uint64](p[0])
+
+
+def _cow_org_set(pfn: uint64, a: uint64):
+    if _cow_origin_base == 0:
+        return
+    if pfn >= cow_nr_frames:
+        return
+    p: Ptr[uint8] = cast[Ptr[uint8]](_cow_origin_base + pfn)
+    p[0] = cast[uint8](a)
+
+
+def cow_origin_of(phys: uint64) -> uint64:
+    # The arm that took this frame's FIRST reference, or 0 if untagged (the
+    # ledger was disarmed then, or the frame is not COW-tracked). Read-only —
+    # the orphan census uses it to say where each orphan came from WITHOUT
+    # inferring anything from the state it finds.
+    return _cow_org_at(_cow_pfn(phys))
+
+
+def _cow_ledger_birth(pfn: uint64, n: uint64):
+    # The 0 -> N transition: this arm is the frame's ORIGIN. Called with
+    # _cow_lock HELD, so the tallies move atomically with the refcount they
+    # describe — a ledger that could disagree with the table it audits would
+    # be worse than no ledger.
+    if _cow_ledger_on == 0:
+        return
+    if _cow_arm >= COW_ARM_MAX:
+        return
+    _cow_arm_add[_cow_arm] = _cow_arm_add[_cow_arm] + n
+    _cow_org_add[_cow_arm] = _cow_org_add[_cow_arm] + n
+    _cow_org_born[_cow_arm] = _cow_org_born[_cow_arm] + 1
+    _cow_org_set(pfn, _cow_arm)
+
+
+def _cow_ledger_note_add(pfn: uint64, n: uint64):
+    # A later reference on an ALREADY-tagged frame. The call-keyed tally still
+    # records the executing arm (pass 13's numbers stay comparable); the
+    # origin-keyed tally credits the arm that created the frame.
     if _cow_ledger_on == 0:
         return
     if _cow_arm < COW_ARM_MAX:
         _cow_arm_add[_cow_arm] = _cow_arm_add[_cow_arm] + n
+    org: uint64 = _cow_org_at(pfn)
+    _cow_org_add[org] = _cow_org_add[org] + n
 
 
-def _cow_ledger_note_drop():
+def _cow_ledger_note_drop(pfn: uint64, died: uint64):
     if _cow_ledger_on == 0:
         return
     if _cow_arm < COW_ARM_MAX:
         _cow_arm_drop[_cow_arm] = _cow_arm_drop[_cow_arm] + 1
+    org: uint64 = _cow_org_at(pfn)
+    _cow_org_drop[org] = _cow_org_drop[org] + 1
+    if died != 0:
+        _cow_org_died[org] = _cow_org_died[org] + 1
+        # The frame is leaving refcount > 0. Untag it so a later re-share
+        # re-attributes it to whichever arm shares it next, rather than
+        # crediting its second life to its first owner.
+        _cow_org_set(pfn, 0)
+
+
+def cow_org_add(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_org_add[a]
+
+
+def cow_org_drop(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_org_drop[a]
+
+
+def cow_org_born(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_org_born[a]
+
+
+def cow_org_died(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_org_died[a]
+
+
+def cow_tagged_live_frames() -> uint64:
+    # Frames still holding a reference that a TAGGED arm (>= 1) created. This
+    # is the leaked-frame population as a count, summed over origins; bucket 0
+    # is excluded because its `died` legitimately exceeds its `born` (frames
+    # that predate the arming).
+    t: uint64 = 0
+    i: uint64 = 1
+    while i < COW_ARM_MAX:
+        if _cow_org_born[i] > _cow_org_died[i]:
+            t = t + (_cow_org_born[i] - _cow_org_died[i])
+        i = i + 1
+    return t
 
 
 def cow_ledger_dump():
@@ -308,6 +454,54 @@ def cow_ledger_dump():
     printk2("[ledger] UNATTRIBUTED arm=0 add=%d drop=%d"
             " (non-zero means a call site is missing cow_set_arm)\n",
             _cow_arm_add[0], _cow_arm_drop[0])
+
+
+def cow_origin_dump():
+    # THE ORIGIN-KEYED LEDGER. Same references, bucketed by the arm that took
+    # each FRAME's first reference instead of by the arm executing the call.
+    # No PTE is consulted and nothing is inferred, so `region_free_cow_safe` —
+    # which has only a physical base and blocked pass 13 — reports here like
+    # every other drop.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    if _cow_ledger_on == 0:
+        printk0("[origin] DISARMED — write `track full` first.\n")
+        return
+    if _cow_origin_base == 0:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[origin] NO TABLE — allocation failed at boot; every"
+                " frame reads bucket 0 and this dump is VOID.\n")
+        return
+    i: uint64 = 0
+    while i < COW_ARM_MAX:
+        if _cow_org_add[i] != 0 or _cow_org_drop[i] != 0 \
+                or _cow_org_born[i] != 0 or _cow_org_died[i] != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[origin] org=%d add=%d drop=%d\n",
+                    i, _cow_org_add[i], _cow_org_drop[i])
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[origin] org=%d born=%d died=%d\n",
+                    i, _cow_org_born[i], _cow_org_died[i])
+        i = i + 1
+    # Bucket 0 = frames whose first reference predates the arming. Its `died`
+    # legitimately exceeds its `born`; saying so here stops a reader treating
+    # that as an over-drop.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[origin] tagged live frames (sum over org>=1 of born-died) = %d\n",
+            cow_tagged_live_frames())
+
+
+def cow_net_dump():
+    # ONE line, O(arms), no page-table walk and no frame scan — cheap enough to
+    # take after EVERY app launch. Sampling per launch rather than per cycle is
+    # what turns "the leak is bursty" into a named event: pass 13's per-cycle
+    # net was 7, 133, 2, 128, 7, 28, 0, 128, ... and five cycles out of twenty
+    # carried the whole thing. A per-launch series says WHICH launch.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    if _cow_ledger_on == 0:
+        printk0("[net] DISARMED\n")
+        return
+    printk3("[net] added=%d dropped=%d live=%d\n",
+            _cow_refs_added, _cow_refs_dropped, cow_tagged_live_frames())
 
 # Pristine boot page-table root (CR3), snapshotted in cow_init() before
 # any task exists. The COW page-table cracker compares against THIS to
@@ -348,6 +542,19 @@ def cow_init():
     memset(cast[Ptr[uint8]](base), 0, table_bytes)
     cow_refcount_base = base
     cow_nr_frames     = nframes
+    # PER-FRAME ORIGIN TAG (leak pass 14) — one byte per frame, half the
+    # refcount table's footprint, allocated here because memblock is closed
+    # long before any ctl write could arm the ledger. Nothing writes it while
+    # disarmed. A failed alloc degrades to "every frame untagged" (bucket 0),
+    # which costs attribution but never correctness: cow_share_page /
+    # cow_drop_page do not consult it.
+    obase: uint64 = memblock_alloc(nframes, 8)
+    if obase == 0:
+        printk0("[cow] origin table alloc failed — drops will be untagged\n")
+    else:
+        memset(cast[Ptr[uint8]](obase), 0, nframes)
+        _cow_origin_base = obase
+        printk1("[cow] origin table: %d bytes (1/frame)\n", nframes)
     # Snapshot the pristine boot CR3 NOW — mem_init() runs before the
     # scheduler creates any task, so the live CR3 is still the boot
     # page-table root that every per-task PML4 will be cloned from.
@@ -396,7 +603,8 @@ def cow_share_page(phys: uint64):
     # (it stays writable in both, which is wrong only for RAM the
     # refcount table can't index; in practice the table covers all of
     # usable RAM).
-    slot: Ptr[uint16] = _cow_slot(_cow_pfn(phys))
+    pfn: uint64 = _cow_pfn(phys)
+    slot: Ptr[uint16] = _cow_slot(pfn)
     if cast[uint64](slot) == 0:
         return
     _flags: uint64 = local_irq_save()
@@ -405,11 +613,11 @@ def cow_share_page(phys: uint64):
     if cur == 0:
         slot[0] = 2
         _cow_refs_added = _cow_refs_added + 2
-        _cow_ledger_note_add(2)
+        _cow_ledger_birth(pfn, 2)
     elif cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
         _cow_refs_added = _cow_refs_added + 1
-        _cow_ledger_note_add(1)
+        _cow_ledger_note_add(pfn, 1)
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -422,7 +630,8 @@ def cow_ref_inc(phys: uint64):
     # under refcount management before splitting it — the VMA has
     # exactly ONE holder at that moment, so its frames must go to
     # refcount 1 (not 2). An out-of-range / pre-init PFN is ignored.
-    slot: Ptr[uint16] = _cow_slot(_cow_pfn(phys))
+    pfn: uint64 = _cow_pfn(phys)
+    slot: Ptr[uint16] = _cow_slot(pfn)
     if cast[uint64](slot) == 0:
         return
     _flags: uint64 = local_irq_save()
@@ -431,7 +640,12 @@ def cow_ref_inc(phys: uint64):
     if cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
         _cow_refs_added = _cow_refs_added + 1
-        _cow_ledger_note_add(1)
+        # 0 -> 1 is a BIRTH here (cow_ref_inc brings a not-yet-shared owner
+        # VMA under management with exactly one holder), N -> N+1 is not.
+        if cur == 0:
+            _cow_ledger_birth(pfn, 1)
+        else:
+            _cow_ledger_note_add(pfn, 1)
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -451,7 +665,8 @@ def cow_drop_page(phys: uint64) -> int32:
     #   refcount 0  (untracked)        -> return 1 (free normally)
     #   refcount 1  -> becomes 0       -> return 1 (last holder)
     #   refcount N>1 -> becomes N-1    -> return 0 (still shared)
-    slot: Ptr[uint16] = _cow_slot(_cow_pfn(phys))
+    pfn: uint64 = _cow_pfn(phys)
+    slot: Ptr[uint16] = _cow_slot(pfn)
     if cast[uint64](slot) == 0:
         return 1
     _flags: uint64 = local_irq_save()
@@ -467,7 +682,10 @@ def cow_drop_page(phys: uint64) -> int32:
     else:
         slot[0] = cast[uint16](cur - 1)
         _cow_refs_dropped = _cow_refs_dropped + 1
-        _cow_ledger_note_drop()
+        died: uint64 = 0
+        if cur == 1:
+            died = 1
+        _cow_ledger_note_drop(pfn, died)
         if cur == 1:
             ret = 1
     spinlock_unlock(&_cow_lock)
