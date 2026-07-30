@@ -2954,6 +2954,28 @@ wkp_curvrun: Array[4, uint64]
 wkp_nrdy:    Array[4, uint64]
 wkp_minv:    Array[4, uint64]
 wkp_ismin:   Array[4, uint64]
+# THE MEMBERSHIP PREDICATE the scan above does NOT apply.
+#
+# wkp_minv/wkp_ismin are computed by a scan of the TASK TABLE filtered on
+# (state==READY && rq_cpu==cpu && on_cpu==0 && !throttled). _pick_next does
+# NOT use that filter: it walks rq_head[cpu] threaded through rq_next, and a
+# node's membership of that list is recorded in rq_on_list, NOT in
+# (state, rq_cpu). So a slot can satisfy every predicate the scan applies and
+# still be invisible to the picker, because it is not ON the list.
+#
+# That is exactly the shape of the standing anomaly ("a READY task ~15,000
+# vruntime units below the dispatched band that _pick_next never selects").
+# These fields close the gap: lminv/lnrdy are the SAME minimum and depth
+# computed by walking the picker's actual list, and ghost*/ describe the
+# lowest-vruntime slot that is READY+owned-by-cpu but NOT linked. If
+# lminv != minv the two views have diverged and ghostpid names the culprit.
+wkp_lminv:   Array[4, uint64]
+wkp_lnrdy:   Array[4, uint64]
+wkp_ghostn:  Array[4, uint64]
+wkp_ghostv:  Array[4, uint64]
+wkp_ghostp:  Array[4, uint64]
+wkp_ghostnm: Array[4, uint64]
+wkp_ghostst: Array[4, uint64]
 
 
 def _wklat_probe_clear():
@@ -2972,6 +2994,13 @@ def _wklat_probe_clear():
         wkp_nrdy[i]    = 0
         wkp_minv[i]    = 0
         wkp_ismin[i]   = 0
+        wkp_lminv[i]   = 0
+        wkp_lnrdy[i]   = 0
+        wkp_ghostn[i]  = 0
+        wkp_ghostv[i]  = 0
+        wkp_ghostp[i]  = 0
+        wkp_ghostnm[i] = 0
+        wkp_ghostst[i] = 0
         i = i + 1
 
 
@@ -3036,6 +3065,53 @@ def wklat_probe_stalled():
         wkp_ismin[k] = 1
     else:
         wkp_ismin[k] = 0
+    # The SAME quantities, recomputed the way _pick_next actually computes
+    # them: by walking rq_head[cpu]. The walk is BOUNDED at NTASKS steps so a
+    # torn rq_next (we hold no rq lock here — the tick calls us) costs a wrong
+    # diagnostic rather than a hang.
+    lminv: uint64 = 0
+    lhave: uint64 = 0
+    lnr:   uint64 = 0
+    steps: uint64 = 0
+    lr: uint64 = rq_head[cpu]
+    while lr != RQL_NIL and steps < NTASKS:
+        steps = steps + 1
+        if task_table[lr].on_cpu == 0 and cgroup_cpu_should_throttle(lr) == 0:
+            lnr = lnr + 1
+            lv: uint64 = task_table[lr].vruntime
+            if lhave == 0 or lv < lminv:
+                lminv = lv
+                lhave = 1
+        lr = task_table[lr].rq_next
+    wkp_lminv[k] = lminv
+    wkp_lnrdy[k] = lnr
+    # GHOSTS: slots the table scan counts as runnable on this cpu but that are
+    # NOT on the cpu's run-list (rq_on_list == 0). These are invisible to
+    # _pick_next yet fully visible to sched_min_vruntime() — which is what
+    # pins the monotonic vruntime floor.
+    gn:  uint64 = 0
+    gv:  uint64 = 0
+    gs:  uint64 = NTASKS
+    t2: uint64 = 0
+    while t2 < NTASKS:
+        if task_table[t2].state == STATE_READY and task_table[t2].rq_cpu == cpu:
+            if task_table[t2].rq_on_list == 0:
+                gn = gn + 1
+                if gs >= NTASKS or task_table[t2].vruntime < gv:
+                    gv = task_table[t2].vruntime
+                    gs = t2
+        t2 = t2 + 1
+    wkp_ghostn[k] = gn
+    if gs < NTASKS:
+        wkp_ghostv[k]  = gv
+        wkp_ghostp[k]  = task_table[gs].pid
+        wkp_ghostnm[k] = task_table[gs].name0
+        wkp_ghostst[k] = gs
+    else:
+        wkp_ghostv[k]  = 0
+        wkp_ghostp[k]  = RQ_CUR_NONE
+        wkp_ghostnm[k] = 0
+        wkp_ghostst[k] = RQ_CUR_NONE
 
 
 def wklat_probe_report():
@@ -3057,6 +3133,17 @@ def wklat_probe_report():
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
                 wkp_rqcpu[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d lnrdy=%d lminv=%d\n", i, wkp_lnrdy[i],
+                wkp_lminv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d ghostn=%d ghostv=%d\n", i, wkp_ghostn[i],
+                wkp_ghostv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d ghostpid=%d ghostslot=%d\n", i, wkp_ghostp[i],
+                wkp_ghostst[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] s%d ghostnm=%x\n", i, wkp_ghostnm[i])
         i = i + 1
 
 
