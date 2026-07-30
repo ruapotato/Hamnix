@@ -25,42 +25,75 @@ g_attr_end:   uint64 = 0
 
 
 def _hx_find_attr(ts: uint64, te: uint64, name: Ptr[uint8]) -> int32:
+    # A REAL attribute-list walk (rewritten 2026-07-30). It used to slide a
+    # window over the whole tag body looking for the literal name, guarded only
+    # by "the previous byte is not alphanumeric" — so the bytes `name` INSIDE a
+    # quoted value matched too. That was harmless only because the old code then
+    # required a following `=`: on `<input id="name" name="who">` the false hit
+    # at id's VALUE had no `=` after it and was rejected, and the real one was
+    # found on the next pass. The moment valueless (boolean) attributes became
+    # findable that accident stopped protecting anything and
+    # `document.getElementById('name').name` came back "" instead of "who".
+    #
+    # So: walk name/value pairs properly. Names end at whitespace / `=` / `/` /
+    # `>`; values are quoted or bare and are STEPPED OVER, so nothing inside one
+    # is ever mistaken for an attribute name. A name with no `=` is present with
+    # the EMPTY STRING as its value, which is what chromium reports for
+    # `<ol reversed>` (getAttribute -> "", hasAttribute -> true).
     nl: uint64 = 0
     while name[nl] != 0:
         nl = nl + 1
     i: uint64 = ts
-    while i + nl <= te:
-        prev_alpha: int32 = 0
-        if i > ts:
-            pc: uint8 = _hx_lower(src_ptr[i - 1])
-            if (pc >= 97 and pc <= 122) or (pc >= 48 and pc <= 57) or pc == 45:
-                prev_alpha = 1
-        if prev_alpha == 0 and _srcword_is(i, name) != 0 and \
-           _alnum_at(i + nl) == 0:
-            j: uint64 = i + nl
-            while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9):
-                j = j + 1
-            if j < te and src_ptr[j] == 61:              # '='
-                j = j + 1
-                while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9):
-                    j = j + 1
-                quote: uint8 = 0
-                if j < te and (src_ptr[j] == 34 or src_ptr[j] == 39):
-                    quote = src_ptr[j]
-                    j = j + 1
-                g_attr_start = j
-                while j < te:
-                    c: uint8 = src_ptr[j]
-                    if quote != 0:
-                        if c == quote:
-                            break
-                    else:
-                        if c == 32 or c == 9:
-                            break
-                    j = j + 1
-                g_attr_end = j
-                return 1
+    while i < te and _alnum_at(i) != 0:                    # step over the tag name
         i = i + 1
+    while i < te:
+        c0: uint8 = src_ptr[i]
+        if c0 == 32 or c0 == 9 or c0 == 10 or c0 == 13 or c0 == 47 or c0 == 61:
+            i = i + 1
+            continue
+        if c0 == 62:                                       # '>' — end of tag
+            return 0
+        ns: uint64 = i
+        while i < te:
+            cn: uint8 = src_ptr[i]
+            if cn == 32 or cn == 9 or cn == 10 or cn == 13 or cn == 61 or \
+               cn == 47 or cn == 62:
+                break
+            i = i + 1
+        ne: uint64 = i
+        vs: uint64 = ne
+        ve: uint64 = ne
+        j: uint64 = i
+        while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9 or \
+                          src_ptr[j] == 10 or src_ptr[j] == 13):
+            j = j + 1
+        if j < te and src_ptr[j] == 61:                    # '='
+            j = j + 1
+            while j < te and (src_ptr[j] == 32 or src_ptr[j] == 9 or \
+                              src_ptr[j] == 10 or src_ptr[j] == 13):
+                j = j + 1
+            quote: uint8 = 0
+            if j < te and (src_ptr[j] == 34 or src_ptr[j] == 39):
+                quote = src_ptr[j]
+                j = j + 1
+            vs = j
+            while j < te:
+                cv: uint8 = src_ptr[j]
+                if quote != 0:
+                    if cv == quote:
+                        break
+                else:
+                    if cv == 32 or cv == 9 or cv == 10 or cv == 13 or cv == 62:
+                        break
+                j = j + 1
+            ve = j
+            if quote != 0 and j < te:
+                j = j + 1
+            i = j
+        if ne - ns == nl and _srcword_is(ns, name) != 0:
+            g_attr_start = vs
+            g_attr_end = ve
+            return 1
     return 0
 
 

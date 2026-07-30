@@ -6225,18 +6225,21 @@ def he_css_reset():
 # are active on creation; a `new CSSStyleSheet()` is inactive until it appears in
 # `document.adoptedStyleSheets`. When no sheet carries injected rules the parse
 # adds nothing, so a page that never mutates a stylesheet renders byte-identically.
-CSSOM_MAX_SHEETS: int32 = 48
+# 48 -> 256 (2026-07-30). A page that builds <style> elements from script —
+# every css/css-cascade WPT file does, one per subtest — burns a sheet id per
+# element, and at 48 the 49th onward silently got sid -1. 256 * 64 slots.
+CSSOM_MAX_SHEETS: int32 = 256
 CSSOM_SLOTS:      int32 = 64          # max injected rules tracked per sheet
 CSSOM_TEXT_CAP:   int32 = 131072
 cssom_text:       Array[131072, uint8]
 cssom_text_w:     int32 = 0
 cssom_n_sheets:   int32 = 0
-cssom_sheet_active:  Array[48, int32]
-cssom_sheet_nrules:  Array[48, int32]
-cssom_sheet_srccount: Array[48, int32]   # count of ORIGINAL (source) rules, so
+cssom_sheet_active:  Array[256, int32]
+cssom_sheet_nrules:  Array[256, int32]
+cssom_sheet_srccount: Array[256, int32]  # count of ORIGINAL (source) rules, so
                                          # a JS cssRules index maps onto the model
-cssom_rule_off:   Array[3072, int32]     # 48 * 64
-cssom_rule_len:   Array[3072, int32]
+cssom_rule_off:   Array[16384, int32]    # 256 * 64
+cssom_rule_len:   Array[16384, int32]
 
 
 def _cssom_reset():
