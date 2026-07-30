@@ -387,6 +387,8 @@ PA_SITE_UACCESS:      uint64 = 17  # uaccess smoke-test pages
 PA_SITE_TMPFS:        uint64 = 18  # tmpfs file chunk
 PA_SITE_WSYS:         uint64 = 19  # window-system layer/back/shadow buffers
 PA_SITE_EXECVE:       uint64 = 20  # execve eager user-stack prefix
+PA_SITE_REGION:       uint64 = 21  # region_alloc contiguous carve (ELF image,
+                                   # PT_INTERP, wsys large shadow)
 
 # Mode: 0 = off, 1 = site + order/owner metadata, 2 = also per-frame tags.
 _pa_trk_mode:   uint64 = 0
@@ -488,6 +490,57 @@ def _pa_trk_unstamp(base: uint64, npages: uint64):
             _pa_trk_frees[s] = _pa_trk_frees[s] + 1
             cast[Ptr[uint8]](_pa_trk_site + p)[0] = cast[uint8](0)
         i = i + 1
+
+
+def _pa_trk_stamp_region(base: uint64, npages: uint64):
+    # THE LAST BLIND SPOT (leak pass 16 §8.1). region_alloc does not go
+    # through the buddy allocator — it carves from memblock or re-uses a
+    # pooled chunk — so until now not one of its frames carried a site or an
+    # owner. That is why the ELF image and PT_INTERP reported under site 0,
+    # why the census had to scope itself to `USER-MAPPED sites only`, and
+    # why COW arms 1 (W^X verbatim share) and 19 (ELF image span) were
+    # UNADJUDICATED: `owner-dead = 0` over a population whose owner was
+    # never recorded means "nobody wrote an owner down", not "no owner is
+    # dead". Every other allocator in the tree was already attributable.
+    #
+    # Attribution is the SAME one-shot pending-slot protocol alloc_pages
+    # uses, so a caller names itself with the same two calls it already
+    # knows (pa_set_site / pa_set_owner) — except that an unnamed caller
+    # falls back to PA_SITE_REGION rather than PA_SITE_UNKNOWN. Landing in
+    # UNKNOWN would be the one bucket whose growth cannot be acted on, and
+    # for a region there is always at least one true thing to say.
+    #
+    # Runs with the region lock held and (on the region_alloc path) under
+    # boot CR3, which is what makes the raw-physical tracking-array writes
+    # legal there — the same guard region_alloc already takes for its own
+    # intrusive free-list header.
+    if _pa_trk_site == 0:
+        return
+    s: uint64 = _pa_trk_cur_site
+    if s >= PA_SITE_MAX or s == PA_SITE_UNKNOWN:
+        s = PA_SITE_REGION
+    # order is meaningless for a region (it is a byte count, not a buddy
+    # run), so the low nibble is parked at 15 = "not a buddy order". A
+    # consumer that reads meta for an order must not mistake a region for
+    # an order-15 buddy run, which the buddy allocator cannot produce.
+    meta: uint64 = 15 | (_pa_trk_cur_owner << 4)
+    pfn: uint64 = base >> 12
+    i: uint64 = 0
+    while i < npages:
+        p: uint64 = pfn + i
+        if p < _pa_trk_frames:
+            cast[Ptr[uint8]](_pa_trk_site + p)[0] = cast[uint8](s)
+            if _pa_trk_meta != 0:
+                cast[Ptr[uint32]](_pa_trk_meta + (p << 2))[0] = \
+                    cast[uint32](meta)
+            if _pa_trk_tag != 0:
+                cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0] = _pa_trk_cur_tag
+        i = i + 1
+    _pa_trk_live[s] = _pa_trk_live[s] + npages
+    _pa_trk_allocs[s] = _pa_trk_allocs[s] + npages
+    _pa_trk_cur_site = PA_SITE_UNKNOWN
+    _pa_trk_cur_owner = 0
+    _pa_trk_cur_tag = 0
 
 
 def _pa_trk_carve(nbytes: uint64) -> uint64:
@@ -1986,6 +2039,8 @@ def region_alloc(size: uint64) -> uint64:
         ret = memblock_alloc(rsize, 4096)
         if ret != 0:
             _region_carved_bytes = _region_carved_bytes + rsize
+    if ret != 0:
+        _pa_trk_stamp_region(ret, rsize >> 12)
     spinlock_unlock(&_pa_region_lock)
     if _ra_sw != 0:
         load_cr3(_ra_live)
@@ -2053,6 +2108,13 @@ def region_free(addr: uint64, size: uint64):
         load_cr3(_rf_boot)
         _rf_sw = 1
     spinlock_lock(&_pa_region_lock)
+    # Untally BEFORE the coalesce, and under the same lock + boot CR3 the
+    # stamp side runs under. The coalesce below MUTATES `addr` and `rsize`
+    # to describe the MERGED chunk, whose neighbours were already untallied
+    # when they were freed; untallying after it would credit this free with
+    # frames it does not own and clamp the site's live count to zero — the
+    # kind of instrument bug that prints a green over a leak.
+    _pa_trk_unstamp(addr, rsize >> 12)
     # Locate the sorted insertion point: prev = highest chunk below addr.
     prev: uint64 = 0
     cur:  uint64 = _region_free_head
