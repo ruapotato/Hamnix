@@ -8885,26 +8885,47 @@ def mm_origin_live_dump(org: uint64) -> uint64:
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk0("[orgl] NOTE: owner/tag need `track full` (mode 2);"
                 " they will read 0.\n")
+    # THE CAP IS ON PRINTING, NOT ON COUNTING (leak pass 16).
+    #
+    # Pass 15 stopped the whole walk at 64 survivors, which was harmless for a
+    # population of 2 and is a FALSE EXONERATION for a big one: `owner-dead=0`
+    # would then mean "0 among the first 64 frames I happened to reach", and
+    # the terminal workload this instrument is now pointed at strands hundreds
+    # of frames per launch, not two. So the enumeration runs to completion and
+    # only the per-frame detail lines stop at 64.
+    #
+    # It costs nothing extra: cow_origin_next_live RESUMES from `from_pfn`, so
+    # walking the whole arm is O(frames) once, not O(frames) per survivor.
+    #
+    # `owner-stray` is the second half of the discriminator, and it is tallied
+    # over EVERY survivor for the same reason. A frame whose live owner no
+    # longer maps the recorded VA to it is stranded exactly as surely as one
+    # whose owner is dead; previously that could only be read off the printed
+    # detail, i.e. off the first 64.
     n: uint64 = 0
     nlive: uint64 = 0
     ndead: uint64 = 0
     nunrec: uint64 = 0
+    nstray: uint64 = 0
+    detail: uint64 = 1
     pfn: uint64 = cow_origin_next_live(org, 1)
     while pfn != 0:
         phys: uint64 = pfn << 12
         ow: uint64 = page_alloc_frame_owner(phys)
         va: uint64 = page_alloc_frame_tag(phys)
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[orgl] org=%d live[%d] phys=%p\n", org, n, phys)
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk3("[orgl] live[%d] va=%p site=%d\n",
-                n, va, page_alloc_frame_site(phys))
-        printk_set_level(PRINTK_LEVEL_EMERG)
-        printk2("[orgl] live[%d] cow_refcount=%d\n", n, cow_refcount(phys))
+        if detail != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[orgl] org=%d live[%d] phys=%p\n", org, n, phys)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[orgl] live[%d] va=%p site=%d\n",
+                    n, va, page_alloc_frame_site(phys))
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[orgl] live[%d] cow_refcount=%d\n", n, cow_refcount(phys))
         if ow == 0:
             nunrec = nunrec + 1
-            printk_set_level(PRINTK_LEVEL_EMERG)
-            printk1("[orgl] live[%d] owner: NOT RECORDED\n", n)
+            if detail != 0:
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk1("[orgl] live[%d] owner: NOT RECORDED\n", n)
         else:
             os: uint64 = ow - 1
             olive: uint64 = 0
@@ -8916,32 +8937,38 @@ def mm_origin_live_dump(org: uint64) -> uint64:
                 nlive = nlive + 1
             else:
                 ndead = ndead + 1
-            printk_set_level(PRINTK_LEVEL_EMERG)
-            printk3("[orgl] live[%d] owner slot=%d live=%d\n", n, os, olive)
-            printk_set_level(PRINTK_LEVEL_EMERG)
-            printk2("[orgl] live[%d] owner pid=%d\n", n, opid)
-            if olive != 0:
+            if detail != 0:
                 printk_set_level(PRINTK_LEVEL_EMERG)
-                printk2("[orgl] live[%d] owner comm=%s\n",
-                        n, cast[uint64](&task_table[os].comm[0]))
+                printk3("[orgl] live[%d] owner slot=%d live=%d\n", n, os, olive)
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk2("[orgl] live[%d] owner pid=%d\n", n, opid)
+            if olive != 0:
                 # THE DISCRIMINATOR. If the owner still maps the recorded VA
                 # to THIS frame, the page is resident in a running process
                 # and is not leaked by any definition a teardown could fix.
-                printk_set_level(PRINTK_LEVEL_EMERG)
-                printk2("[orgl] live[%d] owner maps here phys=%p\n",
-                        n, vma_pte_phys_at(os, va))
+                mp: uint64 = vma_pte_phys_at(os, va)
+                if mp != phys:
+                    nstray = nstray + 1
+                if detail != 0:
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk2("[orgl] live[%d] owner comm=%s\n",
+                            n, cast[uint64](&task_table[os].comm[0]))
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk2("[orgl] live[%d] owner maps here phys=%p\n", n, mp)
         n = n + 1
-        if n >= 64:
+        if n >= 64 and detail != 0:
+            detail = 0
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk0("[orgl] ... capped at 64\n")
-            pfn = 0
-        else:
-            pfn = cow_origin_next_live(org, pfn + 1)
+            printk0("[orgl] ... per-frame detail capped at 64; the TOTAL and"
+                    " owner-* tallies below cover EVERY survivor\n")
+        pfn = cow_origin_next_live(org, pfn + 1)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk3("[orgl] org=%d TOTAL=%d owner-live=%d\n", org, n, nlive)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk3("[orgl] org=%d owner-dead=%d owner-unrecorded=%d\n",
             org, ndead, nunrec)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[orgl] org=%d owner-stray=%d\n", org, nstray)
     return n
 
 
