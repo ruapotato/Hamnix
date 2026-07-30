@@ -2623,8 +2623,11 @@ def ext4_dirgrow_selftest():
     printk1("[ext4-dirgrow] inserted %d new entries\n", inserted)
     # grew_at-1 new entries fit alongside the seeds in the single
     # starting block: that is the MEASURED old ceiling.
+    ceil_new: uint64 = 0
+    if grew_at > 0:
+        ceil_new = grew_at - 1
     printk1("[ext4-dirgrow] measured old 1-block ceiling: %d new entries\n",
-            grew_at - 1)
+            ceil_new)
 
     if ext4_read_inode(cast[uint64](dir_inum), &dirbuf[0]) != 0:
         printk0("[ext4-dirgrow] FAIL: re-read growdir inode\n")

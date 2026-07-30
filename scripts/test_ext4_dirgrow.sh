@@ -222,7 +222,17 @@ check "all $INSERTS entries resolve and read back" \
       "[ext4-dirgrow] PASS all $INSERTS entries resolve and read back" resolve
 check "pre-existing seeds survived" \
       "[ext4-dirgrow] PASS pre-existing seed survived the growth" seeds
-check "self-test PASS banner" "[ext4-dirgrow] PASS" banner
+# Anchored: `grep -F "[ext4-dirgrow] PASS"` also matches the PASS inside
+# every other marker line, so it stayed green under a mutation that made
+# the self-test print FAIL. The banner is its own whole line.
+if blinded banner; then
+    echo "[test_ext4_dirgrow] MUTATED(blinded): self-test PASS banner"
+elif grep -a -E -q "\[ext4-dirgrow\] PASS[[:space:]]*$" "$LOG"; then
+    echo "[test_ext4_dirgrow] OK: self-test PASS banner"
+else
+    echo "[test_ext4_dirgrow] MISS: self-test PASS banner" >&2
+    fail=1
+fi
 
 # The measured old ceiling is the headline number this gate reports: the
 # count of entries a SINGLE block accepted. It must be far below the
@@ -234,7 +244,8 @@ if blinded ceiling; then
 elif [ -z "${CEIL:-}" ]; then
     echo "[test_ext4_dirgrow] MISS: kernel never reported a measured ceiling" >&2
     fail=1
-elif [ "$CEIL" -ge "$INSERTS" ] || [ "$CEIL" -lt 10 ]; then
+elif ! printf '%s' "$CEIL" | grep -qE '^[0-9]{1,6}$' \
+     || [ "$CEIL" -ge "$INSERTS" ] || [ "$CEIL" -lt 10 ]; then
     echo "[test_ext4_dirgrow] MISS: implausible measured ceiling $CEIL" >&2
     fail=1
 else
