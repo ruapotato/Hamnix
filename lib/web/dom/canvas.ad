@@ -5267,6 +5267,280 @@ def _impl_dispatch(rel: int32) -> int32:
     return d
 
 
+# ---- per-tag interface prototypes (HTMLDivElement, HTMLAnchorElement, ...) --
+# `div instanceof HTMLDivElement` is true in every browser and false here until
+# each element is branded with its own interface prototype. One prototype object
+# per interface (68 of them), NOT per element; each chains to HTMLElement.
+IFACE_N: int32 = 68
+g_iface_proto: Array[68, int32]
+
+
+def _build_iface_protos():
+    g_iface_proto[0] = _dom_interface(cast[Ptr[uint8]]("HTMLAnchorElement"), 17, g_proto_elem)
+    g_iface_proto[1] = _dom_interface(cast[Ptr[uint8]]("HTMLAreaElement"), 15, g_proto_elem)
+    g_iface_proto[2] = _dom_interface(cast[Ptr[uint8]]("HTMLAudioElement"), 16, g_proto_elem)
+    g_iface_proto[3] = _dom_interface(cast[Ptr[uint8]]("HTMLBRElement"), 13, g_proto_elem)
+    g_iface_proto[4] = _dom_interface(cast[Ptr[uint8]]("HTMLBaseElement"), 15, g_proto_elem)
+    g_iface_proto[5] = _dom_interface(cast[Ptr[uint8]]("HTMLBodyElement"), 15, g_proto_elem)
+    g_iface_proto[6] = _dom_interface(cast[Ptr[uint8]]("HTMLButtonElement"), 17, g_proto_elem)
+    g_iface_proto[7] = _dom_interface(cast[Ptr[uint8]]("HTMLCanvasElement"), 17, g_proto_elem)
+    g_iface_proto[8] = _dom_interface(cast[Ptr[uint8]]("HTMLDListElement"), 16, g_proto_elem)
+    g_iface_proto[9] = _dom_interface(cast[Ptr[uint8]]("HTMLDataElement"), 15, g_proto_elem)
+    g_iface_proto[10] = _dom_interface(cast[Ptr[uint8]]("HTMLDataListElement"), 19, g_proto_elem)
+    g_iface_proto[11] = _dom_interface(cast[Ptr[uint8]]("HTMLDialogElement"), 17, g_proto_elem)
+    g_iface_proto[12] = _dom_interface(cast[Ptr[uint8]]("HTMLDirectoryElement"), 20, g_proto_elem)
+    g_iface_proto[13] = _dom_interface(cast[Ptr[uint8]]("HTMLDivElement"), 14, g_proto_elem)
+    g_iface_proto[14] = _dom_interface(cast[Ptr[uint8]]("HTMLEmbedElement"), 16, g_proto_elem)
+    g_iface_proto[15] = _dom_interface(cast[Ptr[uint8]]("HTMLFieldSetElement"), 19, g_proto_elem)
+    g_iface_proto[16] = _dom_interface(cast[Ptr[uint8]]("HTMLFontElement"), 15, g_proto_elem)
+    g_iface_proto[17] = _dom_interface(cast[Ptr[uint8]]("HTMLFormElement"), 15, g_proto_elem)
+    g_iface_proto[18] = _dom_interface(cast[Ptr[uint8]]("HTMLFrameElement"), 16, g_proto_elem)
+    g_iface_proto[19] = _dom_interface(cast[Ptr[uint8]]("HTMLFrameSetElement"), 19, g_proto_elem)
+    g_iface_proto[20] = _dom_interface(cast[Ptr[uint8]]("HTMLHRElement"), 13, g_proto_elem)
+    g_iface_proto[21] = _dom_interface(cast[Ptr[uint8]]("HTMLHeadElement"), 15, g_proto_elem)
+    g_iface_proto[22] = _dom_interface(cast[Ptr[uint8]]("HTMLHeadingElement"), 18, g_proto_elem)
+    g_iface_proto[23] = _dom_interface(cast[Ptr[uint8]]("HTMLHtmlElement"), 15, g_proto_elem)
+    g_iface_proto[24] = _dom_interface(cast[Ptr[uint8]]("HTMLIFrameElement"), 17, g_proto_elem)
+    g_iface_proto[25] = _dom_interface(cast[Ptr[uint8]]("HTMLImageElement"), 16, g_proto_elem)
+    g_iface_proto[26] = _dom_interface(cast[Ptr[uint8]]("HTMLInputElement"), 16, g_proto_elem)
+    g_iface_proto[27] = _dom_interface(cast[Ptr[uint8]]("HTMLLIElement"), 13, g_proto_elem)
+    g_iface_proto[28] = _dom_interface(cast[Ptr[uint8]]("HTMLLabelElement"), 16, g_proto_elem)
+    g_iface_proto[29] = _dom_interface(cast[Ptr[uint8]]("HTMLLegendElement"), 17, g_proto_elem)
+    g_iface_proto[30] = _dom_interface(cast[Ptr[uint8]]("HTMLLinkElement"), 15, g_proto_elem)
+    g_iface_proto[31] = _dom_interface(cast[Ptr[uint8]]("HTMLMapElement"), 14, g_proto_elem)
+    g_iface_proto[32] = _dom_interface(cast[Ptr[uint8]]("HTMLMetaElement"), 15, g_proto_elem)
+    g_iface_proto[33] = _dom_interface(cast[Ptr[uint8]]("HTMLMeterElement"), 16, g_proto_elem)
+    g_iface_proto[34] = _dom_interface(cast[Ptr[uint8]]("HTMLModElement"), 14, g_proto_elem)
+    g_iface_proto[35] = _dom_interface(cast[Ptr[uint8]]("HTMLOListElement"), 16, g_proto_elem)
+    g_iface_proto[36] = _dom_interface(cast[Ptr[uint8]]("HTMLObjectElement"), 17, g_proto_elem)
+    g_iface_proto[37] = _dom_interface(cast[Ptr[uint8]]("HTMLOptGroupElement"), 19, g_proto_elem)
+    g_iface_proto[38] = _dom_interface(cast[Ptr[uint8]]("HTMLOptionElement"), 17, g_proto_elem)
+    g_iface_proto[39] = _dom_interface(cast[Ptr[uint8]]("HTMLOutputElement"), 17, g_proto_elem)
+    g_iface_proto[40] = _dom_interface(cast[Ptr[uint8]]("HTMLParagraphElement"), 20, g_proto_elem)
+    g_iface_proto[41] = _dom_interface(cast[Ptr[uint8]]("HTMLParamElement"), 16, g_proto_elem)
+    g_iface_proto[42] = _dom_interface(cast[Ptr[uint8]]("HTMLPreElement"), 14, g_proto_elem)
+    g_iface_proto[43] = _dom_interface(cast[Ptr[uint8]]("HTMLProgressElement"), 19, g_proto_elem)
+    g_iface_proto[44] = _dom_interface(cast[Ptr[uint8]]("HTMLQuoteElement"), 16, g_proto_elem)
+    g_iface_proto[45] = _dom_interface(cast[Ptr[uint8]]("HTMLScriptElement"), 17, g_proto_elem)
+    g_iface_proto[46] = _dom_interface(cast[Ptr[uint8]]("HTMLSelectElement"), 17, g_proto_elem)
+    g_iface_proto[47] = _dom_interface(cast[Ptr[uint8]]("HTMLSourceElement"), 17, g_proto_elem)
+    g_iface_proto[48] = _dom_interface(cast[Ptr[uint8]]("HTMLSpanElement"), 15, g_proto_elem)
+    g_iface_proto[49] = _dom_interface(cast[Ptr[uint8]]("HTMLStyleElement"), 16, g_proto_elem)
+    g_iface_proto[50] = _dom_interface(cast[Ptr[uint8]]("HTMLTableCaptionElement"), 23, g_proto_elem)
+    g_iface_proto[51] = _dom_interface(cast[Ptr[uint8]]("HTMLTableCellElement"), 20, g_proto_elem)
+    g_iface_proto[52] = _dom_interface(cast[Ptr[uint8]]("HTMLTableColElement"), 19, g_proto_elem)
+    g_iface_proto[53] = _dom_interface(cast[Ptr[uint8]]("HTMLTableElement"), 16, g_proto_elem)
+    g_iface_proto[54] = _dom_interface(cast[Ptr[uint8]]("HTMLTableRowElement"), 19, g_proto_elem)
+    g_iface_proto[55] = _dom_interface(cast[Ptr[uint8]]("HTMLTableSectionElement"), 23, g_proto_elem)
+    g_iface_proto[56] = _dom_interface(cast[Ptr[uint8]]("HTMLTemplateElement"), 19, g_proto_elem)
+    g_iface_proto[57] = _dom_interface(cast[Ptr[uint8]]("HTMLTextAreaElement"), 19, g_proto_elem)
+    g_iface_proto[58] = _dom_interface(cast[Ptr[uint8]]("HTMLTimeElement"), 15, g_proto_elem)
+    g_iface_proto[59] = _dom_interface(cast[Ptr[uint8]]("HTMLTitleElement"), 16, g_proto_elem)
+    g_iface_proto[60] = _dom_interface(cast[Ptr[uint8]]("HTMLTrackElement"), 16, g_proto_elem)
+    g_iface_proto[61] = _dom_interface(cast[Ptr[uint8]]("HTMLUListElement"), 16, g_proto_elem)
+    g_iface_proto[62] = _dom_interface(cast[Ptr[uint8]]("HTMLVideoElement"), 16, g_proto_elem)
+    g_iface_proto[63] = _dom_interface(cast[Ptr[uint8]]("HTMLUnknownElement"), 18, g_proto_elem)
+    g_iface_proto[64] = _dom_interface(cast[Ptr[uint8]]("HTMLPictureElement"), 18, g_proto_elem)
+    g_iface_proto[65] = _dom_interface(cast[Ptr[uint8]]("HTMLSlotElement"), 15, g_proto_elem)
+    g_iface_proto[66] = _dom_interface(cast[Ptr[uint8]]("HTMLMenuElement"), 15, g_proto_elem)
+    g_iface_proto[67] = _dom_interface(cast[Ptr[uint8]]("HTMLMarqueeElement"), 18, g_proto_elem)
+
+
+# Interface index for a LOWERCASE tag name, or -1 for the plain HTMLElement.
+# Dispatched on the first byte first so a page with thousands of elements does
+# not walk the whole table for each one.
+def _tag_iface(tp: Ptr[uint8], tl: int32) -> int32:
+    if tl <= 0:
+        return -1
+    c0: uint8 = tp[0]
+    if c0 == 97:                                # 'a'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("audio"), 5) != 0:
+            return 2
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("area"), 4) != 0:
+            return 1
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("a"), 1) != 0:
+            return 0
+    elif c0 == 98:                                # 'b'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("blockquote"), 10) != 0:
+            return 44
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("button"), 6) != 0:
+            return 6
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("base"), 4) != 0:
+            return 4
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("body"), 4) != 0:
+            return 5
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("br"), 2) != 0:
+            return 3
+    elif c0 == 99:                                # 'c'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("colgroup"), 8) != 0:
+            return 52
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("caption"), 7) != 0:
+            return 50
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("canvas"), 6) != 0:
+            return 7
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("col"), 3) != 0:
+            return 52
+    elif c0 == 100:                                # 'd'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("datalist"), 8) != 0:
+            return 10
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("dialog"), 6) != 0:
+            return 11
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("data"), 4) != 0:
+            return 9
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("dir"), 3) != 0:
+            return 12
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("div"), 3) != 0:
+            return 13
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("del"), 3) != 0:
+            return 34
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("dl"), 2) != 0:
+            return 8
+    elif c0 == 101:                                # 'e'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("embed"), 5) != 0:
+            return 14
+    elif c0 == 102:                                # 'f'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("fieldset"), 8) != 0:
+            return 15
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("frameset"), 8) != 0:
+            return 19
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("frame"), 5) != 0:
+            return 18
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("font"), 4) != 0:
+            return 16
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("form"), 4) != 0:
+            return 17
+    elif c0 == 104:                                # 'h'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("head"), 4) != 0:
+            return 21
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("html"), 4) != 0:
+            return 23
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h1"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h2"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h3"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h4"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h5"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("h6"), 2) != 0:
+            return 22
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("hr"), 2) != 0:
+            return 20
+    elif c0 == 105:                                # 'i'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("iframe"), 6) != 0:
+            return 24
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("input"), 5) != 0:
+            return 26
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("img"), 3) != 0:
+            return 25
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("ins"), 3) != 0:
+            return 34
+    elif c0 == 108:                                # 'l'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("legend"), 6) != 0:
+            return 29
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("label"), 5) != 0:
+            return 28
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("link"), 4) != 0:
+            return 30
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("li"), 2) != 0:
+            return 27
+    elif c0 == 109:                                # 'm'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("meter"), 5) != 0:
+            return 33
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("meta"), 4) != 0:
+            return 32
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("map"), 3) != 0:
+            return 31
+    elif c0 == 111:                                # 'o'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("optgroup"), 8) != 0:
+            return 37
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("object"), 6) != 0:
+            return 36
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("option"), 6) != 0:
+            return 38
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("output"), 6) != 0:
+            return 39
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("ol"), 2) != 0:
+            return 35
+    elif c0 == 112:                                # 'p'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("progress"), 8) != 0:
+            return 43
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("param"), 5) != 0:
+            return 41
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("pre"), 3) != 0:
+            return 42
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("p"), 1) != 0:
+            return 40
+    elif c0 == 113:                                # 'q'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("q"), 1) != 0:
+            return 44
+    elif c0 == 115:                                # 's'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("script"), 6) != 0:
+            return 45
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("select"), 6) != 0:
+            return 46
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("source"), 6) != 0:
+            return 47
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("style"), 5) != 0:
+            return 49
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("span"), 4) != 0:
+            return 48
+    elif c0 == 116:                                # 't'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("template"), 8) != 0:
+            return 56
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("textarea"), 8) != 0:
+            return 57
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("table"), 5) != 0:
+            return 53
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("tbody"), 5) != 0:
+            return 55
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("thead"), 5) != 0:
+            return 55
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("tfoot"), 5) != 0:
+            return 55
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("title"), 5) != 0:
+            return 59
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("track"), 5) != 0:
+            return 60
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("time"), 4) != 0:
+            return 58
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("td"), 2) != 0:
+            return 51
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("th"), 2) != 0:
+            return 51
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("tr"), 2) != 0:
+            return 54
+    elif c0 == 117:                                # 'u'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("ul"), 2) != 0:
+            return 61
+    elif c0 == 118:                                # 'v'
+        if _bytes_eq(tp, tl, cast[Ptr[uint8]]("video"), 5) != 0:
+            return 62
+    return -1
+
+
+# Brand `o` with the interface prototype for its tag (falls back to HTMLElement).
+def _brand_by_tag(o: int32):
+    if g_proto_elem == 0:
+        return
+    tv: int32 = js_get_prop(o, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tv) != TAG_STR:
+        return
+    tp: Ptr[uint8] = js_str_bytes(tv)
+    tl: int32 = js_str_bytelen(tv)
+    if tl > 31:
+        return
+    lb: Array[32, uint8]
+    i: int32 = 0
+    while i < tl:
+        lb[i] = _hx_lower(tp[i])
+        i = i + 1
+    ii: int32 = _tag_iface(&lb[0], tl)
+    if ii >= 0 and g_iface_proto[ii] != 0:
+        js_set_proto_v(o, g_iface_proto[ii])
+
 def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32:
     ctor: int32 = js_new_native_fn(js_hbase + NID_NODE_CTOR)
     js_global_set(name, nlen, ctor)
@@ -5395,21 +5669,11 @@ def _build_dom_interfaces():
     js_tag_object(g_proto_attr, cast[Ptr[uint8]]("Attr"))
     js_tag_object(g_proto_nnm, cast[Ptr[uint8]]("NamedNodeMap"))
     js_tag_object(g_proto_impl, cast[Ptr[uint8]]("DOMImplementation"))
-    g_proto_html = _dom_interface(cast[Ptr[uint8]]("HTMLHtmlElement"), 15, \
-                                  g_proto_elem)
-    g_proto_head = _dom_interface(cast[Ptr[uint8]]("HTMLHeadElement"), 15, \
-                                  g_proto_elem)
-    g_proto_body = _dom_interface(cast[Ptr[uint8]]("HTMLBodyElement"), 15, \
-                                  g_proto_elem)
-    g_proto_title = _dom_interface(cast[Ptr[uint8]]("HTMLTitleElement"), 16, \
-                                   g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLHeadingElement"), 18, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLSpanElement"), 15, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLParagraphElement"), 20, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLUnknownElement"), 18, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLInputElement"), 16, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLDivElement"), 14, g_proto_elem)
-    _dom_interface(cast[Ptr[uint8]]("HTMLAnchorElement"), 17, g_proto_elem)
+    _build_iface_protos()
+    g_proto_html = g_iface_proto[_tag_iface(cast[Ptr[uint8]]("html"), 4)]
+    g_proto_head = g_iface_proto[_tag_iface(cast[Ptr[uint8]]("head"), 4)]
+    g_proto_body = g_iface_proto[_tag_iface(cast[Ptr[uint8]]("body"), 4)]
+    g_proto_title = g_iface_proto[_tag_iface(cast[Ptr[uint8]]("title"), 5)]
     _dom_interface(cast[Ptr[uint8]]("SVGElement"), 10, \
                    js_fn_prototype(js_global_get(cast[Ptr[uint8]]("Element"), 7)))
     # MessageChannel — React 18's scheduler prefers it over setTimeout for its

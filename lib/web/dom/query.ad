@@ -4,6 +4,7 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _attr_decode_at
+from lib.htmlengine import _brand_by_tag
 from lib.htmlengine import base_url, base_url_len
 from lib.jsengine import _url_resolve, url_buf_a
 from lib.htmlengine import _ebox_find, _attr_op_match, _build_dataset, _bytes_eq, _content_right, _cstr_len, _dom_lookup_anchor, _extract_html, _extract_text, _find_cre_by_obj, _has_word, _hx_find_attr, _hx_lower, _idbytes_eq, _input_type_is, _is_undef_str, _left_margin, _match_chain, _nth_match, _palette_rgb, _parse_nth, _sel_attr_name_end, _sel_isname, _sel_parse, _sel_split, _select_index, _select_text, _tx_by_anchor, _tx_next_sibling, _tx_prev_sibling, _upper, css_color_rgb
@@ -1145,6 +1146,10 @@ def _attach_proto_methods(p: int32):
 # Attach the element-level native methods to a DOM element object.
 def _attach_el_methods(o: int32):
     _node_identity(o, g_proto_elem)
+    # ...then narrow to the element's own interface prototype, so
+    # `div instanceof HTMLDivElement` is true as it is in a browser. One shared
+    # prototype per interface; the chain still reaches HTMLElement/Element/Node.
+    _brand_by_tag(o)
     # The stateless methods live on HTMLElement.prototype (see
     # _attach_proto_methods) — inherited, not copied. Only elements created
     # BEFORE the interfaces exist (g_proto_elem == 0) need their own copy.
