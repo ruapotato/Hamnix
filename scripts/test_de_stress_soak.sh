@@ -513,6 +513,18 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
     sleep 3
     sample "c${c}closed" || say_fail "cycle $c: CLOSED sample timed out"
 
+    # PER-CYCLE COW REFERENCE LEDGER (leak pass 13). O(arms) — no page-table
+    # walk and no frame scan, unlike `track census` — so it is affordable
+    # every cycle, and that is the whole point: the per-arm add/drop balances
+    # are per-frame COUNTS, so their slopes are immune to the ~6.4 pg/cycle
+    # run-to-run spread that two 30-minute soaks on byte-identical mm/ showed
+    # in PagesInUse. A fix is validated against these, not against a single
+    # before/after PagesInUse pair.
+    if [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ]; then
+        printf 'echo track ledger > /proc/meminfo\n' >&3
+        sleep 1
+    fi
+
     # ---- per-cycle health --------------------------------------------
     audit=$(audit_143)
     if [ -n "$audit" ]; then
@@ -581,8 +593,20 @@ if [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ]; then
     # The census prints "control OK" or "CONTROL FAILED ... verdict is VOID".
     printf 'echo track plant > /proc/meminfo\n' >&3
     sleep 2
+    # PLANT THE NEGATIVE CONTROL TOO. The positive control proves the census
+    # can SEE an unmapped frame; it says nothing about the other error
+    # direction. If the walk misses a private table or mis-indexes the
+    # reachable bitmap, the census manufactures orphans out of LIVE frames and
+    # every span/owner conclusion drawn from an orphan tally is an artefact of
+    # the instrument. `track mplant` maps one tagged frame into a long-lived
+    # address space; the census must mark it reachable and must NOT count it,
+    # and prints "negative control OK" or "NEGATIVE CONTROL FAILED ... VOID".
+    printf 'echo track mplant > /proc/meminfo\n' >&3
+    sleep 2
     printf 'echo track census > /proc/meminfo\n' >&3
-    sleep 6
+    sleep 8
+    printf 'echo track unmplant > /proc/meminfo\n' >&3
+    sleep 2
     printf 'echo track unplant > /proc/meminfo\n' >&3
     sleep 2
 fi

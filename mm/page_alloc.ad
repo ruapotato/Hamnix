@@ -33,7 +33,10 @@
 # large-kmalloc path in slab.ad uses order >0 for blocks > 2 KiB.
 
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
-from mm.cow import cow_boot_cr3, cow_refcount, cow_drop_page
+from mm.cow import (
+    cow_boot_cr3, cow_refcount, cow_drop_page,
+    cow_set_arm, COW_ARM_DROP_REGION,
+)
 from kernel.printk.printk import printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 # #mm-parity: reset a frame's struct-page descriptor (LRU membership,
@@ -971,6 +974,104 @@ def page_alloc_census_planted() -> uint64:
     return _pa_planted
 
 
+# --- NEGATIVE control frame: deliberately MAPPED, and must NOT be reported ---
+#
+# The positive control above proves the census can SEE an unmapped frame. It
+# says nothing about the other error direction, and that direction is the one
+# every conclusion drawn from "44 orphans" rests on: if the walk misses a
+# private table, mis-indexes the reachable bitmap, or declines a leaf it should
+# have marked, the census manufactures orphans out of perfectly live frames.
+# Every span attribution, every owner-liveness claim and every disproof pass 12
+# recorded would then be describing an artefact of the instrument.
+#
+# The circumstantial evidence was good — `site 6: 1 orphan of 41 live`, that
+# one orphan being the plant — but "good circumstantial evidence" is exactly
+# what passes 1..11 kept acting on. So: allocate a frame at a user-mapped site,
+# MAP it into a long-lived task's address space at a scratch VA, and require
+# the census to mark it reachable and NOT count it. Two properties make it a
+# real test of the walk rather than a formality:
+#
+#   * the scratch VA is far above every span the loader installs, so the
+#     mapping is reached only through tables the walk CRACKED — the private
+#     path, which is the only path the census follows;
+#   * phys != VA by construction (the scratch VA is above RAM top), so the
+#     leaf survives the walk's identity filter, which is the filter that made
+#     the positive control fail once before.
+#
+# kernel/sched/core.ad::mm_census_plant_mapped installs the mapping (it owns
+# task_table); this module owns the frame, the tag and the verdict.
+_pa_mplanted:   uint64 = 0
+_pa_mplant_va:  uint64 = 0
+_pa_mplant_slot: uint64 = 0
+PA_MPLANT_TAG:  uint64 = 0xBEEF0FAB  # distinct from PA_PLANT_TAG (0xC0FFEE00)
+
+
+def page_alloc_census_mplant_alloc() -> uint64:
+    # Allocate the negative-control frame, tagged like a real user page so the
+    # sweep judges it under exactly the same predicate as a COW copy. Mapping
+    # is the caller's job; the frame is NOT armed as a control until
+    # page_alloc_census_mplant_arm is told where it landed.
+    if _pa_mplanted != 0:
+        return _pa_mplanted
+    pa_set_site(PA_SITE_VMA_ANON)
+    pa_set_tag(PA_MPLANT_TAG)
+    p: uint64 = alloc_page()
+    return p
+
+
+def page_alloc_census_mplant_arm(phys: uint64, va: uint64, slot: uint64):
+    _pa_mplanted = phys
+    _pa_mplant_va = va
+    _pa_mplant_slot = slot
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[census] planted MAPPED control phys=%p va=%p\n", phys, va)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[census] mapped control installed in task slot %d\n", slot)
+
+
+def page_alloc_census_mplant_clear():
+    _pa_mplanted = 0
+    _pa_mplant_va = 0
+    _pa_mplant_slot = 0
+
+
+def page_alloc_census_mplanted() -> uint64:
+    return _pa_mplanted
+
+
+def page_alloc_census_mplant_va() -> uint64:
+    return _pa_mplant_va
+
+
+def page_alloc_census_mplant_slot() -> uint64:
+    return _pa_mplant_slot
+
+
+def page_alloc_frame_reachable(phys: uint64) -> uint64:
+    # 1 iff the last census marked the frame containing `phys` reachable.
+    # Reads the SAME bit page_alloc_census_sweep tests, so a disagreement
+    # between this and the orphan tally is impossible by construction.
+    if _pa_reach_bm == 0:
+        return 0
+    p: uint64 = phys >> 12
+    if p >= _pa_reach_frames:
+        return 0
+    b: uint64 = cast[uint64](cast[Ptr[uint8]](_pa_reach_bm + (p >> 3))[0])
+    if (b & (cast[uint64](1) << (p & 7))) != 0:
+        return 1
+    return 0
+
+
+def page_alloc_frame_site(phys: uint64) -> uint64:
+    # The recorded site byte for a frame, or 0 when tracking is not armed.
+    if _pa_trk_site == 0:
+        return 0
+    p: uint64 = phys >> 12
+    if p >= _pa_trk_frames:
+        return 0
+    return cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0])
+
+
 def page_alloc_census_report(total: uint64):
     # EMERG report — INFO is suppressed once the shell prompt is up
     # (console_set_interactive), and printk_set_level arms exactly ONE
@@ -1007,6 +1108,37 @@ def page_alloc_census_report(total: uint64):
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk0("[census] NO CONTROL PLANTED: a 0-orphan result here is"
                 " UNVALIDATED — write `track plant` before `track census`.\n")
+    # NEGATIVE CONTROL. A mapped frame MUST be marked reachable and MUST NOT
+    # be tallied. If it is not, the census over-reports and every non-zero
+    # orphan count it has ever produced is suspect — which is a strictly more
+    # valuable result than any fix, so it is stated in the strongest terms the
+    # log can carry rather than left for a reader to infer from a tally.
+    if _pa_mplanted != 0:
+        r: uint64 = page_alloc_frame_reachable(_pa_mplanted)
+        s: uint64 = page_alloc_frame_site(_pa_mplanted)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[census] negctl phys=%p site=%d reachable=%d\n",
+                _pa_mplanted, s, r)
+        if r == 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk0("[census] NEGATIVE CONTROL FAILED: a frame that IS"
+                    " mapped was NOT marked reachable, so it was counted as"
+                    " an ORPHAN. This census OVER-REPORTS and every orphan"
+                    " count from it is VOID.\n")
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[census]   negctl va=%p in task slot %d — the walk"
+                    " missed this live mapping.\n",
+                    _pa_mplant_va, _pa_mplant_slot)
+        else:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[census] negative control OK: mapped frame at va=%p"
+                    " (slot %d) marked reachable, not counted.\n",
+                    _pa_mplant_va, _pa_mplant_slot)
+    else:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] NO NEGATIVE CONTROL: a non-zero orphan count here"
+                " is UNVALIDATED against over-reporting — write"
+                " `track mplant` before `track census`.\n")
     i: uint64 = 0
     while i < PA_SITE_MAX:
         # Report every user-mapped site with live frames, INCLUDING the ones
@@ -2003,6 +2135,7 @@ def region_free_cow_safe(addr: uint64, size: uint64):
         frame: uint64 = addr + off
         if cow_refcount(frame) > 0:
             any_cow = 1
+            cow_set_arm(COW_ARM_DROP_REGION)
             cow_drop_page(frame)
         off = off + 4096
     if any_cow == 0:

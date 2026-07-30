@@ -52,7 +52,10 @@
 #   diagnostic halt).
 
 from mm.memblock import memblock_alloc, memblock_region_top
-from kernel.printk.printk import printk0, printk1, printk2
+from kernel.printk.printk import (
+    printk0, printk1, printk2, printk3, printk_set_level,
+)
+from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
 
 extern def memset(dst: Ptr[uint8], val: int32, n: uint64) -> Ptr[uint8]
 # SMP atomicity for the per-PFN refcount table (see _cow_lock below). The
@@ -148,6 +151,163 @@ def cow_refs_added() -> uint64:
 
 def cow_refs_dropped() -> uint64:
     return _cow_refs_dropped
+
+
+# --- PER-CALL-SITE ledger (leak pass 13) ------------------------------------
+#
+# The two totals above say the ledger is unbalanced. They cannot say WHERE,
+# and "somewhere in fork" is not a statement a fix can be written against.
+# Pass 12 ended on exactly that: the reference is not lost at reap and not
+# lost at execve, yet it is outstanding with no mapper — so an add somewhere
+# has no matching drop. Splitting the SAME two counters by call site turns one
+# soak into a name.
+#
+# The arm is a pending global set just before the call, exactly the
+# pa_set_site pattern the page tracker already uses, and for the same reason:
+# threading an extra parameter through cow_share_page / cow_ref_inc /
+# cow_drop_page would change three public signatures and every caller in three
+# modules for a debug knob. It is NOT per-CPU and NOT reentrant — an IRQ
+# landing between cow_set_arm and the call mis-attributes ONE increment. That
+# is the same trade _pa_trk_cur_site makes; against ~6.9 k increments per soak
+# cycle it cannot move an arm's slope.
+#
+# GATED, unlike the two totals above. `cow_ledger_enable` is driven from the
+# same `track on` / `track full` / `track off` ctl verbs as the page tracker,
+# so a disarmed kernel pays one global load and one not-taken branch in
+# cow_set_arm and nothing at all in the three RMWs. That keeps pass 12's rule
+# — everything new is armable, and the ONLY unconditional additions in this
+# whole effort remain the four declared above. /proc/meminfo is untouched.
+COW_ARM_MAX: uint64 = 24
+
+# Add side.
+COW_ARM_SHARE_WX_RO:      uint64 = 1   # elf: _cow_share_one_page, W^X RO verbatim
+COW_ARM_SHARE_COW:        uint64 = 2   # elf: _cow_share_one_page, general COW
+COW_ARM_SHARE_WRITABLE:   uint64 = 3   # elf: _share_one_page (vm_share_range)
+COW_ARM_REFINC_OWNER:     uint64 = 4   # elf: vm_cow_ref_range over an owner VMA
+COW_ARM_REFINC_RESOLVE:   uint64 = 5   # elf: cow_resolve_pte, the fresh copy
+COW_ARM_REFINC_PGC_HIT:   uint64 = 6   # vma: shared-mmap page-cache hit
+COW_ARM_REFINC_PGC_RACE:  uint64 = 7   # vma: lost the publish race, use theirs
+COW_ARM_REFINC_PGC_PUB:   uint64 = 8   # vma: first publisher of a shared frame
+
+# Drop side.
+COW_ARM_DROP_VMA_RANGE:   uint64 = 9   # vma: _vma_free_cow_range
+COW_ARM_DROP_FORKED:      uint64 = 10  # vma: _cow_release_forked_range
+COW_ARM_DROP_STRAYS:      uint64 = 11  # vma: vma_free_cow_strays
+COW_ARM_DROP_FILEMAP:     uint64 = 12  # vma: file-backed range teardown
+COW_ARM_DROP_RESOLVE:     uint64 = 13  # elf: cow_resolve_pte, the displaced page
+COW_ARM_DROP_REGION:      uint64 = 14  # page_alloc: region_free_cow_safe
+COW_ARM_DROP_UNMAP:       uint64 = 15  # vma: vma unmap range
+COW_ARM_DROP_PGC_FAIL:    uint64 = 16  # vma: shared-mmap install failed, undo
+# The same two teardown walks, split by WHICH share created the reference.
+# Arms 9/10 alone cannot separate the W^X verbatim share (arm 1) from the
+# general COW share (arm 2): both drain into the same walk, so an imbalance
+# across 1+2 vs 9+10 names a pair, not a site. The PTE being dropped carries
+# the answer -- a W^X share leaves RW=0 with the COW bit CLEAR, a COW share
+# leaves RW=0 with the COW bit SET -- so classify at the drop and the two
+# ledgers close independently.
+COW_ARM_DROP_VMA_RANGE_WX: uint64 = 17
+COW_ARM_DROP_FORKED_WX:    uint64 = 18
+
+_cow_ledger_on: uint64 = 0
+_cow_arm:       uint64 = 0
+_cow_arm_add:   Array[24, uint64]
+_cow_arm_drop:  Array[24, uint64]
+
+
+def cow_ledger_enable(on: uint64):
+    _cow_ledger_on = on
+    if on == 0:
+        return
+    i: uint64 = 0
+    while i < COW_ARM_MAX:
+        _cow_arm_add[i] = 0
+        _cow_arm_drop[i] = 0
+        i = i + 1
+
+
+def cow_ledger_on() -> uint64:
+    return _cow_ledger_on
+
+
+def cow_drop_arm_for_pte(pte: uint64, arm_cow: uint64,
+                         arm_wx: uint64) -> uint64:
+    # Which SHARE produced the reference this PTE holds. A W^X verbatim share
+    # (fs/elf.ad::_cow_share_one_page's read-only arm) copies the parent's
+    # flags through untouched, so RW stays 0 and the COW bit stays CLEAR; the
+    # general COW share force-SETS the COW bit. Anything writable never came
+    # from either share arm on this path, so it falls to the COW bucket, which
+    # keeps the classifier total-and-lossless -- a third bucket would just
+    # hide the residue.
+    if (pte & COW_PTE_BIT) == 0:
+        return arm_wx
+    return arm_cow
+
+
+def cow_set_arm(a: uint64):
+    # Attribute the NEXT cow_share_page / cow_ref_inc / cow_drop_page on this
+    # CPU to call site `a`. Disarmed cost: one load, one branch, one return.
+    if _cow_ledger_on == 0:
+        return
+    _cow_arm = a
+
+
+def cow_ledger_add(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_arm_add[a]
+
+
+def cow_ledger_drop(a: uint64) -> uint64:
+    if a >= COW_ARM_MAX:
+        return 0
+    return _cow_arm_drop[a]
+
+
+def _cow_ledger_note_add(n: uint64):
+    # Called with _cow_lock HELD, so the per-arm tallies move atomically with
+    # the refcount they describe — a ledger that could disagree with the table
+    # it audits would be worse than no ledger.
+    if _cow_ledger_on == 0:
+        return
+    if _cow_arm < COW_ARM_MAX:
+        _cow_arm_add[_cow_arm] = _cow_arm_add[_cow_arm] + n
+
+
+def _cow_ledger_note_drop():
+    if _cow_ledger_on == 0:
+        return
+    if _cow_arm < COW_ARM_MAX:
+        _cow_arm_drop[_cow_arm] = _cow_arm_drop[_cow_arm] + 1
+
+
+def cow_ledger_dump():
+    # EMERG, one set_level per line — console_set_interactive suppresses INFO
+    # once the prompt is up and printk_set_level arms exactly ONE message.
+    # Both constraints already cost this effort a "silent" working probe.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    if _cow_ledger_on == 0:
+        printk0("[ledger] DISARMED — no per-arm attribution. Write"
+                " `track full` before `track census`.\n")
+        return
+    printk2("[ledger] totals: added=%d dropped=%d\n",
+            _cow_refs_added, _cow_refs_dropped)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[ledger] totals: outstanding=%d\n",
+            _cow_refs_added - _cow_refs_dropped)
+    i: uint64 = 1
+    while i < COW_ARM_MAX:
+        if _cow_arm_add[i] != 0 or _cow_arm_drop[i] != 0:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[ledger] arm=%d add=%d drop=%d\n",
+                    i, _cow_arm_add[i], _cow_arm_drop[i])
+        i = i + 1
+    # Arm 0 is "nobody called cow_set_arm". A large arm-0 count means the
+    # instrumentation is INCOMPLETE, not that a mystery site exists, and
+    # saying so keeps a reader from slope-fitting an unattributed residue.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[ledger] UNATTRIBUTED arm=0 add=%d drop=%d"
+            " (non-zero means a call site is missing cow_set_arm)\n",
+            _cow_arm_add[0], _cow_arm_drop[0])
 
 # Pristine boot page-table root (CR3), snapshotted in cow_init() before
 # any task exists. The COW page-table cracker compares against THIS to
@@ -245,9 +405,11 @@ def cow_share_page(phys: uint64):
     if cur == 0:
         slot[0] = 2
         _cow_refs_added = _cow_refs_added + 2
+        _cow_ledger_note_add(2)
     elif cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
         _cow_refs_added = _cow_refs_added + 1
+        _cow_ledger_note_add(1)
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -269,6 +431,7 @@ def cow_ref_inc(phys: uint64):
     if cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
         _cow_refs_added = _cow_refs_added + 1
+        _cow_ledger_note_add(1)
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -304,6 +467,7 @@ def cow_drop_page(phys: uint64) -> int32:
     else:
         slot[0] = cast[uint16](cur - 1)
         _cow_refs_dropped = _cow_refs_dropped + 1
+        _cow_ledger_note_drop()
         if cur == 1:
             ret = 1
     spinlock_unlock(&_cow_lock)

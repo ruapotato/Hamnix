@@ -32,10 +32,14 @@ from mm.page_alloc import (
     page_alloc_orphan_collect, page_alloc_orphan_va,
     page_alloc_orphan_phys, page_alloc_orphan_owner,
     page_alloc_track_mode, page_alloc_owns,
+    page_alloc_census_mplant_alloc, page_alloc_census_mplant_arm,
+    page_alloc_census_mplant_clear, page_alloc_census_mplanted,
+    page_alloc_census_mplant_va, page_alloc_census_mplant_slot,
 )
 from mm.slab import kfree
 from mm.cow import (
     cow_boot_cr3, cow_refcount, cow_refs_added, cow_refs_dropped,
+    cow_ledger_dump,
 )
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
@@ -121,7 +125,10 @@ from kernel.panic import panic
 # child's PML4 so the stack does not depend on the identity-backfill
 # leaves being US=1. Unblocks _build_identity_pd/_pt going US=0 and
 # CR4.SMAP enable in arch/x86/kernel/cpu_mitigations.ad.
-from fs.elf import elf_install_user_stack, elf_install_user_mapping
+from fs.elf import (
+    elf_install_user_stack, elf_install_user_mapping,
+    vm_map_user_page, vm_unmap_user_page,
+)
 # RCU (kernel/rcu/rcu.ad): the scheduler is the primary quiescent-state (QS)
 # source — a real context switch on a CPU is a QS for that CPU iff it is not
 # mid-rcu_read_lock. core.ad calls rcu_note_context_switch() on the real-switch
@@ -7770,6 +7777,91 @@ def _mm_census_classify(site: uint64):
             cow_refs_added() - cow_refs_dropped())
 
 
+# Scratch VA for the census's NEGATIVE control mapping. 11 GiB: far above
+# every span the loader installs (image at 0x400000, the 7 GiB user stack
+# window at 0x1C0000000, brk below both), and far above RAM top on every
+# machine this runs on — so phys != VA is guaranteed and the leaf survives the
+# walk's identity filter. Still in the user half (PML4 index 0), so the walk's
+# `li < 256` loop covers it.
+MM_NEGCTL_VA: uint64 = 0x2C0000000
+
+
+def _mm_negctl_host_slot() -> uint64:
+    # Pick the address space to host the negative control: the LOWEST live
+    # slot whose CR3 is NOT the pristine boot root. Returns NTASKS on failure.
+    #
+    # Both halves of that rule are load-bearing:
+    #
+    #   * LOWEST live slot means init, which never exits. The obvious choice —
+    #     the task that wrote the ctl file — is WRONG: `echo ... > /proc/…`
+    #     runs in a hamsh child that dies almost immediately, its page tables
+    #     are freed, and the control frame becomes a genuine orphan. The
+    #     census would then report NEGATIVE CONTROL FAILED for a reason that
+    #     has nothing to do with the census, which is the worst kind of red.
+    #   * NOT the boot CR3, because installing this mapping CRACKS tables
+    #     along the way. Cracking the pristine boot page tables would mutate
+    #     the reference every task's privacy test compares against, and the
+    #     census walk itself descends only into entries that differ from it.
+    b: uint64 = cow_boot_cr3() & 0x000FFFFFFFFFF000
+    su: uint64 = 0
+    while su < NTASKS:
+        if task_table[su].state != STATE_FREE and task_table[su].cr3 != 0:
+            if (task_table[su].cr3 & 0x000FFFFFFFFFF000) != b:
+                return su
+        su = su + 1
+    return NTASKS
+
+
+def mm_census_plant_mapped() -> int32:
+    # THE CENSUS'S NEGATIVE CONTROL (see mm/page_alloc.ad's _pa_mplanted
+    # header for why it is not optional). Allocate a tagged frame at a
+    # user-mapped site and MAP it into a long-lived address space; a census
+    # run while it is outstanding must mark it reachable and must not count
+    # it. Returns 0 on success, -1 if it could not be planted.
+    if page_alloc_census_mplanted() != 0:
+        return 0
+    su: uint64 = _mm_negctl_host_slot()
+    if su >= NTASKS:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] mplant REFUSED: no live non-boot address space\n")
+        return -1
+    p: uint64 = page_alloc_census_mplant_alloc()
+    if p == 0:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] mplant REFUSED: out of memory\n")
+        return -1
+    # Read-only: nothing must ever write through this VA, and a read-only
+    # leaf is marked by the walk exactly like a writable one.
+    if vm_map_user_page(task_table[su].cr3 & 0x000FFFFFFFFFF000,
+                        MM_NEGCTL_VA, p, 0) != 0:
+        free_page(p)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[census] mplant REFUSED: could not crack tables for the"
+                " scratch VA\n")
+        return -1
+    page_alloc_census_mplant_arm(p, MM_NEGCTL_VA, su)
+    return 0
+
+
+def mm_census_unplant_mapped():
+    # ZAP-BEFORE-FREE, without exception: clear the PTE first, then return
+    # the frame. Freeing a frame whose user PTE is still present is exactly
+    # how two earlier passes handed a live mapping back to the buddy
+    # allocator and wedged the desktop.
+    p: uint64 = page_alloc_census_mplanted()
+    if p == 0:
+        return
+    su: uint64 = page_alloc_census_mplant_slot()
+    if su < NTASKS and task_table[su].state != STATE_FREE \
+            and task_table[su].cr3 != 0:
+        vm_unmap_user_page(task_table[su].cr3 & 0x000FFFFFFFFFF000,
+                           page_alloc_census_mplant_va())
+    free_page(p)
+    page_alloc_census_mplant_clear()
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk0("[census] mapped control unmapped and returned\n")
+
+
 def mm_orphan_census() -> uint64:
     # Mark-and-sweep reachability census over the WHOLE system: which
     # tracked frames are no longer mapped by any live task?
@@ -7810,6 +7902,12 @@ def mm_orphan_census() -> uint64:
     printk2("[census] declined to mark: %d huge leaves, %d identity PTEs\n",
             _cens_skip_huge, _cens_skip_ident)
     page_alloc_census_report(total)
+    # PER-ARM REFERENCE LEDGER (pass 13). Printed on EVERY census, including
+    # a zero-orphan one: the arm balances are the quantity a fix is validated
+    # against, and they are per-frame counts rather than a PagesInUse delta,
+    # so they survive the 6.4 pg/cycle run-to-run spread that makes a single
+    # before/after soak pair worthless.
+    cow_ledger_dump()
     # PASS-12 DETAIL PASS. The tally + four sample VAs that pass 11 shipped
     # proved cow_resolve_pte leaks; they could not say WHICH SPAN or WHOSE.
     # Dump every live task's spans and describe each orphan (VA, phys,
