@@ -14,6 +14,15 @@
 #
 # This gate asserts the failure is now reported as "string pool exhausted" and
 # NOT as the corruption artifact "console is not defined".
+#
+# SELF-CALIBRATING (2026-07-29). The iteration count used to be the literal
+# 500000, which is not a property of the engine — it is a property of SP_CAP
+# being 8 MiB. When SP_CAP was right-sized to 16 MiB the loop simply finished
+# and the gate went red without anything being broken. String IDs are reclaimed
+# by gc_collect_strings, so BYTES are the only binding constraint: the trip
+# point is SP_CAP / ~16 B per iteration. The count is now read from
+# lib/web/js/state.ad with 2x margin, so the gate keeps testing the CEILING
+# rather than one historical number.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -27,11 +36,21 @@ if ! adder_bin x86_64-linux user/js_host.ad "$BIN" 2>"$OUT/js_strpool_compile.lo
     echo "[js-strpool] FAIL: host driver did not compile"; cat "$OUT/js_strpool_compile.log"; exit 1
 fi
 
+SP_CAP="$(sed -n 's/^SP_CAP: *int32 *= *\([0-9]*\).*/\1/p' lib/web/js/state.ad | head -1)"
+if [ -z "$SP_CAP" ]; then
+    echo "[js-strpool] INCONCLUSIVE: could not read SP_CAP from lib/web/js/state.ad;"
+    echo "[js-strpool]   the loop size below would not be calibrated to the ceiling."
+    exit 125
+fi
+# ~16 leaked bytes per iteration (measured), x2 margin.
+ITERS=$(( SP_CAP / 8 ))
+echo "[js-strpool] SP_CAP=$SP_CAP -> $ITERS iterations to reach the ceiling"
+
 js="$OUT/js_strpool.js"
-cat > "$js" <<'EOF'
-// Manufacture ~2 fresh strings per iteration; blows past MAX_STR (200000) ids.
+cat > "$js" <<EOF
+// Manufacture ~2 fresh strings per iteration until the byte pool is exhausted.
 var n = 0, junk;
-for (var i = 0; i < 500000; i++) { junk = "item-" + i + "-tail"; n += junk.length; }
+for (var i = 0; i < $ITERS; i++) { junk = "item-" + i + "-tail"; n += junk.length; }
 console.log("RESULT: " + n);
 EOF
 
