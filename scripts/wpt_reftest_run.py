@@ -234,6 +234,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -588,6 +589,29 @@ def viewport(ppm, w=VIEW_W, h=VIEW_H):
 
 
 WORK_PREFIX = ".hamnix_reftest_"
+# Every work file carries the pid of the run that owns it. See work_name() and
+# sweep_stale() -- this is what makes two concurrent runs safe.
+WORK_RE = re.compile(r"^%sp(\d+)_\d+_" % re.escape(WORK_PREFIX))
+# A work file whose owner is still alive but which is older than this cannot be
+# in flight: a single render is capped at a 60s subprocess timeout. Only used to
+# stop pid REUSE from pinning debris in the tree forever.
+WORK_MAX_AGE = 24 * 3600
+
+# Names must be unique across the whole PROCESS, not per Renderer: selftest()
+# builds several Renderers over one root and a per-instance counter hands them
+# all the same numbers.
+_work_seq = 0
+
+
+def work_name(basename):
+    """A work-file name no other process (or Renderer) can also produce.
+
+    The pid is not decoration -- sweep_stale() reads it back to decide what it
+    is allowed to delete.
+    """
+    global _work_seq
+    _work_seq += 1
+    return "%sp%d_%d_%s" % (WORK_PREFIX, os.getpid(), _work_seq, basename)
 
 
 def sweep_stale(root=TESTS):
@@ -598,17 +622,69 @@ def sweep_stale(root=TESTS):
     normal path deletes it in a `finally`, but a SIGKILL does not run one, and
     the leftovers land in a git-TRACKED directory -- so the next reader sees a
     dirty tests/wpt/ and cannot tell vendored content from harness debris.
+
+    OWNERSHIP, AND WHY THIS IS NOT AN UNCONDITIONAL RMDIR
+    ----------------------------------------------------
+    This used to delete every file with the prefix, which made the sweep at one
+    run's STARTUP (and the one in its `finally`) delete another run's IN-FLIGHT
+    documents. Together with a work-file name that was a bare per-Renderer
+    counter -- identical in every process -- two concurrent runs corrupted each
+    other's inputs: measured on this corpus, one run reported 4 spurious ERRORs
+    and lost 3 WEAK-PASSes (which would read as a regression against the floor)
+    while the other reported a spurious PASS (a FALSE GREEN on an external
+    conformance ratchet). Both runs exited 0. So a file is reaped only if it
+    can be PROVEN not to be in flight:
+
+      * it is ours (our pid, so the sweep is this run cleaning up after itself,
+        or debris a dead run with our recycled pid left behind -- we have not
+        written anything at startup, and at exit our own files are finished);
+      * its owning pid is gone; or
+      * it predates any plausible render (see WORK_MAX_AGE), which is the only
+        thing that keeps pid REUSE from pinning debris here forever;
+      * it carries no pid at all, i.e. it is debris in the pre-pid name format,
+        which nothing writes any more.
+
+    Erring toward LEAVING a file is deliberate: the cost is one stray file in
+    `git status`, which is loud and self-correcting. The cost of the other
+    error is a silently wrong conformance number.
     """
+    me = os.getpid()
+    now = time.time()
     n = 0
     for dirpath, _dirnames, filenames in os.walk(root):
         for fn in filenames:
-            if fn.startswith(WORK_PREFIX):
-                try:
-                    os.unlink(os.path.join(dirpath, fn))
-                    n += 1
-                except OSError:
-                    pass
+            if not fn.startswith(WORK_PREFIX):
+                continue
+            p = os.path.join(dirpath, fn)
+            m = WORK_RE.match(fn)
+            if m:
+                owner = int(m.group(1))
+                if owner != me and _pid_alive(owner):
+                    try:
+                        if now - os.path.getmtime(p) < WORK_MAX_AGE:
+                            continue          # in flight -- not ours to delete
+                    except OSError:
+                        continue
+            try:
+                os.unlink(p)
+                n += 1
+            except OSError:
+                pass
     return n
+
+
+def _pid_alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                          # exists, owned by someone else
+    except OSError:
+        return True
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -691,11 +767,13 @@ class Renderer:
             self.cache[key] = self.bycontent[ckey]
             return self.bycontent[ckey]
         self.n += 1
-        # Keep the extension AND the directory: relative <img src> and the
-        # engine's own base-URL handling must still resolve.
+        # Keep the extension AND the directory: relative <img src> (565 vendored
+        # documents carry one, e.g. `../support/green.png`) and the engine's own
+        # base-URL handling must still resolve, so the work file has to sit at
+        # the document's own path depth. The NAME carries our pid, which is what
+        # lets two runs share the directory -- see work_name()/sweep_stale().
         work = os.path.join(os.path.dirname(src),
-                            "%s%d_%s" % (WORK_PREFIX, self.n,
-                                         os.path.basename(src)))
+                            work_name(os.path.basename(src)))
         out = os.path.join(self.tmp, "r%d.ppm" % self.n)
         try:
             with open(work, "wb") as f:

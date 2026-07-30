@@ -103,6 +103,16 @@
 # RUN SERIALLY with the other pixel gates. This gate rebuilds
 # build/host/hambrowse_gfx, the SAME artifact every test_hambrowse_*_host.sh /
 # scripts/framediff_gfx_*.sh uses. Two of them at once race on that path.
+#
+# That restriction is about THIS SCRIPT, not the runner. scripts/wpt_reftest_run.py
+# became safe to run concurrently on 2026-07-30 (pid-scoped work files and an
+# ownership-aware sweep_stale(); before that, two runs wrote each other's work
+# paths inside tests/wpt/ and deleted each other's in-flight documents, which
+# produced both a phantom red and a phantom PASS -- see
+# scripts/test_wpt_reftest_concurrency_host.sh, which gates the property). Two
+# copies of THIS gate still race, on $BIN and on the fixed $JSONL path. Fixing
+# the runner is what makes parallelising the LANE possible at all; it is not a
+# licence to launch this script twice.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
