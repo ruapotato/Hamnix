@@ -72,10 +72,28 @@
 # MUTATION TESTING
 # ================
 # MUTATE=<label>[,...] blinds individual assertions (labels above) to
-# prove each is load-bearing. The REAL mutation test is reverting the
-# hinge in arch/x86/kernel/syscall.ad::_sysarm_write back to
-# `if wr_total == 0: return wn; return wr_total` — this gate then goes
-# red on `rejected`, `noclaim`, `summary` and `toolexit` at once.
+# prove each is load-bearing.
+#
+# MEASURED mutation results (2026-07-30, this host):
+#
+#   both layers reverted (the true pre-fix state: _sysarm_write returns
+#   wr_total on a late-chunk errno AND install_one tests only `wn < 0`)
+#     -> FAIL, rc=1, with the exact reported symptom:
+#          install_rootfs_from_manifest: 2 installed, 0 missing, 0 failed — OK
+#          install: swblocker/victim (262144 bytes)
+#          [shortwrite] tool-exit: ZERO
+#        i.e. the guest reported a clean install of a file the kernel had
+#        refused to write. `rejected`, `noclaim`, `summary` and
+#        `toolexit` all go red together.
+#
+#   hinge ONLY reverted (kernel swallows the errno, consumer keeps its
+#   `wn != pos` check)
+#     -> PASS, rc=0, reported as "kernel rejected install of
+#        swblocker/victim (short write)".
+#
+# The second result is the point of fixing both layers: either one alone
+# closes this hole, so the gate is green if you fix only one. It goes red
+# only when BOTH are broken — which is exactly the state that shipped.
 #
 # Pass marker: [test_install_short_write] PASS
 # Exit codes:  0 PASS, 1 FAIL, 125 INCONCLUSIVE (build/boot never got
@@ -240,7 +258,7 @@ want "tool exit status is NONZERO" \
 if [ "$fail" -ne 0 ]; then
     verdict_fail "$TAG" \
         "the installer did not report a kernel write failure it suffered." \
-        "A 4 MiB file that could not be written was accounted as installed" \
+        "A 256 KiB file that could not be written was accounted as installed" \
         "(or the failure was never surfaced) — silent data loss on the" \
         "primary ship vehicle. See the MISS/SILENT LOSS lines above."
 fi
