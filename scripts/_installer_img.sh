@@ -86,7 +86,20 @@
 # network code did not mark the installer image stale — a gate could rebuild
 # nothing and boot an image predating the fix it was supposed to be testing,
 # the exact false-green this file exists to prevent.
-_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler sys tests"
+# `mm` and `linux_abi` were MISSING until 2026-07-30, and `mm` is the worst
+# hole this list has had. mm/ is the ENTIRE memory manager -- page_alloc.ad,
+# vma.ad, cow.ad, slab.ad, reclaim.ad -- every line of it inside
+# init/main.ad's compile closure, and an edit to any of it did NOT mark the
+# shipped image stale. Found the hard way during leak pass 13: a soak
+# launched immediately after a committed mm/cow.ad + mm/vma.ad change
+# reported `image (0d00h11m old)` and booted a kernel predating the change,
+# i.e. it would have measured the OLD build and attributed the result to the
+# new one. That is precisely the false-green this file exists to prevent, and
+# it is worse for a leak gate than for a feature gate: the output looks
+# entirely plausible either way. linux_abi/ (128 .ad files, the whole Linux
+# syscall shim) was missing for the same reason, and adder/ is compiled into
+# shipped user binaries by scripts/build_user.sh.
+_HAMNIX_IMG_INPUT_DIRS="user lib etc init kernel arch drivers fs net compiler sys tests mm linux_abi adder"
 # Plus the BUILD scripts themselves (not the test_*.sh gates — a gate edit
 # does not change a single byte of the shipped image, and forcing a 6-minute
 # rebuild for one would make this guard hated and then disabled).
