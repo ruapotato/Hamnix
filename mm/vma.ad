@@ -124,6 +124,7 @@ from mm.cow import (
     COW_ARM_DROP_FILEMAP, COW_ARM_DROP_UNMAP, COW_ARM_DROP_PGC_FAIL,
     COW_ARM_REFINC_PGC_HIT, COW_ARM_REFINC_PGC_RACE, COW_ARM_REFINC_PGC_PUB,
     COW_ARM_DROP_VMA_RANGE_WX, COW_ARM_DROP_FORKED_WX, cow_drop_arm_for_pte,
+    COW_ARM_SHARE_COW, COW_ARM_SHARE_VMA_COW, COW_ARM_SHARE_VMA_DEM,
 )
 from mm.swap import (
     swap_out_page, swap_make_pte, swap_ready,
@@ -148,7 +149,7 @@ from mm.writeback import (
     set_page_dirty, set_page_writeback, end_page_writeback, clear_page_dirty,
 )
 from fs.elf import (
-    elf_install_user_mapping, vm_cow_share_range,
+    elf_install_user_mapping, vm_cow_share_range, vm_cow_share_set_arm,
     vm_share_range, vm_protect_range, vm_pin_range,
     elf_prepare_demand_range, elf_map_one_page,
     elf_demand_leaf_absent,
@@ -6922,8 +6923,14 @@ def _vma_fork_copy_locked(child_slot: uint64, parent_slot: uint64,
                 # gettys, so every VT login shell landed in exactly this arm.
                 cast[Ptr[VmaNode]](node)[0].is_demand = \
                     cast[Ptr[VmaNode]](cur)[0].is_demand
-                if vm_cow_share_range(parent_pml4, child_pml4,
-                                      p_start, p_end) < 0:
+                # Per-SPAN origin (leak pass 15). This is the owner-mmap arm
+                # of the last unnamed share path; restored to the default
+                # immediately so nothing downstream inherits it.
+                vm_cow_share_set_arm(COW_ARM_SHARE_VMA_COW)
+                _sh_rc: int32 = vm_cow_share_range(parent_pml4, child_pml4,
+                                                   p_start, p_end)
+                vm_cow_share_set_arm(COW_ARM_SHARE_COW)
+                if _sh_rc < 0:
                     printk1("vma_fork: COW share OOM for VMA @ 0x%x\n",
                             p_start)
                     kfree(node)
@@ -6957,8 +6964,16 @@ def _vma_fork_copy_locked(child_slot: uint64, parent_slot: uint64,
                 _vma_node_set(node, p_start, p_end, p_prot, p_flags,
                               p_fd, p_off, 0, 0)
                 cast[Ptr[VmaNode]](node)[0].is_demand = 1
-                if vm_cow_share_range(parent_pml4, child_pml4,
-                                      p_start, p_end) < 0:
+                # Per-SPAN origin (leak pass 15) — the DEMAND-resident arm.
+                # Deliberately a different arm from the owner-mmap share
+                # above: the node records no backing run, so these frames
+                # are reached through rmap and their teardown is not the
+                # same walk.
+                vm_cow_share_set_arm(COW_ARM_SHARE_VMA_DEM)
+                _dsh_rc: int32 = vm_cow_share_range(parent_pml4, child_pml4,
+                                                    p_start, p_end)
+                vm_cow_share_set_arm(COW_ARM_SHARE_COW)
+                if _dsh_rc < 0:
                     printk1("vma_fork: demand COW share OOM @ 0x%x\n",
                             p_start)
                     kfree(node)

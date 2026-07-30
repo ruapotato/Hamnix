@@ -177,7 +177,7 @@ def cow_refs_dropped() -> uint64:
 # cow_set_arm and nothing at all in the three RMWs. That keeps pass 12's rule
 # — everything new is armable, and the ONLY unconditional additions in this
 # whole effort remain the four declared above. /proc/meminfo is untouched.
-COW_ARM_MAX: uint64 = 24
+COW_ARM_MAX: uint64 = 26
 
 # Add side.
 COW_ARM_SHARE_WX_RO:      uint64 = 1   # elf: _cow_share_one_page, W^X RO verbatim
@@ -229,10 +229,32 @@ COW_ARM_SHARE_COW_USTK: uint64 = 21
 # region_free_cow_safe for the image, and until pass 14 NOTHING for the stack.
 COW_ARM_DROP_USTACK:    uint64 = 22
 
+# The LAST share path without a per-span origin (leak pass 15). After pass 14
+# split vm_cow_share_all's three spans off arm 2, the arm-2 residue was by
+# construction the mmap-VMA fork path — mm/vma.ad::vma_fork_copy, which calls
+# vm_cow_share_range itself. It does so from TWO structurally different arms
+# that are NOT the same span and do NOT drain through the same teardown:
+#
+#   23 OWNER mmap VMA (owns_pages, !MAP_SHARED) — a node with backing/chunks
+#      or an already-COW/pinned node. Both parent and child nodes end up
+#      is_cow, and each drains through _vma_node_free -> _vma_free_cow_range
+#      over [start, end).
+#   24 DEMAND VMA, resident prefix — owns_pages == 0, so the node records NO
+#      backing run; the frames were installed by vma_demand_fault and are
+#      tracked through rmap, not through the node. The share covers only the
+#      pages the parent had already faulted, and the not-present remainder is
+#      skipped.
+#
+# Keeping arm 2 as the default still makes the split total: whatever remains
+# at arm 2 after these two is a caller nobody has named, which is an answer
+# rather than a gap.
+COW_ARM_SHARE_VMA_COW:  uint64 = 23
+COW_ARM_SHARE_VMA_DEM:  uint64 = 24
+
 _cow_ledger_on: uint64 = 0
 _cow_arm:       uint64 = 0
-_cow_arm_add:   Array[24, uint64]
-_cow_arm_drop:  Array[24, uint64]
+_cow_arm_add:   Array[26, uint64]
+_cow_arm_drop:  Array[26, uint64]
 
 # --- PER-FRAME ORIGIN TAG (leak pass 14) ------------------------------------
 #
@@ -280,10 +302,10 @@ _cow_arm_drop:  Array[24, uint64]
 # while disarmed, so the runtime cost stays exactly zero. _build_meminfo is
 # untouched.
 _cow_origin_base: uint64 = 0
-_cow_org_add:  Array[24, uint64]
-_cow_org_drop: Array[24, uint64]
-_cow_org_born: Array[24, uint64]
-_cow_org_died: Array[24, uint64]
+_cow_org_add:  Array[26, uint64]
+_cow_org_drop: Array[26, uint64]
+_cow_org_born: Array[26, uint64]
+_cow_org_died: Array[26, uint64]
 
 
 def cow_ledger_enable(on: uint64):
@@ -512,6 +534,37 @@ def cow_origin_dump():
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk1("[origin] tagged live frames (sum over org>=1 of born-died) = %d\n",
             cow_tagged_live_frames())
+
+
+def cow_origin_next_live(org: uint64, from_pfn: uint64) -> uint64:
+    # ENUMERATE the live population of one origin (leak pass 15). Returns the
+    # next PFN >= from_pfn whose origin byte is `org` AND whose refcount is
+    # non-zero, or 0 when there is none.
+    #
+    # This is EXACTLY the `born - died` population, not an approximation of
+    # it: _cow_ledger_note_drop clears the origin byte back to 0 on the frame's
+    # death, so "origin == org and refcount > 0" is the same set the born/died
+    # pair counts. That equality is the point — an enumeration that could
+    # disagree with the tally would be worse than none, which is the rule
+    # page_alloc_orphan_collect already follows against the census sweep.
+    #
+    # O(frames) per call and therefore O(frames * population) to walk a whole
+    # origin, which is why this is reachable only from a ctl verb. It exists to
+    # answer a question a COUNT cannot: arm 5 has sat at a constant +10 across
+    # three independent runs, and a constant is either a fixed resident set or
+    # a leak that happens to have stopped. Naming the ten frames' owners
+    # settles it once instead of re-litigating it every pass.
+    if _cow_ledger_on == 0:
+        return 0
+    if _cow_origin_base == 0:
+        return 0
+    p: uint64 = from_pfn
+    while p < cow_nr_frames:
+        if _cow_org_at(p) == org:
+            if cow_refcount(p << 12) != 0:
+                return p
+        p = p + 1
+    return 0
 
 
 def cow_net_dump():

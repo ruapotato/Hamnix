@@ -3370,6 +3370,17 @@ def _cow_share_one_page(parent_pml4: uint64, child_pml4: uint64,
 _elf_cow_share_arm: uint64 = 2
 
 
+def vm_cow_share_set_arm(a: uint64):
+    # Attribute the NEXT vm_cow_share_range walk to span `a` (leak pass 15).
+    # Exported so mm/vma.ad can name its OWN two share sites — vma_fork_copy's
+    # owner-mmap arm and its demand-resident arm — the same way
+    # _vm_cow_share_all_locked names the image / brk / ustack spans. The
+    # caller is responsible for restoring COW_ARM_SHARE_COW, exactly as
+    # _vm_cow_share_all_locked does, so nothing downstream inherits a stale
+    # span. Costs one store on a debug path; the tally it feeds is gated.
+    _elf_cow_share_arm = a
+
+
 def vm_cow_share_range(parent_pml4: uint64, child_pml4: uint64,
                        vlo_in: uint64, vhi_in: uint64) -> int32:
     # COW-share every present user page in [vlo_in, vhi_in) between
