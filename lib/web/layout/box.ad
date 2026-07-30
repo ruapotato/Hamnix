@@ -4,6 +4,7 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr, m_padl, d_padl, _hx_tag_end_p
+from lib.htmlengine import grad_is, grad_id_of, grad_type_of, grad_url_ptr, grad_url_len_of
 
 # ====================================================================
 # LAYOUT MODEL — the parsed page becomes a flat list of styled SEGMENTS.
@@ -490,6 +491,15 @@ eimg_nlen: Array[64, uint64]
 n_eimg:    uint64 = 0
 eimg_name_buf: Array[8192, uint8]
 eimg_name_used: uint64 = 0
+# Names dropped because EIMG_MAX / EIMG_NAME_CAP was reached, plus which cap
+# hit FIRST (1 = slots, 2 = name bytes). Read back through he_img_dropped() /
+# he_img_drop_message() so a hit cap is REPORTED instead of silently truncating
+# the page's images (see _eimg_record_p). Mirrors the same discipline the
+# decoded-image store already applies in lib/htmlimg.ad.
+eimg_dropped: uint64 = 0
+eimg_drop_reason: int32 = 0
+EIMGDROP_SLOTS: int32 = 1
+EIMGDROP_NAMES: int32 = 2
 
 # broken-image placeholder box (px) when src is absent/undecodable.
 IMG_BROKEN_W: int32 = 40
@@ -1934,9 +1944,24 @@ def _emit_box_bar(row: int32, x: int32):
 
 
 # ---- <img> pixel box ------------------------------------------------
-# Record an <img>'s src string (src_ptr[soff..soff+slen)) in the registry the
-# host driver reads to decode PNGs. Deduplicated; a no-op if src is empty/full.
-def _eimg_record(soff: uint64, slen: uint64):
+# Register an image name the host must decode, reading it from an arbitrary
+# byte pointer. Two callers with two different backing buffers:
+#   * <img src="...">            — the name is inline in the document buffer,
+#                                  i.e. &src_ptr[soff] (see _eimg_record).
+#   * background-image: url(...) — the name lives in the gradient/url registry
+#                                  (grad_url_buf), NOT in the document.
+# Deduplicated by string; a no-op if the name is empty.
+#
+# KNOWN CEILING (deliberate, and NOT silent): the registry holds at most
+# EIMG_MAX names / EIMG_NAME_CAP name bytes, because every buffer here is a
+# fixed BSS Array (no malloc — see the memory discipline note at the top of
+# lib/htmlengine.ad). A page with more distinct images than that loses the
+# TAIL. Rather than drop them silently — the failure class that has bitten
+# this project repeatedly, where a cap is hit and the caller is told nothing —
+# overflow is COUNTED in eimg_dropped and exposed via he_img_dropped(), and
+# the host drivers print an IMGCAP line when it is non-zero. A page that fits
+# is unaffected and prints nothing.
+def _eimg_record_p(nm: Ptr[uint8], slen: uint64):
     if slen == 0:
         return
     i: uint64 = 0
@@ -1945,7 +1970,7 @@ def _eimg_record(soff: uint64, slen: uint64):
             same: int32 = 1
             k: uint64 = 0
             while k < slen:
-                if eimg_name_buf[eimg_noff[i] + k] != src_ptr[soff + k]:
+                if eimg_name_buf[eimg_noff[i] + k] != nm[k]:
                     same = 0
                     break
                 k = k + 1
@@ -1953,15 +1978,29 @@ def _eimg_record(soff: uint64, slen: uint64):
                 return
         i = i + 1
     if n_eimg >= EIMG_MAX or eimg_name_used + slen > EIMG_NAME_CAP:
+        eimg_dropped = eimg_dropped + 1
+        if eimg_drop_reason == 0:
+            if n_eimg >= EIMG_MAX:
+                eimg_drop_reason = EIMGDROP_SLOTS
+            else:
+                eimg_drop_reason = EIMGDROP_NAMES
         return
     eimg_noff[n_eimg] = eimg_name_used
     eimg_nlen[n_eimg] = slen
     k2: uint64 = 0
     while k2 < slen:
-        eimg_name_buf[eimg_name_used + k2] = src_ptr[soff + k2]
+        eimg_name_buf[eimg_name_used + k2] = nm[k2]
         k2 = k2 + 1
     eimg_name_used = eimg_name_used + slen
     n_eimg = n_eimg + 1
+
+
+# Record an <img>'s src string (src_ptr[soff..soff+slen)) in the registry the
+# host driver reads to decode PNGs. Deduplicated; a no-op if src is empty/full.
+def _eimg_record(soff: uint64, slen: uint64):
+    if slen == 0:
+        return
+    _eimg_record_p(&src_ptr[soff], slen)
 
 
 # alt-text placeholder for the current <img> (bracketed, e.g. "[Hamnix logo]").
@@ -3106,6 +3145,18 @@ def _block_box_close():
                 bfill_padt[n_bfills] = ypad
                 bfill_padb[n_bfills] = ypad
             bfill_rgb[n_bfills] = bgc
+            # background-image: url(...) — the packed bg carries a gtype==3 url
+            # registry entry. The paint pass blits the decoded image, but the
+            # host only decodes names it learns from the image registry (via a
+            # first layout pass), and this url arrives through the gradient/url
+            # store, NOT an <img src>. Register it here so it is decoded before
+            # the paint pass; without this the box stays empty and the CSS
+            # background-color (or the ref's green) shows through instead.
+            if grad_is(bgc) != 0:
+                ubgid: int32 = grad_id_of(bgc)
+                if grad_type_of(ubgid) == 3:
+                    _eimg_record_p(grad_url_ptr(ubgid), \
+                                   cast[uint64](grad_url_len_of(ubgid)))
             # STACKING (CSS painting order): a box's own background must paint
             # BEHIND its descendants' backgrounds. Fills are emitted in CLOSE
             # (post-)order — a child closes and appends its fill BEFORE its

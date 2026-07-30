@@ -11763,6 +11763,79 @@ def he_img_name_len(i: uint64) -> uint64:
     return eimg_nlen[i]
 
 
+# Image names the last layout could NOT record because the fixed-size registry
+# was full (EIMG_MAX names / EIMG_NAME_CAP bytes). Non-zero means the page's
+# image set was TRUNCATED and some <img>/background-image will paint empty --
+# the drivers surface it rather than letting the cap fail silently.
+def he_img_dropped() -> uint64:
+    return eimg_dropped
+
+
+heimg_msg_buf: Array[192, uint8]
+
+
+def _heim_puts(p: uint64, t: Ptr[uint8]) -> uint64:
+    i: uint64 = 0
+    q: uint64 = p
+    while t[i] != 0 and q < 190:
+        heimg_msg_buf[q] = t[i]
+        q = q + 1
+        i = i + 1
+    return q
+
+
+def _heim_dec(p: uint64, v: uint64) -> uint64:
+    if v == 0:
+        if p < 190:
+            heimg_msg_buf[p] = 48
+            return p + 1
+        return p
+    heim_tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    while x > 0:
+        heim_tmp[n] = cast[uint8](48 + (x % 10))
+        x = x / 10
+        n = n + 1
+    q: uint64 = p
+    while n > 0 and q < 190:
+        n = n - 1
+        heimg_msg_buf[q] = heim_tmp[n]
+        q = q + 1
+    return q
+
+
+# NUL-terminated one-line diagnostic naming the registry cap that was hit and
+# its VALUE, and how many image names were lost. Empty (leading NUL) when
+# nothing was dropped, so a page that fits prints nothing. Pure -- the driver
+# writes it with whatever it has. Same shape as htmlimg_drop_message().
+def he_img_drop_message() -> Ptr[uint8]:
+    if eimg_dropped == 0:
+        heimg_msg_buf[0] = 0
+        return &heimg_msg_buf[0]
+    p: uint64 = _heim_puts(0, cast[Ptr[uint8]]("hambrowse: "))
+    p = _heim_dec(p, eimg_dropped)
+    p = _heim_puts(p, cast[Ptr[uint8]](" image name(s) NOT decoded - src registry full: "))
+    if eimg_drop_reason == EIMGDROP_SLOTS:
+        p = _heim_puts(p, cast[Ptr[uint8]]("EIMG_MAX="))
+        p = _heim_dec(p, EIMG_MAX)
+        p = _heim_puts(p, cast[Ptr[uint8]](" slots"))
+    else:
+        p = _heim_puts(p, cast[Ptr[uint8]]("EIMG_NAME_CAP="))
+        p = _heim_dec(p, EIMG_NAME_CAP)
+        p = _heim_puts(p, cast[Ptr[uint8]](" name bytes"))
+    p = _heim_puts(p, cast[Ptr[uint8]]("; the page above is INCOMPLETE\n"))
+    heimg_msg_buf[p] = 0
+    return &heimg_msg_buf[0]
+
+
+def he_img_drop_message_len() -> uint64:
+    n: uint64 = 0
+    while heimg_msg_buf[n] != 0:
+        n = n + 1
+    return n
+
+
 
 # ====================================================================
 # OBSERVER APIs — MutationObserver / IntersectionObserver / ResizeObserver.

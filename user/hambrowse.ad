@@ -67,6 +67,7 @@ from lib.htmlengine import he_layout, \
     he_set_click_links, he_link_evt_index, he_dom_click_index, \
     he_set_document_url, \
     he_n_images, he_img_name_ptr, he_img_name_len, \
+    he_img_dropped, he_img_drop_message, he_img_drop_message_len, \
     he_css_reset, he_css_append, he_css_scan_links, \
     he_css_link_count, he_css_link_off, he_css_link_len, \
     he_dom_is_textfield, he_dom_is_submit, he_dom_field_form, \
@@ -583,6 +584,11 @@ def _decode_images():
     # The store counts refusals; say so, naming the cap and its value.
     if htmlimg_dropped() > 0:
         sys_write(2, htmlimg_drop_message(), htmlimg_drop_message_len())
+    # Same discipline one stage EARLIER: an image whose NAME never made it into
+    # the layout's src registry is never even offered to the store, so the
+    # store's counter cannot see it. Report that cap too.
+    if he_img_dropped() > 0:
+        sys_write(2, he_img_drop_message(), he_img_drop_message_len())
 
 
 # Embedded demo image (the 48x32 checked-in sample PNG, 130 bytes as ASCII-hex)

@@ -45,7 +45,8 @@ extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
 from lib.htmlengine import he_layout, he_n_images, he_img_name_ptr, \
-    he_img_name_len, \
+    he_img_name_len, he_img_dropped, he_img_drop_message, \
+    he_img_drop_message_len, \
     TITLE_H, ADDR_Y, ADDR_H, GO_W, CONTENT_Y, STATUS_H, NAV_BTN_W, NAV_BAR_W
 from lib.htmlpage import htmlpage_render, htmlpage_doc_width, \
     htmlpage_doc_height, htmlpage_hit_link, htmlpage_install_reflow
@@ -261,6 +262,11 @@ def _decode_images():
     # The store counts refusals; say so, naming the cap and its value.
     if htmlimg_dropped() > 0:
         sys_write(2, htmlimg_drop_message(), htmlimg_drop_message_len())
+    # Same discipline one stage EARLIER: an image whose NAME never made it into
+    # the layout's src registry is never even offered to the store, so the
+    # store's counter cannot see it. Report that cap too.
+    if he_img_dropped() > 0:
+        sys_write(2, he_img_drop_message(), he_img_drop_message_len())
 
 
 # ====================================================================

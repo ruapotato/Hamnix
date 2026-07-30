@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  /* A `background-image: url(...)` with NO <img> anywhere on the page. The
+     host driver learns which images to decode from the layout's <img> src
+     registry; a CSS background url arrives through the gradient/url store
+     instead, so it must be registered there too or the box paints EMPTY.
+     tests/fixtures/hambrowse_bgsize.html papers over this with a dummy <img>;
+     this page deliberately does not, so the registration is what is under
+     test. hb_bgsize_red.png is a solid-red 2:1 image -> the box must be RED,
+     not the page white. */
+  body { margin: 0; background: #ffffff; }
+  .bg { background-image: url(hb_bgsize_red.png); background-size: cover;
+        width: 200px; height: 100px; }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+</body>
+</html>
