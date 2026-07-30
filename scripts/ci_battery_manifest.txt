@@ -2230,6 +2230,16 @@ bash scripts/ci_run_gate.sh scripts/test_hpm_source_pkg.sh
 # `refresh` enforces the signature (accept / reject / --allow-unsigned).
 bash scripts/ci_run_gate.sh scripts/test_hpm_signed_index.sh
 bash scripts/ci_run_gate.sh scripts/test_hpm_signed.sh
+# ...and the layer BELOW both of those: lib/ed25519.ad running on the target
+# it actually ships on. The host gate above compiles it for x86_64-linux; the
+# shipped consumers are built by build_user.sh's LLVM->clang->ELF64 lane. That
+# lane emitted `lshr` for a signed `p[i] >> n` (Ed25519's whole field
+# arithmetic), so the verifier rejected every valid signature on device while
+# both gates above stayed green. This one runs the RFC 8032 vectors + a real
+# local-key-signed index ON DEVICE, and refreshes a file:// repo with the
+# signature check ENABLED (no --allow-unsigned, no --trusted-key: the
+# compiled-in LOCAL root, which is what an installed system uses).
+bash scripts/ci_run_gate.sh scripts/test_ed25519_device.sh
 # TLS X.509 real-chain validation (drivers/net/tls.ad + lib/x509). Both are
 # QEMU-free host-target gates (x86_64-linux), hard PASS/FAIL:
 #   - test_tls_rsa_sigalg: deterministic sha256/384/512WithRSAEncryption
