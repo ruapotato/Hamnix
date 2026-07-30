@@ -96,11 +96,20 @@ need_call() {  # need_call <file> <fn> <what>
         struct_fail=1
     fi
 }
+# Same guard for a call whose result is BOUND to a local (`x: T = fn()`). The
+# `(` is still required, so the multi-line `from ... import (fn, fn2,)` block
+# — which is indented and does contain the bare identifier — cannot satisfy it.
+need_call_bound() {  # need_call_bound <file> <fn> <what>
+    if ! grep -aqE "^[[:space:]]+[A-Za-z_].*[^A-Za-z0-9_]$2\(" "$1"; then
+        echo "$TAG FAIL: structural marker missing: $3 (no indented call to $2( in $1)" >&2
+        struct_fail=1
+    fi
+}
 need_call arch/x86/kernel/time.ad sysirq_tick \
     "the timer tick that witnesses EFLAGS.IF being set"
 need_call arch/x86/kernel/syscall.ad sysirq_account \
     "the per-syscall masked-time bracket in do_syscall"
-need_call arch/x86/kernel/syscall.ad sysirq_gap_take \
+need_call_bound arch/x86/kernel/syscall.ad sysirq_gap_take \
     "the re-entrancy-safe gap window saved on the do_syscall frame"
 need arch/x86/kernel/time.ad "def sysirq_report" \
     "the report the gate parses"
