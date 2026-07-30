@@ -39,8 +39,13 @@
 # along that path, or any break in the EL0 load/store or syscall path, moves the
 # checksum and reds the gate.
 #
-# NOT in the bare-metal battery (needs qemu-system-aarch64 + aarch64 binutils +
-# clang + a host_ac with the LLVM backend); a runnable host gate only.
+# REGISTERED in scripts/ci_battery_manifest.txt (via ci_run_gate.sh) as of
+# 2026-07-30: it is the only execution differential standing between an AArch64
+# miscompile and a user, and it had been sitting dark in ci_ondemand_baseline.txt.
+# ~2.5 min, one qemu-system-aarch64. It needs qemu-system-aarch64 + aarch64
+# binutils + clang; when any of those is missing, or when a starved TCG runner
+# never gets the boot as far as the A10 rung, the verdict is INCONCLUSIVE (125),
+# never a soft green.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -55,11 +60,17 @@ W="build/a10_gate"
 SERIAL="$W/serial.txt"
 
 fail() { echo "[A10] FAIL $*"; exit 1; }
+# 125 = INCONCLUSIVE (scripts/_verdict.sh). A missing cross toolchain means the
+# assertion was never OBSERVED; reporting that as either PASS or FAIL is a lie,
+# and PASS is the worse one. ci_run_gate.sh turns 125 into a CI warning.
+inconc() { echo "[A10] INCONCLUSIVE $*"; exit 125; }
 note() { echo "[A10] $*"; }
 
-command -v qemu-system-aarch64 >/dev/null || fail "qemu-system-aarch64 not found"
-command -v "${CROSS}ld"        >/dev/null || fail "aarch64 binutils not found"
-command -v "$CLANG"            >/dev/null || fail "$CLANG not found"
+command -v qemu-system-aarch64 >/dev/null || inconc "qemu-system-aarch64 not found (apt install qemu-system-arm)"
+command -v "${CROSS}ld"        >/dev/null || inconc "aarch64 binutils not found (apt install binutils-aarch64-linux-gnu)"
+command -v "${CROSS}as"        >/dev/null || inconc "aarch64 binutils not found (apt install binutils-aarch64-linux-gnu)"
+command -v "${CROSS}objcopy"   >/dev/null || inconc "aarch64 binutils not found (apt install binutils-aarch64-linux-gnu)"
+command -v "$CLANG"            >/dev/null || inconc "$CLANG not found (the LLVM lane needs clang)"
 [ -f "$A10_SRC" ] || fail "missing $A10_SRC"
 mkdir -p "$W"
 
@@ -149,13 +160,25 @@ note "   embedded blob == fresh blob ($(stat -c %s "$W/fresh.bin") bytes)"
 # 5) Boot and assert at the altitude that matters.
 # --------------------------------------------------------------------------
 note "5) booting qemu-system-aarch64 -M virt"
-timeout 60 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G -nographic -no-reboot \
-    -kernel "$ELF" -serial mon:stdio >"$SERIAL" 2>&1
+timeout "${A10_BOOT_TIMEOUT:-60}" qemu-system-aarch64 -M virt -cpu cortex-a72 -m 2G \
+    -nographic -no-reboot -kernel "$ELF" -serial mon:stdio >"$SERIAL" 2>&1
 # The kernel parks in wfi; timeout killing qemu (rc 124) is expected.
-[ -s "$SERIAL" ] || fail "no serial output"
 
 dump() { grep -a . "$SERIAL" | grep -vi terminating | sed 's/^/[A10]   | /'; }
 need() { grep -qa "$1" "$SERIAL" || { dump; fail "$2"; }; }
+
+# STARVATION vs REGRESSION. A pure-TCG runner with no /dev/kvm can be starved
+# badly enough that the boot never reaches the A10 rung inside the timeout. That
+# is an ENVIRONMENT input, not a miscompile, and calling it FAIL trains everyone
+# to ignore red. But it must not read as PASS either: verdict 125.
+# The discriminator is how far the boot got. A10 sits above A8/A9, so a run that
+# produced NOTHING, or that never even reached the A9 rung, never got close
+# enough to observe A10's assertion at all.
+[ -s "$SERIAL" ] && grep -qa "EL1 entry OK" "$SERIAL" \
+    || inconc "boot produced no/!EL1 serial in ${A10_BOOT_TIMEOUT:-60}s (starved TCG runner?); A10 never observed"
+grep -qa "A9: preemptive EL0 scheduling proven" "$SERIAL" \
+    || grep -qa "A10:" "$SERIAL" \
+    || { dump; inconc "boot never reached the A9 rung below A10 in ${A10_BOOT_TIMEOUT:-60}s (starved TCG runner?); A10 never observed"; }
 
 # (a) The kernel actually LOADED a non-empty image (not a no-op).
 need "A10: loading a COMPILED Adder EL0 user program" "kernel never reached the A10 stage"

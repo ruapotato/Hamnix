@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # scripts/test_arm64_board.sh — BOARD / PLATFORM ABSTRACTION layer test.
 #
+# Not in ci_battery_manifest.txt because it is one RUNG of the standalone aarch64
+# ladder that scripts/test_arm64_phase49.sh (which IS registered) runs end to end:
+# arch/arm64/kmain.ad executes phases 1..49 in sequence in a SINGLE boot, each rung
+# gated on the previous rung's PASS marker, so a regression here stops that boot
+# long before "Phase 49 PASS" and reds the registered gate. Registering all 49
+# would be 49 identical seed-compiles and 49 identical ~6.5-min TCG boots for one
+# signal -- a manifest number going up, not coverage, and ~5 hours against a
+# 50-minute shard cap. Kept rather than deleted because when the registered gate
+# reds, running the rungs individually is how you find WHICH rung broke; this is
+# the on-demand bisection tool for that. Per the USER ruling of 2026-07-30 ARM64
+# ships on the LLVM path only, so the hand-written seed backend this lane
+# exercises is a frozen regression FIXTURE, not a track under active development.
+#
 # The aarch64 port used to hardcode qemu-virt MMIO literals (PL011 UART
 # @0x0900_0000, GICv2 @0x0800_0000, RAM @0x4000_0000) throughout kmain.ad. They
 # are now factored into a board descriptor: compile-time constant globals

@@ -1,0 +1,107 @@
+# user/arm64_a11_sum.ad — a SECOND, DELIBERATELY DIFFERENT EL0 program for the
+# ARM64 LLVM lane's embedded archive (docs/arm64_llvm_scoping.md A11).
+#
+# WHY A SECOND PROGRAM EXISTS AT ALL
+# ----------------------------------
+# A11's claim is "several .ad-built images, loaded BY NAME". A loader that
+# ignores the name and always copies the first (or the only) blob satisfies
+# every assertion you can make about ONE program. So the archive carries images
+# whose observable behaviour DIFFERS, and the gate asks for them by name in an
+# order that is not their archive order and requires the behaviour to follow the
+# name. That is the only way "by name" is falsifiable.
+#
+# This one is therefore not a copy of the A10 program with a different constant:
+# it computes something structurally different (an integer-square-root /
+# triangular-number identity plus a digit-sum fold) so its checksum, its output
+# line and its exit status are all distinct from both siblings, and a loader
+# that got the wrong image cannot accidentally produce them.
+#
+# 100% Adder; only _start is assembly (arch/arm64/llvm/user_rt.S).
+
+A11_SUM_N: int64 = 400
+
+a11_sum_out: Array[64, uint8]
+
+
+def a11_sum_write(fd: int64, buf: Ptr[uint8], len_: uint64) -> int64:
+    return cast[int64](__syscall3(cast[int64](1), fd, buf, len_))
+
+
+def a11_sum_exit(status: int64) -> int64:
+    return cast[int64](__syscall1(cast[int64](60), status))
+
+
+def a11_sum_put(at: int64, c: int64) -> int64:
+    if at < 64:
+        a11_sum_out[at] = cast[uint8](c)
+        return at + 1
+    return at
+
+
+def a11_sum_put_u64(at: int64, v: int64) -> int64:
+    if v == 0:
+        return a11_sum_put(at, 48)
+    digits: Array[24, uint8]
+    n: int64 = 0
+    t: int64 = v
+    while t > 0:
+        digits[n] = cast[uint8](48 + t % 10)
+        t = t / 10
+        n = n + 1
+    k: int64 = at
+    while n > 0:
+        n = n - 1
+        k = a11_sum_put(k, cast[int64](digits[n]))
+    return k
+
+
+def a11_isqrt(v: int64) -> int64:
+    # integer square root by bisection — real loop + comparison traffic
+    lo: int64 = 0
+    hi: int64 = v + 1
+    while lo + 1 < hi:
+        mid: int64 = (lo + hi) / 2
+        if mid * mid <= v:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def a11_digit_sum(v: int64) -> int64:
+    s: int64 = 0
+    t: int64 = v
+    while t > 0:
+        s = s + t % 10
+        t = t / 10
+    return s
+
+
+def a11_sum_checksum() -> int64:
+    # Sum_{i<N} i == N(N-1)/2 exactly; fold isqrt(i) and digit_sum(i) in so the
+    # result depends on real division, multiplication and nested loops rather
+    # than on a closed form the compiler could constant-fold away.
+    acc: int64 = 0
+    i: int64 = 0
+    while i < A11_SUM_N:
+        acc = acc + i + a11_isqrt(i) * 3 + a11_digit_sum(i)
+        i = i + 1
+    tri: int64 = A11_SUM_N * (A11_SUM_N - 1) / 2
+    return (acc + tri) % 1000003
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    c: int64 = a11_sum_checksum()
+    at: int64 = 0
+    at = a11_sum_put(at, 65)    # 'A'
+    at = a11_sum_put(at, 49)    # '1'
+    at = a11_sum_put(at, 49)    # '1'
+    at = a11_sum_put(at, 58)    # ':'
+    at = a11_sum_put(at, 32)    # ' '
+    at = a11_sum_put(at, 83)    # 'S'
+    at = a11_sum_put(at, 61)    # '='
+    at = a11_sum_put_u64(at, c)
+    at = a11_sum_put(at, 10)    # '\n'
+    a11_sum_write(1, &a11_sum_out[0], cast[uint64](at))
+    a11_sum_exit(c % 256)
+    return cast[int32](c % 256)

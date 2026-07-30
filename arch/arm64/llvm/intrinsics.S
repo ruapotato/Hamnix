@@ -239,18 +239,51 @@ read_rbp:
  *                  harmless control char.)
  * inw/inl/outw/outl keep the old no-port-space behaviour.
  */
-    .equ A4_UART_THR,   0x3F8           /* 8250 THR / COM1 base */
+    .equ A4_UART_THR,   0x3F8           /* 8250 THR (write) / RBR (read) */
     .equ A4_UART_LSR,   0x3FD           /* 8250 Line Status Register */
     .equ A4_PL011_DR,   0x09000000      /* qemu virt PL011 Data Register */
+    .equ A4_PL011_FR,   0x18            /* PL011 Flag Register offset */
+    .equ A4_PL011_RXFE, 0x10            /* FR.RXFE: receive FIFO empty */
 
+/*
+ * A11 addition — the RECEIVE half of exactly the same trick.
+ *
+ * The kernel's OWN blocking stdin primitive is early_8250.ad's
+ * early_getc_polled(): spin on LSR.DR, then read RBR. Both are `inb`s, so
+ * routing them HERE gives the aarch64 lane a real read() with ZERO change to
+ * the shared kernel serial driver — the mirror of what outb->PL011 DR did for
+ * printk in A4.
+ *
+ *   inb(0x3FD) (LSR) -> 0x60 (THRE|TEMT) OR'd with 0x01 (DR) when FR.RXFE is
+ *                       CLEAR, i.e. a byte is genuinely waiting in the PL011
+ *                       receive FIFO.
+ *   inb(0x3F8) (RBR) -> the PL011 DR, which POPS one byte off that FIFO.
+ *
+ * The DR bit MUST reflect real hardware state: a constant "data ready" would
+ * feed the kernel garbage forever, and a constant "empty" would hang
+ * early_getc_polled(). Note the DR read is DESTRUCTIVE (it pops the FIFO),
+ * which is why only the RBR port reaches it — the LSR path reads FR and must
+ * never touch DR.
+ */
     .globl inb
     .type inb, %function
 inb:
     cmp     x0, #A4_UART_LSR
     b.ne    1f
+    movz    x9, #0x0900, lsl #16        /* PL011_BASE = 0x0900_0000 */
+    ldr     w10, [x9, #A4_PL011_FR]
     mov     x0, #0x60                   /* THRE|TEMT: transmitter ready */
+    tst     w10, #A4_PL011_RXFE
+    b.ne    9f                          /* RX FIFO empty -> leave DR clear */
+    orr     x0, x0, #0x01               /* LSR.DR: a byte is waiting */
+9:  ret
+1:  cmp     x0, #A4_UART_THR
+    b.ne    2f
+    movz    x9, #0x0900, lsl #16
+    ldr     w0, [x9, #0]                /* PL011 DR: POPS the receive FIFO */
+    and     x0, x0, #0xFF
     ret
-1:  mov     x0, #0
+2:  mov     x0, #0
     ret
     .size inb, .-inb
 

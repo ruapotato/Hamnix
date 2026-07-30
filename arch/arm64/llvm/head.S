@@ -193,15 +193,66 @@ at_el1:
      * undefined reference in the x86_64 link too, which is exactly the
      * arch-foreign-undef regression scripts/test_napi.sh caught. Arch symbols
      * are resolved HERE, in the arch layer. */
-    ldr     x0, =arm64_a10_blob_start   /* x0 = blob base */
-    ldr     x1, =arm64_a10_blob_end
-    sub     x1, x1, x0                  /* x1 = blob size */
-    bl      arm64_a10_load_arm64
+    ldr     x0, =arm64_a11_archive_start   /* x0 = archive base */
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0                     /* x1 = archive size */
+    bl      arm64_a10_load_arm64           /* loads the member named "a10" */
     cbz     x0, park                    /* image missing/oversized -> no eret */
     bl      arm64_a10_launch
     ldr     x0, =msg_a10_ret
     bl      uart_puts
     bl      arm64_a10_verify_arm64
+
+    /* A11 (docs/arm64_llvm_scoping.md): SEVERAL compiled images in ONE embedded
+     * archive, selected BY NAME, plus a real read() on the PL011.
+     *
+     * The order below is deliberate and is the whole point. "sum" is asked for
+     * FIRST even though "a10" is the archive's first member, so a loader that
+     * ignored the name and copied member 0 would run the A10 program again and
+     * print A10's line, not "A11: S=...". Then "echo" — a THIRD, different
+     * image — consumes real bytes off the PL011 through the kernel's syscall
+     * dispatcher. Finally a name that is NOT in the archive must MISS: a loader
+     * that falls back to "whatever was there" is worse than one that fails,
+     * because it would make every by-name assertion above vacuous. */
+    ldr     x0, =msg_a11
+    bl      uart_puts
+
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_sum
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a11_echo_stage          /* miss -> skip the eret, keep booting */
+    bl      arm64_a10_launch            /* same eret path; same link VA */
+    ldr     x0, =name_sum
+    bl      arm64_a11_report_arm64
+
+a11_echo_stage:
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_echo
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a11_miss_stage
+    ldr     x0, =msg_a11_stdin
+    bl      uart_puts
+    bl      arm64_a10_launch
+    ldr     x0, =name_echo
+    bl      arm64_a11_report_arm64
+
+a11_miss_stage:
+    /* NEGATIVE control: a name the archive does not carry must MISS. */
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_absent
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a11_done                /* 0 == correctly refused */
+    ldr     x0, =msg_a11_badhit
+    bl      uart_puts
+a11_done:
+    ldr     x0, =msg_a11_ret
+    bl      uart_puts
 
 park:
     wfi
@@ -408,6 +459,25 @@ msg_a10:
     .asciz  "A10: loading a COMPILED Adder EL0 user program into the user window\n"
 msg_a10_ret:
     .asciz  "A10: EL0 user program exited, returned to kernel\n"
+msg_a11:
+    .asciz  "A11: embedded EL0 image ARCHIVE, loaded BY NAME (+ real read on the PL011)\n"
+msg_a11_stdin:
+    .asciz  "A11: running 'echo' — it will read(2) a line off the PL011\n"
+msg_a11_badhit:
+    .asciz  "A11: FAIL load-by-name returned an image for a name NOT in the archive\n"
+msg_a11_ret:
+    .asciz  "A11: archive stage complete, returned to kernel\n"
+/* Member names asked for at runtime. Fixed 16-byte fields in the archive, but
+ * these are ordinary NUL-terminated strings — the walk compares up to the NUL
+ * and requires the stored name to end there too, so "sum" cannot match a
+ * hypothetical "summer". */
+name_sum:
+    .asciz  "sum"
+name_echo:
+    .asciz  "echo"
+name_absent:
+    .asciz  "nosuchprog"
+    .balign 8
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'
 

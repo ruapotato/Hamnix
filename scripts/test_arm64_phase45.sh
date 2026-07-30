@@ -2,6 +2,19 @@
 # scripts/test_arm64_phase45.sh — PHASE 45 milestone: EL0 CROSS-TASK SIGNAL DELIVERY
 # on bare aarch64 (qemu-virt). Chains off the Phase-44 PASS branch.
 #
+# Not in ci_battery_manifest.txt because it is one RUNG of the standalone aarch64
+# ladder that scripts/test_arm64_phase49.sh (which IS registered) runs end to end:
+# arch/arm64/kmain.ad executes phases 1..49 in sequence in a SINGLE boot, each rung
+# gated on the previous rung's PASS marker, so a regression here stops that boot
+# long before "Phase 49 PASS" and reds the registered gate. Registering all 49
+# would be 49 identical seed-compiles and 49 identical ~6.5-min TCG boots for one
+# signal -- a manifest number going up, not coverage, and ~5 hours against a
+# 50-minute shard cap. Kept rather than deleted because when the registered gate
+# reds, running the rungs individually is how you find WHICH rung broke; this is
+# the on-demand bisection tool for that. Per the USER ruling of 2026-07-30 ARM64
+# ships on the LLVM path only, so the hand-written seed backend this lane
+# exercises is a frozen regression FIXTURE, not a track under active development.
+#
 # TWO concurrent EL0 tasks (A = signaller, B = target) run in ONE shared address space
 # under the live timer scheduler. Task A issues a kill-style syscall naming task B + a
 # signal number; the kernel QUEUES the signal on B's task struct (a pending bit) rather
