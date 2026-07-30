@@ -2371,14 +2371,18 @@ def sched_vruntime_floor() -> uint64:
 TICK_NS: uint64 = 10000000
 g_exec_start_ns: Array[512, uint64]
 g_vover:         Array[512, uint64]
-# Cap the accumulator. THE ORIGINAL 2048 (eight nice-0 tick charges) WAS THE
-# REASON THE REFUND NEVER WORKED, and it is measured, not argued.
+# Cap the accumulator so a task parked as the incumbent across a long idle
+# stretch cannot bank an unbounded refund.
 #
-# The reasoning behind 2048 was "far more than the one-tick over-charge this
-# exists to undo". That is true of ONE over-charge and false of the process: the
-# over-charge recurs on every tick that lands on a short-burst task, and the
-# refund only fires on a wake, so the bank has to hold the ACCUMULATED fiction,
-# not one instance of it.
+# THE CHARGE-RATE INVERSION THIS DOES NOT FIX - the standing finding, and the
+# thing any future work on the wake->dispatch tail has to attack.
+#
+# preempt_tick bills whichever task is on-cpu at the 100 Hz boundary a WHOLE
+# tick of vruntime regardless of how long it actually held the cpu, and the
+# over-charge that produces is NOT proportional to a task's cpu use - it is
+# proportional to how often the task happens to be on-cpu at a tick boundary,
+# which for a short-burst poller tracks its WAKE RATE. So two tasks on the same
+# runqueue are billed at wildly different rates per microsecond actually run.
 #
 # MEASURED on a live DE (build/m2p/ledger, wklat probe, idle arm, stalls=0,
 # tickgap_max 10263us, host loadavg 4.7), with the real-cpu ledger beside the
@@ -2395,19 +2399,30 @@ g_vover:         Array[512, uint64]
 # minimum holder's 1,073,718us. That inversion IS the >60 ms wake->dispatch
 # tail: sshd is serving a debt of ~41,000 units it never ran.
 #
-# Against that, a 2048 cap lets the refund return at most 8 tick charges. The
-# instrument agrees: 68-74 refunds per ~13,000 wakes returning 7,561-9,662 units
-# in total, against ~40,000 units of standing fabricated lead on ONE task.
+# The refund below is the existing attempt to undo this, and it recovers ~0.4%
+# of what is fabricated: 68-74 refunds per ~13,000 wakes returning 7,561-9,662
+# units in total, against a ~41,000-unit standing lead on ONE task.
 #
-# Raising the cap cannot make a task unfair, and that is a property of
-# _sched_wake_refund rather than of the cap: it refunds at most
-# `lead = v - minv`, the distance to the minimum vruntime over the picker's OWN
-# run-list plus the incumbent. So however large the bank, a refunded task lands
-# AT the runqueue minimum and never below it - it can become the next task
-# picked, which is exactly the point, and it cannot undercut anyone. A task that
-# genuinely holds the cpu for the ticks it is charged banks nothing (ran >=
-# TICK_NS refunds nothing), so cpu-bound work is untouched.
-VOVER_CAP: uint64 = 1048576
+# THE CAP IS NOT WHY. MEASURED AND REVERTED. Raising this to 1,048,576 and re-booting the live DE
+# did NOT close the tail (build/m2p/fix-boot1, stalls=0, tickgap_max 10494us
+# idle / 11147us loaded, host loadavg 4.1-4.6):
+#
+#            over60ms   max_us    refunds / units
+#   before    2 / 2     62215     68 / 9662   (idle), 284 / 25931 (loaded)
+#   after     0 / 4     59957     21 / 7899   (idle), 170 / 23254 (loaded)
+#
+# The idle arm's 2 -> 0 is a TWO-SAMPLE change and is not evidence; the loaded
+# arm went 2 -> 4 with max 130477us against 130664us before. Refund COUNT fell
+# while units held, i.e. each refund returned more (376 units against 142) - so
+# the cap was doing what a cap does, and it was never the binding constraint.
+# g_vover is simply near zero at most wakes: the previous wake drained it, and
+# _sched_note_overcharge can only bank what a tick that actually lands on the
+# task exposes. A 41,000-unit standing lead cannot be repaid from a bank that
+# rarely holds more than a few hundred.
+#
+# Left at the measured value. The defect is upstream of the cap - the whole-tick
+# charge itself - see the charge-rate inversion recorded on _sched_note_overcharge.
+VOVER_CAP: uint64 = 2048
 # Diagnostics (reported by wklat verb 6): how often a refund fired and how much
 # vruntime it returned in total.
 g_vover_refunds: uint64 = 0
