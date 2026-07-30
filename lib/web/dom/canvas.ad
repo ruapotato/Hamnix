@@ -932,6 +932,11 @@ def _apply_inner_html(thisv: int32, vp: Ptr[uint8], vn: int32):
         js_set_prop(rtc, cast[Ptr[uint8]]("parentElement"), 13, thisv)
         rti = rti + 1
     _wire_sibling_links(root, js_null())
+    # Source elements read textContent off the parse-time slice, so the new
+    # subtree only becomes visible through an override (created nodes compute).
+    if _find_el_by_obj(thisv) >= 0:
+        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, \
+                   js_new_string(&frag_txt[0], cast[uint64](frag_txt_w)))
     fc: int32 = js_null()
     lc: int32 = js_null()
     if js_array_len(root) > 0:
@@ -2349,6 +2354,46 @@ def _frag_clear(fragv: int32):
     js_set_prop(fragv, cast[Ptr[uint8]]("lastChild"), 9, js_null())
 
 
+# Extend a SOURCE-ANCHORED element's textContent override with an appended Text
+# node's data. Source elements answer textContent from their [cstart,cend) HTML
+# slice, which cannot see a node script appended, so the override is how a
+# mutation becomes visible -- and js_has_own("textContent") is also what the
+# render readback tests to decide the element changed. CREATED nodes deliberately
+# do NOT get one: their textContent is computed from the tree (below), and an
+# own property would shadow that accessor for good.
+def _append_sync_text(parentv: int32, childv: int32):
+    if _find_el_by_obj(parentv) < 0:
+        return
+    cid2: int32 = _find_cre_by_obj(childv)
+    # cre_is_text is a KIND (1 text, 2 comment, 3 processing instruction). Only
+    # a real Text child contributes: a comment or PI must not, or
+    # `<div><!--x--></div>`.textContent reads back "x".
+    if cid2 < 0 or cre_is_text[cid2] != 1:
+        return
+    tsbuf: Array[8192, uint8]
+    tw: int32 = 0
+    exv: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("textContent"), 11)
+    exp2: Ptr[uint8] = js_str_ptr(exv)
+    exn: int32 = _cstr_len(exp2)
+    if _is_undef_str(exp2, exn) != 0:
+        exn = 0
+    i: int32 = 0
+    while i < exn and tw < 8191:
+        tsbuf[tw] = exp2[i]
+        tw = tw + 1
+        i = i + 1
+    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, cast[Ptr[uint8]]("data"), 4))
+    nvn: int32 = _cstr_len(nvp)
+    if _is_undef_str(nvp, nvn) == 0:
+        j: int32 = 0
+        while j < nvn and tw < 8191:
+            tsbuf[tw] = nvp[j]
+            tw = tw + 1
+            j = j + 1
+    js_set_own(parentv, cast[Ptr[uint8]]("textContent"), 11, \
+               js_new_string(&tsbuf[0], cast[uint64](tw)))
+
+
 # ---- Node.textContent, computed ---------------------------------------------
 # Written against the JS-VISIBLE node shape (nodeType / childNodes / data), so
 # ONE implementation serves created elements, DocumentFragments, Documents,
@@ -2390,6 +2435,26 @@ def _tc_walk(v: int32, depth: int32):
     while i < n:
         _tc_walk(js_array_get(kids, i), depth + 1)
         i = i + 1
+
+
+# The concatenation of the node's DIRECT Text children only -- NOT descendants.
+# The created-node emitter needs this: it writes the element's own text and then
+# recurses into the nested created children, so handing it the full computed
+# textContent would print every descendant's text twice, once flattened into the
+# parent and once in place (measured on tests/jsfunc/pages/dombuild.html).
+def _node_direct_text(v: int32) -> int32:
+    kids: int32 = _nd_kids(v)
+    tc_n = 0
+    if kids != 0:
+        i: int32 = 0
+        n: int32 = js_array_len(kids)
+        while i < n:
+            ch: int32 = js_array_get(kids, i)
+            ct: int32 = _nd_type(ch)
+            if ct == 3 or ct == 4:
+                _tc_append_str(js_get_prop(ch, cast[Ptr[uint8]]("data"), 4))
+            i = i + 1
+    return js_new_string(&tc_buf[0], cast[uint64](tc_n))
 
 
 def _node_text_content(v: int32) -> int32:
@@ -2509,6 +2574,7 @@ def _append_child_v(parentv: int32, childv: int32):
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
     # A TEXT child extends the parent's live textContent. Without this an
+    _append_sync_text(parentv, childv)
 
 
 
@@ -5522,6 +5588,12 @@ def _js_host_dispatch(id: int32) -> int32:
                     js_get_prop(base, cast[Ptr[uint8]]("className"), 9))
         js_set_prop(clo, cast[Ptr[uint8]]("innerHTML"), 9, \
                     js_get_prop(base, cast[Ptr[uint8]]("innerHTML"), 9))
+        # The clone starts with an EMPTY child list (deep cloning of children is
+        # not modelled here), so its computed textContent would be "". Carry the
+        # original's across as an override, which is what it read back before
+        # textContent became computed.
+        js_set_own(clo, cast[Ptr[uint8]]("textContent"), 11, \
+                   js_get_prop(base, cast[Ptr[uint8]]("textContent"), 11))
         js_set_prop(clo, cast[Ptr[uint8]]("style"), 5, _new_style_obj())
         _attach_el_methods(clo)
         cre_obj[clid] = clo
@@ -5976,6 +6048,13 @@ def _js_host_dispatch(id: int32) -> int32:
                 js_set_prop(apobj, cast[Ptr[uint8]]("parentElement"), 13, js_this())
                 _mo_record_childlist(js_this(), apobj, -1)
             apai = apai + 1
+        # Source elements answer textContent from the parse-time slice, so an
+        # appended string only shows up through an override. Created nodes
+        # compute theirs from the tree and must NOT get one (it would shadow
+        # the accessor permanently).
+        if apar >= 0:
+            js_set_own(js_this(), cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_string(&apbuf[0], cast[uint64](apw)))
         _wire_sibling_links(apchildren, js_this())
         return js_undefined()
     if rel == NID_INSBEF:
@@ -9395,7 +9474,7 @@ def _emit_created(cid: int32):
     if hn > 0 and _is_undef_str(hp, hn) == 0:
         _rw_ovbuf_ptr(hp, hn)
     else:
-        _rw_js_escaped(js_get_prop(co, cast[Ptr[uint8]]("textContent"), 11))
+        _rw_js_escaped(_node_direct_text(co))
         a: int32 = 0
         while a < cc_n:
             if cc_removed[a] == 0 and cc_owner[a] == cid:
