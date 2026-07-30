@@ -4314,3 +4314,18 @@ bash scripts/test_memhog.sh
 # missing. The same capability is driven on a REAL installed disk by
 # test_installed_system_parity.sh's `pkgrepo` assertions.
 bash scripts/test_installed_pkg_repo.sh
+# WAKE -> DISPATCH LATENCY under 100% CPU load (user: "things that take up a
+# lot of CPU make the mouse studder or freze"). The companion to
+# test_pointer_latency_under_load.sh: that gate owns the kernel-composited
+# cursor GLYPH (an interrupt-latency bound), this one owns the half a user
+# interacts with — an event has to reach the task that must RESPOND to it, and
+# that task has to be SCHEDULED first. Boots -smp 1 with four syscall-free
+# nice-0 hogs at 100% CPU and asserts a MEASURED time bound on all three
+# shapes a wakeup can take: a cooperative handoff (>=99% within 1 ms), a
+# ring-0 waker that keeps the cpu (tick-bounded), and an INTERRUPT-context
+# wake of a wait-queue sleeper, which is the mouse's actual shape. Rejects a
+# pass earned by a starved probe (the probe's 100 Hz cadence is asserted
+# separately) or by a control write the kernel silently refused (the kernel
+# ACKs every accepted verb and the acks are required). INCONCLUSIVE (125),
+# never FAIL, when nothing was observed. ~8 min incl. builds, one QEMU.
+bash scripts/ci_run_gate.sh scripts/test_wakeup_latency.sh

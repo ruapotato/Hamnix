@@ -35,6 +35,7 @@
 # marker into TaskStruct.fd_idx anymore.
 
 from kernel.sched.core import (
+    wklat_ctl,
     task_lookup_by_pid, task_state, task_pid_at, task_pml4,
     get_cwd_buf, set_current_errstr,
     STATE_READY, STATE_RUNNING, STATE_EXITED, STATE_WAIT,
@@ -2091,6 +2092,34 @@ def devproc_write(file_idx: uint32, buf: Ptr[uint8],
             return -1
         ctl_slot: uint64 = cast[uint64](cast[uint32](ctl_target))
         parsed: int64 = 0
+        # `wklat <n>` — SYSTEM-WIDE wakeup-latency instrument + the wakeup
+        # preemption kill-switch. Unlike every other verb here it does not act
+        # on the target task; /proc/self/ctl is simply the control surface a
+        # native task can already open and write without a new device.
+        #   0 wakeup preemption OFF   1 ON   2 reset+arm instrument
+        #   3 print report            4 disarm instrument
+        # Hostowner-only: it changes global scheduling behaviour, so an
+        # ordinary task must not be able to turn the fix off for everyone.
+        # Matched BEFORE `pri` only for readability; the verbs do not collide.
+        wkl_arg: int64 = _ctl_match_verb(buf, count, "wklat")
+        if wkl_arg >= 0:
+            # Privileged: it changes SYSTEM-WIDE scheduling behaviour, so an
+            # ordinary task must not be able to turn the fix off for everyone.
+            # uid 0 as well as the hostowner — the reproducer runs from a
+            # plain hamsh, which is root but is not the host owner, and a gate
+            # that cannot reach its own control surface measures nothing (the
+            # first run of this test silently ran BOTH arms with the fix on).
+            if task_is_hostowner(ctl_caller_uid) == 0 and ctl_caller_uid != 0:
+                set_current_errstr("ctl: permission denied")
+                return -1
+            if _ctl_parse_signed(buf, count, cast[uint64](wkl_arg),
+                                 &parsed) == 0:
+                set_current_errstr("ctl: bad control message")
+                return -1
+            if wklat_ctl(parsed) == 0:
+                set_current_errstr("ctl: bad control message")
+                return -1
+            return cast[int64](count)
         # `pri <int>` — set the per-task POSIX nice (sched_set_nice clamps to
         # NICE_MIN/MAX internally).
         pri_arg: int64 = _ctl_match_verb(buf, count, "pri")

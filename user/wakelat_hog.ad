@@ -1,0 +1,85 @@
+# user/wakelat_hog.ad
+#
+# CPU hog with a THROUGHPUT METER, for scripts/test_wakeup_latency.sh.
+#
+# user/preempt_hog.ad already provides a syscall-free infinite hog, but an
+# infinite hog cannot answer the question this test has to answer: "what did
+# making the pointer responsive COST the CPU-bound work?". A latency fix that
+# reports no throughput cost is usually a fix that is not running, so the hog
+# has to be able to say how much work it got done.
+#
+# So: nice 0 (an ORDINARY process, exactly the shape of the user's report —
+# they did not say "a high-priority process"), a fixed WALL-CLOCK window in
+# jiffies, a tight syscall-free counting loop, and one line at the end:
+#
+#   [wakelat] hog iters=<n>
+#
+# Comparing that number between the fix-OFF and fix-ON arms of the same boot
+# is the throughput cost of wakeup preemption.
+#
+# The jiffies read happens once every 4096 iterations so the syscall cost does
+# not dominate the measured work (same shape as user/nice_hi.ad). Between
+# those checks the task issues ZERO syscalls, so it stays in ring 3 with
+# EFLAGS.IF set and is preemptible by the timer — this hog stresses the
+# SCHEDULER, not interrupt latency.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_get_jiffies() -> uint64
+extern def sys_exit(code: uint64)
+
+# 100 Hz, so 700 jiffies = 7 s of guest wall clock. Long enough to span many
+# 50 ms quanta (the pre-fix wakeup latency bound) so the round-trip sample the
+# parent collects is not dominated by start-up transients.
+WINDOW_JIFFIES: uint64 = 700
+
+spin_accum: uint64 = 0
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+numbuf: Array[24, uint8]
+
+
+def write_u64(fd: int32, v: uint64):
+    tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    if x == 0:
+        tmp[0] = cast[uint8](48)
+        n = 1
+    while x > 0:
+        d: uint64 = x % 10
+        tmp[n] = cast[uint8](48 + d)
+        x = x / 10
+        n = n + 1
+    i: uint64 = 0
+    while i < n:
+        numbuf[i] = tmp[n - 1 - i]
+        i = i + 1
+    numbuf[n] = cast[uint8](10)
+    sys_write(fd, &numbuf[0], n + 1)
+
+
+def main() -> int32:
+    start: uint64 = sys_get_jiffies()
+    deadline: uint64 = start + WINDOW_JIFFIES
+    iters: uint64 = 0
+    while True:
+        iters = iters + 1
+        spin_accum = spin_accum + iters
+        if (iters & 0xFFF) == 0:
+            if sys_get_jiffies() >= deadline:
+                break
+    write_str(1, "[wakelat] hog iters=")
+    write_u64(1, iters)
+    sys_exit(0)
+    return 0

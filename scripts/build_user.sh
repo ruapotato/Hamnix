@@ -484,6 +484,9 @@ build_adder_user preempt_demo         # preemption test: spawns the hog, proves 
 build_adder_user nice_hi              # #151 CFS-lite: high-priority (nice -20) CPU hog
 build_adder_user nice_lo              # #151 CFS-lite: low-priority  (nice +19) CPU hog
 build_adder_user nice_demo            # #151 CFS-lite: spawns nice_hi + nice_lo, proves CPU-share ratio
+build_adder_user wakelat_hog          # wakeup-latency reproducer: nice-0 CPU hog with a throughput meter
+build_adder_user wakelat_echo         # wakeup-latency reproducer: pipe ping-pong responder (blocks in a wait queue)
+build_adder_user wakelat              # wakeup-latency reproducer: A/B round-trip latency distribution under load
 build_adder_user test_hugepage        # §hugepage: 2 MiB MAP_HUGETLB mmap test (tests/test_hugepage.ad)
 build_adder_user test_errstr_perbackend  # TODO net-item: per-backend errstr prefixes + perror (tests/test_errstr_perbackend.ad)
 build_adder_user hpm                  # Hamnix package manager (docs/packages.md)

@@ -1,0 +1,517 @@
+# user/wakelat.ad
+#
+# WAKEUP-LATENCY REPRODUCER — the measurement behind
+# scripts/test_wakeup_latency.sh.
+#
+# USER REPORT: "things that take up a lot of CPU make the mouse studder or
+# freze; it would be nice if the mouse would keep working even if a process is
+# taking up 100% cpu."
+#
+# The kernel-composited cursor GLYPH is already covered (devmouse.ad's tick
+# pump + inline pointer service; scripts/test_pointer_latency_under_load.sh).
+# This measures the other half — the half the user interacts with. An event
+# arrives and the APPLICATION that must respond to it is a blocked task that
+# has to be SCHEDULED first. Clicks, drags, menu tracking, hover.
+#
+# TWO SHAPES OF WAKEUP, AND WHY BOTH ARE HERE
+# -------------------------------------------
+# ARM "handoff" — the waker BLOCKS right after waking (a pipe ping-pong: the
+#   parent writes, then immediately read()s a reply). The write's schedule()
+#   hands the CPU straight to the woken task via the lowest-vruntime pick, so
+#   no CPU hog can get between them. MEASURED: 99.8% under 1 ms with four
+#   hogs. This arm exists to RULE THAT CAUSE OUT and to keep it ruled out —
+#   "the input path is a normal-priority task competing fairly with hogs" is
+#   simply not true for a handoff, and a future reader should not re-derive
+#   that from scratch.
+#
+# ARM "preempt" — the waker does NOT yield. It posts the event and keeps
+#   burning CPU, which is exactly the mouse's shape: the wake is raised by an
+#   interrupt handler and the CPU returns to whatever it interrupted. The
+#   woken task can only run if something PREEMPTS the incumbent. This is the
+#   arm that carries the bug.
+#
+# WHAT IS MEASURED. The responder (/bin/wakelat_echo) times its own service
+# latency: the parent stamps the monotonic clock immediately before write(),
+# the responder stamps it again the moment its read() returns, and the
+# difference is reported as a DISTRIBUTION (n, max, mean, buckets) — never as
+# a bare average, because the complaint is entirely about the tail.
+#
+# THE LOAD. N copies of /bin/wakelat_hog: nice 0 (an ORDINARY process — the
+# user did not report a privileged one), syscall-free tight loops. Each prints
+# its iteration count, so one boot yields BOTH halves of the trade: the
+# latency won and the throughput it cost.
+#
+# THE A/B. Fix OFF and fix ON, same boot, same workload, same instrument,
+# toggled via /proc/self/ctl `wklat 0` / `wklat 1`. That makes the headline a
+# RATIO (immune to host speed and QEMU accel mode) and gives the gate a
+# built-in mutation test: if turning the fix off does not make the number
+# worse, the gate is not measuring the fix and must say so.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_pipe(fds: Ptr[int32]) -> int32
+extern def sys_close(fd: int32) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
+extern def sys_clock_gettime(clockid: int32, tp: Ptr[uint64]) -> int64
+extern def sys_get_jiffies() -> uint64
+extern def sys_exit(code: uint64)
+
+from lib.p9 import spawn_detached
+
+CLOCK_MONOTONIC: int32 = 1
+
+# Hogs per arm. 4 saturates every configuration this is booted under and
+# leaves a surplus, so the measured task genuinely contends.
+NHOGS: uint64 = 4
+
+# Per-arm measurement window, jiffies (100 Hz). Comfortably shorter than
+# wakelat_hog's own 700-jiffy window so the load is still running when the
+# window closes.
+ARM_JIFFIES: uint64 = 450
+
+# Gap between arms, jiffies. MUST outlast the previous arm's hogs (700
+# jiffies from their spawn) or the next arm runs under 8 hogs instead of 4 and
+# the two arms are not comparable. The first version of this test did not wait
+# and the second arm looked 7% slower purely from the leftover load.
+GAP_JIFFIES: uint64 = 320
+
+# Jiffies of ring-3 CPU burn between events in the "preempt" arm. >= 2 ticks
+# so the incumbent is holding a live quantum when the event lands (the whole
+# point), and it sets the event rate at ~33 Hz — a slow mouse.
+EVENT_GAP_JIFFIES: uint64 = 3
+
+req_fds:   Array[2, int32]
+pp_fds:    Array[2, int32]
+echo_argv: Array[2, uint64]
+hog_argv:  Array[2, uint64]
+
+ts_scratch: Array[2, uint64]
+msg:        Array[8, uint8]
+
+spin_accum: uint64 = 0
+
+# Handoff-arm histogram (kept here because the parent is the one that can see
+# a full round trip).
+p_n:    uint64 = 0
+p_sum:  uint64 = 0
+p_max:  uint64 = 0
+p_b1:   uint64 = 0
+p_b5:   uint64 = 0
+p_b12:  uint64 = 0
+p_b25:  uint64 = 0
+p_b60:  uint64 = 0
+p_b120: uint64 = 0
+p_over: uint64 = 0
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+numbuf: Array[24, uint8]
+
+
+def write_u64_raw(fd: int32, v: uint64):
+    tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    if x == 0:
+        tmp[0] = cast[uint8](48)
+        n = 1
+    while x > 0:
+        d: uint64 = x % 10
+        tmp[n] = cast[uint8](48 + d)
+        x = x / 10
+        n = n + 1
+    i: uint64 = 0
+    while i < n:
+        numbuf[i] = tmp[n - 1 - i]
+        i = i + 1
+    sys_write(fd, &numbuf[0], n)
+
+
+def kv(name: Ptr[uint8], v: uint64):
+    write_str(1, name)
+    write_u64_raw(1, v)
+
+
+def write_nl():
+    nl: Array[1, uint8]
+    nl[0] = cast[uint8](10)
+    sys_write(1, &nl[0], 1)
+
+
+def now_ns() -> uint64:
+    ts_scratch[0] = 0
+    ts_scratch[1] = 0
+    if sys_clock_gettime(CLOCK_MONOTONIC, &ts_scratch[0]) != 0:
+        return 0
+    return ts_scratch[0] * 1000000000 + ts_scratch[1]
+
+
+def ctl(verb: Ptr[uint8]):
+    # LOUD on failure. A control write that is silently refused looks exactly
+    # like a working one from here, and that is how the first run of this test
+    # ran both A/B arms in the same configuration and reported "no
+    # difference". Both the open and the write are checked, and the kernel
+    # ACKs every accepted verb on the console as an independent witness.
+    fd: int32 = sys_open_write("/proc/self/ctl")
+    if fd < 0:
+        write_str(1, "[wakelat] FAIL: cannot open /proc/self/ctl\n")
+        return
+    n: int64 = sys_write(fd, verb, strlen_u8(verb))
+    sys_close(fd)
+    if n != cast[int64](strlen_u8(verb)):
+        write_str(1, "[wakelat] FAIL: ctl write refused rc=")
+        write_u64_raw(1, cast[uint64](n))
+        write_str(1, " verb=")
+        write_str(1, verb)
+
+
+def phist_reset():
+    p_n    = 0
+    p_sum  = 0
+    p_max  = 0
+    p_b1   = 0
+    p_b5   = 0
+    p_b12  = 0
+    p_b25  = 0
+    p_b60  = 0
+    p_b120 = 0
+    p_over = 0
+
+
+def phist_add(us: uint64):
+    p_n = p_n + 1
+    p_sum = p_sum + us
+    if us > p_max:
+        p_max = us
+    if us <= 1000:
+        p_b1 = p_b1 + 1
+    elif us <= 5000:
+        p_b5 = p_b5 + 1
+    elif us <= 12000:
+        p_b12 = p_b12 + 1
+    elif us <= 25000:
+        p_b25 = p_b25 + 1
+    elif us <= 60000:
+        p_b60 = p_b60 + 1
+    elif us <= 120000:
+        p_b120 = p_b120 + 1
+    else:
+        p_over = p_over + 1
+
+
+def phist_report(label: Ptr[uint8]):
+    mean: uint64 = 0
+    if p_n > 0:
+        mean = p_sum / p_n
+    write_str(1, "[wakelat] rt arm=")
+    write_str(1, label)
+    kv(" n=", p_n)
+    kv(" max_us=", p_max)
+    kv(" mean_us=", mean)
+    kv(" le1ms=", p_b1)
+    kv(" le5ms=", p_b5)
+    kv(" le12ms=", p_b12)
+    kv(" le25ms=", p_b25)
+    kv(" le60ms=", p_b60)
+    kv(" le120ms=", p_b120)
+    kv(" over120ms=", p_over)
+    write_nl()
+
+
+def post_event(stamp: uint64) -> int32:
+    # Send one 8-byte little-endian message on the event pipe. `stamp` is the
+    # monotonic ns reading taken by the caller as late as possible before this
+    # call; 0 is the responder's "print your histogram" sentinel.
+    i: uint64 = 0
+    x: uint64 = stamp
+    while i < 8:
+        msg[i] = cast[uint8](x & 0xFF)
+        x = x >> 8
+        i = i + 1
+    if sys_write(req_fds[1], &msg[0], 8) != 8:
+        return 0
+    return 1
+
+
+rng_state: uint64 = 0x9E3779B97F4A7C15
+
+
+def rng_next() -> uint64:
+    # xorshift64*. Used ONLY to decorrelate event posts from the 100 Hz tick.
+    rng_state = rng_state ^ (rng_state << 13)
+    rng_state = rng_state ^ (rng_state >> 7)
+    rng_state = rng_state ^ (rng_state << 17)
+    return rng_state
+
+
+def burn_ns(dur_ns: uint64):
+    # Ring-3 CPU burn for `dur_ns`, polling the monotonic clock.
+    #
+    # WHY THIS EXISTS. The first version of this test paced events on jiffy
+    # boundaries, so every event was posted a few microseconds AFTER a timer
+    # tick and every measurement came out at almost exactly one tick period
+    # (mean 9983 us, max 10243 us, zero spread) in BOTH arms — a number that
+    # says nothing about the scheduler and everything about when the test
+    # chose to press the button. Posting at a uniformly random offset within
+    # the tick period is what turns the result into a real distribution: with
+    # wakeup preemption the wait is bounded by the time to the next tick
+    # (uniform over [0, 10] ms), without it by the incumbent's remaining
+    # quantum (uniform over [0, 50] ms at nice 0).
+    if dur_ns == 0:
+        return
+    start: uint64 = now_ns()
+    if start == 0:
+        return
+    target: uint64 = start + dur_ns
+    i: uint64 = 0
+    while True:
+        i = i + 1
+        spin_accum = spin_accum + i
+        if (i & 0x3FF) == 0:
+            if now_ns() >= target:
+                return
+
+
+def burn_until(deadline_jiffies: uint64):
+    # Ring-3 CPU burn. The jiffies read is a syscall, so it is done only every
+    # 4096 iterations — between those this task looks exactly like a hog: ring
+    # 3, EFLAGS.IF set, fully preemptible, and NOT giving up the CPU.
+    i: uint64 = 0
+    while True:
+        i = i + 1
+        spin_accum = spin_accum + i
+        if (i & 0xFFF) == 0:
+            if sys_get_jiffies() >= deadline_jiffies:
+                return
+
+
+def spawn_hogs() -> uint64:
+    hog_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/wakelat_hog")
+    hog_argv[0] = cast[uint64](hog_path)
+    hog_argv[1] = 0
+    started: uint64 = 0
+    i: uint64 = 0
+    while i < NHOGS:
+        # Detached: this process never wait4s them, and a non-detached zombie
+        # per hog per arm would leak a whole address space
+        # (lib/p9.ad::spawn_detached).
+        c: int32 = spawn_detached(cast[Ptr[char]](hog_path), &hog_argv[0],
+                                  -1, -1, cast[Ptr[uint64]](0))
+        if c >= 0:
+            started = started + 1
+        i = i + 1
+    return started
+
+
+def spawn_hogs_hi() -> uint64:
+    # Same load, but at nice -20. sched_quantum_for() scales the timeslice by
+    # weight, so a nice -20 incumbent holds the cpu for SCHED_QUANTUM_MAX = 20
+    # ticks = 200 ms rather than 5 ticks = 50 ms. If wake latency is bounded by
+    # the incumbent's remaining slice, THIS is where it shows: a 4x-longer
+    # slice must produce a 4x-longer tail. If it does not, the slice is not
+    # what bounds it. /bin/nice_hi renices itself through /proc/self/ctl and
+    # burns a 600-jiffy window (user/nice_hi.ad).
+    hi_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/nice_hi")
+    hog_argv[0] = cast[uint64](hi_path)
+    hog_argv[1] = 0
+    started: uint64 = 0
+    i: uint64 = 0
+    while i < NHOGS:
+        c: int32 = spawn_detached(cast[Ptr[char]](hi_path), &hog_argv[0],
+                                  -1, -1, cast[Ptr[uint64]](0))
+        if c >= 0:
+            started = started + 1
+        i = i + 1
+    return started
+
+
+def handoff_round_trip() -> uint64:
+    # ARM "handoff": the classic ping-pong. Returns the round-trip in us.
+    b: Array[1, uint8]
+    b[0] = cast[uint8](88)
+    t0: uint64 = now_ns()
+    if t0 == 0:
+        return 0
+    if sys_write(pp_fds[1], &b[0], 1) != 1:
+        return 0
+    if sys_read(pp_fds[0], &b[0], 1) != 1:
+        return 0
+    t1: uint64 = now_ns()
+    if t1 <= t0:
+        return 0
+    return (t1 - t0) / 1000
+
+
+def run_preempt_arm(label: Ptr[uint8], preempt_on: int32) -> uint64:
+    if preempt_on != 0:
+        ctl("wklat 1\n")
+    else:
+        ctl("wklat 0\n")
+    ctl("wklat 2\n")                        # reset + arm the kernel instrument
+
+    nh: uint64 = spawn_hogs()
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" hogs=", nh)
+    write_nl()
+
+    # Warm-up: let the hogs finish execve + ELF load before any sample is
+    # taken. That is an interrupt-latency regime, a different bug, and it
+    # would contaminate a scheduling measurement.
+    burn_until(sys_get_jiffies() + 40)
+    post_event(0)                           # drop warm-up samples
+    burn_until(sys_get_jiffies() + 5)
+
+    sent: uint64 = 0
+    deadline: uint64 = sys_get_jiffies() + ARM_JIFFIES
+    while sys_get_jiffies() < deadline:
+        # Stamp as late as possible, then post, then KEEP THE CPU. The
+        # responder now has to be given the cpu by preemption, not by us
+        # yielding it.
+        # Decorrelate from the tick: land the post at a uniformly random
+        # offset in [0, 10) ms after the jiffy boundary burn_until stopped on.
+        burn_ns(rng_next() % 10000000)
+        t0: uint64 = now_ns()
+        if t0 == 0:
+            break
+        if post_event(t0) == 0:
+            write_str(1, "[wakelat] FAIL: event pipe broke mid-window\n")
+            break
+        sent = sent + 1
+        burn_until(sys_get_jiffies() + EVENT_GAP_JIFFIES)
+
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" sent=", sent)
+    write_nl()
+    post_event(0)                           # responder prints its histogram
+    # Give the responder room to actually print before the kernel report, and
+    # let this arm's hogs finish so the next arm starts on an idle box.
+    burn_until(sys_get_jiffies() + GAP_JIFFIES)
+    ctl("wklat 3\n")                        # kernel-side wake->dispatch report
+    return sent
+
+
+def run_irq_arm(label: Ptr[uint8], preempt_on: int32, hi_nice: int32):
+    # THE ARM THAT CARRIES THE BUG. The waker here is not a task at all: the
+    # kernel probe (`wklat 5`) parks a thread on a wait queue with a one-tick
+    # timeout, so every one of its wakes is raised by the hrtimer expiry
+    # callback running in the TIMER ISR — interrupt context, exactly like the
+    # mouse IRQ waking the DE client blocked on /dev/wsys/<wid>/pointer. When
+    # that handler returns, the cpu goes back to whatever ring-3 code it
+    # interrupted: here, four syscall-free hogs plus this process.
+    #
+    # Nothing in userland can generate that shape (a userland waker is a task
+    # and its wake is raised in ring 0), which is why the two userland arms
+    # above measure the OTHER two shapes and this one has to reach into the
+    # kernel for the third.
+    if preempt_on != 0:
+        ctl("wklat 1\n")
+    else:
+        ctl("wklat 0\n")
+    ctl("wklat 5\n")                        # idempotent probe start
+    nh: uint64 = 0
+    if hi_nice != 0:
+        nh = spawn_hogs_hi()
+    else:
+        nh = spawn_hogs()
+    write_str(1, "[wakelat] arm=")
+    write_str(1, label)
+    kv(" hogs=", nh)
+    write_nl()
+    # Let the hogs get through execve + ELF load before the window opens.
+    burn_until(sys_get_jiffies() + 60)
+    ctl("wklat 2\n")                        # reset the kernel histogram
+    burn_until(sys_get_jiffies() + ARM_JIFFIES)
+    ctl("wklat 3\n")
+    # Drain this arm's hogs so the next arm starts from an idle box.
+    burn_until(sys_get_jiffies() + GAP_JIFFIES)
+
+
+def main() -> int32:
+    write_str(1, "[wakelat] start\n")
+
+    if sys_pipe(&req_fds[0]) != 0:
+        write_str(1, "[wakelat] FAIL: sys_pipe(event)\n")
+        sys_exit(1)
+        return 1
+    if sys_pipe(&pp_fds[0]) != 0:
+        write_str(1, "[wakelat] FAIL: sys_pipe(pingpong)\n")
+        sys_exit(1)
+        return 1
+
+    echo_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/wakelat_echo")
+    echo_argv[0] = cast[uint64](echo_path)
+    echo_argv[1] = 0
+    # fd 0 = event pipe read end; fd 1 INHERITED (the console), so the
+    # responder's histogram lands on the serial log rather than in a pipe.
+    ec: int32 = spawn_detached(cast[Ptr[char]](echo_path), &echo_argv[0],
+                               req_fds[0], -1, cast[Ptr[uint64]](0))
+    if ec < 0:
+        write_str(1, "[wakelat] FAIL: could not spawn /bin/wakelat_echo\n")
+        sys_exit(1)
+        return 1
+
+    # --- ARM "handoff", loaded. Rules OUT the "input task competes fairly
+    # with hogs" explanation: a waker that blocks hands the cpu straight over.
+    ctl("wklat 1\n")
+    hn: uint64 = spawn_hogs()
+    write_str(1, "[wakelat] arm=handoff")
+    kv(" hogs=", hn)
+    write_nl()
+    phist_reset()
+    i: uint64 = 0
+    hdeadline: uint64 = sys_get_jiffies() + 300
+    while sys_get_jiffies() < hdeadline:
+        us: uint64 = handoff_round_trip()
+        if us == 0:
+            write_str(1, "[wakelat] FAIL: ping-pong broke\n")
+            sys_exit(1)
+            return 1
+        if i >= 200:
+            phist_add(us)
+        i = i + 1
+    phist_report("handoff")
+    burn_until(sys_get_jiffies() + GAP_JIFFIES)
+
+    # --- ARM "off" — wakeup preemption disabled (the pre-fix scheduler).
+    if run_preempt_arm("off", 0) == 0:
+        write_str(1, "[wakelat] FAIL: arm off posted no events\n")
+        sys_exit(1)
+        return 1
+    # --- ARM "on" — wakeup preemption enabled.
+    if run_preempt_arm("on", 1) == 0:
+        write_str(1, "[wakelat] FAIL: arm on posted no events\n")
+        sys_exit(1)
+        return 1
+
+    # --- ARMS "irqoff" / "irqon" — an INTERRUPT-context wake of a
+    # wait-queue sleeper while syscall-free hogs hold the cpu. This is the
+    # mouse's actual shape and the only arm where wakeup preemption can make
+    # a difference.
+    run_irq_arm("irqoff", 0, 0)
+    run_irq_arm("irqon", 1, 0)
+    # And again with nice -20 hogs, i.e. a 200 ms incumbent slice instead of
+    # 50 ms — the configuration where a slice-bounded wakeup latency would be
+    # unmistakable.
+    run_irq_arm("irqhioff", 0, 1)
+    run_irq_arm("irqhion", 1, 1)
+
+    # Leave the system in the SHIPPED configuration and disarm the
+    # instrument: nothing this test did may outlive it.
+    ctl("wklat 1\n")
+    ctl("wklat 4\n")
+    sys_close(req_fds[1])
+    write_str(1, "[wakelat] done\n")
+    sys_exit(0)
+    return 0

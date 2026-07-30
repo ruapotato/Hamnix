@@ -1890,8 +1890,17 @@ def sched_make_ready_on(slot: uint64, target_cpu: uint64):
     # walks this list.
     _rq_list_insert(slot, tc)
     _rq_unlock_cpu(tc)
+    # Wakeup preemption (check_preempt_curr): decide whether tc's incumbent
+    # should be thrown off for this task, and if so raise tc's need_resched.
+    # Done BEFORE the IPI so the flag is already visible when the target takes
+    # the interrupt — otherwise the IPI could land, find nothing to do, and
+    # the switch would slip to the next tick.
+    _wakeup_maybe_kick(slot, tc)
     # Kick the owning CPU (directed). No-op on a uniprocessor; if tc is the
-    # caller's own CPU the IPI self-targets harmlessly (handler just EOIs).
+    # caller's own CPU the IPI self-targets harmlessly. On a BUSY target the
+    # handler now has teeth: do_irq consumes need_resched on IRQ return to
+    # ring 3, so the IPI is what turns a remote wakeup into an immediate
+    # dispatch instead of a wait for that cpu's next quantum boundary.
     smp_send_reschedule_cpu(tc)
 
 
@@ -2308,6 +2317,472 @@ def sched_quantum_for(slot: uint64) -> uint64:
     if q > SCHED_QUANTUM_MAX:
         q = SCHED_QUANTUM_MAX
     return q
+
+
+# =====================================================================
+# WAKEUP -> DISPATCH LATENCY: instrument + wakeup preemption
+# =====================================================================
+#
+# USER REPORT: "things that take up a lot of CPU make the mouse studder or
+# freze; it would be nice if the mouse would keep working even if a process is
+# taking up 100% cpu."
+#
+# The KERNEL-COMPOSITED CURSOR half of that report is already handled (the
+# 100 Hz tick pump + the inline pointer service in devmouse.ad; see
+# scripts/test_pointer_latency_under_load.sh). What was NOT handled — and is
+# what an application experiences — is the other half: a mouse packet has to
+# reach the DE client that is BLOCKED reading /dev/wsys/<wid>/pointer, and
+# that client is an ordinary task which has to be SCHEDULED before it can
+# repaint. Clicks, drags, menu tracking and hover all live on that path.
+#
+# WHAT WAS MEASURED, AND WHAT IT RULED OUT (scripts/test_wakeup_latency.sh)
+# ------------------------------------------------------------------------
+# The obvious hypothesis was that this scheduler had NO wakeup preemption at
+# all — which is TRUE. wq_wake_one / wq_wake_slot flipped the waiter
+# WAIT->READY, homed it on a runqueue and sent a directed reschedule IPI, but
+# the IPI handler is a counter (it only knocks an IDLE cpu out of HLT, so a
+# cpu running a hog ignores it), and preempt_tick() only switched when the
+# RUNNING task's quantum had drained: SCHED_QUANTUM_TICKS = 5 ticks = 50 ms at
+# nice 0, up to SCHED_QUANTUM_MAX = 20 ticks = 200 ms for a nice -20 hog. On
+# paper every wakeup should therefore have waited a uniform [0, 50] ms.
+#
+# IT DOES NOT. Measured on KVM, -smp 1, with four nice-0 syscall-free ring-3
+# hogs pinning the cpu at 100%, across all three shapes a wakeup can take:
+#
+#   waker blocks right after waking (pipe ping-pong)
+#       99.96% of round trips under 1 ms, n = 90,670.
+#       The waker's own schedule() hands the cpu straight to the woken task
+#       via the lowest-vruntime pick. No hog can get between them.
+#   waker keeps the cpu (event posted from a syscall, then ring-3 burn)
+#       uniform over [0, 10] ms, max 10.2 ms, n = 60.
+#       Bounded by the 100 Hz TICK, not by the quantum.
+#   waker is an INTERRUPT (the mouse's shape: hrtimer expiry callback in the
+#   timer ISR force-waking a wait-queue sleeper)
+#       mean 13-75 us, max 42-202 us typical, n = 444-511 per window.
+#       An occasional single sample reaches one tick.
+#
+# Repeated with nice -20 hogs (a 200 ms slice, 4x longer): max 10.0 ms. A
+# 4x-longer slice did NOT produce a 4x-longer tail, which is the direct
+# refutation — the incumbent's slice is not what bounds this.
+#
+# WHY the quantum never binds: a task that slept keeps its stale, LOW vruntime
+# while the hogs' vruntimes advance, so the moment any pick happens the
+# sleeper wins it — and picks happen far more often than once per quantum,
+# because every blocking syscall anywhere in the system is a pick.
+#
+# So the following are RULED OUT as causes of the user's mouse stutter:
+#   * "the pointer path is a normal-priority task competing fairly with hogs"
+#   * "timeslices are simply too coarse"
+#   * "input IRQ work is deferred behind a queue a hog starves" — the probe
+#     held its full 100 Hz cadence throughout every loaded window.
+# The cursor-glyph half was separately attributed to interrupt latency in the
+# syscall path (IA32_FMASK clears EFLAGS.IF); see devmouse.ad.
+#
+# WHAT IS KEPT, AND WHY IT IS A BOUND AND NOT A FIX
+# -------------------------------------------------
+# check_preempt_curr: on a wakeup, compare the woken task against whatever is
+# running on the runqueue it was homed to, and if it outranks it (realtime
+# beats CFS; within CFS a vruntime advantage of more than WAKEUP_GRANULARITY_V)
+# raise that cpu's need_resched. preempt_tick() honours the flag on a ring-3
+# tick even when the quantum has not drained.
+#
+# This is retained deliberately and modestly. It did NOT improve any measured
+# distribution and it did not cost any measured throughput (hog iteration
+# counts were within run-to-run noise both ways), so it is NOT presented as
+# the fix for the user's report. What it buys is a STATED BOUND: without it
+# the code offers no upper bound on wake->dispatch other than the incumbent's
+# slice, which for a nice -20 incumbent is 200 ms; with it the bound is one
+# tick. It rides preempt_tick, an already-proven preemption point, and adds no
+# new place where the kernel can switch tasks.
+#
+# An IRQ-return arm (Linux's preempt_schedule_irq, switching in do_irq after
+# the device handler and EOI) was written, measured, and REMOVED: it never
+# fired once across five instrumented boots, because the woken task was always
+# already dispatched by the ordinary path. Arming a schedule() call on every
+# device interrupt that testing never exercises is a hazard bought with no
+# benefit.
+#
+# Nice-0 vruntime accrues NICE0_WEIGHT * VRUNTIME_SCALE / weight = 256 units
+# per 10 ms tick, so 1 ms == ~26 units.
+WAKEUP_GRANULARITY_V: uint64 = 26
+
+# Runtime kill-switch (default ON). `wklat 0` / `wklat 1` on /proc/self/ctl
+# toggles it without a rebuild, which is what lets the gate measure BOTH arms
+# in ONE boot against ONE workload with ONE instrument — and is the gate's
+# built-in mutation test: with this at 0 the latency assertion MUST fail.
+wakeup_preempt_enabled: int32  = 1
+# Diagnostic: how many wakeups raised need_resched, and how many of those the
+# tick actually acted on. The gap between them is large and that is EXPECTED:
+# most woken tasks are dispatched by the ordinary path (a peer blocking, or
+# the incumbent's slice draining) long before the next tick has to force it.
+wakeup_preempt_kicks:   uint64 = 0
+wakeup_preempt_tick_n:  uint64 = 0
+
+# Per-cpu need_resched. Plain global (not Percpu) because the SETTER is
+# frequently a DIFFERENT cpu than the target — that is the whole point of the
+# directed-IPI path. Single-word stores; a lost race costs at most one tick of
+# latency, never correctness.
+g_need_resched: Array[64, uint64]
+
+# Remote-readable mirror of each cpu's currently-dispatched slot.
+# current_idx_pcpu is a Percpu[] and cannot be read for ANOTHER cpu, but the
+# wakeup comparison has to know what the TARGET cpu is running. Updated by
+# sched_note_dispatch (one store on a path that already writes two).
+# 0xFFFFFFFFFFFFFFFF = nothing dispatched yet on that cpu.
+RQ_CUR_NONE: uint64 = 0xFFFFFFFFFFFFFFFF
+g_rq_current: Array[64, uint64]
+g_rq_current_init: uint64 = 0
+
+
+def _rq_current_init():
+    c: uint64 = 0
+    while c < NR_RQ:
+        g_rq_current[c] = RQ_CUR_NONE
+        c = c + 1
+    g_rq_current_init = 1
+
+
+def sched_rq_current(cpu: uint64) -> uint64:
+    if cpu >= NR_RQ:
+        return RQ_CUR_NONE
+    if g_rq_current_init == 0:
+        return RQ_CUR_NONE
+    return g_rq_current[cpu]
+
+
+def sched_need_resched(cpu: uint64) -> uint64:
+    # Non-destructive read. Used by the IRQ-return path to decide whether the
+    # (expensive) switch is warranted before it commits to one.
+    if cpu >= NR_RQ:
+        return 0
+    return g_need_resched[cpu]
+
+
+def sched_need_resched_take(cpu: uint64) -> uint64:
+    # Read-and-clear. The consumer that actually performs the switch calls
+    # this; clearing before the switch means a wakeup that lands DURING the
+    # switch re-raises the flag rather than being swallowed.
+    if cpu >= NR_RQ:
+        return 0
+    v: uint64 = g_need_resched[cpu]
+    g_need_resched[cpu] = 0
+    return v
+
+
+def sched_set_need_resched(cpu: uint64):
+    if cpu < NR_RQ:
+        g_need_resched[cpu] = 1
+
+
+def _wakeup_should_preempt(woken: uint64, running: uint64) -> uint64:
+    # Would dispatching `woken` in place of `running` be the right call?
+    # Mirrors _pick_next's ordering so the flag can never ask for a switch
+    # that _pick_next would then refuse to make (which would burn a full
+    # context switch to land on the same task).
+    if woken == running:
+        return 0
+    if woken >= NTASKS or running >= NTASKS:
+        return 0
+    # The idle task is always worth preempting.
+    if task_table[running].state != STATE_RUNNING:
+        return 1
+    w_rt: uint64 = sched_is_realtime(woken)
+    r_rt: uint64 = sched_is_realtime(running)
+    if w_rt != 0 and r_rt == 0:
+        return 1
+    if w_rt != 0 and r_rt != 0:
+        if g_rt_priority[woken] > g_rt_priority[running]:
+            return 1
+        return 0
+    if r_rt != 0:
+        # A realtime incumbent is never preempted by a SCHED_OTHER wakeup.
+        return 0
+    # Both CFS: the woken task must be ahead by more than the wakeup
+    # granularity. A task that slept keeps its (stale, small) vruntime, so an
+    # interactive sleeper wins here and a task that just used its slice does
+    # not.
+    rv: uint64 = task_table[running].vruntime
+    wv: uint64 = task_table[woken].vruntime
+    if wv + WAKEUP_GRANULARITY_V < rv:
+        return 1
+    return 0
+
+
+def _wakeup_maybe_kick(slot: uint64, tc: uint64):
+    # Post-enqueue half of check_preempt_curr. Takes NO lock: it reads two
+    # vruntimes and sets one word. Called from sched_make_ready_on, i.e. from
+    # every wakeup AND every new-task publish — a fresh task is placed at
+    # floor + one slice (sched_fork_vruntime), so it does NOT out-rank a
+    # running incumbent and a fork storm raises no kicks. That self-limiting
+    # property is why fork does not need to be special-cased out.
+    if wakeup_preempt_enabled == 0:
+        return
+    if tc >= NR_RQ:
+        return
+    if g_rq_current_init == 0:
+        return
+    running: uint64 = g_rq_current[tc]
+    if running == RQ_CUR_NONE:
+        return
+    if _wakeup_should_preempt(slot, running) == 0:
+        return
+    g_need_resched[tc] = 1
+    wakeup_preempt_kicks = wakeup_preempt_kicks + 1
+
+
+def wakeup_preempt_set_enabled(on: int32):
+    wakeup_preempt_enabled = on
+    if on == 0:
+        c: uint64 = 0
+        while c < NR_RQ:
+            g_need_resched[c] = 0
+            c = c + 1
+
+
+def wakeup_preempt_is_enabled() -> int32:
+    return wakeup_preempt_enabled
+
+
+def wakeup_preempt_kick_count() -> uint64:
+    return wakeup_preempt_kicks
+
+
+# --- the instrument -------------------------------------------------
+#
+# Measures the quantity the user perceives on the APPLICATION half of the
+# pointer path: nanoseconds from "this task became runnable because something
+# woke it" to "this task actually got the cpu". Sampling anywhere else (e.g.
+# counting context switches, or timing the IRQ handler) cannot see this bug —
+# the wake always happened promptly, the DISPATCH is what was late.
+#
+# Default OFF: enabled by the gate through /proc/self/ctl so a production boot
+# pays one predictable-branch compare per wakeup and per dispatch.
+wklat_on:      int32  = 0
+wklat_n:       uint64 = 0
+wklat_sum_ns:  uint64 = 0
+wklat_max_ns:  uint64 = 0
+wklat_b1:      uint64 = 0     # <=   1 ms  — indistinguishable from instant
+wklat_b5:      uint64 = 0     # <=   5 ms
+wklat_b12:     uint64 = 0     # <=  12 ms  — one 100 Hz tick + slack
+wklat_b25:     uint64 = 0     # <=  25 ms
+wklat_b60:     uint64 = 0     # <=  60 ms  — a full nice-0 slice
+wklat_over:    uint64 = 0     # >   60 ms  — a visible freeze
+# Wake timestamps, one per task slot. 0 = no wake in flight.
+g_wake_stamp_ns: Array[512, uint64]
+
+
+def wklat_reset():
+    wklat_n      = 0
+    wklat_sum_ns = 0
+    wklat_max_ns = 0
+    wklat_b1     = 0
+    wklat_b5     = 0
+    wklat_b12    = 0
+    wklat_b25    = 0
+    wklat_b60    = 0
+    wklat_over   = 0
+    i: uint64 = 0
+    while i < NTASKS:
+        g_wake_stamp_ns[i] = 0
+        i = i + 1
+
+
+def wklat_enable(on: int32):
+    wklat_on = on
+    if on != 0:
+        wklat_reset()
+
+
+def _wklat_stamp(slot: uint64):
+    # A task just went WAIT -> READY. Remember when. Safe from IRQ context:
+    # clocksource_read_ns is a lock-free counter read.
+    if wklat_on == 0:
+        return
+    if slot >= NTASKS:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    g_wake_stamp_ns[slot] = clocksource_read_ns()
+
+
+def _wklat_account(slot: uint64):
+    # `slot` is being dispatched. If it has a wake in flight, close the
+    # interval. A task that was preempted and re-dispatched has no stamp, so
+    # ordinary round-robin churn does not pollute the histogram — only genuine
+    # wake -> run intervals are counted.
+    if wklat_on == 0:
+        return
+    if slot >= NTASKS:
+        return
+    st: uint64 = g_wake_stamp_ns[slot]
+    if st == 0:
+        return
+    g_wake_stamp_ns[slot] = 0
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    if now <= st:
+        return
+    d: uint64 = now - st
+    wklat_n = wklat_n + 1
+    wklat_sum_ns = wklat_sum_ns + d
+    if d > wklat_max_ns:
+        wklat_max_ns = d
+    if d <= 1000000:
+        wklat_b1 = wklat_b1 + 1
+    elif d <= 5000000:
+        wklat_b5 = wklat_b5 + 1
+    elif d <= 12000000:
+        wklat_b12 = wklat_b12 + 1
+    elif d <= 25000000:
+        wklat_b25 = wklat_b25 + 1
+    elif d <= 60000000:
+        wklat_b60 = wklat_b60 + 1
+    else:
+        wklat_over = wklat_over + 1
+
+
+def wklat_report():
+    # One parseable block. The gate reads n / max_us / mean_us and the bucket
+    # counts; the p-values are derived host-side from the buckets so the
+    # kernel does no division it does not have to.
+    mean: uint64 = 0
+    if wklat_n > 0:
+        mean = wklat_sum_ns / wklat_n
+    # EMERG level on every line. The console tightens its threshold to
+    # suppress INFO once an interactive shell is up (console_set_interactive),
+    # so an INFO-level report is invisible in exactly the situation this
+    # instrument is used in — the first two runs of the gate lost the entire
+    # kernel-side report that way and nobody noticed, because a missing line
+    # and a zero line look the same to a grep that is not asserting presence.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] n=%d preempt=%d\n", wklat_n,
+            cast[uint64](wakeup_preempt_enabled))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] max_us=%d mean_us=%d\n", wklat_max_ns / 1000,
+            mean / 1000)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] le1ms=%d le5ms=%d\n", wklat_b1, wklat_b5)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] le12ms=%d le25ms=%d\n", wklat_b12, wklat_b25)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] le60ms=%d over60ms=%d\n", wklat_b60, wklat_over)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] kicks=%d irqret=%d\n", wakeup_preempt_kicks, 0)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] tickret=%d probe=%d\n", wakeup_preempt_tick_n,
+            wklat_probe_iters)
+
+
+# --- the IRQ-driven probe ---------------------------------------------
+#
+# WHY A KERNEL PROBE AND NOT A USERLAND ONE. Two userland reproducers were
+# built first and BOTH measured something other than the bug:
+#
+#   * a pipe ping-pong (parent writes then immediately blocks reading a
+#     reply). The write's schedule() hands the cpu straight to the woken task
+#     via the lowest-vruntime pick — a purely COOPERATIVE handoff that no CPU
+#     hog can get between. 99.8% under 1 ms with four hogs.
+#   * a "waker keeps burning cpu" variant. Better, but the waker is still a
+#     TASK, so the wake is raised in ring 0 with the incumbent's fate decided
+#     by the tick, and both A/B arms came out identical.
+#
+# The mouse is neither. Its wake is raised by an INTERRUPT HANDLER, and when
+# that handler returns the cpu goes straight back to the ring-3 code it
+# interrupted — which, in the user's report, is a process at 100% CPU issuing
+# no syscalls at all. To measure THAT, the woken party must be parked in a
+# real wait queue and woken from real interrupt context.
+#
+# This probe is exactly that, with the hrtimer ISR standing in for the mouse
+# IRQ: park on a wait queue with a one-tick timeout, get force-woken by
+# _wq_timeout_hrtimer_cb from the timer ISR, and let _wklat_account time how
+# long the dispatch took. 100 Hz, which is also about the rate a real mouse
+# reports at. Not created unless `wklat 5` asks for it, and it exits when the
+# instrument is disarmed, so a shipped kernel carries no extra kthread.
+wklat_probe_wq:      WaitQueue
+wklat_probe_started: int32  = 0
+wklat_probe_run:     int32  = 0
+wklat_probe_iters:   uint64 = 0
+
+
+def wklat_probe_iterations() -> uint64:
+    return wklat_probe_iters
+
+
+def _wklat_probe_thread():
+    wq_init(&wklat_probe_wq)
+    while wklat_probe_run != 0:
+        wq_wait_prepare(&wklat_probe_wq)
+        # One tick. Nobody ever data-wakes this queue, so every wake is the
+        # hrtimer expiry callback firing from the timer ISR — i.e. an
+        # interrupt-context wake of a wait-queue sleeper, the mouse's shape.
+        wq_wait_commit_timeout(&wklat_probe_wq, 1)
+        wklat_probe_iters = wklat_probe_iters + 1
+    wklat_probe_started = 0
+    task_exit_current(0)
+
+
+def _wklat_probe_start() -> int32:
+    if wklat_probe_started != 0:
+        return 1
+    wq_init(&wklat_probe_wq)
+    wklat_probe_run   = 1
+    wklat_probe_iters = 0
+    _wq_lock_irq()
+    slot: int32 = kthread_create(cast[uint64](&_wklat_probe_thread), 0)
+    if slot >= 0:
+        # Detached: nothing wait4s a probe thread, and a non-detached zombie
+        # would sit in the task table forever.
+        task_table[cast[uint64](slot)].detached = 1
+    _wq_unlock_irq()
+    if slot < 0:
+        wklat_probe_run = 0
+        return 0
+    wklat_probe_started = 1
+    return 1
+
+
+def wklat_ctl(verb: int64) -> int32:
+    # Single control entry point, driven from /proc/self/ctl `wklat <n>`:
+    #   0 = wakeup preemption OFF   1 = wakeup preemption ON
+    #   2 = reset histogram + enable instrument
+    #   3 = print report
+    #   4 = disable instrument
+    # ACK every accepted verb. Without this a control write that is silently
+    # refused (a permission gate, a parse miss) looks exactly like a working
+    # one from userland, and the A/B measurement runs BOTH arms in the same
+    # configuration and reports "the fix makes no difference". That happened
+    # on this instrument's first run; the ack is what makes it impossible to
+    # repeat, and the gate requires the ack lines to be present.
+    if verb == 0:
+        wakeup_preempt_set_enabled(0)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack wakeup_preempt=0\n")
+        return 1
+    if verb == 1:
+        wakeup_preempt_set_enabled(1)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack wakeup_preempt=1\n")
+        return 1
+    if verb == 2:
+        wklat_enable(1)
+        wakeup_preempt_kicks  = 0
+        wakeup_preempt_tick_n = 0
+        return 1
+    if verb == 3:
+        wklat_report()
+        return 1
+    if verb == 4:
+        wklat_enable(0)
+        wklat_probe_run = 0
+        return 1
+    if verb == 5:
+        if _wklat_probe_start() == 0:
+            return 0
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack probe started\n")
+        return 1
+    return 0
 
 
 # --- realtime policy accessors / mutators ----------------------------
@@ -3253,6 +3728,16 @@ def sched_note_dispatch(slot: uint64):
     # QA-N32b: timestamp this dispatch so _sched_try_pull_locked can apply
     # steal hysteresis (don't yank a just-run task onto another CPU).
     task_table[slot].last_dispatch_jiffy = get_jiffies()
+    # Wakeup preemption: publish who is running here so a wakeup raised on
+    # ANOTHER cpu can compare against it (current_idx_pcpu is Percpu and is
+    # not remotely readable). Also close any wake->dispatch interval.
+    if g_rq_current_init == 0:
+        _rq_current_init()
+    if cid < NR_RQ:
+        g_rq_current[cid] = slot
+        # This dispatch satisfies whatever wakeup asked for a reschedule.
+        g_need_resched[cid] = 0
+    _wklat_account(slot)
 
 
 def sched_cpu_runs(slot: uint64, cpu: uint64) -> uint64:
@@ -5468,6 +5953,26 @@ def preempt_tick(from_user: uint64) -> uint64:
         # further charges this period because _another_task_ready=0
         # implies it has nobody to throttle in favour of. The next
         # period refill clears the over-quota state automatically.
+    # WAKEUP PREEMPTION, tick arm. A wakeup raised need_resched for this cpu
+    # and the quantum has NOT drained. Honour it on a ring-3 tick: this is the
+    # backstop for wakeups raised in NON-interrupt context (one task writing
+    # the wsys pointer file for another, a futex wake, a pipe write), which
+    # never pass through the do_irq return path that gives the IRQ-driven
+    # wakes their sub-millisecond service. Bounds latency for those at one
+    # 100 Hz tick instead of the incumbent's remaining slice (up to 50 ms at
+    # nice 0, 200 ms behind a nice -20 hog).
+    #
+    # We deliberately do the vruntime accrual below FIRST-in-spirit by leaving
+    # the charge in place on the path we take: charging the tick is what keeps
+    # a task that is repeatedly preempted from accumulating free runtime. So
+    # this check sits AFTER the cgroup charge and BEFORE the quantum test, and
+    # falls through to the accrual when it does not fire.
+    wake_kick: uint64 = 0
+    if from_user != 0 and wakeup_preempt_enabled != 0:
+        my_cpu_pt: uint64 = get_cpu_id()
+        if sched_need_resched(my_cpu_pt) != 0:
+            if _another_task_ready() != 0:
+                wake_kick = 1
     cw: uint64 = task_table[cur].sched_weight
     if cw == 0:
         cw = NICE0_WEIGHT
@@ -5501,6 +6006,16 @@ def preempt_tick(from_user: uint64) -> uint64:
     if quantum_left > 0:
         quantum_left = quantum_left - 1
     if quantum_left != 0:
+        # Slice not spent — but a wakeup asked for the cpu. Hand it over and
+        # re-arm a fresh slice for whoever runs next (the preempted task's own
+        # remaining slice is forfeit; it has already been charged for the ticks
+        # it used, so this costs it share only for the fraction of a tick it
+        # would have run anyway).
+        if wake_kick != 0:
+            sched_need_resched_take(get_cpu_id())
+            wakeup_preempt_tick_n = wakeup_preempt_tick_n + 1
+            quantum_left = sched_quantum_for(cur)
+            return 1
         return 0
     # Quantum exhausted. Only act on a ring-3 tick with a runnable peer.
     if from_user == 0:
@@ -9678,6 +10193,12 @@ def _wq_place_woken(slot: uint64):
     # owning CPU re-runs _pick_next on its next tick / reschedule-IPI / steal
     # pass, by which point the fence has cleared.
     tc: uint64 = sched_pick_target_cpu(slot)
+    # Stamp the wake BEFORE the enqueue: the target cpu can dispatch this task
+    # the instant sched_make_ready_on drops the rq lock (or from the IPI it
+    # sends), so a stamp written afterwards could land after the dispatch that
+    # is supposed to consume it and leave a stale stamp attributed to the NEXT
+    # wake. Stamping first can only ever over-report the interval slightly.
+    _wklat_stamp(slot)
     sched_make_ready_on(slot, tc)
 
 

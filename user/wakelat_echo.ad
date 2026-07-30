@@ -1,0 +1,178 @@
+# user/wakelat_echo.ad
+#
+# The "application" half of the wakeup-latency reproducer
+# (scripts/test_wakeup_latency.sh): the stand-in for a DE client blocked on
+# /dev/wsys/<wid>/pointer. It sleeps in a kernel wait queue, is woken by an
+# event, and the thing under test is how long it then waits before it is
+# actually SCHEDULED and can respond.
+#
+# It measures its OWN latency rather than letting the parent time a round
+# trip, and that is load-bearing. A round-trip timer in the parent measures
+# the wrong thing: the parent's read() blocks immediately after its write(),
+# which hands the CPU straight to this task through schedule()'s
+# lowest-vruntime pick — a COOPERATIVE handoff that no CPU hog can interfere
+# with. (Measured: 99.8% of such round trips finish in under 1 ms with four
+# hogs running.) The user's bug is the other shape, the one the mouse has: the
+# waker does NOT yield — it is an interrupt handler, and the CPU goes straight
+# back to the hog it interrupted. So here the parent keeps burning CPU after
+# it posts an event, and this task has to be given the CPU by PREEMPTION.
+#
+# PROTOCOL. fd 0 is the read end of one pipe. Each message is 8 bytes: the
+# monotonic nanosecond timestamp taken by the parent immediately before its
+# write(). On receipt this task reads the clock again; the difference is the
+# post-event service latency and goes into the histogram. A message of 0 is
+# the sentinel: print the histogram and reset. fd 1 is the console (NOT the
+# pipe), so its report lands on the serial log.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_clock_gettime(clockid: int32, tp: Ptr[uint64]) -> int64
+extern def sys_exit(code: uint64)
+
+CLOCK_MONOTONIC: int32 = 1
+
+ts_now: Array[2, uint64]
+
+h_n:    uint64 = 0
+h_sum:  uint64 = 0
+h_max:  uint64 = 0
+h_b1:   uint64 = 0      # <=   1 ms
+h_b5:   uint64 = 0      # <=   5 ms
+h_b12:  uint64 = 0      # <=  12 ms   one 100 Hz tick + slack
+h_b25:  uint64 = 0      # <=  25 ms
+h_b60:  uint64 = 0      # <=  60 ms   a full nice-0 quantum
+h_b120: uint64 = 0      # <= 120 ms
+h_over: uint64 = 0      # > 120 ms
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+numbuf: Array[24, uint8]
+
+
+def write_u64_raw(fd: int32, v: uint64):
+    tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    if x == 0:
+        tmp[0] = cast[uint8](48)
+        n = 1
+    while x > 0:
+        d: uint64 = x % 10
+        tmp[n] = cast[uint8](48 + d)
+        x = x / 10
+        n = n + 1
+    i: uint64 = 0
+    while i < n:
+        numbuf[i] = tmp[n - 1 - i]
+        i = i + 1
+    sys_write(fd, &numbuf[0], n)
+
+
+def kv(name: Ptr[uint8], v: uint64):
+    write_str(1, name)
+    write_u64_raw(1, v)
+
+
+def hist_reset():
+    h_n    = 0
+    h_sum  = 0
+    h_max  = 0
+    h_b1   = 0
+    h_b5   = 0
+    h_b12  = 0
+    h_b25  = 0
+    h_b60  = 0
+    h_b120 = 0
+    h_over = 0
+
+
+def hist_add(us: uint64):
+    h_n = h_n + 1
+    h_sum = h_sum + us
+    if us > h_max:
+        h_max = us
+    if us <= 1000:
+        h_b1 = h_b1 + 1
+    elif us <= 5000:
+        h_b5 = h_b5 + 1
+    elif us <= 12000:
+        h_b12 = h_b12 + 1
+    elif us <= 25000:
+        h_b25 = h_b25 + 1
+    elif us <= 60000:
+        h_b60 = h_b60 + 1
+    elif us <= 120000:
+        h_b120 = h_b120 + 1
+    else:
+        h_over = h_over + 1
+
+
+def hist_report():
+    # ONE line, every field on it: a serial log that truncates mid-report then
+    # loses the whole sample instead of half of it, and a half-parsed report is
+    # how a gate silently measures the wrong quantity.
+    mean: uint64 = 0
+    if h_n > 0:
+        mean = h_sum / h_n
+    write_str(1, "[wakelat] svc")
+    kv(" n=", h_n)
+    kv(" max_us=", h_max)
+    kv(" mean_us=", mean)
+    kv(" le1ms=", h_b1)
+    kv(" le5ms=", h_b5)
+    kv(" le12ms=", h_b12)
+    kv(" le25ms=", h_b25)
+    kv(" le60ms=", h_b60)
+    kv(" le120ms=", h_b120)
+    kv(" over120ms=", h_over)
+    nl: Array[1, uint8]
+    nl[0] = cast[uint8](10)
+    sys_write(1, &nl[0], 1)
+
+
+def read_exact(fd: int32, buf: Ptr[uint8], want: uint64) -> uint64:
+    # A pipe read can return short. Loop so an 8-byte message is never split
+    # across two "events" and mis-timed.
+    got: uint64 = 0
+    while got < want:
+        n: int64 = sys_read(fd, buf + got, want - got)
+        if n <= 0:
+            return got
+        got = got + cast[uint64](n)
+    return got
+
+
+def main() -> int32:
+    msg: Array[8, uint8]
+    while True:
+        if read_exact(0, &msg[0], 8) != 8:
+            # Parent closed the pipe: we are done.
+            sys_exit(0)
+            return 0
+        # Timestamp FIRST — before any other work — so the number is the
+        # scheduler's latency and not this program's parsing cost.
+        ts_now[0] = 0
+        ts_now[1] = 0
+        sys_clock_gettime(CLOCK_MONOTONIC, &ts_now[0])
+        t1: uint64 = ts_now[0] * 1000000000 + ts_now[1]
+        t0: uint64 = 0
+        i: uint64 = 0
+        while i < 8:
+            t0 = t0 | (cast[uint64](msg[i]) << cast[uint64](i * 8))
+            i = i + 1
+        if t0 == 0:
+            hist_report()
+            hist_reset()
+        elif t1 > t0:
+            hist_add((t1 - t0) / 1000)
+    return 0
