@@ -50,35 +50,58 @@ ensure_ubin_or_skip test_cow_vma_fork_origin u_mmap_fork mmap_fork
 ELF=build/hamnix-kernel.elf
 HAMSH_ELF=build/user/hamsh.elf
 
-echo "[cow_vma_origin] (1/4) Build userland"
-bash scripts/build_user.sh
-bash scripts/build_modules.sh
+# HAMNIX_CVO_SKIP_BUILD=1 reuses the already-built image. Only for iterating
+# on the harness during a hunt — the kernel edit under test MUST be in the
+# image, and pass 13 lost a whole measurement to a stale one. The unset
+# default always rebuilds.
+if [ "${HAMNIX_CVO_SKIP_BUILD:-0}" = "1" ] && [ -f "$ELF" ]; then
+    echo "[cow_vma_origin] (1-3/4) SKIPPED (HAMNIX_CVO_SKIP_BUILD=1)"
+    echo "[cow_vma_origin] image age: $(( $(date +%s) - $(stat -c %Y "$ELF") ))s"
+    trap 'rm -f "$LOG"' EXIT
+else
+    echo "[cow_vma_origin] (1/4) Build userland"
+    bash scripts/build_user.sh
+    bash scripts/build_modules.sh
 
-echo "[cow_vma_origin] (2/4) /init = hamsh + embed u_mmap_fork"
-HAMNIX_EMBED_UBIN=1 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
+    echo "[cow_vma_origin] (2/4) /init = hamsh + embed u_mmap_fork"
+    HAMNIX_EMBED_UBIN=1 INIT_ELF="$HAMSH_ELF" python3 scripts/build_initramfs.py
 
-echo "[cow_vma_origin] (3/4) Rebuild kernel"
-python3 -m compiler.adder compile \
-    --target=x86_64-bare-metal \
-    init/main.ad \
-    -o "$ELF"
+    echo "[cow_vma_origin] (3/4) Rebuild kernel"
+    python3 -m compiler.adder compile \
+        --target=x86_64-bare-metal \
+        init/main.ad \
+        -o "$ELF"
+fi
 
 echo "[cow_vma_origin] (4/4) Boot + counted run"
 LOG=$(mktemp)
-trap 'rm -f "$LOG"; INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null' EXIT
+if [ "${HAMNIX_CVO_SKIP_BUILD:-0}" = "1" ]; then
+    trap 'rm -f "$LOG"' EXIT
+else
+    trap 'rm -f "$LOG"; INIT_ELF=build/user/init.elf python3 scripts/build_initramfs.py >/dev/null' EXIT
+fi
 
+# THREE identical workload runs, one origin dump after each.
+#
+# Two dumps would be enough if the first run's cohort were the only one-time
+# population, and it is not: hamsh's own frames take their first reference on
+# the first fork and legitimately never die while hamsh lives. Three runs give
+# TWO inter-run deltas, so a per-run leak (constant positive net) is
+# distinguishable from a one-time resident set (net 0 after the first run)
+# without any appeal to a slope or a mean. The LAST delta is the assertion;
+# the first is printed for contrast.
 set +e
-qemu_drive "$LOG" "$ELF" "[hamsh] M16.35 shell ready" 240 \
+qemu_drive "$LOG" "$ELF" "[hamsh] M16.35 shell ready" 420 \
     -- "echo track full > /proc/meminfo" 3 \
-       "u_mmap_fork" 30 \
-       "echo MARK_BASE > /proc/meminfo" 2 \
-       "echo track origin > /proc/meminfo" 5 \
-       "u_mmap_fork" 30 \
-       "echo MARK_FINAL > /proc/meminfo" 2 \
-       "echo track origin > /proc/meminfo" 5 \
-       "echo track org 23 > /proc/meminfo" 8 \
-       "echo track org 24 > /proc/meminfo" 8 \
-       "echo track org 5 > /proc/meminfo" 8 \
+       "u_mmap_fork" 25 \
+       "echo track origin > /proc/meminfo" 6 \
+       "u_mmap_fork" 25 \
+       "echo track origin > /proc/meminfo" 6 \
+       "u_mmap_fork" 25 \
+       "echo track origin > /proc/meminfo" 6 \
+       "echo track org 23 > /proc/meminfo" 10 \
+       "echo track org 24 > /proc/meminfo" 20 \
+       "echo track org 5 > /proc/meminfo" 20 \
        "exit" 1
 rc="$QEMU_DRIVE_RC"
 set -e
@@ -92,10 +115,10 @@ echo "[cow_vma_origin] --- end ---"
 fail=0
 
 mfp=$(grep -F -c "MF: PASS" "$LOG" || true)
-if [ "$mfp" -ge 2 ]; then
+if [ "$mfp" -ge 3 ]; then
     echo "[cow_vma_origin] OK: u_mmap_fork PASS x$mfp (COW semantics intact)"
 else
-    echo "[cow_vma_origin] MISS: expected 2 u_mmap_fork PASS banners, got $mfp"
+    echo "[cow_vma_origin] MISS: expected 3 u_mmap_fork PASS banners, got $mfp"
     fail=1
 fi
 
@@ -107,13 +130,11 @@ if grep -F -q "[origin] DISARMED" "$LOG" || grep -F -q "[origin] NO TABLE" "$LOG
     fail=1
 fi
 
-# Split the log at the two dumps. Each `track origin` emits one block; take
-# block 1 as the baseline and block 2 as the final.
-awk '/\[origin\] totals|\[origin\] org=/{print}' "$LOG" >/dev/null 2>&1 || true
+# Three `track origin` dumps -> two inter-run deltas. Each dump ends with the
+# "tagged live frames" summary line, which is what delimits the blocks.
 python3 - "$LOG" <<'PY' > /tmp/.cvo_deltas.$$ || fail=1
 import re, sys
 log = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
-# Each dump ends with the "tagged live frames" summary line.
 blocks, cur = [], {}
 for line in log.splitlines():
     m = re.search(r'\[origin\] org=(\d+) born=(\d+) died=(\d+)', line)
@@ -121,51 +142,58 @@ for line in log.splitlines():
         cur[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
     elif 'tagged live frames' in line:
         blocks.append(cur); cur = {}
-if len(blocks) < 2:
-    print("ERR blocks=%d" % len(blocks)); sys.exit(1)
-base, fin = blocks[0], blocks[1]
-for arm in sorted(set(base) | set(fin)):
-    b0, d0 = base.get(arm, (0, 0))
-    b1, d1 = fin.get(arm, (0, 0))
-    print("%d %d %d" % (arm, b1 - b0, d1 - d0))
+if len(blocks) < 3:
+    sys.stderr.write("ERR blocks=%d\n" % len(blocks)); sys.exit(1)
+b1, b2, b3 = blocks[0], blocks[1], blocks[2]
+for arm in sorted(set(b1) | set(b2) | set(b3)):
+    (n1, d1) = b1.get(arm, (0, 0))
+    (n2, d2) = b2.get(arm, (0, 0))
+    (n3, d3) = b3.get(arm, (0, 0))
+    # arm, born/died delta over run 2, then over run 3
+    print("%d %d %d %d %d" % (arm, n2 - n1, d2 - d1, n3 - n2, d3 - d2))
 PY
 if [ "$fail" -ne 0 ] || [ ! -s /tmp/.cvo_deltas.$$ ]; then
-    echo "[cow_vma_origin] FAIL: could not read two origin dumps from the log"
+    echo "[cow_vma_origin] FAIL: could not read three origin dumps from the log"
     rm -f /tmp/.cvo_deltas.$$
     exit 1
 fi
 
-echo "[cow_vma_origin] --- per-arm deltas across the second identical run ---"
-cat /tmp/.cvo_deltas.$$ | while read -r arm db dd; do
-    printf '[cow_vma_origin] arm=%-3s delta_born=%-6s delta_died=%-6s net=%s\n' \
-        "$arm" "$db" "$dd" "$((db - dd))"
-done
+echo "[cow_vma_origin] --- per-arm deltas, run2 and run3 (identical workloads) ---"
+while read -r arm b2 d2 b3 d3; do
+    printf '[cow_vma_origin] arm=%-3s run2 born=%-5s died=%-5s net=%-5s | run3 born=%-5s died=%-5s net=%s\n' \
+        "$arm" "$b2" "$d2" "$((b2 - d2))" "$b3" "$d3" "$((b3 - d3))"
+done < /tmp/.cvo_deltas.$$
 
 # POSITIVE CONTROL for the arms themselves: the second run MUST have
 # exercised the mmap-VMA owner share, or "arm 23 is balanced" is a statement
 # about an empty set — the same blind-instrument failure `track plant` exists
 # to rule out for the census.
-db23=$(awk '$1==23{print $2}' /tmp/.cvo_deltas.$$)
+db23=$(awk '$1==23{print $4}' /tmp/.cvo_deltas.$$)
 if [ -z "${db23:-}" ] || [ "$db23" -eq 0 ]; then
-    echo "[cow_vma_origin] FAIL: arm 23 took no births in the measured window"
+    echo "[cow_vma_origin] FAIL: arm 23 took no births in the final window"
     echo "                 — the workload never reached vma_fork_copy's"
     echo "                 owner-mmap share, so a zero net proves nothing."
     fail=1
 else
-    echo "[cow_vma_origin] control OK: arm 23 delta_born=$db23"
+    echo "[cow_vma_origin] control OK: arm 23 run3 born=$db23"
 fi
 
+# THE ASSERTION, on the LAST inter-run delta only. By run 3 every one-time
+# population is already born, so a non-zero net is a frame this run's share
+# created and this run's teardown did not destroy — per run, counted.
 for arm in 23 24; do
     line=$(awk -v a="$arm" '$1==a{print}' /tmp/.cvo_deltas.$$)
     [ -z "$line" ] && continue
-    db=$(echo "$line" | awk '{print $2}')
-    dd=$(echo "$line" | awk '{print $3}')
-    net=$((db - dd))
+    b3=$(echo "$line" | awk '{print $4}')
+    d3=$(echo "$line" | awk '{print $5}')
+    net=$((b3 - d3))
     if [ "$net" -ne 0 ]; then
-        echo "[cow_vma_origin] UNMATCHED: arm=$arm born=$db died=$dd net=$net"
+        echo "[cow_vma_origin] UNMATCHED: arm=$arm run3 born=$b3 died=$d3 net=$net"
+        echo "                 — vma_fork_copy created $net frame(s) this run"
+        echo "                 that its teardown never destroyed."
         fail=1
     else
-        echo "[cow_vma_origin] closed: arm=$arm born=$db died=$dd net=0"
+        echo "[cow_vma_origin] closed: arm=$arm run3 born=$b3 died=$d3 net=0"
     fi
 done
 rm -f /tmp/.cvo_deltas.$$
