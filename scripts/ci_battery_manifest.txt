@@ -4576,3 +4576,22 @@ bash scripts/test_cow_hamterm_origin.sh
 # reported success and failed at the CALL, and burned a registry slot per
 # redefinition) and the 127-byte `alias` name truncation.
 bash scripts/test_hamsh_percmd_floor_host.sh
+
+# --- the EIGHT non-terminal DE apps, origin-adjudicated (leak pass 18) ----
+# The origin instrument (`track full` / `track origin` / `track org N` /
+# `track census`) pointed at the apps NEITHER existing origin gate launches.
+# Pass 14 named hamtermscene; passes 15-16 retired every COW share under it;
+# pass 17 exonerated hamsh itself and closed with "if a residual slope
+# survives it belongs to something neither gate launches". This launches the
+# other eight, one app at a time, in runs of identical open/close cycles, and
+# adjudicates EACH APP separately: inter-cycle deltas per COW arm plus the
+# owner discriminator, never a soak mean and never absolute born == died.
+# Carries the pass-18 run predicate ([cens3]): every census orphan is asked
+# whether it lies inside a live task's wholesale-return run, which is what
+# settles the intermittent site-20 (execve) residue. Both census controls must
+# be green in the same sweep, and the planted control doubles as the run
+# predicate's OWN positive control (a frame mapped nowhere lies in no run, so
+# a run-check reporting zero unaccounted is over-claiming and is failed).
+# Needs a prebuilt installer image; ~30 min, one QEMU. Exits 125 INCONCLUSIVE
+# without /dev/kvm — it never reports green having asserted nothing.
+bash scripts/ci_run_gate.sh scripts/test_cow_deapps_origin.sh

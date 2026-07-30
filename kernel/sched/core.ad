@@ -36,6 +36,7 @@ from mm.page_alloc import (
     page_alloc_census_mplant_clear, page_alloc_census_mplanted,
     page_alloc_census_mplant_va, page_alloc_census_mplant_slot,
     page_alloc_frame_site, page_alloc_frame_owner, page_alloc_frame_tag,
+    page_alloc_site_is_user_mapped, PA_SITE_MAX,
 )
 from mm.slab import kfree
 from mm.cow import (
@@ -9153,6 +9154,118 @@ def _mm_census_classify(site: uint64):
             cow_refs_added() - cow_refs_dropped())
 
 
+# Span kind of the last _mm_phys_live_run() hit, so the caller can NAME the
+# run rather than just count it: 1 = ELF image, 2 = PT_INTERP, 3 = execve
+# eager user-stack run, 4 = thread ustack page. 0 when there was no hit.
+_mm_run_span: uint64 = 0
+
+
+def _mm_phys_live_run(phys: uint64) -> uint64:
+    # THE SITE-20 PREDICATE (leak pass 18). Does `phys` lie inside a run that
+    # some LIVE task is going to hand back WHOLESALE, by physical base?
+    #
+    # Passes 16 and 17 saw orphan counts of 2, 1, 2 over three runs: the
+    # planted control plus AT MOST ONE further frame, always PA_SITE_EXECVE,
+    # intermittent and never growing. A count alone cannot separate the two
+    # stories that fit that shape, and they have opposite consequences:
+    #
+    #   * a frame inside a live task's `ustack_phys` / `image_phys` run that
+    #     currently has NO user PTE — the eager execve prefix is allocated as
+    #     one contiguous run and only the pages the process has touched are
+    #     mapped, so the census (whose only oracle is a page-table walk)
+    #     honestly reports the untouched tail as unreachable. It is owned,
+    #     it is accounted for, and `free_pages(ustack_phys)` at reap returns
+    #     it. NOT a leak, and no teardown change could or should reach it;
+    #
+    #   * a frame in NO live run at all — nobody will ever return it. A leak,
+    #     whatever its site says.
+    #
+    # This is the same rule `_mm_leaf_unreclaimed` already applies at reap
+    # time, asked of a physical frame instead of a leaf, which is why the two
+    # instruments cannot disagree about what "accounted for" means.
+    #
+    # O(NTASKS) per frame, called only from the `track census` ctl path.
+    _mm_run_span = 0
+    if phys == 0:
+        return 0
+    i: uint64 = 0
+    while i < NTASKS:
+        if task_table[i].state != STATE_FREE:
+            ip: uint64 = task_table[i].image_phys
+            if ip != 0 and phys >= ip and phys < ip + task_table[i].image_phys_sz:
+                _mm_run_span = 1
+                return i + 1
+            np: uint64 = task_table[i].interp_phys
+            if np != 0 and phys >= np \
+                    and phys < np + task_table[i].interp_phys_sz:
+                _mm_run_span = 2
+                return i + 1
+            up: uint64 = task_table[i].ustack_phys
+            if up != 0 and phys >= up \
+                    and phys < up + task_table[i].ustack_phys_sz:
+                _mm_run_span = 3
+                return i + 1
+            ub: uint64 = task_table[i].ustack_base
+            if ub != 0 and phys >= ub and phys < ub + USTACK_SIZE:
+                _mm_run_span = 4
+                return i + 1
+        i = i + 1
+    return 0
+
+
+def _mm_census_runcheck():
+    # Adjudicate EVERY orphan the census just tallied, at every user-mapped
+    # site, against _mm_phys_live_run. Prints, per site, how many orphans lie
+    # inside a live task's wholesale-return run and how many lie in none.
+    #
+    # THE TRUNCATION IS REPORTED, NEVER SWALLOWED. page_alloc_orphan_collect
+    # stops at PA_ORPH_CAP (64); a site with more orphans than that would
+    # otherwise get a run-check over a PREFIX and print a reassuring number
+    # about a population it never saw — the exact false-green shape passes 16
+    # and 17 each caught once already. When the collected count is short of
+    # the tallied count the site is declared TRUNCATED and the gate must treat
+    # it as inconclusive rather than as clean.
+    i: uint64 = 0
+    while i < PA_SITE_MAX:
+        tally: uint64 = page_alloc_census_orphans(i)
+        if page_alloc_site_is_user_mapped(i) != 0 and tally != 0:
+            n: uint64 = page_alloc_orphan_collect(i)
+            inrun: uint64 = 0
+            unacc: uint64 = 0
+            k: uint64 = 0
+            while k < n:
+                ph: uint64 = page_alloc_orphan_phys(k)
+                sl: uint64 = _mm_phys_live_run(ph)
+                sp: uint64 = _mm_run_span
+                if sl != 0:
+                    inrun = inrun + 1
+                else:
+                    unacc = unacc + 1
+                if k < 16:
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk3("[cens3] site %d orphan[%d] phys=%p\n", i, k, ph)
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk3("[cens3] site %d orphan[%d] inrun-slot=%d\n",
+                            i, k, sl)
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk3("[cens3] site %d orphan[%d] run-span=%d"
+                            " (1=img 2=interp 3=execve-ustack 4=thread-ustack)\n",
+                            i, k, sp)
+                k = k + 1
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[cens3] site %d: %d orphan(s) collected, %d inside a"
+                    " live task's wholesale run\n", i, n, inrun)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[cens3] site %d: %d UNACCOUNTED (in no live run)\n",
+                    i, unacc)
+            if n < tally:
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk3("[cens3] site %d: TRUNCATED — tallied %d, collected"
+                        " only %d; this run-check covers a PREFIX and is"
+                        " INCONCLUSIVE for this site\n", i, tally, n)
+        i = i + 1
+
+
 # Scratch VA for the census's NEGATIVE control mapping. 11 GiB: far above
 # every span the loader installs (image at 0x400000, the 7 GiB user stack
 # window at 0x1C0000000, brk below both), and far above RAM top on every
@@ -9427,6 +9540,13 @@ def mm_orphan_census() -> uint64:
     if total != 0:
         _mm_census_dump_spans()
         _mm_census_classify(PA_SITE_COW_RESOLVE)
+        # PASS-18 PREDICATE. Every orphan at every user-mapped site, asked
+        # whether it lies inside a live task's wholesale-return run. This is
+        # what settles the intermittent site-20 (execve) residue that passes
+        # 16 and 17 could only count. Costs O(frames) per site that HAS an
+        # orphan, on a census that already walks every page table, and runs
+        # only when the tally is non-zero.
+        _mm_census_runcheck()
     return total
 
 
