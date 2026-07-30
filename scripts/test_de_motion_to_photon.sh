@@ -142,6 +142,19 @@
 # APPLICATION responsiveness (menus, drags, carets -- anything a client
 # redraws), but it is not the reported pointer symptom.
 #
+# REPRODUCED on a second, independent boot (the M2P_MAX_US=5000 mutation run):
+# LOADED n=344 ingest=344 total_max=9183 us mean=3378 us deliver_max=8779 us
+# render_max=741 us. Same shape, same magnitude, same attribution. This is a
+# stable property of the build, not one boot's weather.
+#
+# MUTATION-TESTED, both halves:
+#   * removing the m2p_note_photon() call from _wsys_present_cursor_locked
+#     turns the STRUCTURAL check red (it does not silently measure nothing);
+#   * M2P_MAX_US=5000, i.e. a ceiling under the measured 9.2-9.6 ms, turns the
+#     NUMERIC assertion red and correctly names `deliver` as the half holding
+#     the time. The bound is live, and it is parsed from the guest's own
+#     report rather than from anything the harness assumed.
+#
 # VERDICTS
 #   PASS          measured, under the ceiling
 #   FAIL          measured, over the ceiling
