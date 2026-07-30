@@ -313,6 +313,28 @@ def spawn_hogs() -> uint64:
     return started
 
 
+def spawn_hogs_hi() -> uint64:
+    # Same load, but at nice -20. sched_quantum_for() scales the timeslice by
+    # weight, so a nice -20 incumbent holds the cpu for SCHED_QUANTUM_MAX = 20
+    # ticks = 200 ms rather than 5 ticks = 50 ms. If wake latency is bounded by
+    # the incumbent's remaining slice, THIS is where it shows: a 4x-longer
+    # slice must produce a 4x-longer tail. If it does not, the slice is not
+    # what bounds it. /bin/nice_hi renices itself through /proc/self/ctl and
+    # burns a 600-jiffy window (user/nice_hi.ad).
+    hi_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/nice_hi")
+    hog_argv[0] = cast[uint64](hi_path)
+    hog_argv[1] = 0
+    started: uint64 = 0
+    i: uint64 = 0
+    while i < NHOGS:
+        c: int32 = spawn_detached(cast[Ptr[char]](hi_path), &hog_argv[0],
+                                  -1, -1, cast[Ptr[uint64]](0))
+        if c >= 0:
+            started = started + 1
+        i = i + 1
+    return started
+
+
 def handoff_round_trip() -> uint64:
     # ARM "handoff": the classic ping-pong. Returns the round-trip in us.
     b: Array[1, uint8]
@@ -380,7 +402,7 @@ def run_preempt_arm(label: Ptr[uint8], preempt_on: int32) -> uint64:
     return sent
 
 
-def run_irq_arm(label: Ptr[uint8], preempt_on: int32):
+def run_irq_arm(label: Ptr[uint8], preempt_on: int32, hi_nice: int32):
     # THE ARM THAT CARRIES THE BUG. The waker here is not a task at all: the
     # kernel probe (`wklat 5`) parks a thread on a wait queue with a one-tick
     # timeout, so every one of its wakes is raised by the hrtimer expiry
@@ -398,7 +420,11 @@ def run_irq_arm(label: Ptr[uint8], preempt_on: int32):
     else:
         ctl("wklat 0\n")
     ctl("wklat 5\n")                        # idempotent probe start
-    nh: uint64 = spawn_hogs()
+    nh: uint64 = 0
+    if hi_nice != 0:
+        nh = spawn_hogs_hi()
+    else:
+        nh = spawn_hogs()
     write_str(1, "[wakelat] arm=")
     write_str(1, label)
     kv(" hogs=", nh)
@@ -473,8 +499,13 @@ def main() -> int32:
     # wait-queue sleeper while syscall-free hogs hold the cpu. This is the
     # mouse's actual shape and the only arm where wakeup preemption can make
     # a difference.
-    run_irq_arm("irqoff", 0)
-    run_irq_arm("irqon", 1)
+    run_irq_arm("irqoff", 0, 0)
+    run_irq_arm("irqon", 1, 0)
+    # And again with nice -20 hogs, i.e. a 200 ms incumbent slice instead of
+    # 50 ms — the configuration where a slice-bounded wakeup latency would be
+    # unmistakable.
+    run_irq_arm("irqhioff", 0, 1)
+    run_irq_arm("irqhion", 1, 1)
 
     # Leave the system in the SHIPPED configuration and disarm the
     # instrument: nothing this test did may outlive it.
