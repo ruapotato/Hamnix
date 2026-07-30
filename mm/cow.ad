@@ -248,10 +248,13 @@ _cow_arm_drop:  Array[24, uint64]
 # instead of a difference keeps that visible rather than papering over it.
 #
 # COST. The tallies are gated with the rest of the ledger. The TABLE itself is
-# one byte per frame allocated once from memblock in cow_init — measured on
-# this host at boot: see the "[cow] origin table:" line, 1 byte per 4 KiB frame
-# = 0.024% of RAM (512 KiB on a 2 GiB machine), alongside the refcount table's
-# existing 2 bytes per frame. It is allocated unconditionally because memblock
+# one byte per frame allocated once from memblock in cow_init. MEASURED, not
+# asserted — the soak's own boot log prints it:
+#
+#     [cow] origin table: 261632 bytes (1/frame)      (qemu -m 1G)
+#
+# 1 byte per 4 KiB frame is 0.0244% of RAM, half what the refcount table beside
+# it already costs. It is allocated unconditionally because memblock
 # is closed by the time any ctl write could arm the ledger; nothing WRITES it
 # while disarmed, so the runtime cost stays exactly zero. _build_meminfo is
 # untouched.
