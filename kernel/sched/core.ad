@@ -9749,6 +9749,7 @@ def _wq_place_woken(slot: uint64):
     # owning CPU re-runs _pick_next on its next tick / reschedule-IPI / steal
     # pass, by which point the fence has cleared.
     tc: uint64 = sched_pick_target_cpu(slot)
+    task_table[slot].vruntime = sched_fork_vruntime(slot)   # MUTATION
     # Stamp the wake BEFORE the enqueue: the target cpu can dispatch this task
     # the instant sched_make_ready_on drops the rq lock (or from the IPI it
     # sends), so a stamp written afterwards could land after the dispatch that

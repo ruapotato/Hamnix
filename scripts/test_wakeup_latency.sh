@@ -264,24 +264,30 @@ fi
 
 fail=0
 prev_probe=0
+thin=0
+# ORDER MATTERS HERE. The latency assertions are evaluated BEFORE the
+# sample-count guard, and that ordering was bought with a mutation test: a
+# deliberate regression (re-placing woken tasks at the runqueue floor instead
+# of letting them keep their stale-low vruntime) degraded wake->dispatch so
+# badly -- max 890 ms, mean 22 ms -- that the probe could no longer keep its
+# 100 Hz cadence, and the ORIGINAL order reported INCONCLUSIVE. A regression
+# severe enough to starve the instrument must report FAIL, not "I could not
+# tell": a thin sample is only ambiguous when the samples that WERE collected
+# look healthy.
 while read -r blk; do
     [ -z "$blk" ] && continue
     eval "$(echo "$blk" | tr ' ' '\n' | sed 's/^/L_/')"
-    if [ "${L_n:-0}" -lt "$WAKELAT_MIN_SAMPLES" ]; then
-        verdict_inconclusive "$VTAG" \
-            "irq arm collected only ${L_n:-0} samples (need $WAKELAT_MIN_SAMPLES) — window too short or probe stalled"
-        rm -f "$LOG.parsed"
-        exit 125
-    fi
+    n="${L_n:-0}"
+    [ "$n" -lt 1 ] && n=1
     # THE BOUND. The quantity the user perceives on the application half of
-    # the pointer path, under four processes at 100% CPU. Two assertions:
-    # the BULK of the distribution must be sub-millisecond (this is what
-    # degrades first and by far the most sensitive of the two), and no single
-    # sample may exceed a tick's worth of slack (this catches a genuine
-    # blowout, e.g. a wake that started waiting on a scheduling quantum).
-    irq_pct=$(( ${L_le1ms:-0} * 100 / ${L_n:-1} ))
+    # the pointer path, under four processes at 100% CPU. Two assertions: the
+    # BULK of the distribution must be sub-millisecond (by far the more
+    # sensitive of the two), and no single sample may exceed one tick plus
+    # slack (which catches a genuine blowout, e.g. a wake that started waiting
+    # on a scheduling quantum).
+    irq_pct=$(( ${L_le1ms:-0} * 100 / n ))
     if [ "$irq_pct" -lt "$WAKELAT_IRQ_PCT" ]; then
-        echo "$TAG FAIL: only ${irq_pct}% of interrupt-context wakes dispatched within 1 ms (need ${WAKELAT_IRQ_PCT}%, preempt=${L_preempt}, n=${L_n}, mean=${L_mean_us}us)" >&2
+        echo "$TAG FAIL: only ${irq_pct}% of interrupt-context wakes dispatched within 1 ms (need ${WAKELAT_IRQ_PCT}%, preempt=${L_preempt}, n=${L_n}, mean=${L_mean_us}us, max=${L_max_us}us)" >&2
         fail=1
     elif [ "${L_max_us:-999999}" -gt "$WAKELAT_IRQ_MAX_US" ]; then
         echo "$TAG FAIL: irq-arm wake->dispatch max ${L_max_us}us > ${WAKELAT_IRQ_MAX_US}us (preempt=${L_preempt})" >&2
@@ -289,16 +295,27 @@ while read -r blk; do
     else
         echo "$TAG irq arm preempt=${L_preempt}: n=${L_n} ${irq_pct}% <1ms max=${L_max_us}us mean=${L_mean_us}us"
     fi
-    # The probe must have kept its 100 Hz cadence: a starved probe would make
-    # the histogram look great by simply not sampling the bad moments. Roughly
-    # one iteration per tick over a ~4.5 s window.
+    # The probe must have kept its ~100 Hz cadence. A starved probe would make
+    # the histogram look good by simply not sampling the bad moments, so this
+    # is a FAIL in its own right, not a caveat.
     step=$(( ${L_probe:-0} - prev_probe ))
     if [ "$step" -lt 200 ]; then
-        echo "$TAG FAIL: probe advanced only $step iterations in the window — the interrupt-context waker was starved, so the histogram is not evidence" >&2
+        echo "$TAG FAIL: the interrupt-context waker advanced only $step iterations in a ~4.5 s window (expect ~450 at 100 Hz) — it was starved, so this histogram is not evidence" >&2
         fail=1
     fi
     prev_probe="${L_probe:-0}"
+    # Thin sample with otherwise healthy numbers: not enough to assert on.
+    if [ "${L_n:-0}" -lt "$WAKELAT_MIN_SAMPLES" ]; then
+        thin=1
+    fi
 done <<< "$irq_blocks"
+
+if [ "$fail" -eq 0 ] && [ "$thin" -ne 0 ]; then
+    verdict_inconclusive "$VTAG" \
+        "an irq arm collected fewer than $WAKELAT_MIN_SAMPLES samples while looking healthy — window too short or the boot was starved by host load"
+    rm -f "$LOG.parsed"
+    exit 125
+fi
 
 # --- the "preempt" arm (ring-0 waker that keeps the cpu): tick-bounded.
 svc_lines=$(grep -aoE '\[wakelat\] svc n=[0-9]+ max_us=[0-9]+ mean_us=[0-9]+' "$LOG" \
