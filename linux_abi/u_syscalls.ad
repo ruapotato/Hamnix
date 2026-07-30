@@ -1692,12 +1692,35 @@ def _u_vfs_read_user(fd: int32, ubuf: uint64, count: uint64) -> int64:
     return _u_copyout_rc(ubuf, &rkb[0], n)
 
 
+def _u_write_err_reports_progress(e: int64) -> int32:
+    # #464: see arch/x86/kernel/syscall.ad::_write_err_reports_progress.
+    # Only errnos the caller can re-learn on a subsequent write(2) may
+    # hide behind a positive short count.
+    if e == -11:                             # -EAGAIN / -EWOULDBLOCK
+        return 1
+    if e == -4:                              # -EINTR
+        return 1
+    if e == -32:                             # -EPIPE
+        return 1
+    return 0
+
+
 def _u_vfs_write_user(fd: int32, ubuf: uint64, count: uint64) -> int64:
     # write(2) tail: chunked copy_from_user + vfs_write loop so a
     # >4 KiB write still transfers in full. A short vfs_write (pipe
     # back-pressure) stops the loop and returns the partial count —
     # standard write(2) semantics. A first-chunk errno (incl. EPIPE,
     # which the call sites watch for SIGPIPE) propagates verbatim.
+    #
+    # #464: an errno from a LATER chunk used to be swallowed in favour
+    # of the positive count accumulated so far, which made every hard
+    # sink failure on a >4 KiB write look like a legal short write. That
+    # is only correct for conditions the caller can re-learn on a
+    # subsequent write (-EAGAIN/-EWOULDBLOCK, -EINTR, -EPIPE); a hard
+    # failure (-EIO, -ENOSPC, ...) has no "next write" to resurface on,
+    # and for a staging sink the already-counted bytes are not durable.
+    # Hard errnos therefore propagate. Mirrors
+    # arch/x86/kernel/syscall.ad::_sysarm_write.
     total: uint64 = 0
     left: uint64 = count
     u: uint64 = ubuf
@@ -1712,9 +1735,9 @@ def _u_vfs_write_user(fd: int32, ubuf: uint64, count: uint64) -> int64:
             return cast[int64](total)
         wn: int64 = vfs_write(fd, cast[Ptr[uint8]](&wkb[0]), chunk)
         if wn < 0:
-            if total == 0:
-                return wn
-            return cast[int64](total)
+            if total > 0 and _u_write_err_reports_progress(wn) != 0:
+                return cast[int64](total)
+            return wn
         total = total + cast[uint64](wn)
         if cast[uint64](wn) < chunk:
             return cast[int64](total)

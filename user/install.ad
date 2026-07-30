@@ -687,7 +687,7 @@ def write_hamnix_roots(p2: Ptr[uint8]) -> int32:
 
     wn: int64 = sys_write(fd, &sentinel_wire_buf[0], pos)
     sys_close(fd)
-    if wn < 0:
+    if wn < 0 or cast[uint64](wn) != pos:                 # #464: short == loss
         write_str(2, "[install] FAIL: sentinel install_file write rejected\n")
         return -1
     return 0
@@ -770,7 +770,7 @@ def install_distro_tree(p2: Ptr[uint8]) -> int32:
         if _bind_distro() < 0:
             write_str(2, "[install] WARN: re-bind of #distro failed after "
                          "live_distro_up\n")
-            return -1
+            return -2
     rc: int32 = run_tool4(
         cast[Ptr[uint8]]("install_rootfs_from_manifest"), p2,
         cast[Ptr[uint8]]("/etc/install/distro.manifest"),
@@ -778,7 +778,7 @@ def install_distro_tree(p2: Ptr[uint8]) -> int32:
     if rc != 0:
         write_str(2, "[install] WARN: distro manifest install returned "
                      "non-zero\n")
-        return -1
+        return -2
     write_str(1, "[install] (6/7) Linux namespace installed "
                  "(enter linux { sh } will resolve)\n")
     return 0
@@ -833,7 +833,7 @@ def install_package_repo(p2: Ptr[uint8]) -> int32:
     if rc != 0:
         write_str(2, "[install] WARN: package-repo manifest install returned "
                      "non-zero\n")
-        return -1
+        return -2
     write_str(1, "[install] (6/7) package repo mirrored "
                  "(hpm install hamnix-hamaudiobook will resolve offline)\n")
     return 0
@@ -872,7 +872,7 @@ def install_home_skeleton(p2: Ptr[uint8]) -> int32:
     if rc != 0:
         write_str(2, "[install] WARN: home skeleton install returned "
                      "non-zero\n")
-        return -1
+        return -2
     return 0
 
 
@@ -995,15 +995,28 @@ def prov_install_file(p2: Ptr[uint8], relpath: Ptr[uint8],
     pos = pos + render_u64(body_len, &prov_wire[pos])
     prov_wire[pos] = 10                                   # '\n'
     pos = pos + 1
+    # #464: the body loop used to stop at `pos < 4096` — it TRUNCATED the
+    # body to fit prov_wire while the header still declared the full
+    # `body_len`. The kernel then sat waiting for the missing tail, so
+    # the file was silently short AND the next install_file frame was
+    # eaten as body bytes (a desync that corrupted the following file
+    # too). There is no correct truncation here: refuse the write.
+    if pos + body_len > 4096:
+        write_str(2, "[install] FAIL: install_file body too large for the "
+                     "wire buffer: ")
+        write_str(2, relpath)
+        write_str(2, "\n")
+        sys_close(fd)
+        return -1
     bi: uint64 = 0
-    while bi < body_len and pos < 4096:
+    while bi < body_len:
         prov_wire[pos] = body[bi]
         pos = pos + 1
         bi = bi + 1
 
     wn: int64 = sys_write(fd, &prov_wire[0], pos)
     sys_close(fd)
-    if wn < 0:
+    if wn < 0 or cast[uint64](wn) != pos:
         write_str(2, "[install] FAIL: install_file write rejected for ")
         write_str(2, relpath)
         write_str(2, "\n")
@@ -1121,7 +1134,7 @@ def prov_chown(p2: Ptr[uint8], relpath: Ptr[uint8]) -> int32:
     pos = pos + 1
     wn: int64 = sys_write(fd, &prov_chown_cmd[0], pos)
     sys_close(fd)
-    if wn < 0:
+    if wn < 0 or cast[uint64](wn) != pos:                 # #464: short == loss
         return -1
     return 0
 
@@ -1385,18 +1398,31 @@ def do_install(esp_mb: uint64) -> int32:
 
     # 6/7: lay the Linux-namespace tree down under distro/ so the
     # installed system's `enter linux { ... }` has a real Debian root.
-    # Best-effort — see install_distro_tree.
-    install_distro_tree(&target_p2[0])
+    # Best-effort — see install_distro_tree. #464: "best-effort" used to
+    # mean the return code was DISCARDED and the installer then printed
+    # "install complete" over a tree that was never written. Each step
+    # now records a degraded flag; the banner below reports it.
+    #
+    # Two failure grades, deliberately: -1 == "this medium does not carry
+    # the source at all" (a plain dev cpio with no #distro / no
+    # packages.manifest) which stays a warning, and -2 == "the source was
+    # there and the install of it FAILED", which is the data-loss case
+    # and is what sets the degraded flag.
+    install_degraded: int32 = 0
+    if install_distro_tree(&target_p2[0]) == -2:
+        install_degraded = install_degraded + 1
 
     # 6/7: mirror the medium's package repo onto the target + point the
     # installed /etc/hpm/repo at it, so `hpm search` / the Software app
     # offer the repo-only apps offline. Best-effort — see
     # install_package_repo.
-    install_package_repo(&target_p2[0])
+    if install_package_repo(&target_p2[0]) == -2:
+        install_degraded = install_degraded + 2
 
     # 6/7: populate the install user's home from /etc/skel (the desktop
     # launcher set lives in ~/Desktop). Best-effort.
-    install_home_skeleton(&target_p2[0])
+    if install_home_skeleton(&target_p2[0]) == -2:
+        install_degraded = install_degraded + 4
 
     # 7/7: plant the `.hamnix-roots` sentinel so the kernel binds the
     # installed root at `/` and ELF-loads `/init` off ext4 on next boot.
@@ -1411,6 +1437,29 @@ def do_install(esp_mb: uint64) -> int32:
     if write_hamnix_roots(&target_p2[0]) != 0:
         write_str(2, "[install] FAIL: could not plant .hamnix-roots sentinel\n")
         return 1
+
+    if install_degraded != 0:
+        # #464: NEVER print "install complete" over a partial install.
+        write_str(2, "[install] ============================================\n")
+        write_str(2, "[install] INSTALL INCOMPLETE on ")
+        write_str(2, &target_disk[0])
+        write_str(2, "\n")
+        if (install_degraded & 1) != 0:
+            write_str(2, "[install]   - Linux namespace tree (#distro) was "
+                         "NOT fully installed: `enter linux { sh }` will "
+                         "not work on the installed system\n")
+        if (install_degraded & 2) != 0:
+            write_str(2, "[install]   - local package repo was NOT fully "
+                         "mirrored: hpm/Software will find no offline "
+                         "packages\n")
+        if (install_degraded & 4) != 0:
+            write_str(2, "[install]   - home skeleton was NOT fully "
+                         "installed: the desktop icon set will be "
+                         "missing\n")
+        write_str(2, "[install] The base system IS on disk and will boot, "
+                     "but the install is not complete.\n")
+        write_str(2, "[install] ============================================\n")
+        return 2
 
     write_str(1, "[install] ============================================\n")
     write_str(1, "[install] install complete on ")

@@ -4424,3 +4424,16 @@ bash scripts/ci_run_gate.sh scripts/test_syscall_irqoff.sh
 # shrugs when an SSA-subset bail or a zero-program run costs it its coverage:
 # a lane that emits nothing is UNKNOWN, not green.
 bash scripts/test_llvm_lane_diff.sh
+# #464 SILENT SHORT-WRITE DATA LOSS on the installer. write(2) chunks
+# internally; an errno from any chunk after the first used to be discarded in
+# favour of the positive byte count already accumulated, so a kernel -EIO
+# reached userland as a success-looking short count. Every ctl consumer
+# (install_rootfs_from_manifest, hpm, install.ad) tested only `wn < 0`, so the
+# installer counted files it never wrote and printed "install complete". This
+# gate drives the REAL install_rootfs_from_manifest against a manifest row that
+# cannot land (its parent path component is a regular file), over a 64-chunk
+# write(2) — the only shape in which the errno arrives after earlier chunks
+# were accounted — and asserts the failure is REPORTED, not counted as an
+# install, and exits nonzero. INCONCLUSIVE (125), never a soft green, when the
+# multi-chunk condition was not actually reached. ~7 min, one QEMU.
+bash scripts/ci_run_gate.sh scripts/test_install_short_write.sh

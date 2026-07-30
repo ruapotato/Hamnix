@@ -2328,6 +2328,46 @@ if os.environ.get("ENABLE_EXT4_LARGEDIR_TEST") == "1":
 if os.environ.get("ENABLE_EXT4_DIRGROW_TEST") == "1":
     FILES.append(("/etc/ext4-dirgrow-test", b"1\n"))
 
+# #464 SHORT-WRITE / silent-data-loss fixture. scripts/test_install_short_-
+# write.sh sets ENABLE_SHORTWRITE_TEST=1 to plant a manifest whose SECOND
+# row is guaranteed to fail INSIDE the kernel, on the LAST chunk of a
+# multi-chunk write(2).
+#
+# The shape matters, so spelling it out:
+#
+#   row 1  swblocker <- a tiny body.  Installs fine, as a regular FILE.
+#   row 2  swblocker/victim <- SW_SRC_BYTES of body. `swblocker` is a
+#          FILE, not a directory, so ext4's mkdir -p walker refuses the
+#          parent ("[ext4_mkdir_p] component is not a dir") and
+#          ext4_install_file_to_slot returns -1, which devblk reports as
+#          -EIO.
+#
+# The MULTI-CHUNK shape is what matters, and it is arranged by the
+# /etc/write-smallbounce-test marker planted alongside: it makes
+# _sysarm_write skip its heap bounce and deliver every write(2) in 4 KiB
+# chunks — the production shape whenever the 4 MiB kmalloc fails.
+#
+# SW_SRC_BYTES is then only required to exceed one 4 KiB chunk, so it is
+# kept SMALL (256 KiB). That is deliberate: at 4 MiB the sink's own
+# staging kmalloc fails first (-ENOMEM on chunk 1, which even the unfixed
+# code propagated correctly) and the run proves nothing — measured, not
+# assumed. At 256 KiB the ctl frame spans 64 chunks, chunk 1..63 stage the
+# body and report themselves fully consumed, and the -EIO only appears on
+# chunk 64, with wr_total already at 258048. That is precisely the
+# condition under which write(2) used to discard the errno and return the
+# positive count, turning total data loss into "install: swblocker/victim
+# (262144 bytes)" and exit 0.
+if os.environ.get("ENABLE_SHORTWRITE_TEST") == "1":
+    SW_SRC_BYTES = 256 * 1024
+    FILES.append(("/etc/write-smallbounce-test", b"1\n"))
+    FILES.append(("/etc/shortwrite/blocker.bin", b"sw-blocker\n"))
+    FILES.append(("/etc/shortwrite/victim.bin",
+                  (b"HAMNIX-SHORTWRITE-VICTIM-PAYLOAD" * 8192)[:SW_SRC_BYTES]))
+    FILES.append(("/etc/shortwrite/sw.manifest",
+                  b"# #464 short-write fixture (see build_initramfs.py)\n"
+                  b"swblocker /etc/shortwrite/blocker.bin\n"
+                  b"swblocker/victim /etc/shortwrite/victim.bin\n"))
+
 # ext4 extent-FREE / no-leak self-test. scripts/test_ext4_extent_free.sh
 # sets ENABLE_EXT4EXTFREE_TEST=1 to plant /etc/ext4extfree-test.
 # init/main.ad detects the marker after the ext4 mount and calls
