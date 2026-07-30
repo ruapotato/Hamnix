@@ -1,6 +1,14 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch) + A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ) + A10 REAL COMPILED EL0 USER PROGRAM (loads and runs Adder-compiled userland, not hand-written asm)**
+Status: **A1..A9 DONE + A10 RUNS A REAL COMPILED EL0 PROGRAM + A11 EMBEDDED IMAGE ARCHIVE LOADED BY NAME + REAL read(2) ON THE PL011**
+
+USER ruling 2026-07-30: **ARM64 ships on the LLVM path only.** The hand-written
+AArch64 seed backend (`adder/compiler/codegen_arm64.py`) is NOT being extended;
+it stays as a live regression fixture. x86_64 keeps its hand-written backend.
+
+Previous status line, kept for the phase history:
+
+> Status: **A1 DONE + A2 DONE + A3 boots + A4 runs real kernel init + A5 past mem_init + A6 first scheduler tick + A7 RUNS USERSPACE (EL0 + svc dispatch) + A8 REAL USERLAND FOUNDATION (EL0-RW fine map + real syscall dispatch) + A9 PREEMPTIVE EL0 SCHEDULING (two EL0 tasks time-sliced by the timer IRQ) + A10 REAL COMPILED EL0 USER PROGRAM (loads and runs Adder-compiled userland, not hand-written asm)**
 (whole-kernel
 `.ll` compiles CLEAN, LINKS to a bootable aarch64 ELF with **0 undefined
 symbols**, BOOTS on `qemu-system-aarch64 -M virt` with PL011 early console +
@@ -11,6 +19,163 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-30) — A11 EMBEDDED IMAGE ARCHIVE, LOADED BY NAME + A REAL `read(2)`
+
+**A11 — the aarch64 LLVM kernel carries SEVERAL compiled EL0 images in one
+embedded archive, loads them BY NAME, and services a REAL `read(2)` off the
+PL011: DONE.** Gate `scripts/test_arm64_a11_archive.sh` (new, registered):
+**PASS**, ~145 s.
+
+Also settled by the USER on this date, and it scopes everything below: **ARM64
+ships on the LLVM path only.** `adder/compiler/codegen_arm64.py` (the
+hand-written AArch64 seed backend) is not being extended; it stays as a live
+regression *fixture*, which is exactly why `scripts/test_arm64_phase49.sh` is
+now registered (see "Gate coverage" below).
+
+### What was structurally missing at A10
+
+Two things, and they are the two a shell cannot do without:
+
+1. **One image.** A10 `.incbin`'d exactly ONE blob, so "load the user program"
+   and "load THE blob" were the same operation. Nothing in the lane could tell a
+   by-name loader from a loader that ignores the name.
+2. **No input.** `read(2)` returned 0 unconditionally, so every EL0 program on
+   this lane was a banner printer.
+
+### 1) The archive
+
+`scripts/pack_arm64_user_archive.py` packs several flat images into one blob —
+magic + count + fixed-width 16-byte name table + 16-byte-aligned payloads —
+rebuilt on every kernel build (steps 3a/3a2) and `.incbin`'d by `user_blob.S`.
+`init/main.ad`'s `arm64_a11_load_named_arm64(base, size, name)` walks the table
+and copies the NAMED member into the EL0 window; an absent name **MISSES** and
+returns 0. The name field is fixed-width on purpose: the walk is then a bounded
+byte compare with no pointer chasing, which keeps the loader itself inside the
+LLVM SSA subset (a bail *there* would mean no loader at all).
+
+`arm64_a10_load_arm64` is now a thin wrapper that asks for the member named
+`a10`, so the lane has ONE image-load implementation instead of two that can
+drift, and A10's serial contract is unchanged (its gate still passes).
+
+Three members today, all ordinary Adder through the same backend:
+
+| name   | source                   | what it proves |
+|--------|--------------------------|----------------|
+| `a10`  | `user/arm64_a10_el0.ad`  | the A10 rung, unchanged |
+| `sum`  | `user/arm64_a11_sum.ad`  | a DIFFERENT image is selected by name |
+| `echo` | `user/arm64_a11_echo.ad` | `read(2)` moved real bytes |
+
+`head.S` asks for **`sum` first even though `a10` is member 0**, so a loader
+that ignored the name would run A10 again and be caught.
+
+### 2) The `read(2)` — the receive half of the A4 trick
+
+The kernel's own blocking stdin primitive is `early_8250.ad`'s
+`early_getc_polled()`: spin on LSR.DR, read RBR. Both are `inb`s, so
+`arch/arm64/llvm/intrinsics.S` now routes `inb(0x3FD)` to the PL011 Flag
+Register's `RXFE` bit and `inb(0x3F8)` to the PL011 Data Register. The lane gets
+a real read with **zero change to the shared kernel serial driver** — precisely
+what `outb`→PL011 DR did for `printk` in A4. The dispatcher arm reads
+line-oriented with a **bounded** wait: unbounded spinning turns "nobody typed"
+into a hung boot that reports a timeout instead of a verdict.
+
+### Verified furthest-point PL011 serial (a known line piped to stdin)
+
+```
+[000142] A11: loaded EL0 image by name 'a10' (1752 bytes, byte-sum 167720) -> 0x48010000
+[000154] A10 PASS: real Adder-compiled EL0 program ran; exit status 17 == expected 17
+A11: embedded EL0 image ARCHIVE, loaded BY NAME (+ real read on the PL011)
+[000155] A11: loaded EL0 image by name 'sum' (1224 bytes, byte-sum 127230) -> 0x48010000
+A11: S=179190
+[000160] A11: program 'sum' exited, status=246
+[000161] A11: loaded EL0 image by name 'echo' (1200 bytes, byte-sum 121877) -> 0x48010000
+A11: R=HAMNIX-A11 N=10 C=859903
+[000168] A11: program 'echo' exited, status=255
+[000169] A11: load-by-name MISS for 'nosuchprog' (no such member)
+A11: archive stage complete, returned to kernel
+```
+
+x86-64 native runs of the SAME two `.ad` files print byte-identical `S=`/`R=`
+lines and exit 246 / 255. 0 exceptions hit the diagnostic vector; A8/A9/A10 all
+still pass ahead of it.
+
+### The gate does not trust anything the kernel says about itself
+
+`scripts/test_arm64_a11_archive.sh` recomputes both oracles every run (same
+sources, x86-64, run natively, echo fed the SAME line), **randomises the piped
+line per run** so no canned answer can track it, parses the archive
+INDEPENDENTLY of the kernel, and requires the absent-name MISS. Mutation-proven
+three ways: skip the name compare → FAIL; restore the pre-A11 `read -> 0` stub →
+FAIL; hide `qemu-system-aarch64` → 125 INCONCLUSIVE.
+
+### HONEST SCOPE — what A11 is NOT
+
+Every member links at the SAME VA (`user.lds`) and they run **one at a time**.
+This is "several programs, selectable by name", **not** several concurrently
+resident address spaces — that still needs the per-task TTBR0 + demand-paging
+work in the A9/A10 plans. There is also no filesystem: the archive is embedded,
+not on disk.
+
+### Gate coverage (2026-07-30) — the lane is no longer dark
+
+51 of 53 `test_arm64_*.sh` were unregistered, which is *why* an x86 SSA change
+could break the ARM64 link and ship. Now registered, with measured runtimes:
+
+| gate | cost | what it is |
+|------|------|-----------|
+| `test_arm64_usermode.sh` | ~12 s, qemu-user | same program emitted x86 + aarch64, both EXECUTED, byte-identical |
+| `test_arm64_llvm_lane_diff.sh` | ~7 s, qemu-user | randomized execution differential (new) |
+| `test_arm64_build_integrity.sh` | ~63 s | both lanes still build/link/execute |
+| `test_arm64_a10_userland.sh` | ~2.5 min, 1 QEMU | A10 vs a fresh native oracle |
+| `test_arm64_a11_archive.sh` | ~2.5 min, 1 QEMU | A11 (new) |
+| `test_arm64_phase49.sh` | ~6.5 min, 1 QEMU | the WHOLE standalone ladder in one boot |
+
+The other 48 `test_arm64_phase*.sh` are rungs of the ladder `phase49` runs end
+to end (each gated on the previous rung's PASS marker), so they carry a stated
+on-demand rationale in their headers instead — they are the bisection tool for
+when `phase49` reds, not 49 more copies of the same boot.
+
+### Next step (A12) — recommended
+
+The remaining gap to a compiled `hamsh` is no longer structural in the loader;
+it is **process state**. Ranked:
+
+1. **Per-task TTBR0 + a Data-Abort (0x400, EC=0b100100) demand-paging path.**
+   Every A11 member runs at the same VA in the one shared window. `fork`/`exec`
+   need per-task address spaces before anything else on this list is meaningful.
+2. **Per-task kernel stacks + `__switch_to`,** so a task can BLOCK in a syscall
+   (which `read(2)` now genuinely could — today it spins with a bounded budget
+   instead of sleeping, which is honest but is not scheduling).
+3. **Broaden the syscall surface** — ideally by getting `do_syscall` itself to
+   emit rather than re-listing the ABI in `arm64_do_syscall_arm64`.
+4. **virtio-mmio + virtio-blk + a real filesystem,** so the archive becomes a
+   directory and `hamsh` is loaded from disk rather than from `.rodata`.
+
+### `_handle_tag` (investigated, NOT fixed) — it is not an SSA-subset problem
+
+`scripts/build_user.sh`'s only two native fallbacks are `hambrowse` and `js`,
+both reported as `link-undef:_handle_tag (callee bailed SSA subset)`. That is
+the identical shape as the ARM64 link bug (an emitted caller referencing a
+bailed callee), and on ARM64 there is no native fallback to hide it. But the
+label is misleading: the emitted marker is **`; BAILED @_handle_tag reason=1`**,
+and reason 1 is `SBR_OVERFLOW` — a per-function ARENA CAP, the same class as
+`start_kernel`, not an `SBR_*` subset feature. **Broadening the SSA subset
+cannot fix it.**
+
+`_handle_tag` (`lib/web/dom/forms.ad:898`) is a ~2300-line tag dispatch with
+~271 distinct local names and ~485 branch statements. Note the host compiler
+already runs `NM_MAX=1024` (not the on-disk 256 —
+`scripts/concat_compiler_source.py HOST_BUFFER_OVERRIDES`), so the NAME cap is
+NOT the binding one and which cap trips is still open. The next step is to
+attribute the bail: `ssa_set_bail(SBR_OVERFLOW)` has ~12 call sites in
+`ssa.ad`, so record WHICH one fires and its counter value, then either raise
+that specific cap in lockstep with every array it sizes, or apply the A4
+extract-method treatment to the one oversized branch (the `<p>`/block arm at
+`forms.ad:1485` is 609 lines on its own). Either way it lands behind the WPT
+ratchets — any `lib/web/` change gates on the testharness floor.
 
 ---
 
