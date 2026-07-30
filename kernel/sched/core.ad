@@ -2408,6 +2408,52 @@ def _sched_note_overcharge(slot: uint64, charge: uint64):
     g_vover[slot] = v
 
 
+def _sched_charge_elapsed(slot: uint64):
+    # Charge `slot` for the sub-tick time it has held the cpu since its last
+    # charge, and re-stamp its clock. Called when it gives the cpu UP.
+    #
+    # WHY THIS IS NEEDED ON TOP OF THE TICK CHARGE. The tick only ever bills the
+    # task that happens to be on-cpu at the 100 Hz boundary. A task that always
+    # gives the cpu back before the timer fires is billed NOTHING, EVER. The D3
+    # banner above names that defect but fixes only fork PLACEMENT, and
+    # _sched_wake_place only reaches tasks that come back through a WAIT QUEUE.
+    # A yield-loop task (sys_yield / yield_to_others — hamterm.ad:501 documents
+    # one that "stayed permanently STATE_READY") never sleeps and never ticks,
+    # so it stays pinned at whatever vruntime it was created with FOREVER. That
+    # is what left a runnable task at 44,168 while the field ran at 103,869
+    # after the wake clamp landed: the clamp fired only 74 times in 13,869
+    # wakes because the low stratum was not arriving through the wake path at
+    # all.
+    #
+    # This does NOT double-charge a task that survived a tick: exec_start is
+    # re-stamped by _sched_note_overcharge at every tick charge, so the delta
+    # measured here is only the time since that charge.
+    if slot >= NTASKS:
+        return
+    if sched_is_realtime(slot) != 0:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    st:  uint64 = g_exec_start_ns[slot]
+    g_exec_start_ns[slot] = now
+    if st == 0 or now <= st:
+        return
+    d: uint64 = now - st
+    # exec_start is re-stamped on every dispatch and every tick charge, so a
+    # delta beyond one tick can only be a missed re-stamp; clamp rather than
+    # charge a fiction.
+    if d > TICK_NS:
+        d = TICK_NS
+    w: uint64 = task_table[slot].sched_weight
+    if w == 0:
+        w = NICE0_WEIGHT
+    per_tick: uint64 = ((NICE0_WEIGHT * VRUNTIME_SCALE) / w) * \
+        nscap_cpu_factor_current()
+    task_table[slot].vruntime = task_table[slot].vruntime + \
+        ((d * per_tick) / TICK_NS)
+
+
 def sched_exec_start_stamp(slot: uint64):
     # Start `slot`'s on-cpu clock. Called from sched_note_dispatch.
     if slot >= NTASKS:
@@ -6369,6 +6415,11 @@ def schedule():
         return  # only one ready task
 
     prev: uint64 = current_idx_pcpu
+    # prev is giving the cpu up: bill it for the sub-tick slice it actually ran.
+    # Without this a task that always yields or blocks before the 100 Hz timer
+    # fires accrues NOTHING and stays pinned at the runqueue minimum for the
+    # life of the boot (see _sched_charge_elapsed).
+    _sched_charge_elapsed(prev)
     # getrusage(2): snapshot prev's runnable state BEFORE the flip below
     # clears it. Linux's rule: prev still RUNNING here => preempted while
     # runnable => INVOLUNTARY; prev already non-RUNNING => it blocked /
