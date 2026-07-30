@@ -1983,6 +1983,27 @@ def env_define(e: int32, name: int32, val: int32, is_const: int32):
     env_head[e] = nb
 
 
+# Unlink a binding from `e`'s own chain. Returns 1 when one was removed.
+# `delete window.X` needs this: the global object MIRRORS global scope rather
+# than owning properties (see member_get's fall-through), so deleting the
+# object property alone left the binding — and the interface — visible.
+def env_delete_local(e: int32, name: int32) -> int32:
+    b: int32 = env_head[e]
+    prev: int32 = -1
+    while b >= 0:
+        if str_eq(b_name[b], name) != 0:
+            if prev < 0:
+                env_head[e] = b_next[b]
+            else:
+                b_next[prev] = b_next[b]
+            b_next[b] = bind_free_head
+            bind_free_head = b
+            return 1
+        prev = b
+        b = b_next[b]
+    return 0
+
+
 def env_lookup_bind(e: int32, name: int32) -> int32:
     while e >= 0:
         b: int32 = env_find_local(e, name)

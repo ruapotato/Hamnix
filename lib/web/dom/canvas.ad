@@ -510,7 +510,9 @@ def _cre_make_element(tp: Ptr[uint8], tl: int32) -> int32:
     cre_is_text[cid] = 0
     cre_gone[cid] = 0
     co: int32 = js_new_object_v()
-    js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, js_new_string(&dom_txtbuf[0], 0))
+    # NO own `textContent` here: it would shadow the computed Node.prototype
+    # accessor for this element's whole life (that own property is exactly why
+    # `el.appendChild(text)` never showed up in el.textContent).
     js_set_prop(co, cast[Ptr[uint8]]("id"), 2, js_new_string(&dom_txtbuf[0], 0))
     js_set_prop(co, cast[Ptr[uint8]]("className"), 9, js_new_string(&dom_txtbuf[0], 0))
     js_set_prop(co, cast[Ptr[uint8]]("tagName"), 7, \
@@ -681,9 +683,6 @@ def _frag_close_top(depth: int32):
     if cid < 0:
         return
     co: int32 = cre_obj[cid]
-    ts: int32 = frag_st_txt[depth]
-    js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&frag_txt[ts], cast[uint64](frag_txt_w - ts)))
     arr: int32 = frag_st_arr[depth]
     js_set_prop(co, cast[Ptr[uint8]]("children"), 8, arr)
     js_set_prop(co, cast[Ptr[uint8]]("childNodes"), 10, arr)
@@ -933,10 +932,11 @@ def _apply_inner_html(thisv: int32, vp: Ptr[uint8], vn: int32):
         js_set_prop(rtc, cast[Ptr[uint8]]("parentElement"), 13, thisv)
         rti = rti + 1
     _wire_sibling_links(root, js_null())
-    # keep .textContent consistent with the new subtree (innerHTML raw-override
-    # still wins in render, so this only affects a subsequent JS read).
-    js_set_prop(thisv, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&frag_txt[0], cast[uint64](frag_txt_w)))
+    # Source elements read textContent off the parse-time slice, so the new
+    # subtree only becomes visible through an override (created nodes compute).
+    if _find_el_by_obj(thisv) >= 0:
+        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, \
+                   js_new_string(&frag_txt[0], cast[uint64](frag_txt_w)))
     fc: int32 = js_null()
     lc: int32 = js_null()
     if js_array_len(root) > 0:
@@ -1280,7 +1280,7 @@ def _ns_dispatch(rel: int32) -> int32:
             if _ns_el_matches(gel, nsn, &nsa_lp[0], gln) != 0:
                 js_array_push(garr, gel)
             gi = gi + 1
-        return garr
+        return _brand_collection(garr, g_proto_htmlcoll)
     # the remaining four take (namespace, name-ish) — split per method below.
     if rel == NID_SETATTRNS:
         if js_arg_count() < 3:
@@ -1434,6 +1434,57 @@ def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
 # the NamedNodeMap builder below can reuse the EXACT same resolution order the
 # JS-visible method uses (override store -> source start tag -> reflected
 # property) rather than growing a second, divergent copy of it.
+# HTML's "ASCII whitespace" — TAB, LF, FF, CR, SPACE — and deliberately NOT the
+# Unicode space characters. WPT's
+# getElementsByClassName-whitespace-class-names.html asserts that NO-BREAK
+# SPACE, OGHAM SPACE MARK, EN/EM QUAD, IDEOGRAPHIC SPACE and friends are
+# ordinary class-NAME characters, so `class="&#x00A0;"` is one class whose name
+# is a non-breaking space, not an empty class list.
+def _is_ascii_ws(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 12 or c == 13:
+        return 1
+    return 0
+
+
+# Is `tp[0..tn)` one of the ASCII-whitespace-separated tokens of `cp[0..cn)`?
+# Byte-exact: getElementsByClassName is case-sensitive in standards mode.
+def _cls_has_token(cp: Ptr[uint8], cn: int32, tp: Ptr[uint8], tn: int32) -> int32:
+    i: int32 = 0
+    while i < cn:
+        while i < cn and _is_ascii_ws(cp[i]) != 0:
+            i = i + 1
+        s: int32 = i
+        while i < cn and _is_ascii_ws(cp[i]) == 0:
+            i = i + 1
+        if i > s and i - s == tn and _bytes_eq(&cp[s], tn, tp, tn) != 0:
+            return 1
+    return 0
+
+
+# Does this element carry EVERY class in the argument's token list? An argument
+# with no tokens at all matches nothing (DOM: "if classes is the empty set,
+# return an empty HTMLCollection").
+def _gbc_matches(elv: int32, tp: Ptr[uint8], tn: int32) -> int32:
+    cv: int32 = _el_get_attribute(elv, cast[Ptr[uint8]]("class"), 5)
+    if js_type_of(cv) != TAG_STR:
+        return 0
+    cp: Ptr[uint8] = js_str_bytes(cv)
+    cn: int32 = js_str_bytelen(cv)
+    seen: int32 = 0
+    i: int32 = 0
+    while i < tn:
+        while i < tn and _is_ascii_ws(tp[i]) != 0:
+            i = i + 1
+        s: int32 = i
+        while i < tn and _is_ascii_ws(tp[i]) == 0:
+            i = i + 1
+        if i > s:
+            seen = 1
+            if _cls_has_token(cp, cn, &tp[s], i - s) == 0:
+                return 0
+    return seen
+
+
 def _el_get_attribute(thisv: int32, nmp: Ptr[uint8], an: int32) -> int32:
     # 'style' mirrors the .style store (serialized), so getAttribute and
     # .style stay consistent for both source and created nodes.
@@ -2303,15 +2354,20 @@ def _frag_clear(fragv: int32):
     js_set_prop(fragv, cast[Ptr[uint8]]("lastChild"), 9, js_null())
 
 
-# Extend `parentv`'s live .textContent with an appended TEXT node's data.
-# Element children are deliberately excluded: they render through the
-# created-node emitter, and a textContent override on their parent would make
-# the readback flatten the whole subtree to escaped text.
+# Extend a SOURCE-ANCHORED element's textContent override with an appended Text
+# node's data. Source elements answer textContent from their [cstart,cend) HTML
+# slice, which cannot see a node script appended, so the override is how a
+# mutation becomes visible -- and js_has_own("textContent") is also what the
+# render readback tests to decide the element changed. CREATED nodes deliberately
+# do NOT get one: their textContent is computed from the tree (below), and an
+# own property would shadow that accessor for good.
 def _append_sync_text(parentv: int32, childv: int32):
+    if _find_el_by_obj(parentv) < 0:
+        return
     cid2: int32 = _find_cre_by_obj(childv)
-    # cre_is_text is a KIND now (1 text, 2 comment, 3 processing instruction).
-    # Only a real Text child contributes to the parent's textContent: a comment
-    # or a PI must not, or `<div><!--x--></div>`.textContent reads back "x".
+    # cre_is_text is a KIND (1 text, 2 comment, 3 processing instruction). Only
+    # a real Text child contributes: a comment or PI must not, or
+    # `<div><!--x--></div>`.textContent reads back "x".
     if cid2 < 0 or cre_is_text[cid2] != 1:
         return
     tsbuf: Array[8192, uint8]
@@ -2326,8 +2382,7 @@ def _append_sync_text(parentv: int32, childv: int32):
         tsbuf[tw] = exp2[i]
         tw = tw + 1
         i = i + 1
-    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, \
-                                cast[Ptr[uint8]]("textContent"), 11))
+    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, cast[Ptr[uint8]]("data"), 4))
     nvn: int32 = _cstr_len(nvp)
     if _is_undef_str(nvp, nvn) == 0:
         j: int32 = 0
@@ -2335,8 +2390,152 @@ def _append_sync_text(parentv: int32, childv: int32):
             tsbuf[tw] = nvp[j]
             tw = tw + 1
             j = j + 1
-    js_set_prop(parentv, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&tsbuf[0], cast[uint64](tw)))
+    js_set_own(parentv, cast[Ptr[uint8]]("textContent"), 11, \
+               js_new_string(&tsbuf[0], cast[uint64](tw)))
+
+
+# ---- Node.textContent, computed ---------------------------------------------
+# Written against the JS-VISIBLE node shape (nodeType / childNodes / data), so
+# ONE implementation serves created elements, DocumentFragments, Documents,
+# DocumentTypes and character data alike. Source-anchored elements keep the
+# cheap [cstart,cend) slice (see NID_TC_GET).
+#
+# It replaces a CACHE that was maintained incrementally on append
+# (_append_sync_text) and could only ever see direct Text children: an element
+# whose text sat one level down read back "" (WPT "Element with descendants"),
+# and any structural change that was not an append left the cache stale.
+def _tc_append_str(sv: int32):
+    if js_type_of(sv) != TAG_STR:
+        return
+    p: Ptr[uint8] = js_str_bytes(sv)
+    n: int32 = js_str_bytelen(sv)
+    if _is_undef_str(p, n) != 0:
+        return
+    i: int32 = 0
+    while i < n and tc_n < TC_CAP:
+        tc_buf[tc_n] = p[i]
+        tc_n = tc_n + 1
+        i = i + 1
+
+
+def _tc_walk(v: int32, depth: int32):
+    if depth > 64 or js_type_of(v) != TAG_OBJ:
+        return
+    nt: int32 = _nd_type(v)
+    if nt == 3 or nt == 4:                                # Text / CDATASection
+        _tc_append_str(js_get_prop(v, cast[Ptr[uint8]]("data"), 4))
+        return
+    if nt == 7 or nt == 8:                                # PI / Comment: nothing
+        return
+    kids: int32 = _nd_kids(v)
+    if kids == 0:
+        return
+    i: int32 = 0
+    n: int32 = js_array_len(kids)
+    while i < n:
+        _tc_walk(js_array_get(kids, i), depth + 1)
+        i = i + 1
+
+
+# The concatenation of the node's DIRECT Text children only -- NOT descendants.
+# The created-node emitter needs this: it writes the element's own text and then
+# recurses into the nested created children, so handing it the full computed
+# textContent would print every descendant's text twice, once flattened into the
+# parent and once in place (measured on tests/jsfunc/pages/dombuild.html).
+def _node_direct_text(v: int32) -> int32:
+    kids: int32 = _nd_kids(v)
+    tc_n = 0
+    if kids != 0:
+        i: int32 = 0
+        n: int32 = js_array_len(kids)
+        while i < n:
+            ch: int32 = js_array_get(kids, i)
+            ct: int32 = _nd_type(ch)
+            if ct == 3 or ct == 4:
+                _tc_append_str(js_get_prop(ch, cast[Ptr[uint8]]("data"), 4))
+            i = i + 1
+    return js_new_string(&tc_buf[0], cast[uint64](tc_n))
+
+
+def _node_text_content(v: int32) -> int32:
+    nt: int32 = _nd_type(v)
+    if nt == 0:
+        return js_undefined()                             # not a node
+    if nt == 9 or nt == 10:                               # Document / DocumentType
+        return js_null()
+    if nt == 2:                                           # Attr: its value
+        return js_get_prop(v, cast[Ptr[uint8]]("value"), 5)
+    if nt == 3 or nt == 4 or nt == 7 or nt == 8:
+        dv: int32 = js_get_prop(v, cast[Ptr[uint8]]("data"), 4)
+        if js_type_of(dv) == TAG_STR:
+            return dv
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    tc_n = 0
+    _tc_walk(v, 0)
+    return js_new_string(&tc_buf[0], cast[uint64](tc_n))
+
+
+# DOM "string replace all": detach every child, then append one Text node when
+# the new value is neither null/undefined nor the empty string.
+def _node_set_text_content(v: int32, val: int32):
+    nt: int32 = _nd_type(v)
+    if nt == 9 or nt == 10:
+        return                                            # Document/DocumentType: no-op
+    if nt == 3 or nt == 4 or nt == 7 or nt == 8:
+        js_set_prop(v, cast[Ptr[uint8]]("data"), 4, val)   # CharacterData: it IS the data
+        return
+    if nt == 2:
+        # An Attr's textContent IS its value -- it has no children. Falling
+        # into the element branch below gave it a childNodes array with a Text
+        # node in it, which made its Range "node length" 1 instead of 0.
+        js_set_own(v, cast[Ptr[uint8]]("value"), 5, val)
+        js_set_own(v, cast[Ptr[uint8]]("nodeValue"), 9, val)
+        return
+    kids: int32 = _nd_kids(v)
+    if kids != 0:
+        i: int32 = 0
+        n: int32 = js_array_len(kids)
+        while i < n:
+            ch: int32 = js_array_get(kids, i)
+            if js_type_of(ch) == TAG_OBJ:
+                # Unlink, but leave the removed node's OWN subtree intact — WPT
+                # asserts the detached child still has its three children.
+                js_set_prop(ch, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("previousSibling"), 15, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+                cgi: int32 = _find_cre_by_obj(ch)
+                if cgi >= 0:
+                    cre_gone[cgi] = 1
+            i = i + 1
+    newkids: int32 = js_new_array_v()
+    newels: int32 = js_new_array_v()
+    tv: int32 = js_null()
+    tn2: int32 = 0
+    # The IDL type is DOMString?, so a non-string (42) is STRINGIFIED, not
+    # dropped: `el.textContent = 42` must leave one Text child reading "42".
+    sval: int32 = val
+    if js_type_of(val) != TAG_NULL and js_type_of(val) != TAG_UNDEF:
+        if js_type_of(val) != TAG_STR:
+            svp: Ptr[uint8] = js_to_display(val)
+            sval = js_new_string(svp, cast[uint64](_cstr_len(svp)))
+        tn2 = js_str_bytelen(sval)
+        if _is_undef_str(js_str_bytes(sval), tn2) != 0:
+            tn2 = 0
+    if tn2 > 0:
+        tv = _cre_make_text(sval)
+        if tv > 0 and js_type_of(tv) == TAG_OBJ:
+            js_set_prop(tv, cast[Ptr[uint8]]("parentNode"), 10, v)
+            js_set_prop(tv, cast[Ptr[uint8]]("parentElement"), 13, v)
+            js_array_push(newkids, tv)
+        else:
+            tv = js_null()
+    js_set_own(v, cast[Ptr[uint8]]("childNodes"), 10, newkids)
+    js_set_own(v, cast[Ptr[uint8]]("children"), 8, newels)
+    js_set_prop(v, cast[Ptr[uint8]]("firstChild"), 10, tv)
+    js_set_prop(v, cast[Ptr[uint8]]("lastChild"), 9, tv)
+    js_set_prop(v, cast[Ptr[uint8]]("firstElementChild"), 17, js_null())
+    js_set_prop(v, cast[Ptr[uint8]]("lastElementChild"), 16, js_null())
 
 
 # parent.appendChild(child) with explicit values — shared by the NID_APPEND
@@ -2375,10 +2574,8 @@ def _append_child_v(parentv: int32, childv: int32):
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
     # A TEXT child extends the parent's live textContent. Without this an
-    # `appendChild(document.createTextNode("x"))` left `.textContent` at "" —
-    # which is exactly how React writes every string child, so a rendered React
-    # tree read back empty.
     _append_sync_text(parentv, childv)
+
 
 
 # Build the `port1`/`port2` pair of a MessageChannel. Each port carries a hidden
@@ -2562,12 +2759,15 @@ def _inner_accessor(rel: int32) -> int32:
     idx: int32 = _find_el_by_obj(thisv)
     if rel == NID_TC_GET:
         if idx < 0:
-            return js_undefined()
+            return _node_text_content(thisv)
         n: int32 = _text_into_tw(cast[uint64](dom_cstart[idx]), \
                                  cast[uint64](dom_cend[idx]))
-        v: int32 = js_new_string(&tw_buf[0], cast[uint64](n))
-        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, v)
-        return v
+        # NOT memoised. js_set_own here installed an own data property that
+        # shadowed this accessor for the rest of the element's life, so the
+        # FIRST read froze textContent at its parse-time value AND marked the
+        # element as script-modified for the render readback. Same bug the
+        # innerHTML getter above already had removed.
+        return js_new_string(&tw_buf[0], cast[uint64](n))
     if rel == NID_IH_GET:
         if idx < 0:
             ccid: int32 = _find_cre_by_obj(thisv)
@@ -2615,6 +2815,16 @@ def _inner_accessor(rel: int32) -> int32:
     if js_arg_count() > 0:
         val = js_arg(0)
     if rel == NID_TC_SET:
+        if idx < 0:
+            # Created element / DocumentFragment: run the SPEC algorithm --
+            # replace every child with (at most) one Text node. Storing the
+            # string as an own property, which is all this did, left
+            # firstChild/childNodes pointing at the old children and the
+            # detached ones still claiming the node as their parent.
+            _node_set_text_content(thisv, val)
+            if mreg_n != 0:
+                _mo_record_chardata(thisv)
+            return js_undefined()
         js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, val)
         if mreg_n != 0:
             _mo_record_chardata(thisv)
@@ -3363,7 +3573,7 @@ def _nd_normalize(n: int32, depth: int32):
                 merged: int32 = _nd_concat(pv, dv)
                 js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
                 js_set_prop(prev, cast[Ptr[uint8]]("nodeValue"), 9, merged)
-                js_set_prop(prev, cast[Ptr[uint8]]("textContent"), 11, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
                 js_set_prop(prev, cast[Ptr[uint8]]("length"), 6, \
                             js_number(cast[float64](js_str_bytelen(merged))))
                 js_set_prop(c, cast[Ptr[uint8]]("parentNode"), 10, js_null())
@@ -4729,16 +4939,30 @@ def _js_host_dispatch(id: int32) -> int32:
             _set_query_scope()
             _dom_collect_selector(&dom_idtmp[0], qn, g_qlo, g_qhi, qarr)
             _cre_collect(&dom_idtmp[0], qn, qarr)           # + created nodes
-        return qarr
+        return _brand_collection(qarr, g_proto_nodelist)
     if rel == NID_GETBYCLASS:
+        # Collect every element in scope, then filter on the CLASS ATTRIBUTE's
+        # own token grammar. The old route — build the CSS selector "." + arg
+        # and hand it to the selector engine — got two things wrong that the
+        # DOM spec is explicit about: a multi-token argument ("b c" means "has
+        # BOTH classes") became one nonsense selector and matched nothing, and
+        # class names made of non-ASCII whitespace (NO-BREAK SPACE, EN QUAD,
+        # IDEOGRAPHIC SPACE, ...) are ordinary name characters here but need CSS
+        # escaping to survive a selector.
         carr: int32 = js_new_array_v()
         if js_arg_count() >= 1:
-            cnm: int32 = _arg_bytes(0, &dom_idtmp[1], 255)
-            dom_idtmp[0] = 46                              # '.' + class name
+            cnm: int32 = _arg_bytes(0, &gbc_arg[0], 1024)
             _set_query_scope()
-            _dom_collect_selector(&dom_idtmp[0], cnm + 1, g_qlo, g_qhi, carr)
-            _cre_collect(&dom_idtmp[0], cnm + 1, carr)     # + created nodes
-        return carr
+            graw: int32 = js_new_array_v()
+            _dom_collect_selector(cast[Ptr[uint8]]("*"), 1, g_qlo, g_qhi, graw)
+            _cre_collect(cast[Ptr[uint8]]("*"), 1, graw)   # + created nodes
+            gi: int32 = 0
+            while gi < js_array_len(graw):
+                gel: int32 = js_array_get(graw, gi)
+                if _gbc_matches(gel, &gbc_arg[0], cnm) != 0:
+                    js_array_push(carr, gel)
+                gi = gi + 1
+        return _brand_collection(carr, g_proto_htmlcoll)
     if rel == NID_GETBYTAG:
         tarr: int32 = js_new_array_v()
         if js_arg_count() >= 1:
@@ -4759,7 +4983,7 @@ def _js_host_dispatch(id: int32) -> int32:
                 if _gbt_name_matches(tel, &dom_idtmp[0], tnm) != 0:
                     js_array_push(tarr, tel)
                 tk = tk + 1
-        return tarr
+        return _brand_collection(tarr, g_proto_htmlcoll)
     if rel == NID_HASATTR:
         if js_arg_count() >= 1:
             hn: Array[64, uint8]
@@ -5173,9 +5397,28 @@ def _js_host_dispatch(id: int32) -> int32:
         return _make_event(2)
     if rel == NID_KEYBDEVENT:
         return _make_event(3)
+    if rel == NID_UIEVENT:
+        return _make_event(4)
+    if rel == NID_COMPEVENT:
+        return _make_event(6)
+    if rel == NID_FOCUSEVENT:
+        return _make_event(10)
+    if rel == NID_WHEELEVENT:
+        return _make_event(15)
     if rel == NID_IMAGE_CTOR:
         return _make_image()
-    if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS:
+    if rel == NID_ABORTCTRL:
+        return _make_abort_controller()
+    if rel == NID_ABORT:
+        return _abort_controller_abort()
+    if rel == NID_ABORT_THROW:
+        asig: int32 = js_this()
+        if js_type_of(asig) == TAG_OBJ and \
+           js_to_bool(js_get_prop(asig, cast[Ptr[uint8]]("aborted"), 7)) != 0:
+            js_throw_value(js_get_prop(asig, cast[Ptr[uint8]]("reason"), 6))
+        return js_undefined()
+    if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS or \
+       rel == NID_CREATEATTR_XML:
         # document.createAttribute(localName) / createAttributeNS(ns, qname).
         # A free-standing Attr: value "", ownerElement null. The name is
         # validated first — the tests check the InvalidCharacterError, not the
@@ -5194,18 +5437,37 @@ def _js_host_dispatch(id: int32) -> int32:
         elif js_arg_count() < 1:
             return js_undefined()
         can: int32 = _arg_bytes(cai, &canm[0], 128)
-        cvc: int32 = _validate_qname(&canm[0], can, &nsuri_buf[0], cans)
-        if cvc != 0:
-            return _throw_qname(cvc)
+        if rel == NID_CREATEATTRNS:
+            cvc: int32 = _validate_qname(&canm[0], can, &nsuri_buf[0], cans)
+            if cvc != 0:
+                return _throw_qname(cvc)
+        elif can == 0:
+            # createAttribute takes a plain localName, NOT a qualified name: DOM
+            # "validate" only rejects what does not match XML's Name production,
+            # and the vendored WPT productions.js (dom/nodes/productions.js) has
+            # the whole set — ":", "a:0", "0", "0:a", "x:y:x", "~", "\\", "'",
+            # '"', "invalid^Name" — under valid_names, with "" the ONLY invalid
+            # one. Running these through the QNAME validator threw
+            # InvalidCharacterError on 20 names chromium accepts.
+            return _throw_qname(1)
         if rel == NID_CREATEATTR:
-            # HTML document: createAttribute lowercases (createAttributeNS
-            # does NOT). chromium-verified.
+            # HTML document: createAttribute lowercases. createAttributeNS does
+            # NOT, and neither does an XML document's (NID_CREATEATTR_XML) —
+            # chromium-verified against xml_document.createAttribute("TITLE").
             cl: int32 = 0
             while cl < can:
                 canm[cl] = _hx_lower(canm[cl])
                 cl = cl + 1
         caobj: int32 = _new_attr_obj(&canm[0], can, \
                                      js_new_string(&dom_txtbuf[0], 0), js_null())
+        if rel != NID_CREATEATTRNS:
+            # createAttribute's argument is a LOCAL NAME, not a qualified one:
+            # createAttribute("x:y:x").localName is "x:y:x" with a null prefix.
+            # _new_attr_obj splits on ':' because HTML-parsed attributes arrive
+            # as qualified names, which truncated 10 of these to the tail.
+            js_set_prop(caobj, cast[Ptr[uint8]]("localName"), 9, \
+                        js_new_string(&canm[0], cast[uint64](can)))
+            js_set_prop(caobj, cast[Ptr[uint8]]("prefix"), 6, js_null())
         if cans > 0:
             js_set_prop(caobj, cast[Ptr[uint8]]("namespaceURI"), 12, \
                         js_new_string(&nsuri_buf[0], cast[uint64](cans)))
@@ -5324,10 +5586,14 @@ def _js_host_dispatch(id: int32) -> int32:
                     js_get_prop(base, cast[Ptr[uint8]]("id"), 2))
         js_set_prop(clo, cast[Ptr[uint8]]("className"), 9, \
                     js_get_prop(base, cast[Ptr[uint8]]("className"), 9))
-        js_set_prop(clo, cast[Ptr[uint8]]("textContent"), 11, \
-                    js_get_prop(base, cast[Ptr[uint8]]("textContent"), 11))
         js_set_prop(clo, cast[Ptr[uint8]]("innerHTML"), 9, \
                     js_get_prop(base, cast[Ptr[uint8]]("innerHTML"), 9))
+        # The clone starts with an EMPTY child list (deep cloning of children is
+        # not modelled here), so its computed textContent would be "". Carry the
+        # original's across as an override, which is what it read back before
+        # textContent became computed.
+        js_set_own(clo, cast[Ptr[uint8]]("textContent"), 11, \
+                   js_get_prop(base, cast[Ptr[uint8]]("textContent"), 11))
         js_set_prop(clo, cast[Ptr[uint8]]("style"), 5, _new_style_obj())
         _attach_el_methods(clo)
         cre_obj[clid] = clo
@@ -5380,8 +5646,6 @@ def _js_host_dispatch(id: int32) -> int32:
         cre_is_text[cid] = 0
         cre_gone[cid] = 0
         co: int32 = js_new_object_v()
-        js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, \
-                    js_new_string(&dom_txtbuf[0], 0))
         js_set_prop(co, cast[Ptr[uint8]]("id"), 2, js_new_string(&dom_txtbuf[0], 0))
         js_set_prop(co, cast[Ptr[uint8]]("className"), 9, \
                     js_new_string(&dom_txtbuf[0], 0))
@@ -5503,7 +5767,10 @@ def _js_host_dispatch(id: int32) -> int32:
             # Created/dynamic node (createElement/innerHTML): not in the source
             # tree, so store the listener ON the object for the click()/
             # dispatchEvent object-dispatch path (Phase-0 programmatic events).
-            if el < 0 and _find_cre_by_obj(js_this()) >= 0 and \
+            # Created/dynamic node, OR any other object that is an EventTarget
+            # in its own right (AbortSignal). The registry is keyed on the
+            # object, so it does not need a dom_* row.
+            if el < 0 and js_type_of(js_this()) == TAG_OBJ and \
                js_is_callable(js_arg(1)) != 0:
                 _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1))
             if (el >= 0 or el == DOC_EL) and js_is_callable(js_arg(1)) != 0:
@@ -5781,8 +6048,13 @@ def _js_host_dispatch(id: int32) -> int32:
                 js_set_prop(apobj, cast[Ptr[uint8]]("parentElement"), 13, js_this())
                 _mo_record_childlist(js_this(), apobj, -1)
             apai = apai + 1
-        js_set_prop(js_this(), cast[Ptr[uint8]]("textContent"), 11, \
-                    js_new_string(&apbuf[0], cast[uint64](apw)))
+        # Source elements answer textContent from the parse-time slice, so an
+        # appended string only shows up through an override. Created nodes
+        # compute theirs from the tree and must NOT get one (it would shadow
+        # the accessor permanently).
+        if apar >= 0:
+            js_set_own(js_this(), cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_string(&apbuf[0], cast[uint64](apw)))
         _wire_sibling_links(apchildren, js_this())
         return js_undefined()
     if rel == NID_INSBEF:
@@ -6431,7 +6703,6 @@ def _new_attr_obj(np: Ptr[uint8], nn: int32, valv: int32, ownerv: int32) -> int3
     js_set_prop(a, cast[Ptr[uint8]]("prefix"), 6, pv)
     js_set_prop(a, cast[Ptr[uint8]]("value"), 5, valv)
     js_set_prop(a, cast[Ptr[uint8]]("nodeValue"), 9, valv)
-    js_set_prop(a, cast[Ptr[uint8]]("textContent"), 11, valv)
     js_set_prop(a, cast[Ptr[uint8]]("nodeType"), 8, js_number(2.0))
     js_set_prop(a, cast[Ptr[uint8]]("namespaceURI"), 12, js_null())
     js_set_prop(a, cast[Ptr[uint8]]("specified"), 9, js_bool(1))
@@ -6679,7 +6950,6 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
         js_set_prop(tnode, cast[Ptr[uint8]]("__cd"), 4, titlev)
-        js_set_prop(tnode, cast[Ptr[uint8]]("textContent"), 11, titlev)
         _bare_append(titleel, tnode)
         _bare_append(headel, titleel)
     _bare_append(htmlel, headel)
@@ -6739,10 +7009,6 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
-                js_new_native_fn(js_hbase + NID_CREATEATTRNS))
     js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
                 js_new_native_fn(js_hbase + NID_CREATEATTR))
     js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
@@ -7071,12 +7337,11 @@ def _impl_dispatch(rel: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
+    # An XML document's createAttribute is case-PRESERVING (only an HTML
+    # document lowercases), exactly as its createElement already is -- hence its
+    # own native rather than the shared NID_CREATEATTR.
     js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
-                js_new_native_fn(js_hbase + NID_CREATEATTRNS))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
+                js_new_native_fn(js_hbase + NID_CREATEATTR_XML))
     js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
                 js_new_native_fn(js_hbase + NID_CREATEATTRNS))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
@@ -7406,6 +7671,23 @@ def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32
 # The Node nodeType / DOCUMENT_POSITION constants, mirrored onto both `Node` and
 # every interface that inherits them (scripts read `Node.ELEMENT_NODE` and
 # `Element.ELEMENT_NODE` interchangeably; the spec puts them on both).
+# Array.prototype, or 0 when the builtin is somehow absent.
+def _array_prototype() -> int32:
+    av: int32 = js_global_get(cast[Ptr[uint8]]("Array"), 5)
+    if js_type_of(av) != TAG_OBJ:
+        return 0
+    return js_fn_prototype(av)
+
+
+# Brand a collection ARRAY with NodeList / HTMLCollection.prototype. Both
+# prototypes chain to Array.prototype, so nothing the value could do before
+# stops working; `instanceof` starts answering what a browser answers.
+def _brand_collection(arrv: int32, protov: int32) -> int32:
+    if protov != 0 and js_is_array(arrv) != 0:
+        js_set_proto_v(arrv, protov)
+    return arrv
+
+
 def _node_constants(target: int32):
     js_set_prop(target, cast[Ptr[uint8]]("ELEMENT_NODE"), 12, js_number(1.0))
     js_set_prop(target, cast[Ptr[uint8]]("ATTRIBUTE_NODE"), 14, js_number(2.0))
@@ -7442,7 +7724,10 @@ def _node_constants(target: int32):
 # be branded. Called FIRST in _js_build_document, before any element object is
 # registered, so _attach_el_methods can link elements as they are created.
 def _build_dom_interfaces():
-    g_proto_node = _dom_interface(cast[Ptr[uint8]]("Node"), 4, 0)
+    # EventTarget is the root of the node hierarchy (Node inherits it), and is
+    # what `addEventListener` is specified on. It was missing entirely.
+    g_proto_evtgt = _dom_interface(cast[Ptr[uint8]]("EventTarget"), 11, 0)
+    g_proto_node = _dom_interface(cast[Ptr[uint8]]("Node"), 4, g_proto_evtgt)
     nodector: int32 = js_global_get(cast[Ptr[uint8]]("Node"), 4)
     _node_constants(nodector)
     _node_constants(g_proto_node)
@@ -7451,6 +7736,13 @@ def _build_dom_interfaces():
     # normalize / isEqualNode / lookupNamespaceURI instead of reporting them
     # `undefined` (94 WPT subtests were failing on the missing-method TypeError).
     _attach_node_natives(g_proto_node)
+    # textContent lives on NODE.prototype, so DocumentFragment / Document /
+    # DocumentType get it too (a fragment reported `undefined`). CharacterData's
+    # own accessor over the __cd backing field shadows this for text-like nodes,
+    # and Element's identical pair keeps the source-slice fast path.
+    js_define_accessor(g_proto_node, cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_native_fn(js_hbase + NID_TC_GET), \
+                       js_new_native_fn(js_hbase + NID_TC_SET))
     g_proto_elem = _dom_interface(cast[Ptr[uint8]]("Element"), 7, g_proto_node)
     # HTMLElement inherits Element; elements are branded with the HTMLElement
     # prototype so `el instanceof HTMLElement`, `instanceof Element` and
@@ -7571,6 +7863,18 @@ def _build_dom_interfaces():
     _build_nodefilter()
     g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
     g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
+    # NodeList / HTMLCollection. Collections are real JS ARRAYS here (length and
+    # [i] are the engine's own fast paths, which is how a browser's collections
+    # behave from script), so the interface prototype is chained to
+    # Array.prototype: branding a collection makes `instanceof HTMLCollection`
+    # true WITHOUT taking forEach/map/slice away from page code that has always
+    # had them on these values.
+    g_proto_nodelist = _dom_interface(cast[Ptr[uint8]]("NodeList"), 8, \
+                                      _array_prototype())
+    g_proto_htmlcoll = _dom_interface(cast[Ptr[uint8]]("HTMLCollection"), 14, \
+                                      _array_prototype())
+    js_tag_object(g_proto_nodelist, cast[Ptr[uint8]]("NodeList"))
+    js_tag_object(g_proto_htmlcoll, cast[Ptr[uint8]]("HTMLCollection"))
     js_tag_object(g_proto_doctype, cast[Ptr[uint8]]("DocumentType"))
     js_tag_object(g_proto_attr, cast[Ptr[uint8]]("Attr"))
     js_tag_object(g_proto_nnm, cast[Ptr[uint8]]("NamedNodeMap"))
@@ -7929,20 +8233,47 @@ def _js_build_document():
     # constructor reuses the base Event native — but each carries its OWN
     # prototype object, because createEvent brands the returned event with
     # exactly window[iface].prototype and the WPT alias test compares identity.
-    _mk_ev_iface(cast[Ptr[uint8]]("UIEvent"), 7, NID_EVENT_CTOR, 4)
+    # UIEvent / FocusEvent / CompositionEvent / WheelEvent ARE constructable and
+    # each carries its own init dictionary — they get their own natives so
+    # _make_event knows which members to read. (They also need the interface's
+    # OWN prototype on the instance, which the shared-native wiring could not
+    # give them: `new UIEvent("x") instanceof UIEvent` was false.)
+    _mk_ev_iface(cast[Ptr[uint8]]("UIEvent"), 7, NID_UIEVENT, 4)
     _mk_ev_iface(cast[Ptr[uint8]]("BeforeUnloadEvent"), 17, NID_EVENT_CTOR, 5)
-    _mk_ev_iface(cast[Ptr[uint8]]("CompositionEvent"), 16, NID_EVENT_CTOR, 6)
+    _mk_ev_iface(cast[Ptr[uint8]]("CompositionEvent"), 16, NID_COMPEVENT, 6)
     _mk_ev_iface(cast[Ptr[uint8]]("DeviceMotionEvent"), 17, NID_EVENT_CTOR, 7)
     _mk_ev_iface(cast[Ptr[uint8]]("DeviceOrientationEvent"), 22, NID_EVENT_CTOR, 8)
     _mk_ev_iface(cast[Ptr[uint8]]("DragEvent"), 9, NID_EVENT_CTOR, 9)
-    _mk_ev_iface(cast[Ptr[uint8]]("FocusEvent"), 10, NID_EVENT_CTOR, 10)
+    _mk_ev_iface(cast[Ptr[uint8]]("FocusEvent"), 10, NID_FOCUSEVENT, 10)
     _mk_ev_iface(cast[Ptr[uint8]]("HashChangeEvent"), 15, NID_EVENT_CTOR, 11)
     _mk_ev_iface(cast[Ptr[uint8]]("MessageEvent"), 12, NID_EVENT_CTOR, 12)
     _mk_ev_iface(cast[Ptr[uint8]]("StorageEvent"), 12, NID_EVENT_CTOR, 13)
     _mk_ev_iface(cast[Ptr[uint8]]("TextEvent"), 9, NID_EVENT_CTOR, 14)
+    _mk_ev_iface(cast[Ptr[uint8]]("WheelEvent"), 10, NID_WHEELEVENT, 15)
+    # Link the event interface prototypes into the spec's inheritance chain.
+    # Each _mk_ev_iface built a FREESTANDING prototype, so `new MouseEvent(…)
+    # instanceof UIEvent` (and instanceof Event) was false for every subclass.
+    _ev_inherit(1, 0)        # CustomEvent        -> Event
+    _ev_inherit(4, 0)        # UIEvent            -> Event
+    _ev_inherit(5, 0)        # BeforeUnloadEvent  -> Event
+    _ev_inherit(7, 0)        # DeviceMotionEvent  -> Event
+    _ev_inherit(8, 0)        # DeviceOrientation  -> Event
+    _ev_inherit(11, 0)       # HashChangeEvent    -> Event
+    _ev_inherit(12, 0)       # MessageEvent       -> Event
+    _ev_inherit(13, 0)       # StorageEvent       -> Event
+    _ev_inherit(2, 4)        # MouseEvent         -> UIEvent
+    _ev_inherit(3, 4)        # KeyboardEvent      -> UIEvent
+    _ev_inherit(6, 4)        # CompositionEvent   -> UIEvent
+    _ev_inherit(10, 4)       # FocusEvent         -> UIEvent
+    _ev_inherit(14, 4)       # TextEvent          -> UIEvent
+    _ev_inherit(9, 2)        # DragEvent          -> MouseEvent
+    _ev_inherit(15, 2)       # WheelEvent         -> MouseEvent
     # `new Image()` constructor — a common preload/beacon global (round: google).
     js_global_set(cast[Ptr[uint8]]("Image"), 5, \
                   js_new_native_fn(js_hbase + NID_IMAGE_CTOR))
+    # AbortController + AbortSignal. testharness.js's t.get_signal() constructs
+    # one, so their absence took out whole FILES rather than single subtests.
+    _build_abort_interfaces()
     # `new CSSStyleSheet()` — constructible stylesheet (adoptedStyleSheets +
     # replaceSync); inactive until adopted, so it adds nothing to the cascade
     # until `document.adoptedStyleSheets = [sheet]`.
@@ -9143,7 +9474,7 @@ def _emit_created(cid: int32):
     if hn > 0 and _is_undef_str(hp, hn) == 0:
         _rw_ovbuf_ptr(hp, hn)
     else:
-        _rw_js_escaped(js_get_prop(co, cast[Ptr[uint8]]("textContent"), 11))
+        _rw_js_escaped(_node_direct_text(co))
         a: int32 = 0
         while a < cc_n:
             if cc_removed[a] == 0 and cc_owner[a] == cid:
@@ -10183,6 +10514,17 @@ def _obj_lp_name(typep: Ptr[uint8], typen: int32) -> int32:
     return 3 + i
 
 
+# Does this object carry at least one live listener for `type`?
+def _obj_has_listener(obj: int32, typep: Ptr[uint8], typen: int32) -> int32:
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        return 0
+    if js_array_len(arr) == 0:
+        return 0
+    return 1
+
+
 def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
@@ -10328,6 +10670,11 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
     g_stop_prop = 0
     g_stop_immediate = 0
     g_cur_event = evo
+    # `window.event` is defined only DURING a dispatch (and restores to the
+    # outer event when dispatches nest). It was set and never cleared, so an
+    # earlier dispatch left it readable for the rest of the page's life --
+    # dom/events/event-global.html asserts "undefined before dispatch".
+    sv_event: int32 = js_global_get(cast[Ptr[uint8]]("event"), 5)
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("target"), 6, targetobj)
         js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
@@ -10365,6 +10712,7 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
         js_set_prop(evo, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     g_cur_event = -1
+    js_global_set(cast[Ptr[uint8]]("event"), 5, sv_event)
     return ran
 
 
@@ -10673,6 +11021,16 @@ def _mk_ev_iface(nm: Ptr[uint8], nlen: int32, nid: int32, flavor: int32):
                        js_new_native_fn(js_hbase + NID_CANCELBUB_SET))
 
 
+# Link one event interface's prototype onto its spec parent's, so `instanceof`
+# walks the real chain (MouseEvent -> UIEvent -> Event).
+def _ev_inherit(child: int32, parent: int32):
+    if child < 0 or child >= 16 or parent < 0 or parent >= 16:
+        return
+    if g_ev_proto[child] == 0 or g_ev_proto[parent] == 0:
+        return
+    js_set_proto_v(g_ev_proto[child], g_ev_proto[parent])
+
+
 # Map a document.createEvent() interface name to a `flavor`, or -1 if the name
 # is not in the spec's legacy event-interface table. ASCII case-INSENSITIVE, and
 # the plural legacy aliases (Events/HTMLEvents/SVGEvents -> Event, MouseEvents ->
@@ -10825,25 +11183,138 @@ def _ascii_ci_eq(a: Ptr[uint8], an: int32, b: Ptr[uint8], bn: int32) -> int32:
     return 1
 
 
+# Was the event constructor called WITHOUT `new` on the global (`Event("x")` /
+# `window.Event("x")`)? Then `this` is the window, not a fresh instance, and
+# writing the event's fields into it would scribble over the global object.
+def _ev_this_is_global(v: int32) -> int32:
+    if v == js_win or v == js_doc:
+        return 1
+    return 0
+
+
+# ---- event-constructor dictionary readers -----------------------------------
+# Per WebIDL a dictionary argument that is undefined OR null means "every member
+# absent", and an ABSENT member takes the declared default — it is not read at
+# all. Before this, the constructor read members straight off the argument, so
+# `new Event("x", null)` threw "cannot read property 'bubbles' of null" (18 WPT
+# subtests) and a supplied-but-undefined member clobbered the default.
+def _evd_get(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    if js_type_of(opt) != TAG_OBJ:
+        return js_undefined()
+    return js_get_prop(opt, name, cast[uint64](n))
+
+
+def _evd_bool(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_UNDEF:
+        return 0
+    return js_to_bool(v)
+
+
+def _evd_num(opt: int32, name: Ptr[uint8], n: int32) -> float64:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_UNDEF:
+        return 0.0
+    return js_to_number(v)
+
+
+def _evd_str(opt: int32, name: Ptr[uint8], n: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    if js_type_of(v) == TAG_STR:
+        return v
+    if js_type_of(v) == TAG_UNDEF:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    sp: Ptr[uint8] = js_to_display(v)
+    return js_new_string(sp, cast[uint64](_cstr_len(sp)))
+
+
+# An interface-typed dictionary member (UIEventInit.view, MouseEventInit /
+# FocusEventInit.relatedTarget). Default null; a value of the WRONG type is a
+# TypeError when `strict` — WPT asserts `new UIEvent("x", {view: 7})` throws.
+def _evd_iface(opt: int32, name: Ptr[uint8], n: int32, strict: int32) -> int32:
+    v: int32 = _evd_get(opt, name, n)
+    t: int32 = js_type_of(v)
+    if t == TAG_OBJ:
+        return v
+    if t == TAG_UNDEF or t == TAG_NULL:
+        return js_null()
+    if strict != 0:
+        js_throw_type_error(cast[Ptr[uint8]]( \
+            "Failed to construct event: member is not of the expected type"))
+    return js_null()
+
+
+# The four EventModifierInit booleans shared by MouseEvent / KeyboardEvent /
+# WheelEvent. Written unconditionally so `"ctrlKey" in ev` is true even when the
+# dictionary omitted them (the WPT check is `property in event`, not truthiness).
+def _ev_modifiers(ev: int32, opt: int32):
+    js_set_prop(ev, cast[Ptr[uint8]]("ctrlKey"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("ctrlKey"), 7)))
+    js_set_prop(ev, cast[Ptr[uint8]]("shiftKey"), 8, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("shiftKey"), 8)))
+    js_set_prop(ev, cast[Ptr[uint8]]("altKey"), 6, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("altKey"), 6)))
+    js_set_prop(ev, cast[Ptr[uint8]]("metaKey"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("metaKey"), 7)))
+
+
+# Does this flavor inherit UIEvent? (UIEvent itself, and every interface whose
+# spec parent chain reaches it.)
+def _ev_is_ui(flavor: int32) -> int32:
+    if flavor == 2 or flavor == 3 or flavor == 4 or flavor == 6 or \
+       flavor == 9 or flavor == 10 or flavor == 14 or flavor == 15:
+        return 1
+    return 0
+
+
+# Does this flavor inherit MouseEvent? (MouseEvent, DragEvent, WheelEvent.)
+def _ev_is_mouse(flavor: int32) -> int32:
+    if flavor == 2 or flavor == 9 or flavor == 15:
+        return 1
+    return 0
+
+
 def _make_event(flavor: int32) -> int32:
-    ev: int32 = js_new_object_v()
-    if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
-        js_set_proto_v(ev, g_ev_proto[flavor])
+    # Initialise the RECEIVER when the call gave us one. `new Event(...)` and
+    # `super(type, init)` from a `class X extends Event` constructor both arrive
+    # with `this` already linked to the correct prototype. Minting a fresh
+    # object instead — what this did before — dropped every field on the floor
+    # for the subclass case (super() discards the return value), and branded
+    # `new UIEvent()` with Event.prototype so `instanceof UIEvent` was false.
+    ev: int32 = js_this()
+    if js_type_of(ev) != TAG_OBJ or _ev_this_is_global(ev) != 0:
+        ev = js_new_object_v()
+        if flavor >= 0 and flavor < 16 and g_ev_proto[flavor] != 0:
+            js_set_proto_v(ev, g_ev_proto[flavor])
     # type (arg0) — copied into a stable buffer first (js_str_ptr shares scratch).
     tn: int32 = 0
     if js_arg_count() >= 1:
         tn = _arg_bytes(0, &dom_idtmp[0], 256)
         if _is_undef_str(&dom_idtmp[0], tn) != 0:
             tn = 0
+    opt: int32 = js_undefined()
+    if js_arg_count() >= 2:
+        opt = js_arg(1)
     js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
                 js_new_string(&dom_idtmp[0], cast[uint64](tn)))
-    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, js_bool(0))
-    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(0))
+    # ---- EventInit ----------------------------------------------------------
+    js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("bubbles"), 7)))
+    js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("cancelable"), 10)))
+    js_set_prop(ev, cast[Ptr[uint8]]("composed"), 8, \
+                js_bool(_evd_bool(opt, cast[Ptr[uint8]]("composed"), 8)))
     js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
-    js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, js_null())
+    # isTrusted is a readonly Event attribute, NOT a dictionary member: a
+    # script-constructed event is always untrusted no matter what the init says.
+    js_set_prop(ev, cast[Ptr[uint8]]("isTrusted"), 9, js_bool(0))
     js_set_prop(ev, cast[Ptr[uint8]]("target"), 6, js_null())
     js_set_prop(ev, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
+    js_set_prop(ev, cast[Ptr[uint8]]("srcElement"), 10, js_null())
     js_set_prop(ev, cast[Ptr[uint8]]("eventPhase"), 10, js_number(cast[float64](0)))
+    g_ev_ts_tick = g_ev_ts_tick + 1
+    js_set_prop(ev, cast[Ptr[uint8]]("timeStamp"), 9, \
+                js_number(cast[float64](g_ev_ts_tick) * 0.005))
     js_set_prop(ev, cast[Ptr[uint8]]("preventDefault"), 14, \
                 js_new_native_fn(js_hbase + NID_PREVENT))
     js_set_prop(ev, cast[Ptr[uint8]]("stopPropagation"), 15, \
@@ -10851,36 +11322,159 @@ def _make_event(flavor: int32) -> int32:
     js_set_prop(ev, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
                 js_new_native_fn(js_hbase + NID_STOPIMMED))
     _event_constants(ev)
-    if flavor == 2:
-        # basic MouseEvent geometry (defaults 0)
-        js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, js_number(cast[float64](0)))
-        js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, js_number(cast[float64](0)))
-        js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, js_number(cast[float64](0)))
-    if flavor == 3:
-        js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, \
-                    js_new_string(cast[Ptr[uint8]](""), 0))
-    # options object (arg1)
-    if js_arg_count() >= 2:
-        opt: int32 = js_arg(1)
-        js_set_prop(ev, cast[Ptr[uint8]]("bubbles"), 7, \
-                    js_bool(js_to_bool(js_get_prop(opt, cast[Ptr[uint8]]("bubbles"), 7))))
-        js_set_prop(ev, cast[Ptr[uint8]]("cancelable"), 10, \
-                    js_bool(js_to_bool(js_get_prop(opt, cast[Ptr[uint8]]("cancelable"), 10))))
+    # ---- UIEventInit (view, detail) -----------------------------------------
+    if _ev_is_ui(flavor) != 0:
+        js_set_prop(ev, cast[Ptr[uint8]]("view"), 4, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("view"), 4, 1))
+        js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("detail"), 6)))
+    else:
+        # CustomEvent's detail is `any` with default null; plain Event keeps the
+        # null the dispatcher has always seen here.
+        js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, js_null())
         if flavor == 1:
-            js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, \
-                        js_get_prop(opt, cast[Ptr[uint8]]("detail"), 6))
-        if flavor == 2:
-            js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("clientX"), 7))))
-            js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("clientY"), 7))))
-            js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, \
-                        js_number(js_to_number(js_get_prop(opt, cast[Ptr[uint8]]("button"), 6))))
-        if flavor == 3:
-            kv: int32 = js_get_prop(opt, cast[Ptr[uint8]]("key"), 3)
-            if js_type_of(kv) == 4:
-                js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, kv)
+            dv: int32 = _evd_get(opt, cast[Ptr[uint8]]("detail"), 6)
+            if js_type_of(dv) != TAG_UNDEF:
+                js_set_prop(ev, cast[Ptr[uint8]]("detail"), 6, dv)
+    # ---- MouseEventInit -----------------------------------------------------
+    if _ev_is_mouse(flavor) != 0:
+        _ev_modifiers(ev, opt)
+        js_set_prop(ev, cast[Ptr[uint8]]("screenX"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("screenX"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("screenY"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("screenY"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("clientX"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("clientX"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("clientY"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("clientY"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("button"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("button"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("buttons"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("buttons"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("relatedTarget"), 13, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("relatedTarget"), 13, 0))
+    # ---- WheelEventInit -----------------------------------------------------
+    if flavor == 15:
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaX"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaX"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaY"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaY"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaZ"), 6, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaZ"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("deltaMode"), 9, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("deltaMode"), 9)))
+    # ---- KeyboardEventInit --------------------------------------------------
+    if flavor == 3:
+        _ev_modifiers(ev, opt)
+        js_set_prop(ev, cast[Ptr[uint8]]("key"), 3, \
+                    _evd_str(opt, cast[Ptr[uint8]]("key"), 3))
+        js_set_prop(ev, cast[Ptr[uint8]]("code"), 4, \
+                    _evd_str(opt, cast[Ptr[uint8]]("code"), 4))
+        js_set_prop(ev, cast[Ptr[uint8]]("location"), 8, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("location"), 8)))
+        js_set_prop(ev, cast[Ptr[uint8]]("repeat"), 6, \
+                    js_bool(_evd_bool(opt, cast[Ptr[uint8]]("repeat"), 6)))
+        js_set_prop(ev, cast[Ptr[uint8]]("isComposing"), 11, \
+                    js_bool(_evd_bool(opt, cast[Ptr[uint8]]("isComposing"), 11)))
+        js_set_prop(ev, cast[Ptr[uint8]]("charCode"), 8, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("charCode"), 8)))
+        js_set_prop(ev, cast[Ptr[uint8]]("keyCode"), 7, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("keyCode"), 7)))
+        js_set_prop(ev, cast[Ptr[uint8]]("which"), 5, \
+                    js_number(_evd_num(opt, cast[Ptr[uint8]]("which"), 5)))
+    # ---- FocusEventInit -----------------------------------------------------
+    if flavor == 10:
+        js_set_prop(ev, cast[Ptr[uint8]]("relatedTarget"), 13, \
+                    _evd_iface(opt, cast[Ptr[uint8]]("relatedTarget"), 13, 0))
+    # ---- CompositionEventInit / TextEvent -----------------------------------
+    if flavor == 6 or flavor == 14:
+        js_set_prop(ev, cast[Ptr[uint8]]("data"), 4, \
+                    _evd_str(opt, cast[Ptr[uint8]]("data"), 4))
     return ev
+
+
+# ---- AbortController / AbortSignal ------------------------------------------
+# Both were missing entirely. testharness.js's `t.get_signal()` builds an
+# AbortController, so a test that uses it aborts the whole FILE, not one
+# subtest — and `new AbortController()` is ordinary page code (fetch
+# cancellation, addEventListener({signal})), not an exotic corner.
+# Both interfaces keep their methods on the PROTOTYPE, not on the instance.
+# That is what a browser does, and here it is load-bearing: testharness.js
+# constructs an AbortController for EVERY Test object (line 2755) and aborts it
+# in cleanup, so a per-instance copy of four native functions is four objects
+# per subtest. On a 434-subtest file that alone exhausted the 40,000-slot object
+# pool and truncated the run.
+def _build_abort_interfaces():
+    g_proto_abortsig = _dom_interface(cast[Ptr[uint8]]("AbortSignal"), 11, \
+                                      g_proto_evtgt)
+    js_tag_object(g_proto_abortsig, cast[Ptr[uint8]]("AbortSignal"))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("addEventListener"), 16, \
+                js_new_native_fn(js_hbase + NID_ADDEVT))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("removeEventListener"), 19, \
+                js_new_native_fn(js_hbase + NID_REMEVT))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                js_new_native_fn(js_hbase + NID_DISPATCH))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("throwIfAborted"), 14, \
+                js_new_native_fn(js_hbase + NID_ABORT_THROW))
+    actor: int32 = js_new_native_fn(js_hbase + NID_ABORTCTRL)
+    js_global_set(cast[Ptr[uint8]]("AbortController"), 15, actor)
+    g_proto_abortctl = js_fn_prototype(actor)
+    js_tag_object(g_proto_abortctl, cast[Ptr[uint8]]("AbortController"))
+    js_set_prop(g_proto_abortctl, cast[Ptr[uint8]]("abort"), 5, \
+                js_new_native_fn(js_hbase + NID_ABORT))
+
+
+def _new_abort_signal() -> int32:
+    sig: int32 = js_new_object_v()
+    if g_proto_abortsig != 0:
+        js_set_proto_v(sig, g_proto_abortsig)
+    js_set_prop(sig, cast[Ptr[uint8]]("aborted"), 7, js_bool(0))
+    js_set_prop(sig, cast[Ptr[uint8]]("reason"), 6, js_undefined())
+    js_set_prop(sig, cast[Ptr[uint8]]("onabort"), 7, js_null())
+    return sig
+
+
+def _make_abort_controller() -> int32:
+    ac: int32 = js_this()
+    if js_type_of(ac) != TAG_OBJ or _ev_this_is_global(ac) != 0:
+        ac = js_new_object_v()
+        if g_proto_abortctl != 0:
+            js_set_proto_v(ac, g_proto_abortctl)
+    js_set_prop(ac, cast[Ptr[uint8]]("signal"), 6, _new_abort_signal())
+    return ac
+
+
+# controller.abort([reason]) — idempotent. The default reason is an AbortError
+# DOMException, which is what `signal.throwIfAborted()` and a rejected fetch
+# both surface.
+def _abort_controller_abort() -> int32:
+    ac: int32 = js_this()
+    if js_type_of(ac) != TAG_OBJ:
+        return js_undefined()
+    sig: int32 = js_get_prop(ac, cast[Ptr[uint8]]("signal"), 6)
+    if js_type_of(sig) != TAG_OBJ:
+        return js_undefined()
+    if js_to_bool(js_get_prop(sig, cast[Ptr[uint8]]("aborted"), 7)) != 0:
+        return js_undefined()
+    rsn: int32 = js_undefined()
+    if js_arg_count() >= 1:
+        rsn = js_arg(0)
+    if js_type_of(rsn) == TAG_UNDEF:
+        rsn = _new_domexc(cast[Ptr[uint8]]("AbortError"), 10, \
+                          cast[Ptr[uint8]]("signal is aborted without reason"), 32)
+    js_set_prop(sig, cast[Ptr[uint8]]("aborted"), 7, js_bool(1))
+    js_set_prop(sig, cast[Ptr[uint8]]("reason"), 6, rsn)
+    # Only build and dispatch the `abort` event when something is listening.
+    # An abort with no listener is the overwhelmingly common case (testharness
+    # aborts its per-Test controller in cleanup) and the event object plus its
+    # method set is ~10 objects a time.
+    if _obj_has_listener(sig, cast[Ptr[uint8]]("abort"), 5) != 0 or \
+       js_is_callable(js_get_prop(sig, cast[Ptr[uint8]]("onabort"), 7)) != 0:
+        ev: int32 = _blank_event(0)
+        js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
+                    js_new_string(cast[Ptr[uint8]]("abort"), 5))
+        ignore_ad: int32 = _obj_dispatch(sig, cast[Ptr[uint8]]("abort"), 5, ev, 0)
+    return js_undefined()
 
 
 # `new Image()` / `new Image(w, h)` -> a minimal HTMLImageElement stub. Real

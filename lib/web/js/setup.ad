@@ -1755,6 +1755,12 @@ def obj_add_const(objv: int32, name: Ptr[uint8], x: float64):
 # prototypes chain to Error.prototype.
 def install_error(name: Ptr[uint8], native_id: int32, super_ctor: int32) -> int32:
     fv: int32 = v_new_native(native_id)
+    # The CONSTRUCTOR's own `name` ("Error" / "TypeError" / ...). Native function
+    # objects carry no name, and assert_throws_js identifies the Error base by
+    # `obj.name === "Error"` while walking the constructor's prototype chain.
+    fnk: int32 = str_from_cstr(cast[Ptr[uint8]]("name"))
+    obj_set(objid_of(fv), fnk, v_string_cstr(name))
+    obj_mark_nonenum(objid_of(fv), fnk)
     proto: int32 = v_new_object()
     pnk: int32 = str_from_cstr(cast[Ptr[uint8]]("name"))
     obj_set(objid_of(proto), pnk, v_string_cstr(name))
@@ -1763,6 +1769,11 @@ def install_error(name: Ptr[uint8], native_id: int32, super_ctor: int32) -> int3
         basep: int32 = obj_get(objid_of(super_ctor), str_from_cstr(cast[Ptr[uint8]]("prototype")))
         if tag_of(basep) == TAG_OBJ:
             obj_proto[objid_of(proto)] = objid_of(basep)
+        # ES 20.5.6.2: NativeError's [[Prototype]] is the Error CONSTRUCTOR, not
+        # Function.prototype. testharness.js's assert_throws_js walks exactly
+        # this chain looking for a function named "Error" and rejects the
+        # assertion outright ("is not an Error subtype") when it runs out.
+        obj_proto[objid_of(fv)] = objid_of(super_ctor)
     else:
         # Error.prototype itself carries the shared toString + the default
         # `message` (""). ES 20.5.3: the SUBCLASS prototypes get neither — they
@@ -1776,6 +1787,15 @@ def install_error(name: Ptr[uint8], native_id: int32, super_ctor: int32) -> int3
     epk: int32 = str_from_cstr(cast[Ptr[uint8]]("prototype"))
     obj_set(objid_of(fv), epk, proto)
     obj_mark_nonenum(objid_of(fv), epk)
+    # ES 20.5.3.1 / 20.5.6.3.1: <Error>.prototype.constructor is the constructor
+    # itself, non-enumerable. Without it, an engine-thrown TypeError reported
+    # `e.constructor` as the bare Object prototype's — and testharness.js's
+    # assert_throws_js ends with exactly `e.constructor === TypeError`, so every
+    # assert_throws_js in the suite failed with "is not an Error subtype" even
+    # though `e instanceof TypeError` was already true.
+    eck: int32 = str_from_cstr(cast[Ptr[uint8]]("constructor"))
+    obj_set(objid_of(proto), eck, fv)
+    obj_mark_nonenum(objid_of(proto), eck)
     env_define(g_env, str_from_cstr(name), fv, 0)
     return fv
 

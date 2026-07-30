@@ -1315,6 +1315,21 @@ NID_CREATEATTR:   int32 = 246        # document.createAttribute(localName)
 NID_CREATEATTRNS: int32 = 247        # document.createAttributeNS(ns, qualifiedName)
 NID_GETATTRNODE:  int32 = 248        # element.getAttributeNode(name)
 NID_GETATTRNODENS: int32 = 249       # element.getAttributeNodeNS(ns, localName)
+# --- constructable event subclasses (round 11) -------------------------------
+# UIEvent / FocusEvent / CompositionEvent / WheelEvent were previously wired to
+# NID_EVENT_CTOR, which minted a PLAIN Event: `new UIEvent(...) instanceof
+# UIEvent` was false and none of the interface's dictionary members existed.
+# Each now has its own native so _make_event knows which interface's dictionary
+# to read (dom/events/Event-subclasses-constructors.html).
+NID_UIEVENT:      int32 = 250        # new UIEvent(type, {view, detail})
+NID_FOCUSEVENT:   int32 = 251        # new FocusEvent(type, {relatedTarget, ...})
+NID_COMPEVENT:    int32 = 252        # new CompositionEvent(type, {data, ...})
+NID_WHEELEVENT:   int32 = 253        # new WheelEvent(type, {deltaX, ...})
+NID_CREATEATTR_XML: int32 = 254      # xmlDoc.createAttribute(name) — case-PRESERVING
+# --- AbortController / AbortSignal -------------------------------------------
+NID_ABORTCTRL:    int32 = 255        # new AbortController()
+NID_ABORT:        int32 = 256        # controller.abort([reason])
+NID_ABORT_THROW:  int32 = 257        # signal.throwIfAborted()
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1404,6 +1419,11 @@ g_proto_tw:    int32 = 0             # TreeWalker.prototype
 g_proto_ni:    int32 = 0             # NodeIterator.prototype
 g_nodefilter:  int32 = 0             # the global NodeFilter constants object
 g_proto_nnm:   int32 = 0             # NamedNodeMap.prototype
+g_proto_evtgt: int32 = 0             # EventTarget.prototype (root of Node)
+g_proto_nodelist: int32 = 0          # NodeList.prototype (chains Array.prototype)
+g_proto_htmlcoll: int32 = 0          # HTMLCollection.prototype (ditto)
+g_proto_abortsig: int32 = 0          # AbortSignal.prototype
+g_proto_abortctl: int32 = 0          # AbortController.prototype
 g_proto_html:  int32 = 0             # HTMLHtmlElement.prototype
 g_proto_head:  int32 = 0             # HTMLHeadElement.prototype
 g_proto_body:  int32 = 0             # HTMLBodyElement.prototype
@@ -1420,6 +1440,25 @@ g_domexc_ctor: int32 = 0             # the DOMException constructor VALUE. Kept 
 # each created event with EXACTLY window[iface].prototype, so we stash the same
 # object handle here that we handed the global constructor.
 g_ev_proto: Array[16, int32]
+
+# Event.timeStamp cursor. This engine has no wall clock (see date.ad: Date.now()
+# is a monotonic counter, deliberately, so renders stay byte-identical), but
+# timeStamp must still ADVANCE: WPT's Event-timestamp-safe-resolution spins
+# `do { e2 = new MouseEvent(...) } while (e2.timeStamp - e1.timeStamp == 0)`,
+# which never terminates against a constant. One tick per constructed event, in
+# units of 5 microseconds — the coarsest resolution the same test will accept
+# (it asserts the estimated resolution is >= 5us, i.e. NOT better than that).
+g_ev_ts_tick: int32 = 0
+
+# getElementsByClassName's argument, copied out of the JS string scratch before
+# the element walk (which calls back into the JS API and would clobber it).
+gbc_arg: Array[1024, uint8]
+
+# Node.textContent accumulator (see _node_text_content). One buffer, refilled
+# per read; 64 KiB is the same ceiling the innerHTML serialiser works to.
+TC_CAP: int32 = 65535
+tc_buf: Array[65536, uint8]
+tc_n: int32 = 0
 
 # close-tag scan results
 g_close_lt:  uint64 = 0
@@ -1512,6 +1551,12 @@ def _dom_reset():
     g_proto_ni = 0
     g_nodefilter = 0
     g_proto_nnm = 0
+    g_proto_evtgt = 0
+    g_proto_nodelist = 0
+    g_proto_htmlcoll = 0
+    g_proto_abortsig = 0
+    g_proto_abortctl = 0
+    g_ev_ts_tick = 0
     g_proto_html = 0
     g_proto_head = 0
     g_proto_body = 0
