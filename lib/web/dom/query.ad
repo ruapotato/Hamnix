@@ -1386,6 +1386,11 @@ def _attach_childnode_mixin(p: int32):
                 js_new_native_fn(js_hbase + NID_CN_AFTER))
     js_set_prop(p, cast[Ptr[uint8]]("replaceWith"), 11, \
                 js_new_native_fn(js_hbase + NID_CN_REPLWITH))
+    # remove() is a ChildNode member, not an Element one: a Text, Comment,
+    # ProcessingInstruction or DocumentType has it too. It was only on the
+    # element natives, so `textNode.remove()` was a TypeError.
+    js_set_prop(p, cast[Ptr[uint8]]("remove"), 6, \
+                js_new_native_fn(js_hbase + NID_REMOVE))
 
 
 # The ParentNode mixin: prepend / replaceChildren (append already lives on the

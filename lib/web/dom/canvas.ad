@@ -510,7 +510,9 @@ def _cre_make_element(tp: Ptr[uint8], tl: int32) -> int32:
     cre_is_text[cid] = 0
     cre_gone[cid] = 0
     co: int32 = js_new_object_v()
-    js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, js_new_string(&dom_txtbuf[0], 0))
+    # NO own `textContent` here: it would shadow the computed Node.prototype
+    # accessor for this element's whole life (that own property is exactly why
+    # `el.appendChild(text)` never showed up in el.textContent).
     js_set_prop(co, cast[Ptr[uint8]]("id"), 2, js_new_string(&dom_txtbuf[0], 0))
     js_set_prop(co, cast[Ptr[uint8]]("className"), 9, js_new_string(&dom_txtbuf[0], 0))
     js_set_prop(co, cast[Ptr[uint8]]("tagName"), 7, \
@@ -681,9 +683,6 @@ def _frag_close_top(depth: int32):
     if cid < 0:
         return
     co: int32 = cre_obj[cid]
-    ts: int32 = frag_st_txt[depth]
-    js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&frag_txt[ts], cast[uint64](frag_txt_w - ts)))
     arr: int32 = frag_st_arr[depth]
     js_set_prop(co, cast[Ptr[uint8]]("children"), 8, arr)
     js_set_prop(co, cast[Ptr[uint8]]("childNodes"), 10, arr)
@@ -933,10 +932,6 @@ def _apply_inner_html(thisv: int32, vp: Ptr[uint8], vn: int32):
         js_set_prop(rtc, cast[Ptr[uint8]]("parentElement"), 13, thisv)
         rti = rti + 1
     _wire_sibling_links(root, js_null())
-    # keep .textContent consistent with the new subtree (innerHTML raw-override
-    # still wins in render, so this only affects a subsequent JS read).
-    js_set_prop(thisv, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&frag_txt[0], cast[uint64](frag_txt_w)))
     fc: int32 = js_null()
     lc: int32 = js_null()
     if js_array_len(root) > 0:
@@ -2354,40 +2349,128 @@ def _frag_clear(fragv: int32):
     js_set_prop(fragv, cast[Ptr[uint8]]("lastChild"), 9, js_null())
 
 
-# Extend `parentv`'s live .textContent with an appended TEXT node's data.
-# Element children are deliberately excluded: they render through the
-# created-node emitter, and a textContent override on their parent would make
-# the readback flatten the whole subtree to escaped text.
-def _append_sync_text(parentv: int32, childv: int32):
-    cid2: int32 = _find_cre_by_obj(childv)
-    # cre_is_text is a KIND now (1 text, 2 comment, 3 processing instruction).
-    # Only a real Text child contributes to the parent's textContent: a comment
-    # or a PI must not, or `<div><!--x--></div>`.textContent reads back "x".
-    if cid2 < 0 or cre_is_text[cid2] != 1:
+# ---- Node.textContent, computed ---------------------------------------------
+# Written against the JS-VISIBLE node shape (nodeType / childNodes / data), so
+# ONE implementation serves created elements, DocumentFragments, Documents,
+# DocumentTypes and character data alike. Source-anchored elements keep the
+# cheap [cstart,cend) slice (see NID_TC_GET).
+#
+# It replaces a CACHE that was maintained incrementally on append
+# (_append_sync_text) and could only ever see direct Text children: an element
+# whose text sat one level down read back "" (WPT "Element with descendants"),
+# and any structural change that was not an append left the cache stale.
+def _tc_append_str(sv: int32):
+    if js_type_of(sv) != TAG_STR:
         return
-    tsbuf: Array[8192, uint8]
-    tw: int32 = 0
-    exv: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("textContent"), 11)
-    exp2: Ptr[uint8] = js_str_ptr(exv)
-    exn: int32 = _cstr_len(exp2)
-    if _is_undef_str(exp2, exn) != 0:
-        exn = 0
+    p: Ptr[uint8] = js_str_bytes(sv)
+    n: int32 = js_str_bytelen(sv)
+    if _is_undef_str(p, n) != 0:
+        return
     i: int32 = 0
-    while i < exn and tw < 8191:
-        tsbuf[tw] = exp2[i]
-        tw = tw + 1
+    while i < n and tc_n < TC_CAP:
+        tc_buf[tc_n] = p[i]
+        tc_n = tc_n + 1
         i = i + 1
-    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, \
-                                cast[Ptr[uint8]]("textContent"), 11))
-    nvn: int32 = _cstr_len(nvp)
-    if _is_undef_str(nvp, nvn) == 0:
-        j: int32 = 0
-        while j < nvn and tw < 8191:
-            tsbuf[tw] = nvp[j]
-            tw = tw + 1
-            j = j + 1
-    js_set_prop(parentv, cast[Ptr[uint8]]("textContent"), 11, \
-                js_new_string(&tsbuf[0], cast[uint64](tw)))
+
+
+def _tc_walk(v: int32, depth: int32):
+    if depth > 64 or js_type_of(v) != TAG_OBJ:
+        return
+    nt: int32 = _nd_type(v)
+    if nt == 3 or nt == 4:                                # Text / CDATASection
+        _tc_append_str(js_get_prop(v, cast[Ptr[uint8]]("data"), 4))
+        return
+    if nt == 7 or nt == 8:                                # PI / Comment: nothing
+        return
+    kids: int32 = _nd_kids(v)
+    if kids == 0:
+        return
+    i: int32 = 0
+    n: int32 = js_array_len(kids)
+    while i < n:
+        _tc_walk(js_array_get(kids, i), depth + 1)
+        i = i + 1
+
+
+def _node_text_content(v: int32) -> int32:
+    nt: int32 = _nd_type(v)
+    if nt == 0:
+        return js_undefined()                             # not a node
+    if nt == 9 or nt == 10:                               # Document / DocumentType
+        return js_null()
+    if nt == 2:                                           # Attr: its value
+        return js_get_prop(v, cast[Ptr[uint8]]("value"), 5)
+    if nt == 3 or nt == 4 or nt == 7 or nt == 8:
+        dv: int32 = js_get_prop(v, cast[Ptr[uint8]]("data"), 4)
+        if js_type_of(dv) == TAG_STR:
+            return dv
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    tc_n = 0
+    _tc_walk(v, 0)
+    return js_new_string(&tc_buf[0], cast[uint64](tc_n))
+
+
+# DOM "string replace all": detach every child, then append one Text node when
+# the new value is neither null/undefined nor the empty string.
+def _node_set_text_content(v: int32, val: int32):
+    nt: int32 = _nd_type(v)
+    if nt == 9 or nt == 10:
+        return                                            # Document/DocumentType: no-op
+    if nt == 3 or nt == 4 or nt == 7 or nt == 8:
+        js_set_prop(v, cast[Ptr[uint8]]("data"), 4, val)   # CharacterData: it IS the data
+        return
+    if nt == 2:
+        # An Attr's textContent IS its value -- it has no children. Falling
+        # into the element branch below gave it a childNodes array with a Text
+        # node in it, which made its Range "node length" 1 instead of 0.
+        js_set_own(v, cast[Ptr[uint8]]("value"), 5, val)
+        js_set_own(v, cast[Ptr[uint8]]("nodeValue"), 9, val)
+        return
+    kids: int32 = _nd_kids(v)
+    if kids != 0:
+        i: int32 = 0
+        n: int32 = js_array_len(kids)
+        while i < n:
+            ch: int32 = js_array_get(kids, i)
+            if js_type_of(ch) == TAG_OBJ:
+                # Unlink, but leave the removed node's OWN subtree intact — WPT
+                # asserts the detached child still has its three children.
+                js_set_prop(ch, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("previousSibling"), 15, js_null())
+                js_set_prop(ch, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+                cgi: int32 = _find_cre_by_obj(ch)
+                if cgi >= 0:
+                    cre_gone[cgi] = 1
+            i = i + 1
+    newkids: int32 = js_new_array_v()
+    newels: int32 = js_new_array_v()
+    tv: int32 = js_null()
+    tn2: int32 = 0
+    # The IDL type is DOMString?, so a non-string (42) is STRINGIFIED, not
+    # dropped: `el.textContent = 42` must leave one Text child reading "42".
+    sval: int32 = val
+    if js_type_of(val) != TAG_NULL and js_type_of(val) != TAG_UNDEF:
+        if js_type_of(val) != TAG_STR:
+            svp: Ptr[uint8] = js_to_display(val)
+            sval = js_new_string(svp, cast[uint64](_cstr_len(svp)))
+        tn2 = js_str_bytelen(sval)
+        if _is_undef_str(js_str_bytes(sval), tn2) != 0:
+            tn2 = 0
+    if tn2 > 0:
+        tv = _cre_make_text(sval)
+        if tv > 0 and js_type_of(tv) == TAG_OBJ:
+            js_set_prop(tv, cast[Ptr[uint8]]("parentNode"), 10, v)
+            js_set_prop(tv, cast[Ptr[uint8]]("parentElement"), 13, v)
+            js_array_push(newkids, tv)
+        else:
+            tv = js_null()
+    js_set_own(v, cast[Ptr[uint8]]("childNodes"), 10, newkids)
+    js_set_own(v, cast[Ptr[uint8]]("children"), 8, newels)
+    js_set_prop(v, cast[Ptr[uint8]]("firstChild"), 10, tv)
+    js_set_prop(v, cast[Ptr[uint8]]("lastChild"), 9, tv)
+    js_set_prop(v, cast[Ptr[uint8]]("firstElementChild"), 17, js_null())
+    js_set_prop(v, cast[Ptr[uint8]]("lastElementChild"), 16, js_null())
 
 
 # parent.appendChild(child) with explicit values — shared by the NID_APPEND
@@ -2426,10 +2509,7 @@ def _append_child_v(parentv: int32, childv: int32):
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
     # A TEXT child extends the parent's live textContent. Without this an
-    # `appendChild(document.createTextNode("x"))` left `.textContent` at "" —
-    # which is exactly how React writes every string child, so a rendered React
-    # tree read back empty.
-    _append_sync_text(parentv, childv)
+
 
 
 # Build the `port1`/`port2` pair of a MessageChannel. Each port carries a hidden
@@ -2613,12 +2693,15 @@ def _inner_accessor(rel: int32) -> int32:
     idx: int32 = _find_el_by_obj(thisv)
     if rel == NID_TC_GET:
         if idx < 0:
-            return js_undefined()
+            return _node_text_content(thisv)
         n: int32 = _text_into_tw(cast[uint64](dom_cstart[idx]), \
                                  cast[uint64](dom_cend[idx]))
-        v: int32 = js_new_string(&tw_buf[0], cast[uint64](n))
-        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, v)
-        return v
+        # NOT memoised. js_set_own here installed an own data property that
+        # shadowed this accessor for the rest of the element's life, so the
+        # FIRST read froze textContent at its parse-time value AND marked the
+        # element as script-modified for the render readback. Same bug the
+        # innerHTML getter above already had removed.
+        return js_new_string(&tw_buf[0], cast[uint64](n))
     if rel == NID_IH_GET:
         if idx < 0:
             ccid: int32 = _find_cre_by_obj(thisv)
@@ -2666,6 +2749,16 @@ def _inner_accessor(rel: int32) -> int32:
     if js_arg_count() > 0:
         val = js_arg(0)
     if rel == NID_TC_SET:
+        if idx < 0:
+            # Created element / DocumentFragment: run the SPEC algorithm --
+            # replace every child with (at most) one Text node. Storing the
+            # string as an own property, which is all this did, left
+            # firstChild/childNodes pointing at the old children and the
+            # detached ones still claiming the node as their parent.
+            _node_set_text_content(thisv, val)
+            if mreg_n != 0:
+                _mo_record_chardata(thisv)
+            return js_undefined()
         js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, val)
         if mreg_n != 0:
             _mo_record_chardata(thisv)
@@ -3414,7 +3507,7 @@ def _nd_normalize(n: int32, depth: int32):
                 merged: int32 = _nd_concat(pv, dv)
                 js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
                 js_set_prop(prev, cast[Ptr[uint8]]("nodeValue"), 9, merged)
-                js_set_prop(prev, cast[Ptr[uint8]]("textContent"), 11, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
                 js_set_prop(prev, cast[Ptr[uint8]]("length"), 6, \
                             js_number(cast[float64](js_str_bytelen(merged))))
                 js_set_prop(c, cast[Ptr[uint8]]("parentNode"), 10, js_null())
@@ -5427,8 +5520,6 @@ def _js_host_dispatch(id: int32) -> int32:
                     js_get_prop(base, cast[Ptr[uint8]]("id"), 2))
         js_set_prop(clo, cast[Ptr[uint8]]("className"), 9, \
                     js_get_prop(base, cast[Ptr[uint8]]("className"), 9))
-        js_set_prop(clo, cast[Ptr[uint8]]("textContent"), 11, \
-                    js_get_prop(base, cast[Ptr[uint8]]("textContent"), 11))
         js_set_prop(clo, cast[Ptr[uint8]]("innerHTML"), 9, \
                     js_get_prop(base, cast[Ptr[uint8]]("innerHTML"), 9))
         js_set_prop(clo, cast[Ptr[uint8]]("style"), 5, _new_style_obj())
@@ -5483,8 +5574,6 @@ def _js_host_dispatch(id: int32) -> int32:
         cre_is_text[cid] = 0
         cre_gone[cid] = 0
         co: int32 = js_new_object_v()
-        js_set_prop(co, cast[Ptr[uint8]]("textContent"), 11, \
-                    js_new_string(&dom_txtbuf[0], 0))
         js_set_prop(co, cast[Ptr[uint8]]("id"), 2, js_new_string(&dom_txtbuf[0], 0))
         js_set_prop(co, cast[Ptr[uint8]]("className"), 9, \
                     js_new_string(&dom_txtbuf[0], 0))
@@ -5887,8 +5976,6 @@ def _js_host_dispatch(id: int32) -> int32:
                 js_set_prop(apobj, cast[Ptr[uint8]]("parentElement"), 13, js_this())
                 _mo_record_childlist(js_this(), apobj, -1)
             apai = apai + 1
-        js_set_prop(js_this(), cast[Ptr[uint8]]("textContent"), 11, \
-                    js_new_string(&apbuf[0], cast[uint64](apw)))
         _wire_sibling_links(apchildren, js_this())
         return js_undefined()
     if rel == NID_INSBEF:
@@ -6537,7 +6624,6 @@ def _new_attr_obj(np: Ptr[uint8], nn: int32, valv: int32, ownerv: int32) -> int3
     js_set_prop(a, cast[Ptr[uint8]]("prefix"), 6, pv)
     js_set_prop(a, cast[Ptr[uint8]]("value"), 5, valv)
     js_set_prop(a, cast[Ptr[uint8]]("nodeValue"), 9, valv)
-    js_set_prop(a, cast[Ptr[uint8]]("textContent"), 11, valv)
     js_set_prop(a, cast[Ptr[uint8]]("nodeType"), 8, js_number(2.0))
     js_set_prop(a, cast[Ptr[uint8]]("namespaceURI"), 12, js_null())
     js_set_prop(a, cast[Ptr[uint8]]("specified"), 9, js_bool(1))
@@ -6785,7 +6871,6 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
         js_set_prop(tnode, cast[Ptr[uint8]]("__cd"), 4, titlev)
-        js_set_prop(tnode, cast[Ptr[uint8]]("textContent"), 11, titlev)
         _bare_append(titleel, tnode)
         _bare_append(headel, titleel)
     _bare_append(htmlel, headel)
@@ -7572,6 +7657,13 @@ def _build_dom_interfaces():
     # normalize / isEqualNode / lookupNamespaceURI instead of reporting them
     # `undefined` (94 WPT subtests were failing on the missing-method TypeError).
     _attach_node_natives(g_proto_node)
+    # textContent lives on NODE.prototype, so DocumentFragment / Document /
+    # DocumentType get it too (a fragment reported `undefined`). CharacterData's
+    # own accessor over the __cd backing field shadows this for text-like nodes,
+    # and Element's identical pair keeps the source-slice fast path.
+    js_define_accessor(g_proto_node, cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_native_fn(js_hbase + NID_TC_GET), \
+                       js_new_native_fn(js_hbase + NID_TC_SET))
     g_proto_elem = _dom_interface(cast[Ptr[uint8]]("Element"), 7, g_proto_node)
     # HTMLElement inherits Element; elements are branded with the HTMLElement
     # prototype so `el instanceof HTMLElement`, `instanceof Element` and

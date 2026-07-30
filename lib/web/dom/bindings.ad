@@ -1454,6 +1454,12 @@ g_ev_ts_tick: int32 = 0
 # the element walk (which calls back into the JS API and would clobber it).
 gbc_arg: Array[1024, uint8]
 
+# Node.textContent accumulator (see _node_text_content). One buffer, refilled
+# per read; 64 KiB is the same ceiling the innerHTML serialiser works to.
+TC_CAP: int32 = 65535
+tc_buf: Array[65536, uint8]
+tc_n: int32 = 0
+
 # close-tag scan results
 g_close_lt:  uint64 = 0
 g_close_end: uint64 = 0
