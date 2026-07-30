@@ -47,17 +47,20 @@
 #            hrtimer expiry callback from the timer ISR) while four
 #            syscall-free ring-3 hogs hold the cpu. THIS IS THE MOUSE'S SHAPE
 #            and it is the tightest of the three.
-#            MEASURED: mean ~13 us, max well under 1 ms.
+#            MEASURED: mean 13-75 us, max 42-202 us typical; an occasional
+#            single sample reaches one tick. Repeating it with nice -20 hogs
+#            (a 200 ms slice instead of 50 ms) did NOT lengthen the tail.
 #
 # WHAT THE MEASUREMENT RULED OUT (do not re-derive this)
 # -----------------------------------------------------
 #   * "the pointer path is a normal-priority task competing fairly with hogs"
 #     — ruled out. All three shapes are serviced within one tick or better
 #     with four nice-0 hogs at 100% CPU.
-#   * "timeslices are too coarse" — ruled out. SCHED_QUANTUM_TICKS is 5 (50 ms
-#     at nice 0) and SCHED_QUANTUM_MAX is 20 (200 ms), but no measured wake
-#     ever waited a quantum. A woken task keeps its stale, low vruntime and so
-#     wins the very next _pick_next.
+#   * "timeslices are too coarse" — ruled out, and disproved directly by
+#     re-running the irq arm with nice -20 hogs: a 4x longer incumbent slice
+#     produced no longer a tail. A woken task keeps its stale, low vruntime,
+#     so it wins the very next _pick_next — and picks happen far more often
+#     than once per quantum, because every blocking syscall is a pick.
 #   * "input IRQ work is deferred behind a queue a hog starves" — ruled out.
 #     The probe kept its full 100 Hz cadence (probe iteration count advances
 #     by ~1 per tick) throughout the loaded window.

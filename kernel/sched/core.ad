@@ -2320,38 +2320,72 @@ def sched_quantum_for(slot: uint64) -> uint64:
 # that client is an ordinary task which has to be SCHEDULED before it can
 # repaint. Clicks, drags, menu tracking and hover all live on that path.
 #
-# THE BUG. This scheduler had NO wakeup preemption of any kind. wq_wake_one /
-# wq_wake_slot flipped the waiter WAIT->READY, homed it on a runqueue and sent
-# a directed reschedule IPI — but:
-#   * the IPI handler is a counter; it only knocks an IDLE cpu out of HLT, so
-#     a cpu that is busy running a hog ignores it entirely; and
-#   * preempt_tick() only switches when the RUNNING task's quantum has drained
-#     (SCHED_QUANTUM_TICKS = 5 ticks = 50 ms at nice 0, up to
-#     SCHED_QUANTUM_MAX = 20 ticks = 200 ms for a nice -20 hog).
-# So a woken task waited for the hog's remaining slice: uniform in [0, 50] ms
-# at nice 0. Every pointer event, every keystroke, every IPC reply. At a 100 Hz
-# event rate that is exactly the "stutter" the user described — the cursor
-# glyph (kernel-drawn) kept moving while the thing under it did not respond.
+# WHAT WAS MEASURED, AND WHAT IT RULED OUT (scripts/test_wakeup_latency.sh)
+# ------------------------------------------------------------------------
+# The obvious hypothesis was that this scheduler had NO wakeup preemption at
+# all — which is TRUE. wq_wake_one / wq_wake_slot flipped the waiter
+# WAIT->READY, homed it on a runqueue and sent a directed reschedule IPI, but
+# the IPI handler is a counter (it only knocks an IDLE cpu out of HLT, so a
+# cpu running a hog ignores it), and preempt_tick() only switched when the
+# RUNNING task's quantum had drained: SCHED_QUANTUM_TICKS = 5 ticks = 50 ms at
+# nice 0, up to SCHED_QUANTUM_MAX = 20 ticks = 200 ms for a nice -20 hog. On
+# paper every wakeup should therefore have waited a uniform [0, 50] ms.
 #
-# THE FIX (Linux's check_preempt_curr + preempt_schedule_irq, kept targeted):
-#   1. On a wakeup, compare the woken task against whatever is running on the
-#      runqueue it was homed to. If it OUTRANKS it (realtime beats CFS; within
-#      CFS a vruntime advantage of more than WAKEUP_GRANULARITY_V), raise that
-#      cpu's need_resched flag.
-#   2. Consume need_resched at the two safe preemption points that already
-#      exist: the timer tick (preempt_tick, ring 3 only) and — the one that
-#      makes this sub-millisecond — IRQ return to ring 3 in do_irq(). A mouse
-#      IRQ that wakes the client therefore switches to it BEFORE returning to
-#      the hog, instead of at the end of the hog's slice.
-#   3. The directed reschedule IPI already sent by sched_make_ready_on now has
-#      teeth on a BUSY remote cpu: it lands in do_irq, which sees the flag.
+# IT DOES NOT. Measured on KVM, -smp 1, with four nice-0 syscall-free ring-3
+# hogs pinning the cpu at 100%, across all three shapes a wakeup can take:
 #
-# WHY THE GRANULARITY TERM MATTERS. Without it every wakeup preempts, and a
-# chatty producer/consumer pair would ping-pong the cpu at the wake rate. The
-# threshold is the standard sysctl_sched_wakeup_granularity: the waker must be
-# ahead by more than ~1 ms of nice-0 vruntime before it is worth a switch.
-# It costs latency only for tasks that are ALREADY nearly caught up, i.e. ones
-# that were about to be picked anyway.
+#   waker blocks right after waking (pipe ping-pong)
+#       99.96% of round trips under 1 ms, n = 90,670.
+#       The waker's own schedule() hands the cpu straight to the woken task
+#       via the lowest-vruntime pick. No hog can get between them.
+#   waker keeps the cpu (event posted from a syscall, then ring-3 burn)
+#       uniform over [0, 10] ms, max 10.2 ms, n = 60.
+#       Bounded by the 100 Hz TICK, not by the quantum.
+#   waker is an INTERRUPT (the mouse's shape: hrtimer expiry callback in the
+#   timer ISR force-waking a wait-queue sleeper)
+#       mean 13-75 us, max 42-202 us typical, n = 444-511 per window.
+#       An occasional single sample reaches one tick.
+#
+# Repeated with nice -20 hogs (a 200 ms slice, 4x longer): max 10.0 ms. A
+# 4x-longer slice did NOT produce a 4x-longer tail, which is the direct
+# refutation — the incumbent's slice is not what bounds this.
+#
+# WHY the quantum never binds: a task that slept keeps its stale, LOW vruntime
+# while the hogs' vruntimes advance, so the moment any pick happens the
+# sleeper wins it — and picks happen far more often than once per quantum,
+# because every blocking syscall anywhere in the system is a pick.
+#
+# So the following are RULED OUT as causes of the user's mouse stutter:
+#   * "the pointer path is a normal-priority task competing fairly with hogs"
+#   * "timeslices are simply too coarse"
+#   * "input IRQ work is deferred behind a queue a hog starves" — the probe
+#     held its full 100 Hz cadence throughout every loaded window.
+# The cursor-glyph half was separately attributed to interrupt latency in the
+# syscall path (IA32_FMASK clears EFLAGS.IF); see devmouse.ad.
+#
+# WHAT IS KEPT, AND WHY IT IS A BOUND AND NOT A FIX
+# -------------------------------------------------
+# check_preempt_curr: on a wakeup, compare the woken task against whatever is
+# running on the runqueue it was homed to, and if it outranks it (realtime
+# beats CFS; within CFS a vruntime advantage of more than WAKEUP_GRANULARITY_V)
+# raise that cpu's need_resched. preempt_tick() honours the flag on a ring-3
+# tick even when the quantum has not drained.
+#
+# This is retained deliberately and modestly. It did NOT improve any measured
+# distribution and it did not cost any measured throughput (hog iteration
+# counts were within run-to-run noise both ways), so it is NOT presented as
+# the fix for the user's report. What it buys is a STATED BOUND: without it
+# the code offers no upper bound on wake->dispatch other than the incumbent's
+# slice, which for a nice -20 incumbent is 200 ms; with it the bound is one
+# tick. It rides preempt_tick, an already-proven preemption point, and adds no
+# new place where the kernel can switch tasks.
+#
+# An IRQ-return arm (Linux's preempt_schedule_irq, switching in do_irq after
+# the device handler and EOI) was written, measured, and REMOVED: it never
+# fired once across five instrumented boots, because the woken task was always
+# already dispatched by the ordinary path. Arming a schedule() call on every
+# device interrupt that testing never exercises is a hazard bought with no
+# benefit.
 #
 # Nice-0 vruntime accrues NICE0_WEIGHT * VRUNTIME_SCALE / weight = 256 units
 # per 10 ms tick, so 1 ms == ~26 units.
@@ -2362,10 +2396,11 @@ WAKEUP_GRANULARITY_V: uint64 = 26
 # in ONE boot against ONE workload with ONE instrument — and is the gate's
 # built-in mutation test: with this at 0 the latency assertion MUST fail.
 wakeup_preempt_enabled: int32  = 1
-# Diagnostic: how many wakeups actually raised need_resched, and how many of
-# those were consumed at IRQ-return (the sub-ms path) vs at a tick.
+# Diagnostic: how many wakeups raised need_resched, and how many of those the
+# tick actually acted on. The gap between them is large and that is EXPECTED:
+# most woken tasks are dispatched by the ordinary path (a peer blocking, or
+# the incumbent's slice draining) long before the next tick has to force it.
 wakeup_preempt_kicks:   uint64 = 0
-wakeup_preempt_irqret:  uint64 = 0
 wakeup_preempt_tick_n:  uint64 = 0
 
 # Per-cpu need_resched. Plain global (not Percpu) because the SETTER is
@@ -2478,39 +2513,6 @@ def _wakeup_maybe_kick(slot: uint64, tc: uint64):
         return
     g_need_resched[tc] = 1
     wakeup_preempt_kicks = wakeup_preempt_kicks + 1
-
-
-def sched_irqret_preempt_check(interrupted_cs: uint64) -> uint64:
-    # IRQ-RETURN arm of wakeup preemption — Linux's preempt_schedule_irq
-    # point, and the one that makes an IRQ-driven wakeup (the mouse!) service
-    # in microseconds rather than at the incumbent's next slice boundary.
-    #
-    # Called by do_irq() AFTER the device handler has run, AFTER the LAPIC EOI
-    # and AFTER the softirq drain, i.e. at exactly the moment timer_interrupt
-    # already performs its own preemptive schedule(). Returns 1 when do_irq
-    # should call schedule().
-    #
-    # SAFETY. We switch ONLY when the interrupt caught ring 3. That is the
-    # same rule preempt_tick applies and it is what makes this safe: ring-3
-    # code holds no kernel lock and has no half-updated kernel state, so
-    # freezing it here and resuming it later is always legal. A ring-0
-    # interrupt (a kthread, a syscall with IF somehow set, a nested IRQ) is
-    # left alone and the flag survives to the next ring-3 opportunity.
-    if wakeup_preempt_enabled == 0:
-        return 0
-    if (interrupted_cs & 3) != 3:
-        return 0
-    cpu: uint64 = get_cpu_id()
-    if sched_need_resched(cpu) == 0:
-        return 0
-    if _another_task_ready() == 0:
-        # Flag was stale (the woken task already ran, or migrated away).
-        # Clearing it here stops a stale flag from forcing a switch later.
-        sched_need_resched_take(cpu)
-        return 0
-    sched_need_resched_take(cpu)
-    wakeup_preempt_irqret = wakeup_preempt_irqret + 1
-    return 1
 
 
 def wakeup_preempt_set_enabled(on: int32):
@@ -2651,8 +2653,7 @@ def wklat_report():
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] le60ms=%d over60ms=%d\n", wklat_b60, wklat_over)
     printk_set_level(PRINTK_LEVEL_EMERG)
-    printk2("[wklat] kicks=%d irqret=%d\n", wakeup_preempt_kicks,
-            wakeup_preempt_irqret)
+    printk2("[wklat] kicks=%d irqret=%d\n", wakeup_preempt_kicks, 0)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] tickret=%d probe=%d\n", wakeup_preempt_tick_n,
             wklat_probe_iters)
@@ -2751,7 +2752,6 @@ def wklat_ctl(verb: int64) -> int32:
     if verb == 2:
         wklat_enable(1)
         wakeup_preempt_kicks  = 0
-        wakeup_preempt_irqret = 0
         wakeup_preempt_tick_n = 0
         return 1
     if verb == 3:
