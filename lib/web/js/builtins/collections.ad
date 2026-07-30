@@ -9,6 +9,44 @@
 # Map / Set — ES2015 keyed collections with insertion-order iteration and
 # SameValueZero key equality.
 # ====================================================================
+# ---- Function constructor source assembly (see NAT_FUNCTION_CTOR) -----------
+# One shared buffer; the constructor is not re-entrant into itself before the
+# eval() call consumes it, and an over-long body is truncated rather than
+# scribbling past the end (the parse then fails with a SyntaxError, which is a
+# far better outcome than corrupting the heap).
+FNCTOR_CAP: int32 = 65536
+fnctor_buf: Array[65536, uint8]
+
+
+def fnctor_putc(c: uint8, w: int32) -> int32:
+    if w < FNCTOR_CAP:
+        fnctor_buf[w] = c
+        return w + 1
+    return w
+
+
+def fnctor_puts(s: Ptr[uint8], w: int32) -> int32:
+    i: int32 = 0
+    while s[i] != 0:
+        w = fnctor_putc(s[i], w)
+        i = i + 1
+    return w
+
+
+def fnctor_putval(h: int32, w: int32) -> int32:
+    sv: int32 = to_string_val(h)
+    if tag_of(sv) != TAG_STR:
+        return w
+    sid: int32 = strid_of(sv)
+    p: Ptr[uint8] = str_ptr(sid)
+    n: int32 = str_len(sid)
+    i: int32 = 0
+    while i < n:
+        w = fnctor_putc(p[i], w)
+        i = i + 1
+    return w
+
+
 def ms_samevaluezero(a: int32, b: int32) -> int32:
     # === plus (NaN, NaN) -> equal, which is the Map/Set key equality.
     if tag_of(a) == TAG_NUM and tag_of(b) == TAG_NUM:
@@ -266,10 +304,26 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
         gc_force()
         return v_number(cast[float64](gc_collections))
     if id == NAT_FUNCTION_CTOR:
-        # `Function` exists for identity/instanceof; building code from a string
-        # is not supported by this engine — fail clearly rather than silently.
-        throw_error(cast[Ptr[uint8]]("TypeError"), cast[Ptr[uint8]]("Function constructor (dynamic code) is not supported"))
-        return v_undef()
+        # `new Function(arg0, ..., body)` — assembled into the source text
+        # `(function anonymous(arg0, ...){ body })` and handed to the SAME
+        # tokenizer/parser eval() already uses. It used to throw outright, which
+        # is why every event-handler CONTENT attribute (`<body onload="...">`,
+        # and WPT's whole "convert the attribute to a function" family) was
+        # unreachable, and why polyfills that feature-detect with
+        # `new Function('return this')()` took their fallback path.
+        fw: int32 = 0
+        fw = fnctor_puts(cast[Ptr[uint8]]("(function anonymous("), fw)
+        fi: int32 = 0
+        while fi + 1 < argc:
+            if fi > 0:
+                fw = fnctor_putc(44, fw)                   # ','
+            fw = fnctor_putval(call_args[base + fi], fw)
+            fi = fi + 1
+        fw = fnctor_puts(cast[Ptr[uint8]]("\n) {\n"), fw)
+        if argc >= 1:
+            fw = fnctor_putval(call_args[base + argc - 1], fw)
+        fw = fnctor_puts(cast[Ptr[uint8]]("\n})"), fw)
+        return native_eval(v_string_bytes(&fnctor_buf[0], fw))
     if id == NAT_CONSOLE_LOG:
         emit_tgt = 1
         i: int32 = 0

@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 3086
+#!PASS_FLOOR 3121
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope ( is not valid
@@ -377,30 +377,6 @@ dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLFrameSetElement.onfocus
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLFrameSetElement.onload to Window
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLFrameSetElement.onresize to Window
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLFrameSetElement.onscroll to Window
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onscroll
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onscroll
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onscroll
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onscroll
 dom/events/CustomEvent.html	First parameter to initCustomEvent should be mandatory.
 dom/events/Event-defaultPrevented-after-dispatch.html	Default prevention via preventDefault
 dom/events/Event-defaultPrevented-after-dispatch.html	Default prevention via returnValue
@@ -881,6 +857,8 @@ dom/nodes/Node-isConnected.html	Test with ordinary child nodes
 dom/nodes/Node-isEqualNode.html	documents should not be compared based on properties
 dom/nodes/Node-isEqualNode.html	elements should be compared on attribute namespace, local name, and value
 dom/nodes/Node-isEqualNode.html	node equality testing should test descendant equality too
+dom/nodes/Node-lookupNamespaceURI.html	Connected Attr has namespace URI matching "xml"
+dom/nodes/Node-lookupNamespaceURI.html	Connected Attr no namespace URI matching "xmlns"
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix ""
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix "foo"
 dom/nodes/Node-lookupNamespaceURI.html	DocumentType is in default namespace, prefix "xmlns"
@@ -1041,7 +1019,6 @@ dom/nodes/attributes.html	setAttribute should lowercase its name argument (mixed
 dom/nodes/attributes.html	setAttribute should lowercase its name argument (upper case attribute)
 dom/nodes/attributes.html	setAttribute should set the attribute with the given qualified name
 dom/nodes/attributes.html	setAttribute should set the first attribute with the given name
-dom/nodes/attributes.html	setAttributeNode called with an Attr that has the same name as an existing one should not change attribute order
 dom/nodes/attributes.html	setAttributeNode doesn't have case-insensitivity even with an HTMLElement 1
 dom/nodes/attributes.html	setAttributeNode doesn't have case-insensitivity even with an HTMLElement 2
 dom/nodes/attributes.html	setAttributeNode doesn't have case-insensitivity even with an HTMLElement 3
@@ -1114,24 +1091,18 @@ dom/nodes/moveBefore/Node-moveBefore.html	If node is a doctype and parent is not
 dom/nodes/moveBefore/Node-moveBefore.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
 dom/nodes/moveBefore/Node-moveBefore.html	If node is an Element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
 dom/nodes/moveBefore/Node-moveBefore.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
-dom/nodes/moveBefore/Node-moveBefore.html	Invalid node hierarchy with null old parent does not crash
-dom/nodes/moveBefore/Node-moveBefore.html	Move disconnected iframe does not crash
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node before itself should not move the node
-dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected container to a disconnected new parent in the same tree succeeds
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected container to a disconnected new parent in the same tree succeeds,also across shadow-roots
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected container to a disconnected new parent without a shared ancestor throws a HIERARCHY_REQUEST_ERR
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from connected->disconnected throws a HIERARCHY_REQUEST_ERR
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from disconnected->connected throws a HIERARCHY_REQUEST_ERR
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore on a paragraph's Text node child
-dom/nodes/moveBefore/Node-moveBefore.html	moveBefore with reference child whose parent is NOT the destination parent (context node) throws a NotFoundError.
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() CharacterData into a Document
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() into a Document throws a HierarchyRequestError
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() on a cross-document target node throws a HierarchyRequestError
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() on disconnected parent throws a HierarchyRequestError
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() returns undefined
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() with a non-{Element, CharacterData} throws a HierarchyRequestError
-dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() with disconnected target node throws a HierarchyRequestError
-dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() with node being an inclusive ancestor of parent throws a HierarchyRequestError
 dom/nodes/moveBefore/child-style-preserve.html	
 dom/nodes/moveBefore/continue-css-animation-left.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/continue-css-animation-transform.html	<FILE PRODUCED NO RESULTS>
@@ -1178,19 +1149,15 @@ dom/nodes/moveBefore/moveBefore-shadow-inside.html
 dom/nodes/moveBefore/moveBefore-shadow-root.html	moveBefore() is allowed in ShadowRoots (i.e., connected DocumentFragments)
 dom/nodes/moveBefore/moveBefore-size-query.html	moveBefore() between different size containers invalidates target
 dom/nodes/moveBefore/mutation-observer.html	[Connected move] MutationObserver removal + insertion is tracked by moveBefore()
-dom/nodes/moveBefore/mutation-observer.html	[Disconnected move] MutationObserver removal + insertion is tracked by moveBefore()
 dom/nodes/moveBefore/nonce.html	Element nonce content attribute is not cleared after move
 dom/nodes/moveBefore/object-crash-regression.html	Moving an object element does not crash
 dom/nodes/moveBefore/popover-preserve.html	when reparenting an open popover, it shouldn't be closed automatically
 dom/nodes/moveBefore/preserve-render-blocking-script.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/preserve-render-blocking-style.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/relevant-mutations.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/script-move-before.html	Synchronous script execution in HTMLScriptElement during moveBefore should be blocked
-dom/nodes/moveBefore/script-move-before.html	Synchronous script execution in SVGScriptElement during moveBefore should be blocked
 dom/nodes/moveBefore/select-option-optgroup.html	Moving options between select elements.
 dom/nodes/moveBefore/select-option-optgroup.html	Option selectedness is updated on option and optgroup DOM moves
 dom/nodes/moveBefore/slotchange-events.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/style-applies.html	Moving a style inside the document should not affect whether it's applied
 dom/nodes/moveBefore/throws-exception.html	moveBefore() on a cross-document target node
 dom/nodes/name-validation.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/node-creation-realm.html	DOMImplementation.createDocument() creates the document in the target realm
@@ -2260,6 +2227,30 @@ url/failure.html	Loading data…
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, empty data attribute
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, multiple data attributes
 +dom/eventPathRemoved.html	Event.prototype should not have property named 'path'
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onscroll
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLFrameSetElement.onscroll
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLBodyElement.onscroll
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Set HTMLFrameSetElement.onscroll
 +dom/events/CustomEvent.html	CustomEvent dispatching.
 +dom/events/CustomEvent.html	initCustomEvent's default parameter values.
 +dom/events/Event-cancelBubble.html	Event.cancelBubble=false must have no effect during event propagation.
@@ -4247,6 +4238,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should have XMLNS namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should have null namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Child element should inherit baz namespace
++dom/nodes/Node-lookupNamespaceURI.html	Comment does not have bar namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit  baz namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit bar namespace
 +dom/nodes/Node-lookupNamespaceURI.html	Comment should inherit baz namespace
@@ -4562,6 +4554,7 @@ url/failure.html	Loading data…
 +dom/nodes/attributes.html	setAttribute should not change the order of previously set attributes.
 +dom/nodes/attributes.html	setAttribute should not throw even if a load is not allowed
 +dom/nodes/attributes.html	setAttribute should not throw even when qualifiedName starts with 'xmlns'
++dom/nodes/attributes.html	setAttributeNode called with an Attr that has the same name as an existing one should not change attribute order
 +dom/nodes/attributes.html	setAttributeNode, if it fires mutation events, should fire one with the new node when resetting an existing attribute
 +dom/nodes/attributes.html	toggleAttribute should not change the order of previously set attributes.
 +dom/nodes/attributes.html	toggleAttribute should not throw even when qualifiedName starts with 'xmlns'
@@ -4903,7 +4896,16 @@ url/failure.html	Loading data…
 +dom/nodes/insert-adjacent.html	invalid object argument insertAdjacentElement
 +dom/nodes/moveBefore/Node-moveBefore.html	Calling moveBefore with a non-Node first argument must throw TypeError.
 +dom/nodes/moveBefore/Node-moveBefore.html	Calling moveBefore with second argument missing, or other than Node, null, or undefined, must throw TypeError.
++dom/nodes/moveBefore/Node-moveBefore.html	Invalid node hierarchy with null old parent does not crash
++dom/nodes/moveBefore/Node-moveBefore.html	Move disconnected iframe does not crash
++dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected container to a disconnected new parent in the same tree succeeds
++dom/nodes/moveBefore/Node-moveBefore.html	moveBefore with reference child whose parent is NOT the destination parent (context node) throws a NotFoundError.
 +dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() method does not exist on non-ParentNode Nodes
++dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() with disconnected target node throws a HierarchyRequestError
++dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() with node being an inclusive ancestor of parent throws a HierarchyRequestError
++dom/nodes/moveBefore/script-move-before.html	Synchronous script execution in HTMLScriptElement during moveBefore should be blocked
++dom/nodes/moveBefore/script-move-before.html	Synchronous script execution in SVGScriptElement during moveBefore should be blocked
++dom/nodes/moveBefore/style-applies.html	Moving a style inside the document should not affect whether it's applied
 +dom/nodes/remove-next-sibling-during-replace-with.html	
 +dom/nodes/rootNode.html	getRootNode() must return a document fragment when a node is in the fragment
 +dom/nodes/rootNode.html	getRootNode() must return the context object when it does not have any parent
