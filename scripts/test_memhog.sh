@@ -108,11 +108,19 @@ set +e
   # until memhog is gone, every queued `cat` below then executes AFTER the
   # exit, and B would sample the post-release state — a gate that always
   # reads "no change" and calls it a pass. Cost one false FAIL to learn.
-  printf 'memhog 96M --hold 30 --batch --no-free &\n'; sleep 14
+  printf 'memhog 96M --hold 20 --batch --no-free &\n'; sleep 12
   printf 'echo GATE-SCENE-B\n';                      sleep 2
   printf 'cat /dev/wsys/2/scene\n';                  sleep 6
-  # memhog is still holding here; wait out the rest of its hold + exit.
-  printf 'echo GATE-SCENE-C\n';                      sleep 26
+  # Wait out the REST of the 20 s hold plus the exit and one monitor resample.
+  # `wait` would be the honest way to synchronise, but hamsh's `wait` WEDGES
+  # the shell when the backgrounded job has already been reaped (measured: the
+  # prompt never returned and the rest of the sequence never ran), so the delay
+  # is explicit. What actually guarantees correctness is the ORDERING PROOF in
+  # the verdict below, which reads the exit and the C marker out of the log and
+  # reports INCONCLUSIVE if C came first — a guessed sleep alone once sampled C
+  # while the hog was still held and called a healthy display stale.
+  printf 'echo GATE-HOG-WAIT\n';                     sleep 18
+  printf 'echo GATE-SCENE-C\n';                      sleep 3
   printf 'cat /dev/wsys/2/scene\n';                  sleep 5
   # --- (A) allocate / verify / release with the full report ---
   printf 'echo GATE-ALLOC\n';                        sleep 2
@@ -124,7 +132,7 @@ set +e
   printf 'echo GATE-RAMP\n';                         sleep 2
   printf 'memhog --ramp --hold 0 --batch -q\n';      sleep 22
   printf 'echo GATE-DONE\n';                         sleep 3
-) | timeout 320s qemu-system-x86_64 \
+) | timeout 340s qemu-system-x86_64 \
     -kernel "$ELF" \
     -smp 1 -nographic -no-reboot -m 512M \
     -monitor none -serial stdio \
@@ -242,8 +250,29 @@ if [ -z "$mem_a" ] || [ -z "$mem_b" ] || [ -z "$mem_c" ]; then
          "from /dev/wsys/2/scene (A='$mem_a' B='$mem_b' C='$mem_c')" >&2
     exit 125
 fi
+# ORDERING PROOF, not a sleep. Sample C is only meaningful if the hog process
+# had already exited when it was taken; assert that from the log itself. Two
+# false FAILs came from a C that raced the exit.
+# memhog's OWN last line, not hamsh's "[n]+ Done" notice: hamsh only prints
+# the job notice at its NEXT prompt, so the notice can land AFTER the C marker
+# even though the process died well before it (measured: notice on log line
+# 1828, C marker on 1827, actual exit on 1821). Using the notice made a
+# correct run report INCONCLUSIVE.
+exit_ln=$(grep -a -n "no-free: exiting while holding" "$LOG" | head -1 | cut -d: -f1)
+cln=$(grep -a -n "GATE-SCENE-C" "$LOG" | grep -a -v '\[K' | head -1 | cut -d: -f1)
+if [ -z "$exit_ln" ] || [ -z "$cln" ]; then
+    echo "[memhog] INCONCLUSIVE: could not establish from the log that the" \
+         "96M hog had exited before sample C was taken" >&2
+    exit 125
+fi
+if [ "$exit_ln" -gt "$cln" ]; then
+    echo "[memhog] INCONCLUSIVE: sample C (log line $cln) was taken BEFORE the" \
+         "hog exited (log line $exit_ln) — C describes the hog still held," \
+         "not a release" >&2
+    exit 125
+fi
 echo "[memhog] monitor displayed used kB: A=$mem_a  B=$mem_b (hog held)" \
-     " C=$mem_c (hog exited)"
+     " C=$mem_c (hog exited, proven at log line $exit_ln < $cln)"
 # B must be clearly higher than A: the 96 MiB (98304 kB) hog has to show up.
 if [ "$((mem_b - mem_a))" -lt 65536 ]; then
     echo "[memhog] FAIL: the monitor's displayed used memory rose only" \
