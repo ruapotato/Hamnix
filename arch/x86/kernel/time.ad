@@ -736,11 +736,16 @@ def sysirq_report():
         if best >= SYSIRQ_NSLOT:
             rank = 8
         else:
+            # Two whole lines, not one line split across two printk calls: a
+            # concurrent printk from another CPU would interleave into the
+            # middle of a split line and the parser would silently lose the
+            # sample.
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk3("[sysirq] top nr=%d n=%d max_us=%d ",
+            printk3("[sysirq] top nr=%d n=%d max_us=%d\n",
                     best, sysirq_cnt[best], sysirq_max[best] / 1000)
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk2("sum_us=%d name=%s\n", sysirq_sum[best] / 1000,
+            printk3("[sysirq] top+ nr=%d sum_us=%d name=%s\n", best,
+                    sysirq_sum[best] / 1000,
                     cast[uint64](sysirq_name(best)))
             # Consume it so the next pass finds the next-worst. The counter is
             # kept so the entry is not resurrected by a later sample in the
