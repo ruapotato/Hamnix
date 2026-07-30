@@ -4340,3 +4340,11 @@ bash scripts/test_installed_pkg_repo.sh
 # ACKs every accepted verb and the acks are required). INCONCLUSIVE (125),
 # never FAIL, when nothing was observed. ~8 min incl. builds, one QEMU.
 bash scripts/ci_run_gate.sh scripts/test_wakeup_latency.sh
+# ext4 LINEAR directory GROWTH (~4 min, one QEMU boot). ext4_dir_insert used
+# to fail once a linear directory's single block ran out of slack, capping a
+# directory at ~112 entries and silently truncating installs. This creates 600
+# files in a one-block linear dir, reports the MEASURED old ceiling, reads
+# every entry back, then re-validates the kernel-written image with debugfs
+# (all 605 entries enumerated) and e2fsck -fn (fully clean). MUTATE=<label>
+# blinds one assertion at a time.
+bash scripts/test_ext4_dirgrow.sh

@@ -678,6 +678,9 @@ from fs.ext4 import ext4_htree_insert_selftest
 # large_dir (3-level htree growth) WRITE self-test (gated boot:37.largedir on
 # /etc/ext4-largedir-test). Single additive import — see start_kernel gate.
 from fs.ext4 import ext4_largedir_selftest
+# LINEAR directory GROWTH self-test (gated boot:37.dirgrow on
+# /etc/ext4-dirgrow-test). Single additive import — see start_kernel gate.
+from fs.ext4 import ext4_dirgrow_selftest
 # fs-verity (EXT4_VERITY_FL Merkle-tree authenticity) self-test (gated
 # boot:37.verity on /etc/ext4-verity-test). Single additive import — see
 # start_kernel gate.
@@ -858,6 +861,11 @@ g_ext4_htins_test: int32 = 0
 # mount. See the marker scan in start_kernel and ext4_largedir_selftest() in
 # fs/ext4.ad.
 g_ext4_largedir_test: int32 = 0
+# 1 when /etc/ext4-dirgrow-test was found in the cpio, arming the LINEAR
+# directory GROWTH self-test (ext4_dirgrow_selftest) after the ext4 mount.
+# See the marker scan in start_kernel and ext4_dirgrow_selftest() in
+# fs/ext4.ad.
+g_ext4_dirgrow_test: int32 = 0
 # 1 when /etc/ext4extfree-test was found in the cpio, arming the
 # extent-free / no-leak self-test (ext4_extentfree_selftest) after the
 # ext4 mount: it writes a multi-block fragmented file, records the free-
@@ -2211,6 +2219,31 @@ def block_smoke_test():
             lgdir_idx = lgdir_cnt
         else:
             lgdir_idx = lgdir_idx + 1
+    # [boot:37.dirgrow] LINEAR directory GROWTH self-test arming. Gated on
+    # /etc/ext4-dirgrow-test (planted exclusively by
+    # scripts/test_ext4_dirgrow.sh). ext4_dirgrow_selftest() fills a
+    # one-block linear directory past its old ~1-block entry ceiling,
+    # proving ext4_dir_insert allocates additional directory blocks and
+    # that every entry still resolves. WRITES the mounted image, so opt-in
+    # via the cpio marker — same shape as the largedir gate above.
+    dgrow_target: Ptr[uint8] = "/etc/ext4-dirgrow-test"
+    dgrow_idx: uint64 = 0
+    dgrow_cnt: uint64 = initramfs_entry_count()
+    while dgrow_idx < dgrow_cnt:
+        dgrow_nm: Ptr[char] = initramfs_entry_name(dgrow_idx)
+        dgrow_ok: int32 = 1
+        dgrow_j: uint64 = 0
+        while dgrow_j < 23:                    # 22 chars + NUL
+            if cast[uint8](dgrow_nm[dgrow_j]) != dgrow_target[dgrow_j]:
+                dgrow_ok = 0
+                dgrow_j = 23
+            else:
+                dgrow_j = dgrow_j + 1
+        if dgrow_ok == 1:
+            g_ext4_dirgrow_test = 1
+            dgrow_idx = dgrow_cnt
+        else:
+            dgrow_idx = dgrow_idx + 1
     # Extent-free / no-leak self-test arming. Gated on /etc/ext4extfree-test
     # (planted exclusively by scripts/test_ext4_extent_free.sh).
     # ext4_extentfree_selftest() records the free-block bitmap count, writes
@@ -4024,6 +4057,14 @@ def block_smoke_test():
             # via the 3-level hash descend. Self-skips on normal boots.
             if g_ext4_largedir_test == 1:
                 ext4_largedir_selftest()
+            # [boot:37.dirgrow] LINEAR directory GROWTH self-test. Only
+            # when the cpio shipped /etc/ext4-dirgrow-test. Creates far
+            # more entries in a one-block linear directory than one block
+            # holds, proving ext4_dir_insert grows the directory instead
+            # of failing, and that every entry resolves and reads back.
+            # Self-skips on normal boots.
+            if g_ext4_dirgrow_test == 1:
+                ext4_dirgrow_selftest()
             # Extent-free / no-leak self-test. Only when the cpio shipped
             # /etc/ext4extfree-test. Writes a multi-block fragmented file,
             # records the free-block bitmap count, unlinks it, and proves
