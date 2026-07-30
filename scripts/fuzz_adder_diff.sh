@@ -155,6 +155,39 @@ echo "[fuzz_adder_diff] match-liveness result: $REGM_OUT (expect 'ok/ok off=333 
 [ "$REGM_OUT" = "ok/ok off=333 on=333" ] \
     || fail "codegen.ad --opt miscompiled the match-body liveness fixture: $REGM_OUT"
 
+# ---- Regression: POINTER/CAST/MEMBER ELEMENT SIGNEDNESS
+#      (tests/fuzz/regress_ptr_signedness.ad).
+#      ssa.ad's ssa_expr_sgn decides signed-vs-unsigned for `>>` `/` `%` and
+#      every ordered compare, and it SILENTLY DEFAULTED every base kind it did
+#      not resolve to 0 = "unknown" — which the shift/div selector reads as
+#      UNSIGNED and the compare selector reads as SIGNED, so an unresolved base
+#      is wrong in BOTH directions at once. `o[i] >> 16` on a `Ptr[int64]`
+#      parameter emitted lshr, which is the whole of lib/ed25519.ad's field
+#      arithmetic: EVERY valid signature was rejected and /bin/hpm refused its
+#      own signed index (fixed in c9585fd2). Same root cause, still live after
+#      it: a cast value/base, a call base, and any struct reached through a
+#      `Ptr[Struct]` parameter — LANGUAGE.md's canonical `ptr[0].field` idiom.
+#      The fuzzer never generated signed arithmetic through a pointer-typed
+#      parameter with a NEGATIVE value in range, so this shape needs a fixture.
+#      codegen.ad's native lane resolves all of these, so opt ON vs OFF is a
+#      real differential: both must print 18446744073709550828 (= -788).
+echo "[fuzz_adder_diff] regression: regress_ptr_signedness.ad (opt ON+OFF)"
+REGP_OUT="$(python3 - <<'PY'
+import sys; sys.path.insert(0, "tests/fuzz")
+import ad_codegen_host as h
+from pathlib import Path
+wd = Path("build/fuzz_ad_codegen")
+body = open("tests/fuzz/regress_ptr_signedness.ad").read()
+off = h.run_through_codegen_ad("regrp_off", body, wd, opt=False)
+on  = h.run_through_codegen_ad("regrp_on",  body, wd, opt=True)
+print(f"{off.kind}/{on.kind} off={off.stdout} on={on.stdout}")
+PY
+)"
+echo "[fuzz_adder_diff] ptr-signedness result: $REGP_OUT" \
+     "(expect 'ok/ok off=18446744073709550828 on=18446744073709550828')"
+[ "$REGP_OUT" = "ok/ok off=18446744073709550828 on=18446744073709550828" ] \
+    || fail "element-signedness miscompile (ssa_expr_sgn unknown-default): $REGP_OUT"
+
 # ---- Seeded differential batch -----------------------------------------
 echo "[fuzz_adder_diff] differential: count=$FUZZ_COUNT seed=$FUZZ_SEED"
 python3 tests/fuzz/adder_fuzzer.py --ad-codegen \

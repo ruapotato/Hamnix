@@ -4406,3 +4406,21 @@ bash scripts/ci_run_gate.sh scripts/test_cow_vma_fork_origin.sh
 # INCONCLUSIVE (125), never FAIL, when nothing was observed. ~9 min incl.
 # builds, one QEMU.
 bash scripts/ci_run_gate.sh scripts/test_syscall_irqoff.sh
+
+# test_llvm_lane_diff: EXECUTION differential for the LLVM lane
+# (host_ac --backend=llvm -> clang -> run) against a by-construction oracle.
+# HOST-ONLY, no QEMU, ~90 s at the default 25 programs.
+#
+# This lane ships essentially ALL of userland — scripts/build_user.sh routes
+# every app through it by default (272 LLVM / 2 native) — and until this gate
+# it had NO randomized correctness instrument of any kind. fuzz_adder_diff.sh
+# exercises the NATIVE backend and never emits a .ll; kobjdiff compares native
+# against the Python seed, which the LLVM emitter does not share; bench_llvm.sh
+# runs the lane but is a fixed-benchmark PERFORMANCE harness. A miscompile
+# confined to this lane therefore shipped in every binary with all three green
+# (ssa_expr_sgn emitting lshr where ashr was required), and was caught only
+# because it happened to land in lib/ed25519.ad where a wrong bit means a
+# rejected signature and hpm refuses to install. The gate FAILS rather than
+# shrugs when an SSA-subset bail or a zero-program run costs it its coverage:
+# a lane that emits nothing is UNKNOWN, not green.
+bash scripts/test_llvm_lane_diff.sh

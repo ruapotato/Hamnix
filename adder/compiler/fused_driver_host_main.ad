@@ -507,10 +507,22 @@ def drv_build_modslug_raw(path: Ptr[uint8]):
     j: uint32 = 0
     while j < plen:
         c: uint8 = path[j]
-        if c == 47 or c == 46:    # '/' or '.'
-            drv_modslug[o] = 95   # '_'
-        else:
+        # The slug becomes part of an IDENTIFIER (`<slug>__<privname>`), so
+        # EVERY byte that is not [A-Za-z0-9_] must become '_' — not just '/'
+        # and '.'. Mapping only those two let a '-' in the input PATH through
+        # verbatim, minting the identifier `tmp_a-b___ch` for `_ch` in
+        # /tmp/a-b.ad; the lexer then split it at the '-' and the compile died
+        # with a bogus "parse error at line 44" pointing at a line that is
+        # perfectly valid. Any checkout, worktree or temp dir with a hyphen in
+        # its name — e.g. .claude/worktrees/agent-<sha> — could not compile a
+        # module with a single leading-underscore private name, and said so in
+        # a way that blamed the source. All existing repo paths are
+        # [A-Za-z0-9_/.] only, so every slug in the tree is unchanged.
+        if (c >= 48 and c <= 57) or (c >= 65 and c <= 90) \
+                or (c >= 97 and c <= 122) or c == 95:
             drv_modslug[o] = c
+        else:
+            drv_modslug[o] = 95   # '_'
         o = o + 1
         j = j + 1
     drv_modslug[o] = 0

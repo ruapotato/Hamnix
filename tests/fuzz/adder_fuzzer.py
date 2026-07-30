@@ -669,6 +669,13 @@ class Program:
         self._gen_regpressure_scratch_traffic(env)  # caller-saved IR scratch (--opt)
         self._gen_region_callsplit_traffic(env)  # per-region caller-saved regalloc (--opt)
         self._gen_dce_keep_bait(env)      # DCE in main(): fire + must-KEEP probes
+        # Signed arithmetic/compare through POINTER-TYPED params, pointer
+        # casts, pointer-returning calls and Ptr[Struct] fields — the base
+        # kinds _gen_index_signedness_traffic never reached, and the ones
+        # ssa_expr_sgn silently answered "unknown" for (the Ed25519/P-256
+        # lshr-for-ashr class). Appended LAST so existing seeds' draw
+        # streams up to this point are unchanged.
+        self._gen_ptr_signedness_traffic(env)
 
         # ---- KERNEL-SHAPE features (FUZZ_FEATURES) --------------------------
         # Appended AFTER all base generation so a given seed's existing draw
@@ -1042,6 +1049,136 @@ class Program:
             self.emit(f"    if {gname} < cast[{tn}]({den}):")
             self.emit(f"        {cbn} = cast[int64](1)")
             self._fold_value(f"cast[uint64]({cbn})", U64.wrap(cres))
+
+    def _gen_ptr_signedness_traffic(self, env):
+        """Signed/unsigned arithmetic and comparison through a POINTER-TYPED
+        PARAMETER, a POINTER CAST, a pointer-returning CALL, and a struct field
+        reached through a `Ptr[Struct]` parameter — with values whose high bit
+        is SET, the only regime in which the signed and unsigned instruction
+        differ at all.
+
+        WHY THIS EXISTS: _gen_index_signedness_traffic (above) covers exactly
+        one base kind, a named GLOBAL ARRAY, and that is the shape the
+        signedness selectors happened to resolve. ssa.ad's ssa_expr_sgn
+        resolved a handful of base kinds and SILENTLY DEFAULTED the rest to
+        0 = "unknown" — which the shift/div selector reads as UNSIGNED and the
+        ordered-compare selector reads as SIGNED, so an unresolved base is
+        wrong in BOTH directions at once and neither announces itself. `o[i] >>
+        16` on a `Ptr[int64]` parameter therefore emitted `lshr`: that is the
+        whole of lib/ed25519.ad's field arithmetic, so every LLVM-lane binary
+        (272 of 274 apps, /bin/hpm included) rejected every valid Ed25519
+        signature, and lib/ec/p256.ad::p256_ge compared 256-bit limbs SIGNED in
+        ssh/sshd. The fuzzer could not see any of it because it never generated
+        a pointer-typed parameter carrying a negative value.
+
+        Every helper below is emitted at top level and takes its buffer as a
+        PARAMETER (never touching a global), so the base kind under test is the
+        parameter/cast/call/member itself. Results fold into g_accum, so a
+        wrong instruction diverges from the by-construction oracle."""
+        rng = self.rng
+        u = "ps"
+        # A Ptr[Struct] carrier for the `h[0].f` / `h[0].pf[i]` idiom
+        # (LANGUAGE.md's "production idiom" — and the base kind ssa.ad resolved
+        # LAST, because codegen's member_resolve needs a local type-node table
+        # the SSA/LLVM lane never populates).
+        self.emit_top(f"class PsBox{u}:")
+        self.emit_top(f"    pf: Ptr[int64]")
+        self.emit_top(f"    sc: int64")
+        self.emit_top("")
+        for t in STORE_TYPES:
+            tn = t.name
+            # (a) `p[i] >> s` through a Ptr[T] PARAMETER.
+            self.emit_top(f"def ps_shr_{tn}_{u}(p: Ptr[{tn}], i: uint64, s: {tn}) -> uint64:")
+            self.emit_top(f"    return cast[uint64](cast[{tn}](p[i] >> s))")
+            # (b) `p[i] < k` through a Ptr[T] PARAMETER.
+            self.emit_top(f"def ps_cmp_{tn}_{u}(p: Ptr[{tn}], i: uint64, k: {tn}) -> uint64:")
+            self.emit_top(f"    if p[i] < k:")
+            self.emit_top(f"        return cast[uint64](1)")
+            self.emit_top(f"    return cast[uint64](0)")
+            # (c) `cast[Ptr[T]](addr)[i] >> s` — ND_CAST as the index base.
+            self.emit_top(f"def ps_castb_{tn}_{u}(a: uint64, i: uint64, s: {tn}) -> uint64:")
+            self.emit_top(f"    return cast[uint64](cast[{tn}](cast[Ptr[{tn}]](a)[i] >> s))")
+            # (d) `fn(...)[i] >> s` — ND_CALL as the index base.
+            self.emit_top(f"def ps_mkp_{tn}_{u}(a: uint64) -> Ptr[{tn}]:")
+            self.emit_top(f"    return cast[Ptr[{tn}]](a)")
+            self.emit_top(f"def ps_callb_{tn}_{u}(a: uint64, i: uint64, s: {tn}) -> uint64:")
+            self.emit_top(f"    return cast[uint64](cast[{tn}](ps_mkp_{tn}_{u}(a)[i] >> s))")
+            self.emit_top("")
+        # (e) int64 DIV/MOD through a Ptr[int64] parameter — sdiv/srem vs
+        #     udiv/urem, the direction that broke lib/dropplace.ad.
+        self.emit_top(f"def ps_div_{u}(p: Ptr[int64], i: uint64, d: int64) -> int64:")
+        self.emit_top(f"    return p[i] / d")
+        self.emit_top(f"def ps_mod_{u}(p: Ptr[int64], i: uint64, d: int64) -> int64:")
+        self.emit_top(f"    return p[i] % d")
+        # (f) struct field + field-array through a Ptr[Struct] PARAMETER.
+        self.emit_top(f"def ps_msc_{u}(h: Ptr[PsBox{u}], s: int64) -> int64:")
+        self.emit_top(f"    return h[0].sc >> s")
+        self.emit_top(f"def ps_mfa_{u}(h: Ptr[PsBox{u}], i: uint64, s: int64) -> int64:")
+        self.emit_top(f"    return h[0].pf[i] >> s")
+        self.emit_top("")
+
+        for t in STORE_TYPES:
+            tn = t.name
+            name, n, shadow = self.store_arrays[t]
+            idx = rng.randrange(n)
+            hi = 1 << (t.bits - 1)
+            raw = hi | rng.randint(0, hi - 1)          # HIGH BIT SET
+            self.emit(f"    {name}[{idx}] = cast[{tn}]({raw})")
+            shadow[idx] = t.wrap(raw)
+            elem = shadow[idx]                          # type-view value
+            uelem = _to_reg(elem) & umask(t.bits)       # raw bit pattern
+            addr = f"psa_{tn}_{u}"
+            self.emit(f"    {addr}: uint64 = cast[uint64](&{name}[0])")
+            sh = rng.randint(1, t.bits - 1)
+            want_shr = t.wrap(elem >> sh) if t.signed else t.wrap(uelem >> sh)
+            shs = f"cast[{tn}]({sh})"
+            self._fold_value(
+                f"ps_shr_{tn}_{u}(cast[Ptr[{tn}]]({addr}), cast[uint64]({idx}), {shs})",
+                U64.wrap(_to_reg(want_shr)))
+            self._fold_value(
+                f"ps_castb_{tn}_{u}({addr}, cast[uint64]({idx}), {shs})",
+                U64.wrap(_to_reg(want_shr)))
+            self._fold_value(
+                f"ps_callb_{tn}_{u}({addr}, cast[uint64]({idx}), {shs})",
+                U64.wrap(_to_reg(want_shr)))
+            # compare: pick a K on the far side of the sign boundary so the
+            # signed and unsigned answers genuinely disagree.
+            kraw = rng.randint(0, hi - 1)               # HIGH BIT CLEAR
+            kval = t.wrap(kraw)
+            cres = 1 if (elem < kval if t.signed else uelem < kraw) else 0
+            self._fold_value(
+                f"ps_cmp_{tn}_{u}(cast[Ptr[{tn}]]({addr}), cast[uint64]({idx}), "
+                f"cast[{tn}]({kraw}))", U64.wrap(cres))
+
+        # int64 div/mod with a NEGATIVE dividend (truncating toward zero).
+        iname, inn, ishadow = self.store_arrays[I64]
+        didx = rng.randrange(inn)
+        dval = -rng.randint(1, 1 << 40)
+        self.emit(f"    {iname}[{didx}] = {self._int_src(dval)}")
+        ishadow[didx] = I64.wrap(dval)
+        self.emit(f"    psia_{u}: uint64 = cast[uint64](&{iname}[0])")
+        den = rng.choice([3, 5, 7, 13])
+        q = -((-dval) // den)                            # trunc toward zero
+        r = dval - q * den
+        self._fold_value(
+            f"cast[uint64](ps_div_{u}(cast[Ptr[int64]](psia_{u}), "
+            f"cast[uint64]({didx}), cast[int64]({den})))", U64.wrap(I64.wrap(q)))
+        self._fold_value(
+            f"cast[uint64](ps_mod_{u}(cast[Ptr[int64]](psia_{u}), "
+            f"cast[uint64]({didx}), cast[int64]({den})))", U64.wrap(I64.wrap(r)))
+
+        # struct field + field-array through a Ptr[Struct] param, negative.
+        sc = -rng.randint(1, 1 << 40)
+        ssh = rng.randint(1, 20)
+        self.emit(f"    psbox_{u}: PsBox{u}")
+        self.emit(f"    psbox_{u}.pf = cast[Ptr[int64]](psia_{u})")
+        self.emit(f"    psbox_{u}.sc = {self._int_src(sc)}")
+        self._fold_value(
+            f"cast[uint64](ps_msc_{u}(&psbox_{u}, cast[int64]({ssh})))",
+            U64.wrap(I64.wrap(sc >> ssh)))
+        self._fold_value(
+            f"cast[uint64](ps_mfa_{u}(&psbox_{u}, cast[uint64]({didx}), "
+            f"cast[int64]({ssh})))", U64.wrap(I64.wrap(I64.wrap(dval) >> ssh)))
 
     # ---- ALU memory-source operand traffic (--opt alu-load fold) -------------
     def _gen_aluload_traffic(self, env):

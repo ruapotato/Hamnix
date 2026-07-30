@@ -166,6 +166,8 @@ from compiler.codegen import (
     struct_field_elem_struct,
     struct_field_type_node,
     member_scalar_signedness,
+    member_scalar_signedness_in,
+    index_elem_signed,
     glob_ptr_size,
     st_total,
     SF_NOFIELD,
@@ -561,6 +563,62 @@ def ssa_callee_ret_node(off: uint32, len_: uint32) -> uint32:
     return 0
 
 
+# PURE (emits nothing, bails nothing) resolver for "which struct does `obj`
+# denote?", returning the struct-table index +1, or 0 if unresolvable. This is
+# the query half of ssa_struct_base_rec, which cannot be reused for a
+# signedness question because it EMITS loads and can set ssa_bail.
+#
+# It exists because codegen's member_resolve — the resolver
+# member_scalar_signedness / index_elem_signed use — walks codegen's LOCAL
+# type-node table, and the SSA/LLVM lane never populates that table. So on this
+# lane every `s[0].field` / `s[0].v[i]` / `s[0].arr[i]` through a Ptr[Struct]
+# PARAMETER answered "unknown", which the instruction selectors then read as
+# UNSIGNED for `>>`/`/`/`%` and as SIGNED for every ordered compare. `ptr[0].
+# field` is the canonical Adder struct idiom (LANGUAGE.md's "production idiom"),
+# so this was the largest remaining hole of the ssa_expr_sgn unknown-default
+# class, not a corner case.
+def ssa_member_struct_of(obj: uint32) -> uint32:
+    if obj == 0:
+        return 0
+    k: uint32 = nd_kind[obj]
+    if k == ND_IDENT:
+        nid: uint32 = nm_intern(nd_name_off[obj], nd_name_len[obj])
+        if nid < NM_MAX and ssa_islocal[nid] != 0:
+            return ssa_local_struct[nid]        # 0 when not a struct local
+        gi: uint32 = glob_lookup(nd_name_off[obj], nd_name_len[obj])
+        if gi != 0:
+            gsi: uint32 = glob_struct_idx[gi - 1]
+            if gsi != 0:
+                return gsi
+            # A module-scope `Ptr[Struct]` global records no struct index
+            # (glob_struct_idx is the IN-PLACE struct slot); recover the
+            # pointee from its declared type node so `gp[0].field` resolves.
+            gtn: uint32 = glob_type_node[gi - 1]
+            if gtn != 0 and nd_kind[gtn] == ND_PTR_TYPE:
+                return struct_lookup_by_node(nd_a[gtn])
+        return 0
+    if k == ND_INDEX or (k == ND_UNARY and nd_aux[obj] == UNOP_DEREF):
+        # `s[i].field` / `(*s).field`: the element of a Ptr[Struct] (or an
+        # Array-of-Struct) IS the struct. Both spellings dereference one level.
+        base: uint32 = nd_a[obj]
+        if base != 0 and nd_kind[base] == ND_CAST:
+            # `cast[Ptr[Struct]](x)[i].field`
+            dt: uint32 = nd_a[base]
+            if dt != 0 and nd_kind[dt] == ND_PTR_TYPE:
+                return struct_lookup_by_node(nd_a[dt])
+            return 0
+        return ssa_member_struct_of(base)
+    if k == ND_MEMBER:
+        # `a.b.field`: struct of `a.b` == the nested-struct type of field `b`.
+        outer: uint32 = ssa_member_struct_of(nd_a[obj])
+        if outer == 0:
+            return 0
+        fld_is_ptr: uint32 = 0
+        return struct_field_struct(outer, nd_name_off[obj], nd_name_len[obj],
+                                   &fld_is_ptr)
+    return 0
+
+
 # SHALLOW expression signedness (0/1/2), mirroring codegen.ad's expr_signedness
 # restricted to the Phase-1 subset: ND_IDENT -> the local's declared signedness
 # (non-locals bail before this is reached); ND_CALL -> the callee's return-type
@@ -570,6 +628,14 @@ def ssa_expr_sgn(node: uint32) -> uint32:
     if node == 0:
         return 0
     k: uint32 = nd_kind[node]
+    if k == ND_CAST:
+        # `cast[T](x)` : the CAST's declared signedness, mirroring codegen
+        # expr_signedness's ND_CAST arm. ssa_expr_sgn had no ND_CAST arm at
+        # all, so a cast — the one construct whose ENTIRE PURPOSE is to state
+        # the type — was answered "unknown", and `cast[int64](u) >> 4` emitted
+        # lshr. A cast is the strongest signedness evidence in the language;
+        # discarding it is the worst possible default.
+        return type_signedness(nd_a[node])
     if k == ND_IDENT:
         nid: uint32 = nm_intern(nd_name_off[node], nd_name_len[node])
         if nid < NM_MAX and ssa_islocal[nid] != 0:
@@ -618,6 +684,31 @@ def ssa_expr_sgn(node: uint32) -> uint32:
             igi: uint32 = ssa_global_array_1d(nd_name_off[ibase], nd_name_len[ibase])
             if igi != 0:
                 return ssa_array_elem_sgn(igi)
+            return 0
+        # NON-IDENT base — `cast[Ptr[T]](a)[i]`, `fn()[i]`, `s[0].v[i]`,
+        # `g[i][j]`. These need NO ssa-local table: the element type is
+        # recoverable from the cast's / callee's / field's recorded type node
+        # alone, which is exactly what codegen's index_elem_signed does (it is
+        # the SAME function the native lane's expr_signedness calls for this
+        # node kind, so the two lanes now agree by construction instead of by
+        # a hand-copied subset). Before this, all four fell through to 0 =
+        # "unknown" and were silently miscompiled in BOTH directions at once:
+        # unknown -> UNSIGNED for `>>`/`/`/`%`, unknown -> SIGNED for every
+        # ordered compare. Only the ND_IDENT arm above must stay ssa-local,
+        # because codegen's local tables are not populated on this lane.
+        ies: uint32 = index_elem_signed(node)
+        if ies != 0:
+            return ies
+        # `s[0].v[i]` / `s[0].arr[i]`: codegen's member_resolve just failed
+        # (empty local table on this lane). Resolve the struct from the SSA
+        # lane's OWN table and read the field's element signedness.
+        if ibase != 0 and nd_kind[ibase] == ND_MEMBER:
+            msi: uint32 = ssa_member_struct_of(nd_a[ibase])
+            if msi != 0:
+                mesgn: uint32 = 0
+                if struct_field_elem(msi, nd_name_off[ibase],
+                                     nd_name_len[ibase], &mesgn) != 0:
+                    return mesgn
         return 0
     if k == ND_UNARY:
         # `*p` : the pointee signedness (0 if not a derefable pointer ident).
@@ -632,7 +723,18 @@ def ssa_expr_sgn(node: uint32) -> uint32:
         # instead of the unsigned (setb / `icmp ult`) — so a high-half kernel
         # address (bit 63 set, negative when signed) wrongly compared `< 0x100000`
         # and schedule()'s #switch-bad-sp guard false-fired ("uninitialized sp").
-        return member_scalar_signedness(node)
+        msgn: uint32 = member_scalar_signedness(node)
+        if msgn != 0:
+            return msgn
+        # codegen's member_resolve failed — it needs its LOCAL type-node table,
+        # which this lane never fills. `s[0].w >> 16` on a `Ptr[Struct]` PARAM
+        # therefore answered "unknown" and emitted lshr for an int64 field.
+        # Resolve the struct from the SSA lane's own table instead.
+        ssi: uint32 = ssa_member_struct_of(nd_a[node])
+        if ssi != 0:
+            return member_scalar_signedness_in(ssi, nd_name_off[node],
+                                               nd_name_len[node])
+        return 0
     return 0
 
 
