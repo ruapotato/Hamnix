@@ -1313,6 +1313,8 @@ def _ns_dispatch(rel: int32) -> int32:
 
 # Does element `elv` match getElementsByTagNameNS(ns, local)? "*" matches all.
 def _ns_el_matches(elv: int32, nsn: int32, lp: Ptr[uint8], ln: int32) -> int32:
+    if js_type_of(elv) != TAG_OBJ:
+        return 0
     nsv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("namespaceURI"), 12)
     if nsn == 1 and nsuri_buf[0] == 42:                    # namespace "*"
         pass
@@ -1343,6 +1345,11 @@ def _el_has_attribute(thisv: int32, np: Ptr[uint8], n: int32) -> int32:
 
 # Does created element `elv` answer to getElementsByTagName(`np`[0..nn))?
 def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
+    if js_type_of(elv) != TAG_OBJ:
+        # Past the DOM_MAX ceiling the collector emits undefined placeholders
+        # so the collection LENGTH still matches the document (see
+        # tests/fixtures/hambrowse_ceilings.html). Pass them through untouched.
+        return 1
     if nn == 1 and np[0] == 42:                            # "*"
         return 1
     # The QUALIFIED name (prefix:localName), not tagName — tagName is the
