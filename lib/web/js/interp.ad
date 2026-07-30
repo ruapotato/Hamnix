@@ -827,6 +827,17 @@ def op_in(keyv: int32, objv: int32) -> int32:
         if obj_find_prop(cur, ks) >= 0:
             return 1
         cur = obj_proto[cur]
+    # The global object mirrors global SCOPE (see member_get's fall-through):
+    # `window.HTMLElement` resolves, so `"HTMLElement" in window` must be true
+    # too. It was not, because every DOM interface object, every constructor and
+    # every builtin is an env binding rather than a property of g_global_obj —
+    # so feature detection through `in` reported the whole platform missing.
+    # Measured 2026-07-30 on the vendored WPT subset: `typeName in window`
+    # alone accounted for 70 subtests, 55 of them in Node-cloneNode.html, which
+    # bails on the FIRST assertion of every one of its 143 tests.
+    if g_global_obj != 0 and o == objid_of(g_global_obj):
+        if env_lookup_bind(g_env, ks) >= 0:
+            return 1
     return 0
 
 
@@ -1087,6 +1098,17 @@ def eval_expr(node: int32, env: int32) -> int32:
             # This is what the `Array.prototype.slice.call(arguments)` idiom needs.
             if str_eq_cstr(n_str[node], cast[Ptr[uint8]]("arguments")) != 0 and this_top > 0 and argc_stack[this_top - 1] >= 0:
                 return build_arguments(argbase_stack[this_top - 1], argc_stack[this_top - 1])
+            # HTML "named access on the Window object": `<div id=main>` makes
+            # `main` a global. Asked of the host only AFTER scope lookup has
+            # missed, so a real binding always wins — which is the spec order.
+            if g_named_lookup_nid != 0 and host_dispatch_set != 0:
+                sv_nl: int32 = g_named_lookup_str
+                g_named_lookup_str = n_str[node]
+                nhf: Fn[int32, int32] = cast[Fn[int32, int32]](host_dispatch_addr)
+                nrv: int32 = nhf(g_named_lookup_nid)
+                g_named_lookup_str = sv_nl
+                if tag_of(nrv) != TAG_UNDEF:
+                    return nrv
             # Undefined global reference. Per spec this is a THROWN
             # ReferenceError: an ordinary catchable exception that unwinds to the
             # nearest try/catch and, if uncaught, ends only THIS script.

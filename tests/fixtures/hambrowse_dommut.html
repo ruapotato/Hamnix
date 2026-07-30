@@ -24,9 +24,23 @@
   // element nodeValue is null (renders as the string 'null' via concat).
   console.log("nval " + first.nodeValue); // nval null
 
-  // ---- lastChild / previousSibling aliases -----------------------------
-  console.log("alias " + list.lastChild.textContent \
-              + " " + list.lastElementChild.previousSibling.textContent); // alias Epsilon Delta
+  // ---- last/previous ELEMENT traversal ---------------------------------
+  // NOT lastChild/previousSibling: those are NODE-level, and the markup above
+  // puts a newline between every </li> and the next <li>, so in a browser they
+  // are Text nodes, not elements. Measured 2026-07-30 with
+  // `chromium --headless --dump-dom` on this exact list shape:
+  //   lastChild.nodeType 3 / .textContent "\n"
+  //   lastElementChild.previousSibling.nodeType 3 / .textContent "\n  "
+  //   childNodes.length 7 for three <li>
+  // This gate used to assert "Epsilon Delta" here, which is what an
+  // element-only childNodes produced and NOT what a browser does.
+  console.log("alias " + list.lastElementChild.textContent \
+              + " " + list.lastElementChild.previousElementSibling.textContent); // alias Epsilon Delta
+  // ...and the node-level pair, byte-for-byte as chromium reports it.
+  console.log("nodealias " + list.childNodes.length \
+              + " " + list.firstChild.nodeType \
+              + " " + list.lastChild.nodeType \
+              + " " + JSON.stringify(list.lastElementChild.previousSibling.textContent)); // nodealias 11 3 3 "\n  "
 
   // ---- :nth-child(An+B) / even / odd -----------------------------------
   // odd = 1,3,5 -> Alpha Gamma Epsilon ; even = 2,4 -> Beta Delta.

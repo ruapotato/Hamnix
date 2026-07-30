@@ -61,7 +61,15 @@ def _cx_walk(parent_slot: int32, pel: int32, pcid: int32):
     else:
         pobj = cre_obj[pcid]
     ec: int32 = 0
-    arr: int32 = js_get_prop(pobj, cast[Ptr[uint8]]("childNodes"), 10)
+    # OWN property only. childNodes is a lazy accessor on HTMLElement.prototype
+    # now, and _cx_build calls this for EVERY registered source element on every
+    # query — going through the getter would materialise the whole document's
+    # child-NODE lists (an object + a string per text run) to look for CREATED
+    # children. A source element only has created children once a mutation
+    # installed the own array, which is exactly when this needs to see it.
+    arr: int32 = js_null()
+    if js_has_own(pobj, cast[Ptr[uint8]]("childNodes"), 10) != 0:
+        arr = js_get_prop(pobj, cast[Ptr[uint8]]("childNodes"), 10)
     if js_is_array(arr) != 0:
         ln: int32 = js_array_len(arr)
         m: int32 = 0
@@ -1448,6 +1456,11 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_CONTAINS))
     js_set_prop(o, cast[Ptr[uint8]]("getAttributeNames"), 17, \
                 js_new_native_fn(js_hbase + NID_GETATTRNAMES))
+    # Attr-node getters (the NamedNodeMap already hands back real Attr nodes).
+    js_set_prop(o, cast[Ptr[uint8]]("getAttributeNode"), 16, \
+                js_new_native_fn(js_hbase + NID_GETATTRNODE))
+    js_set_prop(o, cast[Ptr[uint8]]("getAttributeNodeNS"), 18, \
+                js_new_native_fn(js_hbase + NID_GETATTRNODENS))
     # namespace-aware attribute + tag-name API
     js_set_prop(o, cast[Ptr[uint8]]("setAttributeNS"), 14, \
                 js_new_native_fn(js_hbase + NID_SETATTRNS))
@@ -1494,6 +1507,70 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_GETCLIENTRECTS))
 
 
+# Apply a child-list edit to the parent's own NODE-level childNodes array.
+# children (element-only) and childNodes (elements + source text nodes) are
+# DIFFERENT arrays for a source element now, so an edit to one is not an edit
+# to the other — and copying the element-only result over childNodes, which is
+# what the three helpers below used to do, silently deleted every text node the
+# page had not touched. Only acts when childNodes has actually been
+# materialised; an untouched element rebuilds it correctly on next access.
+#   mode 0 = drop `oldv` | 1 = replace `oldv` with `newv`
+#   mode 2 = insert `newv` before `oldv` (js_null() appends)
+def _dom_nodes_edit(parentv: int32, oldv: int32, newv: int32, mode: int32, \
+                    prev_kids: int32, nw_kids: int32):
+    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+        return
+    old: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
+    if js_is_array(old) == 0:
+        return
+    # A CREATED node has no source span, so there is nothing to interleave and
+    # its children and childNodes are the SAME array: the caller's element-only
+    # rebuild IS the node list, and copying it across is what this always did.
+    if old == prev_kids:
+        js_set_own(parentv, cast[Ptr[uint8]]("childNodes"), 10, nw_kids)
+        return
+    nw: int32 = js_new_array_v()
+    did: int32 = 0
+    i: int32 = 0
+    ln: int32 = js_array_len(old)
+    while i < ln:
+        ev: int32 = js_array_get(old, i)
+        if mode == 0:
+            if ev != oldv:
+                js_array_push(nw, ev)
+        elif mode == 1:
+            if ev == oldv and did == 0:
+                js_array_push(nw, newv)
+                did = 1
+            else:
+                js_array_push(nw, ev)
+        else:
+            if ev == oldv and did == 0 and oldv != js_null():
+                js_array_push(nw, newv)
+                did = 1
+            js_array_push(nw, ev)
+        i = i + 1
+    if did == 0 and mode != 0:
+        js_array_push(nw, newv)
+    js_set_own(parentv, cast[Ptr[uint8]]("childNodes"), 10, nw)
+
+
+# Push `childv` onto the parent's own childNodes array too, when it exists, so
+# a NodeList a page is already iterating stays LIVE across an appendChild
+# (dom/nodes/NodeList-Iterable.html appends while iterating container.childNodes).
+def _dom_nodes_push(parentv: int32, childv: int32):
+    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+        return
+    nd: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
+    # A CREATED node's children and childNodes are the SAME array object (it has
+    # no source span, so there is nothing to interleave). Pushing again would
+    # double-insert; only a source element has the two split apart.
+    if nd == js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8):
+        return
+    if js_is_array(nd) != 0:
+        js_array_push(nd, childv)
+
+
 # Rebuild a parent object's live JS .children/.childNodes array with `childv`
 # removed (identity match on the value handle). Keeps a readback after
 # removeChild/replaceChild consistent with the mutated tree.
@@ -1509,8 +1586,8 @@ def _dom_children_drop(parentv: int32, childv: int32):
         if ev != childv:
             js_array_push(nw, ev)
         i = i + 1
+    _dom_nodes_edit(parentv, childv, js_null(), 0, old, nw)
     js_set_prop(parentv, cast[Ptr[uint8]]("children"), 8, nw)
-    js_set_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10, nw)
 
 
 # Rebuild a parent object's live .children/.childNodes replacing the first
@@ -1534,8 +1611,8 @@ def _dom_children_replace(parentv: int32, oldv: int32, newv: int32):
         i = i + 1
     if did == 0:
         js_array_push(nw, newv)
+    _dom_nodes_edit(parentv, oldv, newv, 1, old, nw)
     js_set_prop(parentv, cast[Ptr[uint8]]("children"), 8, nw)
-    js_set_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10, nw)
 
 
 # Rebuild a parent object's live .children/.childNodes inserting `newv` just
@@ -1557,8 +1634,8 @@ def _dom_children_insert(parentv: int32, newv: int32, refv: int32):
         i = i + 1
     if did == 0:
         js_array_push(nw, newv)
+    _dom_nodes_edit(parentv, refv, newv, 2, old, nw)
     js_set_prop(parentv, cast[Ptr[uint8]]("children"), 8, nw)
-    js_set_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10, nw)
 
 
 # Capture an inline event-handler attribute (onclick=/oninput=/...) source into
@@ -1630,6 +1707,94 @@ def _dom_register_tx(txi: int32) -> int32:
     return _dom_register_el()
 
 
+# ---- SOURCE TEXT NODES -----------------------------------------------------
+# (design rationale + what was rejected: see the stx_ block in
+# lib/web/dom/bindings.ad)
+
+# Offset just past element `k`'s CLOSE tag — i.e. where the next sibling text
+# run begins. tx_ce is the inner-content end, which is the '<' of `</name>`
+# when there IS one and equal to tx_cs for a void / unterminated element; the
+# two are told apart by looking for the literal "</" there rather than by a
+# void-element name table, so `<b></b>`, `<br>` and an unclosed `<li>` all come
+# out right.
+def _tx_elem_end(k: int32) -> uint64:
+    e: uint64 = cast[uint64](tx_ce[k])
+    if e + 1 < src_len and src_ptr[e] == 60 and src_ptr[e + 1] == 47:
+        j: uint64 = e + 2
+        while j < src_len and src_ptr[j] != 62:
+            j = j + 1
+        if j < src_len:
+            return j + 1
+        return src_len
+    return e
+
+
+# The Text node for source run [s,e), created once and memoized by `s`.
+# Returns js_null() for an empty run or on pool exhaustion.
+def _stx_text_node(s: uint64, e: uint64, parentv: int32) -> int32:
+    if e <= s:
+        return js_null()
+    key: int32 = cast[int32](s)
+    i: int32 = 0
+    while i < stx_n:
+        if stx_start[i] == key:
+            return stx_obj[i]
+        i = i + 1
+    if stx_n >= STX_MAX:
+        if dom_warn_stx == 0:
+            dom_warn_stx = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING STX_MAX reached: source text nodes beyond this are missing from childNodes. STX_MAX="), STX_MAX)
+        return js_null()
+    n: int32 = _text_into_tw(s, e)
+    o: int32 = js_new_object_v()
+    js_set_prop(o, cast[Ptr[uint8]]("nodeType"), 8, js_number(3.0))
+    js_set_prop(o, cast[Ptr[uint8]]("nodeName"), 8, \
+                js_new_string(cast[Ptr[uint8]]("#text"), 5))
+    # data / nodeValue / textContent / length are accessors on
+    # CharacterData.prototype over this one backing field (see _cre_make_text);
+    # writing them as own properties here would shadow the accessors.
+    js_set_prop(o, cast[Ptr[uint8]]("__cd"), 4, \
+                js_new_string(&tw_buf[0], cast[uint64](n)))
+    js_set_prop(o, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+    js_set_prop(o, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+    _node_identity(o, g_proto_text)
+    k: int32 = stx_n
+    stx_start[k] = key
+    stx_end[k] = cast[int32](e)
+    stx_obj[k] = o
+    stx_n = k + 1
+    return o
+
+
+# Push every child NODE of tx entry `t` onto array `arr`, in document order:
+# the text runs between its child elements interleaved with the elements
+# themselves. `parentv` is the owning element's JS object (for parentNode).
+# Returns the node count.
+def _node_children_of_tx(t: int32, parentv: int32, arr: int32) -> int32:
+    n: int32 = 0
+    pos: uint64 = cast[uint64](tx_cs[t])
+    ce: uint64 = cast[uint64](tx_ce[t])
+    k: int32 = 0
+    while k < tx_n:
+        if tx_parent[k] == t:
+            a: uint64 = cast[uint64](tx_anchor[k])
+            if a > pos and a <= ce:
+                tn: int32 = _stx_text_node(pos, a, parentv)
+                if js_type_of(tn) == TAG_OBJ:
+                    js_array_push(arr, tn)
+                    n = n + 1
+            js_array_push(arr, _dom_register_tx(k))
+            n = n + 1
+            pos = _tx_elem_end(k)
+        k = k + 1
+    if ce > pos:
+        tl: int32 = _stx_text_node(pos, ce, parentv)
+        if js_type_of(tl) == TAG_OBJ:
+            js_array_push(arr, tl)
+            n = n + 1
+    return n
+
+
 # Wire the live traversal properties of the just-registered element `idx` from
 # the integer tree index: parentNode/parentElement, previous/nextElementSibling
 # (+ firstChild/nextSibling aliases), children/childNodes, first/lastElement-
@@ -1661,20 +1826,21 @@ def _dom_wire_tree(idx: int32):
     # siblings (same parent, document order == tx order)
     prevs: int32 = _tx_prev_sibling(t)
     nexts: int32 = _tx_next_sibling(t)
+    # previousSibling / nextSibling are NODE-level and therefore LAZY
+    # (NID_PSIB_ACC / NID_NSIB_ACC): they are answered off the parent's child-
+    # NODE list, which costs an object + a string per text run and must not be
+    # paid by every registered element. The *Element* twins stay eager — they
+    # come straight out of tx and cost nothing.
     if prevs >= 0:
-        pso: int32 = _dom_register_tx(prevs)
-        js_set_prop(o, cast[Ptr[uint8]]("previousElementSibling"), 22, pso)
-        js_set_prop(o, cast[Ptr[uint8]]("previousSibling"), 15, pso)
+        js_set_prop(o, cast[Ptr[uint8]]("previousElementSibling"), 22, \
+                    _dom_register_tx(prevs))
     else:
         js_set_prop(o, cast[Ptr[uint8]]("previousElementSibling"), 22, js_null())
-        js_set_prop(o, cast[Ptr[uint8]]("previousSibling"), 15, js_null())
     if nexts >= 0:
-        nso: int32 = _dom_register_tx(nexts)
-        js_set_prop(o, cast[Ptr[uint8]]("nextElementSibling"), 18, nso)
-        js_set_prop(o, cast[Ptr[uint8]]("nextSibling"), 11, nso)
+        js_set_prop(o, cast[Ptr[uint8]]("nextElementSibling"), 18, \
+                    _dom_register_tx(nexts))
     else:
         js_set_prop(o, cast[Ptr[uint8]]("nextElementSibling"), 18, js_null())
-        js_set_prop(o, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
     # children
     ch: int32 = js_new_array_v()
     havef: int32 = 0
@@ -1698,15 +1864,31 @@ def _dom_wire_tree(idx: int32):
     # measured at ~1.35x on a 9000-element page. The own data property is
     # exactly what the setter would have installed, and it shadows the accessor.
     js_set_own(o, cast[Ptr[uint8]]("children"), 8, ch)
-    js_set_own(o, cast[Ptr[uint8]]("childNodes"), 10, ch)
     js_set_prop(o, cast[Ptr[uint8]]("childElementCount"), 17, \
                 js_number(cast[float64](nchild)))
     js_set_prop(o, cast[Ptr[uint8]]("firstElementChild"), 17, firsto)
-    js_set_prop(o, cast[Ptr[uint8]]("firstChild"), 10, firsto)
     js_set_prop(o, cast[Ptr[uint8]]("lastElementChild"), 16, lasto)
-    # childNodes is element-only here (round-2 approximation), so the node-level
-    # aliases mirror the element-level ones.
-    js_set_prop(o, cast[Ptr[uint8]]("lastChild"), 9, lasto)
+    # childNodes / firstChild / lastChild are NODE-level and stay on their lazy
+    # accessors (NID_NODES_ACC / NID_FCH_ACC / NID_LCH_ACC) — see _dom_node_kids.
+
+
+# Build (once) and return the NODE-level childNodes array of registered element
+# `idx`: the text runs between its child elements, interleaved with them, in
+# document order. Memoised as an own property, which shadows NID_NODES_ACC from
+# here on. js_null() when the element has no tx entry (e.g. inside <noscript>).
+def _dom_node_kids(idx: int32) -> int32:
+    o: int32 = dom_obj[idx]
+    if js_has_own(o, cast[Ptr[uint8]]("childNodes"), 10) != 0:
+        return js_get_prop(o, cast[Ptr[uint8]]("childNodes"), 10)
+    if tx_built == 0:
+        return js_null()
+    t: int32 = _tx_by_anchor(dom_anchor[idx])
+    if t < 0:
+        return js_null()
+    nd: int32 = js_new_array_v()
+    ign: int32 = _node_children_of_tx(t, o, nd)
+    js_set_own(o, cast[Ptr[uint8]]("childNodes"), 10, nd)
+    return nd
 
 
 # Register (or return the existing record for) the element described by the
