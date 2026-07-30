@@ -3181,6 +3181,25 @@ def vm_map_user_page(pml4_phys: uint64, vaddr: uint64, phys: uint64,
     return 0
 
 
+def vm_unmap_user_page(pml4_phys: uint64, vaddr: uint64) -> int32:
+    # ZAP a single 4 KiB user PTE: clear the leaf entry mapping `vaddr` in
+    # `pml4_phys` and flush it. The inverse of vm_map_user_page, and the
+    # ZAP-BEFORE-FREE half of any caller that installed a mapping by hand —
+    # freeing a frame whose PTE is still present is how earlier passes handed
+    # a live mapping back to the buddy allocator.
+    #
+    # Deliberately does NOT free the frame or the intermediate tables: the
+    # caller owns the frame (it supplied the phys) and the tables stay for
+    # the task's own teardown. Returns 0 if a slot existed and was cleared,
+    # -1 if the VA has no 4 KiB leaf slot (nothing to zap).
+    slot: uint64 = _cow_resolve_pte_slot(pml4_phys, vaddr)
+    if slot == 0:
+        return -1
+    cast[Ptr[uint64]](slot)[0] = 0
+    invlpg_one(vaddr)
+    return 0
+
+
 def _cow_probe_leaf(pml4_phys: uint64, vaddr: uint64) -> uint64:
     # READ-ONLY (never allocates, never cracks) page-table walk: return the
     # effective leaf entry mapping `vaddr` in `pml4_phys`, or 0 when the VA
