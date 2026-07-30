@@ -2291,6 +2291,77 @@ def sched_vruntime_floor() -> uint64:
     return g_sched_vruntime_floor
 
 
+# ---------------------------------------------------------------------------
+# REAL-RUNTIME vruntime accounting (the other half of the D3 finding above).
+#
+# The D3 banner names the defect from the side of a task that runs LESS than a
+# tick and is charged NOTHING. This is the same defect seen from the other
+# side, and it is what the wklat outlier ring measured on a live desktop: a
+# task that runs for a few HUNDRED MICROSECONDS but happens to hold the cpu
+# when the 100 Hz timer fires was charged a FULL TICK -- 256 units at nice 0,
+# i.e. 10 ms of credit for 0.2 ms of work.
+#
+# Measured consequence, two independent KVM boots of the shipped image with the
+# DE live (build/m2p/wklat_ctx, build/m2p/wklat_ctx2): sshd, blocked in
+# tcp_accept's one-tick poll, is woken ~100x/s. Whenever a tick landed on it,
+# its vruntime jumped ~250 units above EVERY task the scheduler then
+# dispatched, and it waited to be picked again for as long as it took the whole
+# field to each be charged a tick of their own:
+#
+#     arm     runqueue depth   wake->dispatch   ticks waited
+#     idle    11-13            82-98 ms         8-10
+#     loaded  15-17            113-132 ms       12-13
+#
+# The wait is (runqueue depth) x (one tick), which is why a live DE showed a
+# 90-130 ms tail where a lightweight boot with two or three runnable tasks
+# showed 4.5 ms. Nothing about it is load-dependent, which is exactly what the
+# idle and loaded arms measured.
+#
+# THE FIX, which is what Linux does (update_curr: delta_exec = now -
+# curr->exec_start): charge the vruntime a task ACTUALLY earned. The scale is
+# unchanged -- a full 10 ms tick of nice-0 runtime still costs exactly
+# NICE0_WEIGHT * VRUNTIME_SCALE / weight = 256 units -- so every existing
+# placement constant (the fork penalty, the wakeup granularity, the quantum)
+# keeps its meaning. What changes is that a task pays for its own runtime
+# instead of for the accident of where the timer landed.
+#
+# Charged at BOTH ends, which is what makes it complete rather than a
+# half-measure: at the tick (the incumbent pays for the slice it has run so
+# far) and at every dispatch (the OUTGOING task pays for the sub-tick slice it
+# just ran and would otherwise have had for free -- the D3 half).
+TICK_NS: uint64 = 10000000
+g_exec_start_ns: Array[512, uint64]
+
+
+def _sched_charge_exec(slot: uint64):
+    # Charge `slot` the vruntime it has earned since its exec_start, and
+    # re-stamp exec_start. No-op before a clocksource exists (early boot),
+    # where the caller keeps the old whole-tick charge.
+    if slot >= NTASKS:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    st: uint64 = g_exec_start_ns[slot]
+    g_exec_start_ns[slot] = now
+    if st == 0 or now <= st:
+        return
+    d: uint64 = now - st
+    # A task resuming after a long descheduled gap must not be billed for time
+    # it did not run. exec_start is re-stamped on every dispatch, so a delta
+    # beyond one full tick can only be a missed re-stamp; clamp rather than
+    # charge a fiction.
+    if d > TICK_NS:
+        d = TICK_NS
+    w: uint64 = task_table[slot].sched_weight
+    if w == 0:
+        w = NICE0_WEIGHT
+    per_tick: uint64 = ((NICE0_WEIGHT * VRUNTIME_SCALE) / w) * \
+        nscap_cpu_factor_current()
+    task_table[slot].vruntime = task_table[slot].vruntime + \
+        ((d * per_tick) / TICK_NS)
+
+
 def sched_fork_vruntime(slot: uint64) -> uint64:
     # Placement vruntime for a newly-created / forked task: the monotonic
     # floor plus a one-slice weight-scaled penalty (place_entity initial=1).
@@ -4183,9 +4254,19 @@ def sched_note_dispatch(slot: uint64):
     prev: uint64 = RQ_CUR_NONE
     if cid < NR_RQ:
         prev = g_rq_current[cid]
+        # The outgoing task pays for the sub-tick slice it just ran. Without
+        # this, a task that always blocks before the timer fires accrues
+        # nothing at all and stays pinned at the runqueue minimum -- the
+        # starvation half of the same defect, described in the D3 banner.
+        if prev < NTASKS and prev != slot:
+            _sched_charge_exec(prev)
         g_rq_current[cid] = slot
         # This dispatch satisfies whatever wakeup asked for a reschedule.
         g_need_resched[cid] = 0
+    # Start this task's runtime clock. Paired with the charge above and the
+    # one in preempt_tick.
+    if clocksource_is_selected() != 0:
+        g_exec_start_ns[slot] = clocksource_read_ns()
     _wklat_account(slot, prev)
 
 
@@ -6438,8 +6519,18 @@ def preempt_tick(from_user: uint64) -> uint64:
     # CEILING on top of it. 25% cap → 4x accrual → ~1/4 the CPU of an
     # uncapped peer at the same nice.
     cap_factor: uint64 = nscap_cpu_factor_current()
-    task_table[cur].vruntime = task_table[cur].vruntime + \
-        (((NICE0_WEIGHT * VRUNTIME_SCALE) / cw) * cap_factor)
+    # Charge what this task actually RAN since its last charge, not a whole
+    # tick. Charging a whole tick bills a task that ran 0.2 ms for 10 ms of
+    # credit and pushes it a full slice behind every peer, which on a live
+    # desktop costs it (runqueue depth) ticks before it is picked again -- the
+    # 90-130 ms wake->dispatch tail the wklat outlier ring attributed to
+    # exactly this. Falls back to the whole-tick charge only before a
+    # clocksource exists, where nothing else is running anyway.
+    if clocksource_is_selected() != 0:
+        _sched_charge_exec(cur)
+    else:
+        task_table[cur].vruntime = task_table[cur].vruntime + \
+            (((NICE0_WEIGHT * VRUNTIME_SCALE) / cw) * cap_factor)
     # QUANTUM RANGE INVARIANT (launch-queue / CPU-bound-starvation fix).
     # sched_quantum_for() provably arms quantum_left into [1, SCHED_QUANTUM_MAX]
     # on EVERY dispatch, so a running task's slice can never legitimately exceed
