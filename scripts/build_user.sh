@@ -222,8 +222,15 @@ _run_compile_pool() {
 
     # --- LLVM-default coverage report --------------------------------------
     local _llvm _nat _total
-    _llvm=$(ls -1 "$_LANEDIR"/*.llvm   2>/dev/null | wc -l)
-    _nat=$(ls -1 "$_LANEDIR"/*.native 2>/dev/null | wc -l)
+    # `ls` of an EMPTY glob exits 2, and under `set -euo pipefail` that rc
+    # propagates through the pipe and kills the script — so the coverage report
+    # itself failed the build the first time native fallback reached ZERO (the
+    # goal state). Count with a glob-into-array instead, which is empty-safe.
+    local -a _lm=() _nm=()
+    _lm=("$_LANEDIR"/*.llvm);   [ -e "${_lm[0]:-}" ] || _lm=()
+    _nm=("$_LANEDIR"/*.native); [ -e "${_nm[0]:-}" ] || _nm=()
+    _llvm=${#_lm[@]}
+    _nat=${#_nm[@]}
     _total=$(( _llvm + _nat ))
     echo "[build_user] ================ LLVM-default coverage ================"
     if [ "$_LLVM_DEFAULT" = "1" ]; then
