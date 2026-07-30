@@ -591,8 +591,7 @@ def pgtable_build_cpu_entry_area():
     m_verw: uint64 = _cea_map_range(verw_kva, verw_kva + PGT_CEA_VERW_BYTES)
     if (m_idt == 0) | (m_gdt == 0) | (m_tss == 0) | (m_df == 0) \
             | (m_verw == 0):
-        printk0("[pgtable] cpu_entry_area: WARN OOM mapping an entry"
-                " structure (incomplete CEA)\n")
+        printk0("[pgtable] cpu_entry_area: WARN OOM mapping an entry structure (incomplete CEA)\n")
 
     # Flush the TLB so the new window is live immediately.
     load_cr3(cr3)
@@ -638,11 +637,9 @@ def pgtable_cpu_entry_area_selftest() -> uint64:
             verw_ok, text_ok)
     all_ok: uint64 = idt_ok & gdt_ok & tss_ok & df_ok & verw_ok & text_ok
     if all_ok == 1:
-        printk0("[pgtable] cpu_entry_area PASS: IDT/GDT/TSS/DF/VERW/entry.text"
-                " resolve through the entry window (same RAM)\n")
+        printk0("[pgtable] cpu_entry_area PASS: IDT/GDT/TSS/DF/VERW/entry.text resolve through the entry window (same RAM)\n")
     else:
-        printk0("[pgtable] cpu_entry_area FAIL: an entry structure did not"
-                " resolve through the CEA window\n")
+        printk0("[pgtable] cpu_entry_area FAIL: an entry structure did not resolve through the CEA window\n")
     return all_ok
 
 # Multiboot1 constants (mirror arch/x86/kernel/e820.ad — kept inline

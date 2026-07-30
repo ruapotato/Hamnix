@@ -486,8 +486,7 @@ def _audit_pml4_subtree_us1_leaks(pml4_idx: uint64, label: Ptr[char]) -> uint64:
                         if (pde & PGT_FLAG_PS_KM) != 0:
                             # 2 MiB leaf.
                             if (pde & PGT_FLAG_US_KM) != 0:
-                                printk2("[smap-audit] LEAK %s 2M leaf US=1 (pdpt[%d]"
-                                        " pd-row follows)\n",
+                                printk2("[smap-audit] LEAK %s 2M leaf US=1 (pdpt[%d] pd-row follows)\n",
                                         cast[uint64](label), i)
                                 printk1("[smap-audit]   pd[%d]\n", j)
                                 leaks = leaks + 1
@@ -499,8 +498,7 @@ def _audit_pml4_subtree_us1_leaks(pml4_idx: uint64, label: Ptr[char]) -> uint64:
                                     pt_base + k * cast[uint64](8))[0]
                                 if (pte & PGT_FLAG_P_KM) != 0:
                                     if (pte & PGT_FLAG_US_KM) != 0:
-                                        printk2("[smap-audit] LEAK %s 4K leaf US=1"
-                                                " (pdpt[%d])\n",
+                                        printk2("[smap-audit] LEAK %s 4K leaf US=1 (pdpt[%d])\n",
                                                 cast[uint64](label), i)
                                         leaks = leaks + 1
                                 k = k + 1

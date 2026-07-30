@@ -462,20 +462,65 @@ for s in sorted(persite):
     else:
         gtxt = 'growth unknown (too few page dumps)'
     print('site %-3d %d orphan(s), live %d, %s' % (s, n_orph, n_live, gtxt))
+# THE RUN PREDICATE (leak pass 18) — `[cens3]`. An orphan count is not a leak
+# count: the census's only oracle is a page-table walk, and the eager execve
+# user-stack prefix is ONE contiguous run whose untouched pages carry no user
+# PTE. Such a frame is honestly unreachable and completely accounted for —
+# free_pages(ustack_phys) at reap returns it — so counting it as a leak
+# condemns the instrument's blind spot rather than a bug. The kernel now asks,
+# of every orphan, whether it lies inside a live task's wholesale-return run,
+# and THAT is the quantity this gate judges.
+unacc, inrun_t, trunc = {}, {}, []
+for m in re.finditer(r'\[cens3\] site (\d+): (\d+) UNACCOUNTED', log):
+    unacc[int(m.group(1))] = int(m.group(2))
+for m in re.finditer(r'\[cens3\] site (\d+): (\d+) orphan\(s\) collected, '
+                     r'(\d+) inside a', log):
+    inrun_t[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+for m in re.finditer(r'\[cens3\] site (\d+): TRUNCATED', log):
+    trunc.append(int(m.group(1)))
+print()
+print('=== run predicate (pass 18) ===')
+for s in sorted(set(list(unacc) + list(inrun_t))):
+    n_c, n_r = inrun_t.get(s, (0, 0))
+    print('site %-3d collected %-3d  in a live run %-3d  UNACCOUNTED %d'
+          % (s, n_c, n_r, unacc.get(s, 0)))
+if not unacc:
+    print('(no [cens3] output — a kernel without the run predicate)')
+
 if not pos or not neg:
     bad.append('census controls incomplete (positive=%s negative=%s) — an '
                'orphan count without both controls is not a measurement'
                % (pos, neg))
+elif trunc:
+    bad.append('run-check TRUNCATED at site(s) %s — it covered only a prefix '
+               'of the population there, so those sites are inconclusive, not '
+               'clean' % ', '.join(str(s) for s in trunc))
+elif unacc:
+    tot_unacc = sum(unacc.values())
+    # The plant is the run predicate's OWN positive control, for free: it is
+    # mapped nowhere, so it lies in no run and MUST come out UNACCOUNTED. A
+    # run-check that explained every orphan would be over-claiming.
+    if tot_unacc == 0:
+        bad.append('run predicate reported 0 UNACCOUNTED while a planted '
+                   'control orphan (mapped NOWHERE, so in NO run) was '
+                   'outstanding — it OVER-CLAIMS and its verdict is void')
+    elif tot_unacc == 1:
+        notes.append('census: exactly 1 UNACCOUNTED frame, which is the '
+                     'planted control; every other orphan lies inside a live '
+                     "task's wholesale-return run. Both controls green in the "
+                     'same sweep.')
+    else:
+        detail = ', '.join('site %d x%d' % (s, unacc[s])
+                           for s in sorted(unacc) if unacc[s])
+        bad.append('census: %d UNACCOUNTED frames; 1 is the planted control, '
+                   'so %d lie in NO live run and nobody will ever return '
+                   'them — %s' % (tot_unacc, tot_unacc - 1, detail))
 elif orph:
     n = int(orph[-1])
-    # 1 == the deliberately planted positive control and nothing else.
     if n > 1:
-        resid = ', '.join('site %d x%d' % (s, persite[s][0])
-                          for s in sorted(persite) if persite[s][0] > 0)
-        bad.append('census reports %d orphaned frames; 1 is the planted '
-                   'positive control (site %s), so %d frame(s) are genuinely '
-                   'unreachable — %s'
-                   % (n, planted_site, n - 1, resid or 'site unreported'))
+        bad.append('census reports %d orphaned frames and the kernel printed '
+                   'NO [cens3] run-check to adjudicate them — a stale kernel, '
+                   'so this is INCONCLUSIVE, not a leak and not clean' % n)
     else:
         notes.append('census: %d orphan (the planted positive control), both '
                      'controls green in the same sweep' % n)

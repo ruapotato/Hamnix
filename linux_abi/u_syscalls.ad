@@ -17214,8 +17214,7 @@ def maps_open_selftest() -> int32:
                     cast[uint64](enc))
             return 0
         n = devproc_read(cast[uint32](enc & 0xFFFFFFFF), 0, &mbuf[0], 2047)
-        printk0("[MAPS] note: boot-task fd table saturated;"
-                " verified via #p proc server\n")
+        printk0("[MAPS] note: boot-task fd table saturated; verified via #p proc server\n")
     else:
         set_task_ustack_range(slot, save_lo, save_sz)
         printk1("[MAPS] FAIL open /proc/self/maps rc=%d\n", cast[uint64](fd))

@@ -326,8 +326,7 @@ def lapic_calibrate_and_setup_timer(tsc_hz: uint64, tsc_ok: uint64):
             lo: uint64 = lapic_hz_tsc - band
             hi: uint64 = lapic_hz_tsc + band
             if lapic_hz_pit < lo or lapic_hz_pit > hi:
-                printk1("LAPIC: PIT calibration implausible vs TSC — "
-                        "using TSC-derived %d Hz\n", lapic_hz_tsc)
+                printk1("LAPIC: PIT calibration implausible vs TSC — using TSC-derived %d Hz\n", lapic_hz_tsc)
                 lapic_hz = lapic_hz_tsc
     else:
         printk0("LAPIC: TSC uncalibrated — using PIT-derived frequency\n")

@@ -478,8 +478,7 @@ def cow_ledger_dump():
     # Both constraints already cost this effort a "silent" working probe.
     printk_set_level(PRINTK_LEVEL_EMERG)
     if _cow_ledger_on == 0:
-        printk0("[ledger] DISARMED — no per-arm attribution. Write"
-                " `track full` before `track census`.\n")
+        printk0("[ledger] DISARMED — no per-arm attribution. Write `track full` before `track census`.\n")
         return
     printk2("[ledger] totals: added=%d dropped=%d\n",
             _cow_refs_added, _cow_refs_dropped)
@@ -497,8 +496,7 @@ def cow_ledger_dump():
     # instrumentation is INCOMPLETE, not that a mystery site exists, and
     # saying so keeps a reader from slope-fitting an unattributed residue.
     printk_set_level(PRINTK_LEVEL_EMERG)
-    printk2("[ledger] UNATTRIBUTED arm=0 add=%d drop=%d"
-            " (non-zero means a call site is missing cow_set_arm)\n",
+    printk2("[ledger] UNATTRIBUTED arm=0 add=%d drop=%d (non-zero means a call site is missing cow_set_arm)\n",
             _cow_arm_add[0], _cow_arm_drop[0])
 
 
@@ -514,8 +512,7 @@ def cow_origin_dump():
         return
     if _cow_origin_base == 0:
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk0("[origin] NO TABLE — allocation failed at boot; every"
-                " frame reads bucket 0 and this dump is VOID.\n")
+        printk0("[origin] NO TABLE — allocation failed at boot; every frame reads bucket 0 and this dump is VOID.\n")
         return
     i: uint64 = 0
     while i < COW_ARM_MAX:
