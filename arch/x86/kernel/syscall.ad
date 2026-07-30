@@ -37,6 +37,7 @@ from arch.x86.kernel.time import (
     sysirq_last_tick_ns, sysirq_account,
 )
 from kernel.sched.core import (
+    sched_dispatch_count,
     TaskStruct, current_task,
     create_user_task, create_user_task_argv, create_user_thread,
     fork_seed_callee_saved,
@@ -4380,6 +4381,7 @@ def do_syscall(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
     s_tick0: uint64 = sysirq_tick_count()
     s_gap: uint64 = sysirq_gap_take()
     s_tk0: uint64 = sysirq_last_tick_ns()
+    s_disp0: uint64 = sched_dispatch_count()
     # Read the ABI fork BEFORE the call: execve / exit can replace or retire
     # the current task, so `current_task()` afterwards may not be this caller.
     s_task: Ptr[TaskStruct] = current_task()
@@ -4387,7 +4389,10 @@ def do_syscall(nr: uint64, a0: uint64, a1: uint64, a2: uint64,
     if s_task[0].is_linux_userspace != 0:
         s_lin = 1
     s_rc: uint64 = _do_syscall_dispatch(nr, a0, a1, a2, a3, a4, a5)
-    sysirq_account(nr, s_lin, s_t0, s_tick0, s_gap, s_tk0)
+    s_span: uint64 = 0
+    if sched_dispatch_count() != s_disp0:
+        s_span = 1
+    sysirq_account(nr, s_lin, s_t0, s_tick0, s_gap, s_tk0, s_span)
     return s_rc
 
 

@@ -50,15 +50,18 @@
 #     100% CPU must not lengthen the masked stretches.
 #
 # MEASURED ON THIS TREE (-smp 1, TCG, hamsh boot, no DE):
-#   idle    n=320530  delayed=287 (0.09%)   max=1915us
-#   loaded  n=1439771 delayed=801 (0.056%)  max=1237us
-#   worst offenders, both arms: write (nr=8) 1.2-1.9 ms, open (nr=5) ~0.1 ms.
-#   `yield` (nr=24) heads the table with a max that tracks write's to within
-#   ~20 us in both arms -- it is a yield SPANNING another task's write, not a
-#   masked region of its own; see the cross-context-switch caveat in the
-#   instrument banner. The real ceiling is write, and 1.9 ms is a FIFTH of a
-#   tick: on this workload the syscall path does NOT mask interrupts long
-#   enough to drop a tick, so it is not the source of a visible freeze.
+#   idle    n=415399  delayed=56    max=1028us  over5ms=0  spanning=210
+#   loaded  n=2106616 delayed=1479  max=801us   over5ms=0  spanning=69
+#   worst offenders BY NAME, both arms:
+#       write (nr=8)        1028 us idle / 801 us loaded
+#       open  (nr=5)         121 us       /  80 us
+#       get_jiffies (nr=2)     2 us       /   2 us
+#   The ceiling is `write`, and ~1 ms is a TENTH of a tick. On this workload
+#   the syscall path does NOT mask interrupts long enough to drop a tick, so
+#   the "IA32_FMASK holds IF clear for 10-14 ms" hypothesis is not what the
+#   user is seeing here. Load does not make it worse -- the loaded arm's
+#   worst case is SHORTER than the idle arm's, which is the ratio this gate
+#   exists to keep honest.
 #
 # The report also NAMES the worst offenders (`[sysirq] top+ ... name=`), which
 # is the attribution this gate exists to keep alive; the names are echoed into
@@ -136,6 +139,14 @@ need arch/x86/kernel/time.ad "def sysirq_report" \
     "the report the gate parses"
 need arch/x86/kernel/time.ad "def sysirq_name" \
     "worst-offender NAMES — the attribution this gate exists for"
+# A window that spanned a context switch must NOT be charged to the syscall
+# that enclosed it. Mutation-proven: a 20 ms masked spin injected into getcwd
+# was reported on getcwd (19805 us) AND on `yield` (19829 us), whose window
+# merely contained it. Dropping this seam silently restores that false name.
+need_call_bound arch/x86/kernel/syscall.ad sched_dispatch_count \
+    "the context-switch witness that suppresses spanning false attribution"
+need kernel/sched/core.ad "def sched_dispatch_count" \
+    "the dispatch counter the spanning witness reads"
 need sys/src/9/port/devproc.ad '"sysirq"' \
     "the /proc/self/ctl control verb the reproducer drives"
 # The kernel must ACK an accepted control verb. Without the ack a refused
@@ -245,6 +256,7 @@ for line in txt.splitlines():
         continue
     for pat, keys in (
         (r'\[sysirq\] delayed=(\d+) tick_ns=(\d+)', ('delayed', 'tick_ns')),
+        (r'\[sysirq\] spanning=(\d+)',              ('spanning',)),
         (r'\[sysirq\] max_us=(\d+) mean_us=(\d+)',  ('max_us', 'mean_us')),
         (r'\[sysirq\] le1ms=(\d+) le5ms=(\d+)',     ('le1ms', 'le5ms')),
         (r'\[sysirq\] le12ms=(\d+) le25ms=(\d+)',   ('le12ms', 'le25ms')),
@@ -293,7 +305,7 @@ while read -r blk; do
         echo "$TAG FAIL: arm $arm — ${delay_pct}% of syscalls delayed a due timer IRQ (limit ${SYSIRQ_DELAY_PCT}%, n=${L_n}, delayed=${L_delayed:-?})" >&2
         fail=1
     else
-        echo "$TAG arm $arm: n=${L_n} delayed=${L_delayed:-?} (${delay_pct}%) max=${L_max_us}us over5ms=$over5"
+        echo "$TAG arm $arm: n=${L_n} delayed=${L_delayed:-?} (${delay_pct}%) max=${L_max_us}us over5ms=$over5 spanning=${L_spanning:-?}"
     fi
     arm_max+=("${L_max_us:-0}")
     if [ "${L_n:-0}" -lt "$SYSIRQ_MIN_SAMPLES" ]; then

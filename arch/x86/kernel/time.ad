@@ -504,6 +504,7 @@ SYSIRQ_TICK_NS: uint64 = 10000000   # nominal 100 Hz period; see above
 # Default off, armed at runtime through /proc/self/ctl `sysirq 1`, matching
 # the precedent of --track-allocs, kmtrack and wklat_*.
 SYSIRQ_NSLOT: uint64 = 352          # native syscall nrs run 0..324
+SYSIRQ_SPAN:  uint64 = 349          # window spanned a context switch (see below)
 SYSIRQ_OTHER: uint64 = 350          # native nr >= 350: lumped here
 SYSIRQ_LINUX: uint64 = 351          # any Linux-ABI syscall (different numbering)
 
@@ -518,6 +519,10 @@ sysirq_n:      uint64 = 0
 # timer IRQ off past its due time. With excess accounting this, not the mean,
 # is the headline: on a healthy tree it should be a vanishing fraction of n.
 sysirq_hit:    uint64 = 0
+# Samples discarded because the window spanned a context switch (see
+# sysirq_account). Reported, never asserted on: they are real masked time,
+# just not attributable to the syscall that happened to enclose them.
+sysirq_span:   uint64 = 0
 sysirq_sum_ns: uint64 = 0
 sysirq_max_ns: uint64 = 0
 sysirq_b1:     uint64 = 0           # <=  1 ms — imperceptible
@@ -538,6 +543,7 @@ sysirq_max: Array[352, uint64]
 def sysirq_reset():
     sysirq_n      = 0
     sysirq_hit    = 0
+    sysirq_span   = 0
     sysirq_sum_ns = 0
     sysirq_max_ns = 0
     sysirq_b1     = 0
@@ -602,7 +608,8 @@ def sysirq_last_tick_ns() -> uint64:
 
 
 def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
-                   tick0: uint64, outer_gap: uint64, tk0: uint64):
+                   tick0: uint64, outer_gap: uint64, tk0: uint64,
+                   spanned: uint64):
     # Close one syscall's masked-time window. See the banner for the formula.
     ingap: uint64 = sysirq_gapmax_ns
     # Merge the enclosing window back: it must end up holding the max of what
@@ -639,6 +646,22 @@ def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
         idx = nr
         if idx >= SYSIRQ_OTHER:
             idx = SYSIRQ_OTHER
+    if spanned != 0:
+        # The window contained a context switch, so whatever masking it saw
+        # may belong to the task that ran in the middle -- and that task's own
+        # syscall recorded it too, so charging it here would double-count it
+        # AND name the wrong syscall. Park it in its own row: visible, and
+        # excluded from both the per-syscall attribution and the histogram
+        # the gate asserts on. Measured worth: with a 20 ms masked spin
+        # injected into getcwd, `yield` reported a max within 24 us of
+        # getcwd's purely by containing it.
+        idx = SYSIRQ_SPAN
+        sysirq_span = sysirq_span + 1
+        sysirq_cnt[idx] = sysirq_cnt[idx] + 1
+        sysirq_sum[idx] = sysirq_sum[idx] + blocked
+        if blocked > sysirq_max[idx]:
+            sysirq_max[idx] = blocked
+        return
     sysirq_cnt[idx] = sysirq_cnt[idx] + 1
     sysirq_sum[idx] = sysirq_sum[idx] + blocked
     if blocked > sysirq_max[idx]:
@@ -737,6 +760,8 @@ def sysirq_name(nr: uint64) -> Ptr[char]:
         return "msync"
     if nr == 318:
         return "listdir_records"
+    if nr == SYSIRQ_SPAN:
+        return "spanning(ctxsw)"
     if nr == SYSIRQ_LINUX:
         return "linux-abi(all)"
     if nr == SYSIRQ_OTHER:
@@ -756,6 +781,8 @@ def sysirq_report():
     printk2("[sysirq] n=%d armed=%d\n", sysirq_n, cast[uint64](sysirq_on))
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[sysirq] delayed=%d tick_ns=%d\n", sysirq_hit, SYSIRQ_TICK_NS)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[sysirq] spanning=%d\n", sysirq_span)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[sysirq] max_us=%d mean_us=%d\n", sysirq_max_ns / 1000,
             mean / 1000)
