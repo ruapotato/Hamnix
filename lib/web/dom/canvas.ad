@@ -1434,6 +1434,57 @@ def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
 # the NamedNodeMap builder below can reuse the EXACT same resolution order the
 # JS-visible method uses (override store -> source start tag -> reflected
 # property) rather than growing a second, divergent copy of it.
+# HTML's "ASCII whitespace" — TAB, LF, FF, CR, SPACE — and deliberately NOT the
+# Unicode space characters. WPT's
+# getElementsByClassName-whitespace-class-names.html asserts that NO-BREAK
+# SPACE, OGHAM SPACE MARK, EN/EM QUAD, IDEOGRAPHIC SPACE and friends are
+# ordinary class-NAME characters, so `class="&#x00A0;"` is one class whose name
+# is a non-breaking space, not an empty class list.
+def _is_ascii_ws(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 12 or c == 13:
+        return 1
+    return 0
+
+
+# Is `tp[0..tn)` one of the ASCII-whitespace-separated tokens of `cp[0..cn)`?
+# Byte-exact: getElementsByClassName is case-sensitive in standards mode.
+def _cls_has_token(cp: Ptr[uint8], cn: int32, tp: Ptr[uint8], tn: int32) -> int32:
+    i: int32 = 0
+    while i < cn:
+        while i < cn and _is_ascii_ws(cp[i]) != 0:
+            i = i + 1
+        s: int32 = i
+        while i < cn and _is_ascii_ws(cp[i]) == 0:
+            i = i + 1
+        if i > s and i - s == tn and _bytes_eq(&cp[s], tn, tp, tn) != 0:
+            return 1
+    return 0
+
+
+# Does this element carry EVERY class in the argument's token list? An argument
+# with no tokens at all matches nothing (DOM: "if classes is the empty set,
+# return an empty HTMLCollection").
+def _gbc_matches(elv: int32, tp: Ptr[uint8], tn: int32) -> int32:
+    cv: int32 = _el_get_attribute(elv, cast[Ptr[uint8]]("class"), 5)
+    if js_type_of(cv) != TAG_STR:
+        return 0
+    cp: Ptr[uint8] = js_str_bytes(cv)
+    cn: int32 = js_str_bytelen(cv)
+    seen: int32 = 0
+    i: int32 = 0
+    while i < tn:
+        while i < tn and _is_ascii_ws(tp[i]) != 0:
+            i = i + 1
+        s: int32 = i
+        while i < tn and _is_ascii_ws(tp[i]) == 0:
+            i = i + 1
+        if i > s:
+            seen = 1
+            if _cls_has_token(cp, cn, &tp[s], i - s) == 0:
+                return 0
+    return seen
+
+
 def _el_get_attribute(thisv: int32, nmp: Ptr[uint8], an: int32) -> int32:
     # 'style' mirrors the .style store (serialized), so getAttribute and
     # .style stay consistent for both source and created nodes.
@@ -4731,13 +4782,27 @@ def _js_host_dispatch(id: int32) -> int32:
             _cre_collect(&dom_idtmp[0], qn, qarr)           # + created nodes
         return qarr
     if rel == NID_GETBYCLASS:
+        # Collect every element in scope, then filter on the CLASS ATTRIBUTE's
+        # own token grammar. The old route — build the CSS selector "." + arg
+        # and hand it to the selector engine — got two things wrong that the
+        # DOM spec is explicit about: a multi-token argument ("b c" means "has
+        # BOTH classes") became one nonsense selector and matched nothing, and
+        # class names made of non-ASCII whitespace (NO-BREAK SPACE, EN QUAD,
+        # IDEOGRAPHIC SPACE, ...) are ordinary name characters here but need CSS
+        # escaping to survive a selector.
         carr: int32 = js_new_array_v()
         if js_arg_count() >= 1:
-            cnm: int32 = _arg_bytes(0, &dom_idtmp[1], 255)
-            dom_idtmp[0] = 46                              # '.' + class name
+            cnm: int32 = _arg_bytes(0, &gbc_arg[0], 1024)
             _set_query_scope()
-            _dom_collect_selector(&dom_idtmp[0], cnm + 1, g_qlo, g_qhi, carr)
-            _cre_collect(&dom_idtmp[0], cnm + 1, carr)     # + created nodes
+            graw: int32 = js_new_array_v()
+            _dom_collect_selector(cast[Ptr[uint8]]("*"), 1, g_qlo, g_qhi, graw)
+            _cre_collect(cast[Ptr[uint8]]("*"), 1, graw)   # + created nodes
+            gi: int32 = 0
+            while gi < js_array_len(graw):
+                gel: int32 = js_array_get(graw, gi)
+                if _gbc_matches(gel, &gbc_arg[0], cnm) != 0:
+                    js_array_push(carr, gel)
+                gi = gi + 1
         return carr
     if rel == NID_GETBYTAG:
         tarr: int32 = js_new_array_v()
@@ -5183,7 +5248,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _make_event(15)
     if rel == NID_IMAGE_CTOR:
         return _make_image()
-    if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS:
+    if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS or \
+       rel == NID_CREATEATTR_XML:
         # document.createAttribute(localName) / createAttributeNS(ns, qname).
         # A free-standing Attr: value "", ownerElement null. The name is
         # validated first — the tests check the InvalidCharacterError, not the
@@ -5202,18 +5268,37 @@ def _js_host_dispatch(id: int32) -> int32:
         elif js_arg_count() < 1:
             return js_undefined()
         can: int32 = _arg_bytes(cai, &canm[0], 128)
-        cvc: int32 = _validate_qname(&canm[0], can, &nsuri_buf[0], cans)
-        if cvc != 0:
-            return _throw_qname(cvc)
+        if rel == NID_CREATEATTRNS:
+            cvc: int32 = _validate_qname(&canm[0], can, &nsuri_buf[0], cans)
+            if cvc != 0:
+                return _throw_qname(cvc)
+        elif can == 0:
+            # createAttribute takes a plain localName, NOT a qualified name: DOM
+            # "validate" only rejects what does not match XML's Name production,
+            # and the vendored WPT productions.js (dom/nodes/productions.js) has
+            # the whole set — ":", "a:0", "0", "0:a", "x:y:x", "~", "\\", "'",
+            # '"', "invalid^Name" — under valid_names, with "" the ONLY invalid
+            # one. Running these through the QNAME validator threw
+            # InvalidCharacterError on 20 names chromium accepts.
+            return _throw_qname(1)
         if rel == NID_CREATEATTR:
-            # HTML document: createAttribute lowercases (createAttributeNS
-            # does NOT). chromium-verified.
+            # HTML document: createAttribute lowercases. createAttributeNS does
+            # NOT, and neither does an XML document's (NID_CREATEATTR_XML) —
+            # chromium-verified against xml_document.createAttribute("TITLE").
             cl: int32 = 0
             while cl < can:
                 canm[cl] = _hx_lower(canm[cl])
                 cl = cl + 1
         caobj: int32 = _new_attr_obj(&canm[0], can, \
                                      js_new_string(&dom_txtbuf[0], 0), js_null())
+        if rel != NID_CREATEATTRNS:
+            # createAttribute's argument is a LOCAL NAME, not a qualified one:
+            # createAttribute("x:y:x").localName is "x:y:x" with a null prefix.
+            # _new_attr_obj splits on ':' because HTML-parsed attributes arrive
+            # as qualified names, which truncated 10 of these to the tail.
+            js_set_prop(caobj, cast[Ptr[uint8]]("localName"), 9, \
+                        js_new_string(&canm[0], cast[uint64](can)))
+            js_set_prop(caobj, cast[Ptr[uint8]]("prefix"), 6, js_null())
         if cans > 0:
             js_set_prop(caobj, cast[Ptr[uint8]]("namespaceURI"), 12, \
                         js_new_string(&nsuri_buf[0], cast[uint64](cans)))
@@ -6751,10 +6836,6 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CREATEATTR))
     js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
                 js_new_native_fn(js_hbase + NID_CREATEATTRNS))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
-                js_new_native_fn(js_hbase + NID_CREATEATTRNS))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
     return d
 
@@ -7079,12 +7160,11 @@ def _impl_dispatch(rel: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
+    # An XML document's createAttribute is case-PRESERVING (only an HTML
+    # document lowercases), exactly as its createElement already is -- hence its
+    # own native rather than the shared NID_CREATEATTR.
     js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
-                js_new_native_fn(js_hbase + NID_CREATEATTRNS))
-    js_set_prop(d, cast[Ptr[uint8]]("createAttribute"), 15, \
-                js_new_native_fn(js_hbase + NID_CREATEATTR))
+                js_new_native_fn(js_hbase + NID_CREATEATTR_XML))
     js_set_prop(d, cast[Ptr[uint8]]("createAttributeNS"), 17, \
                 js_new_native_fn(js_hbase + NID_CREATEATTRNS))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))

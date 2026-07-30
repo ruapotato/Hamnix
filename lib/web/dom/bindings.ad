@@ -1325,6 +1325,7 @@ NID_UIEVENT:      int32 = 250        # new UIEvent(type, {view, detail})
 NID_FOCUSEVENT:   int32 = 251        # new FocusEvent(type, {relatedTarget, ...})
 NID_COMPEVENT:    int32 = 252        # new CompositionEvent(type, {data, ...})
 NID_WHEELEVENT:   int32 = 253        # new WheelEvent(type, {deltaX, ...})
+NID_CREATEATTR_XML: int32 = 254      # xmlDoc.createAttribute(name) — case-PRESERVING
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1439,6 +1440,10 @@ g_ev_proto: Array[16, int32]
 # units of 5 microseconds — the coarsest resolution the same test will accept
 # (it asserts the estimated resolution is >= 5us, i.e. NOT better than that).
 g_ev_ts_tick: int32 = 0
+
+# getElementsByClassName's argument, copied out of the JS string scratch before
+# the element walk (which calls back into the JS API and would clobber it).
+gbc_arg: Array[1024, uint8]
 
 # close-tag scan results
 g_close_lt:  uint64 = 0
