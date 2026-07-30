@@ -514,6 +514,25 @@ inrun = {}
 trunc = []
 for m in re.finditer(r'\[cens3\] site (\d+): (\d+) UNACCOUNTED', log):
     unacc[int(m.group(1))] = int(m.group(2))
+# DISCOUNT THE PLANT FROM ITS OWN SITE. `track plant` allocates at a real
+# user-mapped site (PA_SITE_VMA_ANON), so the positive control lands in that
+# site's tally and, left in, would be re-reported as that site's leak — which
+# is precisely what happened the first time this gate ran: two apps whose
+# vma_anon frames were entirely reachable were accused of a slope by the
+# control frame sitting in the same bucket. It is identified by PHYSICAL
+# ADDRESS, not by site: page_alloc_census_plant prints the phys it planted.
+plant_phys = None
+m = re.search(r'\[census\] planted control orphan phys=0x0*([0-9a-fA-F]+)', log)
+if m:
+    plant_phys = int(m.group(1), 16)
+unacc_real = dict(unacc)
+if plant_phys is not None:
+    for mm_ in re.finditer(r'\[cens3\] site (\d+) orphan\[\d+\] '
+                           r'phys=0x0*([0-9a-fA-F]+)', log):
+        if int(mm_.group(2), 16) == plant_phys:
+            s_ = int(mm_.group(1))
+            if unacc_real.get(s_, 0) > 0:
+                unacc_real[s_] -= 1
 for m in re.finditer(r'\[cens3\] site (\d+): (\d+) orphan\(s\) collected, '
                      r'(\d+) inside a', log):
     inrun[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
@@ -531,8 +550,10 @@ if not unacc:
         print('(no orphans at any user-mapped site, so nothing to adjudicate)')
 for s in sorted(set(list(unacc) + list(inrun))):
     n, ir = inrun.get(s, (0, 0))
-    print('site %-3d %-13s collected %-3d  in-run %-3d  UNACCOUNTED %d'
-          % (s, PGNAME.get(s, '?'), n, ir, unacc.get(s, 0)))
+    print('site %-3d %-13s collected %-3d  in-run %-3d  UNACCOUNTED %d '
+          '(%d after discounting the plant)'
+          % (s, PGNAME.get(s, '?'), n, ir, unacc.get(s, 0),
+             unacc_real.get(s, 0)))
 if trunc:
     bad.append('run-check TRUNCATED at site(s) %s — it covered a prefix of '
                'the population, so those sites are inconclusive, not clean'
@@ -544,29 +565,34 @@ if unacc:
     # MUST come out UNACCOUNTED. A run-check that reported zero here would be
     # over-claiming — every orphan "explained" — and that is a blind
     # instrument printing a green.
+    tot_real = sum(unacc_real.values())
     if tot_unacc == 0:
         bad.append('run predicate reported 0 UNACCOUNTED while a planted '
                    'control orphan (mapped NOWHERE, so in NO run) was '
                    'outstanding — the predicate OVER-CLAIMS and its verdict '
                    'is void')
-    elif tot_unacc == 1:
-        notes.append('run predicate: exactly 1 UNACCOUNTED frame, which is '
-                     'the planted control — every other orphan lies inside a '
-                     'live task\'s wholesale-return run')
+    elif plant_phys is None:
+        bad.append('%d UNACCOUNTED frame(s) but the planted control\'s phys '
+                   'was never printed, so the plant cannot be told apart from '
+                   'a real one — inconclusive, not green' % tot_unacc)
+    elif tot_real == 0:
+        notes.append('run predicate: the ONLY unaccounted frame in the whole '
+                     'machine is the planted control at phys=0x%x; every '
+                     'other orphan lies inside a live task\'s '
+                     'wholesale-return run' % plant_phys)
     else:
-        detail = ', '.join('site %d x%d' % (s, unacc[s])
-                           for s in sorted(unacc) if unacc[s])
-        bad.append('run predicate: %d UNACCOUNTED frames; 1 is the planted '
-                   'control, so %d frame(s) lie in NO live run and nobody '
-                   'will ever return them — %s'
-                   % (tot_unacc, tot_unacc - 1, detail))
+        detail = ', '.join('site %d x%d' % (s, unacc_real[s])
+                           for s in sorted(unacc_real) if unacc_real[s])
+        bad.append('run predicate: %d UNACCOUNTED frame(s) after discounting '
+                   'the planted control — they lie in NO live run and nobody '
+                   'will ever return them: %s' % (tot_real, detail))
 
 # Growth flags are adjudicated AGAINST the census, never on their own: pass
 # 17's lesson is that a ramp to a bounded high-water is indistinguishable from
 # a slope over few cycles.
 for app, sites in per_app_growth.items():
     for s in sites:
-        if s in USER_SITES and unacc.get(s, 0) > 0:
+        if s in USER_SITES and unacc_real.get(s, 0) > 0:
             bad.append('%s: site %d/%s grew on EVERY delta AND the census '
                        'finds %d UNACCOUNTED orphan(s) there — that is a '
                        'named slope'
