@@ -198,6 +198,15 @@ COW_ARM_DROP_RESOLVE:     uint64 = 13  # elf: cow_resolve_pte, the displaced pag
 COW_ARM_DROP_REGION:      uint64 = 14  # page_alloc: region_free_cow_safe
 COW_ARM_DROP_UNMAP:       uint64 = 15  # vma: vma unmap range
 COW_ARM_DROP_PGC_FAIL:    uint64 = 16  # vma: shared-mmap install failed, undo
+# The same two teardown walks, split by WHICH share created the reference.
+# Arms 9/10 alone cannot separate the W^X verbatim share (arm 1) from the
+# general COW share (arm 2): both drain into the same walk, so an imbalance
+# across 1+2 vs 9+10 names a pair, not a site. The PTE being dropped carries
+# the answer -- a W^X share leaves RW=0 with the COW bit CLEAR, a COW share
+# leaves RW=0 with the COW bit SET -- so classify at the drop and the two
+# ledgers close independently.
+COW_ARM_DROP_VMA_RANGE_WX: uint64 = 17
+COW_ARM_DROP_FORKED_WX:    uint64 = 18
 
 _cow_ledger_on: uint64 = 0
 _cow_arm:       uint64 = 0
@@ -218,6 +227,20 @@ def cow_ledger_enable(on: uint64):
 
 def cow_ledger_on() -> uint64:
     return _cow_ledger_on
+
+
+def cow_drop_arm_for_pte(pte: uint64, arm_cow: uint64,
+                         arm_wx: uint64) -> uint64:
+    # Which SHARE produced the reference this PTE holds. A W^X verbatim share
+    # (fs/elf.ad::_cow_share_one_page's read-only arm) copies the parent's
+    # flags through untouched, so RW stays 0 and the COW bit stays CLEAR; the
+    # general COW share force-SETS the COW bit. Anything writable never came
+    # from either share arm on this path, so it falls to the COW bucket, which
+    # keeps the classifier total-and-lossless -- a third bucket would just
+    # hide the residue.
+    if (pte & COW_PTE_BIT) == 0:
+        return arm_wx
+    return arm_cow
 
 
 def cow_set_arm(a: uint64):

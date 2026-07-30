@@ -123,6 +123,7 @@ from mm.cow import (
     COW_ARM_DROP_VMA_RANGE, COW_ARM_DROP_FORKED, COW_ARM_DROP_STRAYS,
     COW_ARM_DROP_FILEMAP, COW_ARM_DROP_UNMAP, COW_ARM_DROP_PGC_FAIL,
     COW_ARM_REFINC_PGC_HIT, COW_ARM_REFINC_PGC_RACE, COW_ARM_REFINC_PGC_PUB,
+    COW_ARM_DROP_VMA_RANGE_WX, COW_ARM_DROP_FORKED_WX, cow_drop_arm_for_pte,
 )
 from mm.swap import (
     swap_out_page, swap_make_pte, swap_ready,
@@ -1743,7 +1744,9 @@ def _vma_free_cow_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
                 # exactly what free_page would take — this is the release-only
                 # (_cow_release_forked_range) semantics for the non-buddy case,
                 # applied per-frame instead of per-range.
-                cow_set_arm(COW_ARM_DROP_VMA_RANGE)
+                cow_set_arm(cow_drop_arm_for_pte(
+                    pte, COW_ARM_DROP_VMA_RANGE,
+                    COW_ARM_DROP_VMA_RANGE_WX))
                 last: int32 = cow_drop_page(phys)
                 if last != 0 and _pa_link_ok(phys) != 0:
                     free_page(phys)
@@ -1878,7 +1881,8 @@ def _cow_release_forked_range(pml4_phys: uint64, vlo: uint64, vhi: uint64):
                 # is returned, so a mis-set refcount alone can never push a
                 # region frame onto a buddy free list.
                 rc: uint64 = cow_refcount(phys)
-                cow_set_arm(COW_ARM_DROP_FORKED)
+                cow_set_arm(cow_drop_arm_for_pte(
+                    pte, COW_ARM_DROP_FORKED, COW_ARM_DROP_FORKED_WX))
                 last: int32 = cow_drop_page(phys)
                 if last != 0 and rc == 1 and page_alloc_owns(phys) != 0 \
                         and task_phys_in_live_owner_run(phys) == 0:
