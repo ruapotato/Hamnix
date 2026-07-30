@@ -67,7 +67,13 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OUT_DIR="${OUT_DIR:-build/cow_hamterm_origin/$TS}"
 HANDOFF_MARKER="handing off to interactive shell"
 
-[ -e /dev/kvm ] || { echo "$TAG SKIP-RUNTIME: /dev/kvm absent" >&2; exit 0; }
+# INCONCLUSIVE (125), not PASS (0). GitHub runners have no /dev/kvm, so an
+# `exit 0` here made this gate report GREEN on every CI run while asserting
+# nothing whatsoever about COW origins — the precise false-green class
+# scripts/test_gate_kvmdark.sh ratchets against, and this gate has been the
+# ratchet's only red since it was registered. 125 makes ci_run_gate.sh warn
+# instead of counting the run as proof. See scripts/_verdict.sh.
+[ -e /dev/kvm ] || { echo "$TAG INCONCLUSIVE: /dev/kvm absent — nothing asserted" >&2; exit 125; }
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then
     for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd \

@@ -925,6 +925,7 @@ def js_set_gc_stress(on: int32):
 #   0 n_envs        3 n_vals        6 n_strs       9  n_objs
 #   1 env_collections 4 gc_collections 7 str_collections 10 MAX_OBJ
 #   2 env_last_freed  5 gc_last_freed  8 str_last_freed  11 MAX_ENV
+#  47 sp_top (string-pool BYTES used, lifetime)   48 SP_CAP
 def js_arena_stat(which: int32) -> int32:
     if which == 0:
         return n_envs
@@ -1036,4 +1037,20 @@ def js_arena_stat(which: int32) -> int32:
         return comb_n
     if which == 46:
         return COMB_CAP
+    #  47 sp_top  48 SP_CAP
+    # The string pool is the one arena in this engine whose BYTES are never
+    # reclaimed: the collector is non-moving, so it recovers ID-table slots and
+    # permanently orphans the bytes behind them (state.ad, and deliberately —
+    # builtins hold raw &sp_buf[..] pointers and bld_begin/bld_end keeps an
+    # open span across a collection). SP_CAP is therefore a CUMULATIVE
+    # LIFETIME budget, and it is what ends a long-running page. Exhaustion was
+    # already loud (three "CEILING string pool exhausted" sites in value.ad),
+    # but there was no way to watch the budget APPROACHING: index 6 reports
+    # string IDs, which the collector DOES reclaim, so it can sit flat while
+    # the byte budget drains underneath it. A ceiling observable only by
+    # hitting it is a silent cap with extra steps.
+    if which == 47:
+        return sp_top
+    if which == 48:
+        return SP_CAP
     return -1
