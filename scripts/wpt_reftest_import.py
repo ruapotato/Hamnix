@@ -38,55 +38,90 @@ treats them as alternatives (any one matching is a pass). Recorded as such.
 
 WHAT IS IMPORTED, AND WHY THAT SLICE
 ------------------------------------
-Round 1 imports the CSS2 *normal flow and floats* family:
+Round 1 imported the CSS2 *normal flow and floats* family:
 
     css/CSS2/normal-flow  css/CSS2/floats  css/CSS2/floats-clear
     css/CSS2/box-display
 
 That is the CSS2 box model: how blocks stack, how floats displace them, how
-clearance works, what `display` does to a box. It is the layer every other
-CSS feature is built on top of, our own layout engine's core, and it is
-self-contained (no compositor, no media, no network). Getting the LANE working
-end to end on a coherent 171-file slice is the deliverable; volume comes next.
+clearance works, what `display` does to a box. It is the layer every other CSS
+feature is built on top of, our own layout engine's core, and it is
+self-contained (no compositor, no media, no network). 100 observable pairs.
+
+ROUND 2 -- 1,445 pairs, and a CORRECTION TO THE SCALING PLAN BELOW
+-------------------------------------------------------------------
+The round-1 plan named an XML parse mode as "by far the biggest lever" and
+@font-face second, and both statements were derived from a census of css/CSS2
+ALONE, where .xht really is 93% of the files. Extending the same census to the
+whole css/ tree at this pin inverts the conclusion:
+
+    css/**  reftest-shaped files      non-.xht 16,689      .xht 7,565
+
+There are 16,689 reftests our HTML parser can already read, across 70 areas,
+and the lane was measuring 100 of them. Neither capability wall was the binding
+constraint on coverage -- AREA SELECTION was, by a factor of 167. An XML parse
+mode is still worth ~7,500 pairs and still worth building, but it is no longer
+the first thing to build, and the cost of NOT having it is now a known 31% of
+the css/ corpus rather than an unbounded unknown.
+
+Round 2 therefore imports breadth over capability, choosing areas that are the
+next layer out from the round-1 box model and that the runner can observe today:
+
+    css/CSS2 (all of it)  +155   same subject matter, already bisecting
+    css/css-sizing         186   width/height/min-/max-: precisely the two
+                                 systemic defects the round-1 baseline exposed
+    css/css-display         73   display types, successor to CSS2/box-display
+    css/css-position       118   static/relative/absolute/fixed placement
+    css/css-backgrounds    537   what every ref-filled-green-* reference relies
+                                 on -- if `background` is wrong, so is the whole
+                                 green-square reference family
+    css/css-lists          137   list-item boxes and markers
+    css/css-values         139   lengths and units, underneath all of the above
+
+Measured cost of the whole 1,445-pair lane: 47 s and ~4,900 renders for the
+score, plus 14 s for the whole-lane null-CSS proof. Throughput is still not the
+wall, and the "500 uniform FAILs teach less than 50" caution is now much weaker
+than it was, because the mutation-based discrimination control
+(scripts/wpt_reftest_run.py) makes a mass import produce a CAPABILITY MAP rather
+than a wall of identical failures: NONDISCRIMINATING says "the engine ignores
+this test's CSS entirely", WEAK-PASS says "it applies it but the pair cannot
+tell", FAIL says "it applies it and gets the geometry wrong". Those are three
+different bugs and the lane now separates them.
 
 NEVER EDIT A VENDORED TEST OR REFERENCE. Exclusions are recorded, with a
 reason, in tests/wpt/REFTEST_EXCLUSIONS.md. "We fail it" is never a reason --
 a failing external test is the entire point of importing an external suite.
 
-SCALING TO THE FULL css/CSS2 (measured, not guessed)
-----------------------------------------------------
-css/CSS2 holds 11,318 test-shaped files; 6,265 carry a rel=match/mismatch link.
-What actually gates coverage is NOT runner throughput -- the pixel backend
-renders in 13 ms and the lane needs ~3 renders per pair, so all 6,265 would run
-in about FOUR MINUTES. Two capability walls gate it instead, in this order:
+WHAT IS STILL WALLED OFF, IN ORDER OF VALUE
+--------------------------------------------
+  1. AREA-BY-AREA IMPORT of the remaining ~15,200 observable non-.xht reftests
+     -- a one-line change to AREAS. The largest untouched areas at this pin are
+     css-grid 1,569, css-text 1,278, css-break 1,022, css-ui 985, css-flexbox
+     902, css-transforms 785. Cost is linear and measured: ~33 ms per pair.
+     Sequencing should follow what the engine can already say something about;
+     css-grid and css-flexbox will be near-uniform FAIL until the box model is
+     right, whereas css-color, css-overflow and css-text-decor sit closer.
 
-  1. AN XML PARSE MODE -- worth ~5,300 reftests, by far the biggest lever.
-     10,501 of the 11,318 files are .xht, served as application/xhtml+xml. An
-     HTML tokenizer mis-parses `<style><![CDATA[...]]></style>`, self-closing
-     `<div/>` and the XHTML DTD doctype, so the pixels are not an observation of
-     the test. Estimated cost: an XML tokenizer feeding the existing tree
-     builder (well-formed input only -- XHTML has no error recovery to
-     emulate, which makes it much smaller than the HTML parser it sits beside).
+  2. AN XML PARSE MODE -- ~7,500 reftests, 5,853 of them in css/CSS2. WPT serves
+     .xht as application/xhtml+xml and an HTML tokenizer mis-parses
+     `<style><![CDATA[...]]></style>`, self-closing `<div/>` and the XHTML DTD
+     doctype, so the pixels are not an observation of the test. An XML tokenizer
+     feeding the existing tree builder (well-formed input only -- XHTML has no
+     error recovery to emulate) is much smaller than the HTML parser beside it.
+     NOTE: normalizing XHTML to HTML in this HARNESS would be a soft-green. It
+     would report "we render .xht" while hambrowse still could not open one.
 
-  2. @font-face / THE AHEM FONT -- worth several hundred reftests, and it
-     compounds: Ahem is how reftests make text geometry pixel-predictable, so
-     every text-layout area (linebox, text, bidi-text, fonts: ~800 reftests
-     between them) leans on it. lib/htmlpaint already loads TrueType
-     (htmlpaint_load_ttf), so this is a CSS-plumbing job, not a rasterizer one.
+  3. @font-face / THE AHEM FONT -- several hundred reftests, and it compounds:
+     Ahem is how reftests make text geometry pixel-predictable, so every
+     text-layout area (linebox, text, bidi-text, fonts) leans on it.
+     lib/htmlpaint already loads TrueType (htmlpaint_load_ttf), so this is a
+     CSS-plumbing job, not a rasterizer one.
 
-  3. AREA-BY-AREA IMPORT thereafter is a one-line change to AREAS below. The
-     honest sequencing is to import an area only once the lane can say
-     something about it, because 500 uniform FAILs teach less than 50 that
-     bisect a specific bug -- and every import grows the NONDISCRIMINATING
-     bucket, which is the number to watch, not the ratio.
-
-Before ANY of that, the two systemic box-model defects the round-1 baseline
-exposed are worth more than volume: on a bare `div{width:Npx;height:Npx}`,
-computed width overshoots by exactly +8px at every size and computed height is
-quantized upward to whole text rows (50->54, 100->108, 200->234, 300->342).
-Nearly every CSS2 box-model reftest fails on those two before reaching its own
-subject matter, so 6,265 imported tests today would mostly measure the same two
-bugs 6,265 times.
+The two systemic box-model defects the round-1 baseline exposed still dominate
+the failure list: on a bare `div{width:Npx;height:Npx}`, computed width
+overshoots by exactly +8px at every size and computed height is quantized upward
+to whole text rows (50->54, 100->108, 200->234, 300->342). Fixing those two is
+still worth more per unit of work than any further import.
 
 To refresh:
     python3 scripts/wpt_reftest_import.py --wpt /path/to/wpt-checkout
@@ -111,10 +146,20 @@ PINNED_SHA = "8ab228c702a6cfeacb3c986b06a16a744b493a8d"
 
 # Directories imported this round. See the module docstring for the rationale.
 AREAS = [
+    # Round 1 -- the CSS2 box model. Kept as its own lines so the diff of any
+    # future round shows exactly what arrived.
     "css/CSS2/normal-flow",
     "css/CSS2/floats",
     "css/CSS2/floats-clear",
     "css/CSS2/box-display",
+    # Round 2. See ROUND 2 in the module docstring for why these and not .xht.
+    "css/CSS2",              # the rest of CSS2: same subject matter, +155
+    "css/css-sizing",        # width/height/min-/max-: the two systemic defects
+    "css/css-display",       # display types, successor to CSS2/box-display
+    "css/css-position",      # static/relative/absolute/fixed placement
+    "css/css-backgrounds",   # what every ref-filled-green-* reference relies on
+    "css/css-lists",         # list-item boxes and markers
+    "css/css-values",        # lengths and units, underneath all of the above
 ]
 
 MAX_CHAIN_DEPTH = 6
@@ -394,7 +439,12 @@ def chain_for(wpt, test):
 
 
 def collect(wpt):
-    tests, excluded = [], []
+    # `seen` because AREAS may legitimately OVERLAP -- round 2 lists the whole
+    # of css/CSS2 alongside the four round-1 subdirectories it contains, so the
+    # diff still shows what arrived when. Without it the walk emitted duplicate
+    # manifest rows, the runner scored those tests twice, and every count in the
+    # lane was quietly inflated.
+    tests, excluded, seen = [], [], set()
     for area in AREAS:
         adir = os.path.join(wpt, area)
         if not os.path.isdir(adir):
@@ -408,6 +458,9 @@ def collect(wpt):
                     continue
                 rel = os.path.relpath(os.path.join(dirpath, fn),
                                       wpt).replace(os.sep, "/")
+                if rel in seen:
+                    continue
+                seen.add(rel)
                 data = read(wpt, rel)
                 if data is None:
                     continue

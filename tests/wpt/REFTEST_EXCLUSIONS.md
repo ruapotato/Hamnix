@@ -9,43 +9,43 @@ names a missing capability and the condition for re-import.
 
 See `EXCLUSIONS.md` for the testharness.js lane.
 
-## `xml:.xht` -- 1061 file(s)
+## `xml:.xht` -- 6096 file(s)
 
 XHTML (.xht/.xhtml). WPT serves these as application/xhtml+xml and they must be parsed by an XML parser: `<style><![CDATA[ ... ]]></style>`, self-closing `<div/>`, and the XHTML DTD doctype all mean something different to an HTML tokenizer. Our engine has ONE parser and it is the HTML one, so an .xht document is not mis-rendered -- it is mis-PARSED, and the resulting pixels are not an observation of the test. This is the single biggest lever on CSS2 coverage: 10,501 of the 11,318 files under css/CSS2 are .xht. Re-import the moment an XML parse mode exists.
 
-- `css/CSS2/box-display/anonymous-box-generation-001.xht`
-- `css/CSS2/box-display/anonymous-boxes-inheritance-001.xht`
-- `css/CSS2/box-display/anonymous-inline-whitespace-001.xht`
-- `css/CSS2/box-display/block-in-inline-001.xht`
-- `css/CSS2/box-display/block-in-inline-002.xht`
-- `css/CSS2/box-display/block-in-inline-003.xht`
-- `css/CSS2/box-display/block-in-inline-007.xht`
-- `css/CSS2/box-display/block-in-inline-008.xht`
-- `css/CSS2/box-display/block-in-inline-relpos-001.xht`
-- `css/CSS2/box-display/block-in-inline-relpos-002.xht`
-- `css/CSS2/box-display/box-generation-001.xht`
-- `css/CSS2/box-display/box-generation-002.xht`
-- ... and 1049 more
+- `css/CSS2/abspos/abspos-containing-block-initial-001.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004a.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004b.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004c.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004d.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004e.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-004f.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-005a.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-005b.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-005c.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-005d.xht`
+- `css/CSS2/abspos/abspos-containing-block-initial-007.xht`
+- ... and 6084 more
 
-## `chain-xml:.xht` -- 33 file(s)
+## `chain-xml:.xht` -- 462 file(s)
 
 The test itself is observable, but its REFERENCE is not, so the pair cannot be compared. XHTML (.xht/.xhtml). WPT serves these as application/xhtml+xml and they must be parsed by an XML parser: `<style><![CDATA[ ... ]]></style>`, self-closing `<div/>`, and the XHTML DTD doctype all mean something different to an HTML tokenizer. Our engine has ONE parser and it is the HTML one, so an .xht document is not mis-rendered -- it is mis-PARSED, and the resulting pixels are not an observation of the test. This is the single biggest lever on CSS2 coverage: 10,501 of the 11,318 files under css/CSS2 are .xht. Re-import the moment an XML parse mode exists.
 
+- `css/CSS2/abspos/static-fixed-inside-abspos.html`
+- `css/CSS2/abspos/static-inside-inline-001.html`
+- `css/CSS2/abspos/static-inside-inline-002.html`
+- `css/CSS2/abspos/static-inside-inline-003.html`
+- `css/CSS2/abspos/static-inside-table-cell.html`
+- `css/CSS2/abspos/table-caption-is-containing-block-001.html`
+- `css/CSS2/abspos/table-caption-passes-abspos-up-001.html`
 - `css/CSS2/floats-clear/adjoining-float-before-clearance.html`
 - `css/CSS2/floats-clear/adjoining-float-nested-forced-clearance-003.html`
 - `css/CSS2/floats-clear/adjoining-float-nested-forced-clearance.html`
 - `css/CSS2/floats-clear/adjoining-float-new-fc.html`
 - `css/CSS2/floats-clear/clear-on-replaced-element.html`
-- `css/CSS2/floats-clear/floats-bfc-003.html`
-- `css/CSS2/floats-clear/negative-clearance-after-adjoining-float.html`
-- `css/CSS2/floats-clear/no-clearance-due-to-large-margin-after-left-right.html`
-- `css/CSS2/floats-clear/no-clearance-due-to-large-margin.html`
-- `css/CSS2/floats-clear/remove-block-before-self-collapsing-sibling-with-clearance.html`
-- `css/CSS2/floats/adjoining-floats-dynamic.html`
-- `css/CSS2/floats/block-in-inline-become-float.html`
-- ... and 21 more
+- ... and 450 more
 
-## `ref:Ahem` -- 24 file(s)
+## `ref:Ahem` -- 103 file(s)
 
 Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree. Ahem is a metrics-exact font (every glyph a solid em square) that reftests use to make text geometry pixel-predictable. Our engine has no webfont loader, so both documents fall back to DejaVu and the comparison measures our fallback metrics rather than the test's assertion -- it can pass or fail for reasons the test is not about. Re-import when @font-face loading lands.
 
@@ -61,9 +61,27 @@ Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree.
 - `css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html`
 - `css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html`
 - `css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html`
-- ... and 12 more
+- ... and 91 more
 
-## `glob:*.tentative.html` -- 8 file(s)
+## `ref:reftest-wait.js` -- 95 file(s)
+
+Uses WPT's reftest-wait protocol: the test carries class="reftest-wait" on <html> and the runner must NOT screenshot until the test itself removes that class (it signals "my dynamic setup is finished"). Our harness renders once, synchronously, with no such handshake, so it would photograph the page mid-setup -- a picture of the wrong moment is not an observation of the test. Re-import when the renderer can be driven to a quiescent state and re-shot.
+
+- `css/CSS2/lists/list-item-dynamic-color.html`
+- `css/CSS2/normal-flow/dynamic-percentage-height.html`
+- `css/CSS2/stacking-context/composite-change-after-scroll-preserves-stacking-order.html`
+- `css/CSS2/stacking-context/opacity-change-parent-stacking-context.html`
+- `css/CSS2/stacking-context/opacity-change-twice-stacking-context.html`
+- `css/CSS2/stacking-context/opacity-transition-change-parent-stacking-context.html`
+- `css/CSS2/tables/table-anonymous-objects-214.html`
+- `css/CSS2/tables/table-cell-dynamic-color.html`
+- `css/CSS2/zindex/z-index-020.html`
+- `css/css-backgrounds/animations/background-color-animation-custom-property.html`
+- `css/css-backgrounds/animations/background-color-animation-custom-timing-function-reverse.html`
+- `css/css-backgrounds/animations/background-color-animation-custom-timing-function.html`
+- ... and 83 more
+
+## `glob:*.tentative.html` -- 65 file(s)
 
 SCORE STABILITY, NOT A RUNNER LIMITATION -- flagged as such because it is the one exclusion here that is a policy choice, and the only one a future maintainer could grow in order to hide failures. A .tentative test encodes a spec PROPOSAL that has not stabilised, so the pair can move under us for reasons that are not our engine, and upstream may change or delete it at the next pin bump. Our runner CAN observe these files perfectly well, and the ones excluded here are not passing: the sibling non-tentative floats-wrap-bfc-with-margin-001.html and -010.html ARE vendored and DO fail. Same rationale as wpt_import.py's encoding/legacy-mb-* exclusions. If this list ever grows, check that it grew for this reason.
 
@@ -75,29 +93,103 @@ SCORE STABILITY, NOT A RUNNER LIMITATION -- flagged as such because it is the on
 - `css/CSS2/floats/floats-wrap-bfc-with-margin-008.tentative.html`
 - `css/CSS2/floats/floats-wrap-bfc-with-margin-009.tentative.html`
 - `css/CSS2/floats/zero-width-floats-positioning.tentative.html`
+- `css/CSS2/tables/border-collapse-visibility-collapse-001.tentative.html`
+- `css/CSS2/tables/border-collapse-visibility-collapse-002.tentative.html`
+- `css/css-backgrounds/background-position-subpixel-at-border.tentative.html`
+- `css/css-backgrounds/background-position/subpixel-position-center.tentative.html`
+- ... and 53 more
 
-## `ref:<video` -- 2 file(s)
+## `glob:*.sub.html` -- 28 file(s)
+
+Server-side substitution (.sub) -- the {{host}}/{{ports}} placeholders are expanded by the wptserve HTTP server, which we do not run. The file on disk is not a valid test.
+
+- `css/CSS2/normal-flow/cross-domain-iframe-paint-order.sub.html`
+- `css/css-position/position-absolute-iframe-print-001.sub.html`
+- `css/css-position/position-absolute-iframe-print-002.sub.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-cross-origin-no-match-element.sub.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-cross-origin-not-embedded-sized.sub.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-cross-origin.sub.html`
+- `css/css-values/urls/cross-origin/url-image-cross-origin-anonymous-negative.sub.html`
+- `css/css-values/urls/cross-origin/url-image-cross-origin-anonymous.sub.html`
+- `css/css-values/urls/cross-origin/url-image-cross-origin-use-credentials-negative.sub.html`
+- `css/css-values/urls/cross-origin/url-image-cross-origin-use-credentials.sub.html`
+- `css/css-values/urls/cross-origin/url-image-set-cross-origin-anonymous-negative.sub.html`
+- `css/css-values/urls/cross-origin/url-image-set-cross-origin-anonymous.sub.html`
+- ... and 16 more
+
+## `ref:<iframe` -- 27 file(s)
+
+Nested browsing context: the engine has one document per render and no frame tree, so the sub-document never renders at all.
+
+- `css/CSS2/linebox/iframe-in-block-in-inline.html`
+- `css/CSS2/linebox/iframe-in-wrapped-span.html`
+- `css/CSS2/normal-flow/resizable-iframe-paint-order.html`
+- `css/css-backgrounds/background-image-shared-stylesheet.html`
+- `css/css-backgrounds/background-margin-iframe-root.html`
+- `css/css-display/display-change-iframe.html`
+- `css/css-display/display-contents-unusual-html-elements-none.html`
+- `css/css-sizing/aspect-ratio/replaced-element-002.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-meta-after-head.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-meta-dynamic-append-after-body.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-meta-dynamic-append-to-doc.html`
+- `css/css-sizing/responsive-iframe/responsive-iframe-meta-dynamic-append.html`
+- ... and 15 more
+
+## `ref:<video` -- 6 file(s)
 
 Uses a <video> element. The engine has no media element, so a <video> occupies no space and paints nothing -- both documents lose the very box the test is about, and the resulting pixels are not an observation of the test. Measured: with these vendored, the Chromium cross-check found video-controls-paint-order.html holding for us and violated in Chromium -- i.e. it would have been a false pass but for the discrimination control. Re-import when media elements land.
 
 - `css/CSS2/normal-flow/video-controls-paint-order.html`
 - `css/CSS2/normal-flow/video-paint-order.html`
+- `css/css-sizing/aspect-ratio/replaced-element-003.html`
+- `css/css-sizing/aspect-ratio/replaced-element-026.html`
+- `css/css-sizing/aspect-ratio/replaced-element-027.html`
+- `css/css-sizing/aspect-ratio/replaced-element-049.html`
 
-## `glob:*.sub.html` -- 1 file(s)
+## `ref:<object` -- 6 file(s)
 
-Server-side substitution (.sub) -- the {{host}}/{{ports}} placeholders are expanded by the wptserve HTTP server, which we do not run. The file on disk is not a valid test.
+<object> embeds an external resource through a plugin-style fallback chain the engine does not implement.
 
-- `css/CSS2/normal-flow/cross-domain-iframe-paint-order.sub.html`
+- `css/css-display/display-change-object-iframe.html`
+- `css/css-position/replaced-object-backdrop.html`
+- `css/css-sizing/aspect-ratio/replaced-element-005.html`
+- `css/css-sizing/aspect-ratio/replaced-element-006.html`
+- `css/css-sizing/aspect-ratio/replaced-element-020.html`
+- `css/css-sizing/aspect-ratio/replaced-element-021.html`
 
-## `ref:reftest-wait.js` -- 1 file(s)
+## `chain:declares both match and mismatch` -- 3 file(s)
 
-Uses WPT's reftest-wait protocol: the test carries class="reftest-wait" on <html> and the runner must NOT screenshot until the test itself removes that class (it signals "my dynamic setup is finished"). Our harness renders once, synchronously, with no such handshake, so it would photograph the page mid-setup -- a picture of the wrong moment is not an observation of the test. Re-import when the renderer can be driven to a quiescent state and re-shot.
+Reference chain could not be resolved: declares both match and mismatch
 
-- `css/CSS2/normal-flow/dynamic-percentage-height.html`
+- `css/css-backgrounds/box-shadow-border-radius-001.html`
+- `css/css-lists/list-style-position-001.html`
+- `css/css-values/viewport-page-print.html`
 
-## `ref:<iframe` -- 1 file(s)
+## `xml:.xhtml` -- 3 file(s)
 
-Nested browsing context: the engine has one document per render and no frame tree, so the sub-document never renders at all.
+XHTML (.xht/.xhtml). WPT serves these as application/xhtml+xml and they must be parsed by an XML parser: `<style><![CDATA[ ... ]]></style>`, self-closing `<div/>`, and the XHTML DTD doctype all mean something different to an HTML tokenizer. Our engine has ONE parser and it is the HTML one, so an .xht document is not mis-rendered -- it is mis-PARSED, and the resulting pixels are not an observation of the test. This is the single biggest lever on CSS2 coverage: 10,501 of the 11,318 files under css/CSS2 are .xht. Re-import the moment an XML parse mode exists.
 
-- `css/CSS2/normal-flow/resizable-iframe-paint-order.html`
+- `css/css-values/attr-namespace-case-sensitivity.xhtml`
+- `css/css-values/attr-namespace-valid.xhtml`
+- `css/css-values/calc-in-counter-001.xhtml`
+
+## `chain-ref:Ahem` -- 2 file(s)
+
+The test itself is observable, but its REFERENCE is not, so the pair cannot be compared. Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree. Ahem is a metrics-exact font (every glyph a solid em square) that reftests use to make text geometry pixel-predictable. Our engine has no webfont loader, so both documents fall back to DejaVu and the comparison measures our fallback metrics rather than the test's assertion -- it can pass or fail for reasons the test is not about. Re-import when @font-face loading lands.
+
+- `css/CSS2/margin-padding-clear/margin-auto-on-block-box.html`
+- `css/css-backgrounds/box-shadow-multiple-001.html`
+
+## `ref:<audio` -- 2 file(s)
+
+Uses an <audio> element; as <video>, the engine has no media element.
+
+- `css/css-position/position-fixed-video-controls-print.html`
+- `css/css-sizing/aspect-ratio/replaced-element-035.html`
+
+## `chain:reference missing` -- 1 file(s)
+
+Reference chain could not be resolved: reference missing: css/CSS2/tables/border-collapse-005-ref.html 
+
+- `css/CSS2/tables/border-collapse-005.html`
 

@@ -58,26 +58,92 @@ runners do not have to worry about, and it produces FALSE PASSES:
     an engine that IGNORES CSS ENTIRELY renders both as the same bare
     paragraph of prose -- identical -- and the pair reads as PASS.
 
-So whenever the relationship HOLDS we render a NEGATIVE CONTROL: the same two
-documents with all CSS removed (<style> blocks, style="" attributes, inlined
-external stylesheets) and all scripts removed -- i.e. what an engine with no CSS
-support at all would see. If the relationship holds for THOSE renders too, our
-pass is not evidence about CSS, and the pair is reported NONDISCRIMINATING.
-Discriminating pairs are the only ones that enter the score. (The control runs
-only on holding pairs: a FAIL needs no qualifying, and skipping it there saves
-two renders per failing pair.)
+The control is therefore a set of MUTATIONS of the holding pair. A holding is
+evidence only if SOME mutation that removes CSS from the picture makes the
+relationship stop holding:
 
-If the control itself cannot be rendered the verdict is ERROR, never PASS.
-Falling through to PASS would convert "the anti-soft-green control could not be
-run" into an unqualified success -- precisely the substitution this exists to
-prevent.
+  mutant 0  THE NULL-CSS ENGINE. Both documents re-rendered with all CSS
+            removed (<style> blocks, style="" attributes, inlined external
+            stylesheets) and all scripts removed. This was the whole of the
+            previous control and it is kept at full strength, so no pass it
+            banked can be lost. It is also the ONLY mutant that says anything
+            about a `mismatch` pair -- see WHY THE TWO RELATIONSHIPS DIFFER.
+  mutant k  ONE DECLARATION of the TEST neutralized -- its property renamed to
+            an unknown one -- and re-compared against the UNCHANGED reference.
 
-ONE control, not two. An earlier revision also recorded `css_active` ("did our
-output change because of this pair's CSS") and described it as a second,
-independent condition. It was not: `not css_active` means the test and every
-reference render identically with and without CSS, which makes the null-engine
-comparison bit-for-bit the SAME comparison, so the null-engine check is
-necessarily true as well. One guard described as two overstates the guard.
+WHY MUTANT 0 WAS NOT ENOUGH, AND WHAT IT COST
+----------------------------------------------
+Global-strip asks whether a null engine would ALSO see the relationship hold.
+On this corpus that question fires on tests that are perfectly good:
+
+    test: a float with height:200px and max-height:100px, background green
+    ref:  css/reference/ref-filled-green-100px-square-only.html
+
+Both documents carry the WPT boilerplate sentence "Test passes if there is a
+filled green square". Strip all CSS from both and each collapses to that
+sentence and nothing else -- identical -- so the pair reads NONDISCRIMINATING
+whether the engine is right or wrong. FIXING it moves it FAIL ->
+NONDISCRIMINATING: out of the denominator, never into the numerator, and
+against #!ND_CEILING on the way. 57 of the 67 remaining failures in the round-1
+tranche used a `ref-filled-green-*` reference, i.e. could not have scored at
+all, and two real fixes (max-height-applies-to-018, max-height-separates-margin)
+landed in the bucket and read as nothing.
+
+Mutant k asks the sharper, per-test question instead: is the holding LOAD-
+BEARING on a declaration of this test? Neutralize `max-height` above and the
+float is 200px tall, the reference is still a 100px square, and the pair stops
+holding. That is direct evidence the engine applied it.
+
+SUBJECT vs SHARED -- WHY THERE ARE TWO PASS CLASSES
+----------------------------------------------------
+Not every load-bearing declaration is evidence about the test's own subject
+matter. Consider a float with nothing beside it:
+
+    test: div{float:left; width:100px; height:100px; background:green}
+    ref:  div{           width:100px; height:100px; background:green}
+
+An engine that ignores `float` entirely lays this out identically and the pair
+holds. `width`, `height` and `background` ARE load-bearing -- but the reference
+declares each of them with the SAME VALUE, so both sides run the same code and
+a shared bug cancels. The pair cannot distinguish a float-implementing engine
+from one that has never heard of floats.
+
+So a load-bearing declaration counts as SUBJECT evidence only if the reference
+does not contain that exact (property, value) itself:
+
+  PASS       some SUBJECT declaration is load-bearing
+  WEAK-PASS  the holding depends on CSS, but only through declarations the
+             reference supplies verbatim (or on scripts). Real work, banked
+             under its own floor, kept out of the headline number.
+
+PROOF BY CONSTRUCTION -- A NULL-CSS ENGINE SCORES ZERO
+-------------------------------------------------------
+`Renderer.null_engine` strips every document's CSS before rendering: a faithful
+mutant of an engine with no CSS support at all, obtained without touching
+lib/web/, so it cannot drift away from the binary under test. Such an engine's
+render is INVARIANT under every mutation above -- stripping CSS from a document
+whose CSS is already being ignored changes nothing -- so no mutant ever breaks
+a holding, so every holding pair is NONDISCRIMINATING and PASS = WEAK-PASS = 0.
+`--prove-null` runs the whole vendored lane through it and exits non-zero if it
+scores anything; the gate runs that on every invocation. `--prove-blind PROP`
+does the same for a PARTIAL capability loss, and measured on the round-1
+tranche the previous model let an engine lose `max-height` (PASS 1, ND 32 -> 30)
+and lose `display` (PASS 1, ND 32) with the gate still green, while this one
+drops to PASS 2 and WEAK-PASS 22 respectively and the gate fails.
+
+If a mutant cannot be RENDERED, and no other mutant broke the holding, the
+verdict is ERROR, never a pass. Falling through would convert "the control
+could not be run" into an unqualified success -- the exact substitution this
+exists to prevent.
+
+WHY THE TWO RELATIONSHIPS NEED DIFFERENT MUTANTS
+-------------------------------------------------
+Under CSS loss renders collapse TOWARD each other. `match` therefore degenerates
+toward HOLDING -- that is the false-pass hole, and mutant k is what closes it.
+`mismatch` degenerates toward VIOLATION: a null engine cannot pass a mismatch
+pair at all unless the two documents already differ for a non-CSS reason, which
+is exactly what mutant 0 tests. Neither mutant subsumes the other; the union is
+the control.
 
 This is a NECESSARY condition, not a sufficient one. What BOUNDS the residual
 false-pass rate is the Chromium cross-check
@@ -88,7 +154,8 @@ than part of this gate, so the bound is only as fresh as its last run. Measured
 found HOLDING that Chromium found violated -- which the discrimination control
 had already kept out of the score. That one pair was a <video> test, now
 excluded outright, and it is the concrete evidence that this control earns its
-keep.
+keep. The cross-check matters MORE under this model than the last one: the
+scored denominator is larger, so re-run it after any tranche import.
 
 PREPROCESSING -- AND WHY IT IS NOT TEST EDITING
 -----------------------------------------------
@@ -116,13 +183,16 @@ passes on the two multi-candidate chains in the manifest and inflated the ERROR
 count against its ceiling.)
 
 VERDICTS
-  PASS              the relationship holds, on a discriminating pair
+  PASS              holds, load-bearing on a SUBJECT declaration
+  WEAK-PASS         holds and depends on CSS, but only through declarations the
+                    reference supplies verbatim (or on scripts)
   FAIL              the relationship does not hold
-  NONDISCRIMINATING the pair cannot distinguish a CSS engine from no CSS engine
-  ERROR             a document could not be rendered at all, or the negative
-                    control for a holding pair could not be rendered
+  NONDISCRIMINATING holds under every mutation -- the render does not depend on
+                    CSS at all, so a null engine would satisfy it too
+  ERROR             a document could not be rendered at all, or a mutant of a
+                    holding pair could not be rendered
 
-NOT SOFT-GREEN. --selftest drives EIGHT controls through the real pipeline and
+NOT SOFT-GREEN. --selftest drives TWELVE controls through the real pipeline and
 exits non-zero unless every one lands on its expected verdict; callers treat
 that as INCONCLUSIVE (125), never PASS:
 
@@ -130,8 +200,20 @@ that as INCONCLUSIVE (125), never PASS:
                              not -- an always-green comparator dies here
   mismatch-holds / -violated the same for the mismatch relationship
   nondiscriminating          a pair a null engine would pass must NOT score
+  buried-real-pass           the green-square shape the previous model buried:
+                             a genuine fix MUST score, not vanish into ND
+  shared-machinery           a holding that rests only on declarations the
+                             reference repeats verbatim MUST be WEAK-PASS
+  neutralize==delete         renaming a property must render exactly as deleting
+                             the declaration does. The whole mutation model
+                             reads "the render changed" as "the engine applied
+                             that declaration"; if our parser discarded the
+                             enclosing rule on an unknown property instead,
+                             every mutation would bite and everything would score
+  null-CSS engine            with CSS application mutated OFF, NOTHING scores
   determinism               the same document rendered twice is byte-identical;
-                             the whole zero-tolerance argument rests on it
+                             the whole zero-tolerance argument rests on it, and
+                             the content-keyed render cache does too
   inline css / inline js     an external stylesheet and an external script each
                              CHANGE the render. Zero vendored documents in the
                              round-1 tranche use either (the ones that did were
@@ -143,6 +225,7 @@ that as INCONCLUSIVE (125), never PASS:
 """
 
 import argparse
+import hashlib
 import html as htmlmod
 import json
 import os
@@ -424,9 +507,36 @@ def delete_decl(data, decl):
     return data[:s] + data[i:]
 
 
+def value_key(value):
+    """An order-insensitive key for a declaration value.
+
+    Used ONLY to decide whether a reference supplies a declaration the test also
+    has -- i.e. whether a load-bearing declaration is SHARED MACHINERY or the
+    test's own subject matter. It compares the multiset of tokens, not the
+    string, because CSS shorthands are order-flexible and a purely textual
+    comparison got this wrong in a way that inflated the score:
+
+        test  border: black solid 1px
+        ref   border: 1px solid black
+
+    -- the same declaration, written by two different authors. Textually they
+    differ, so `border` looked like the TEST'S OWN subject, and 156 pairs across
+    css-backgrounds scored a full PASS on it. Measured: with the engine mutated
+    BLIND to width and height, PASS rose from 61 to 203, because losing box
+    geometry made those pairs coincide and `border` then carried them. A
+    capability REMOVAL must never raise the score.
+
+    Deliberately erring toward "shared": `margin: 1px 2px` and `margin: 2px 1px`
+    are genuinely different and this treats them as the same, which can only
+    DEMOTE a pass to WEAK-PASS. Under-crediting is the safe direction for a
+    control; over-crediting is the failure this exists to prevent.
+    """
+    return tuple(sorted(value.split()))
+
+
 def prop_value_set(data):
-    """{(property, normalized value)} for every declaration in `data`."""
-    return {(d[2], d[3]) for d in css_declarations(data)}
+    """{(property, order-insensitive value key)} for `data`'s declarations."""
+    return {(d[2], value_key(d[3])) for d in css_declarations(data)}
 
 
 # --------------------------------------------------------------------------
@@ -511,6 +621,7 @@ class Renderer:
         self.root = tests_root
         self.n = 0
         self.cache = {}
+        self.bycontent = {}
         # documents where a <script src>/<link rel=stylesheet> survived
         # inlining, i.e. a resource we did NOT load. Scoring such a document
         # measures the engine as if the resource did not exist, which reads as
@@ -567,6 +678,18 @@ class Renderer:
             for d in reversed(css_declarations(data)):
                 if d[2] in self.blind_props:
                     data = neutralize(data, d)
+        # Key the cache on the BYTES that reach the renderer, not on the name of
+        # the mutation that produced them. Two mutations that happen to yield
+        # the same document are the same render -- which is not an assumption
+        # but the determinism property --selftest proves, and the same property
+        # the whole zero-tolerance comparison already rests on. It matters at
+        # scale: under the null-CSS engine mutant every per-declaration variant
+        # of a document strips to identical bytes, so the whole-lane proof costs
+        # one render per document instead of one per mutation.
+        ckey = (doc_rel, hashlib.sha256(data).digest())
+        if ckey in self.bycontent:
+            self.cache[key] = self.bycontent[ckey]
+            return self.bycontent[ckey]
         self.n += 1
         # Keep the extension AND the directory: relative <img src> and the
         # engine's own base-URL handling must still resolve.
@@ -589,6 +712,7 @@ class Renderer:
                 except OSError:
                     pass
         self.cache[key] = got
+        self.bycontent[ckey] = got
         return got
 
 
@@ -682,8 +806,8 @@ def run_one(rend, test, kind, refs):
     # ALSO contain verbatim. A declaration the reference repeats identically is
     # shared machinery -- both sides exercise the same code, so a shared bug
     # cancels and the pass says nothing about that property.
-    subject = [d for d in decls if (d[2], d[3]) not in refprops]
-    shared = [d for d in decls if (d[2], d[3]) in refprops]
+    subject = [d for d in decls if (d[2], value_key(d[3])) not in refprops]
+    shared = [d for d in decls if (d[2], value_key(d[3])) in refprops]
 
     for d in subject:
         b = breaks("neut@%d" % d[0], neutralize(data, d))
