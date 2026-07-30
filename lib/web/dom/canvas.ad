@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_ni_natives, _attach_range_natives, _attach_tw_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -537,16 +537,48 @@ def _cre_make_text(sval: int32) -> int32:
     cre_is_text[tcid] = 1
     cre_gone[tcid] = 0
     tco: int32 = js_new_object_v()
-    js_set_prop(tco, cast[Ptr[uint8]]("textContent"), 11, sval)
     js_set_prop(tco, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](3)))
     js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#text"), 5))
-    js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, sval)
-    js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, sval)
+    # data / nodeValue / textContent / length are ACCESSORS on
+    # CharacterData.prototype over this one backing field; setting them as own
+    # data properties here would shadow the accessors and let the four drift.
+    js_set_prop(tco, cast[Ptr[uint8]]("__cd"), 4, sval)
     _node_identity(tco, g_proto_text)
     cre_obj[tcid] = tco
     cre_n = tcid + 1
     return tco
+
+
+# A created Comment (kind 2) or ProcessingInstruction (kind 3). Both are real
+# members of the created-node pool, which is what lets them be APPENDED: a
+# comment used to be a bare JS object with no cre_* row, so appendChild could
+# not find it, parentNode stayed null, childNodes stayed empty, and every
+# ChildNode test that uses a Comment as its context object was unreachable.
+def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
+    if cre_n >= CRE_MAX:
+        return js_null()
+    ccid: int32 = cre_n
+    cre_tag_off[ccid] = dom_idbuf_len
+    cre_tag_len[ccid] = 0
+    cre_is_text[ccid] = kind
+    cre_gone[ccid] = 0
+    co2: int32 = js_new_object_v()
+    if kind == 2:
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(8.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#comment"), 8))
+        _node_identity(co2, g_proto_comm)
+    else:
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(7.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, targetv)
+        js_set_prop(co2, cast[Ptr[uint8]]("target"), 6, targetv)
+        _node_identity(co2, g_proto_pi)
+    js_set_prop(co2, cast[Ptr[uint8]]("__cd"), 4, sval)
+    js_set_prop(co2, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    cre_obj[ccid] = co2
+    cre_n = ccid + 1
+    return co2
 
 
 # Parse the attributes region sp[a..b) of a fragment start tag onto node obj
@@ -2277,7 +2309,10 @@ def _frag_clear(fragv: int32):
 # the readback flatten the whole subtree to escaped text.
 def _append_sync_text(parentv: int32, childv: int32):
     cid2: int32 = _find_cre_by_obj(childv)
-    if cid2 < 0 or cre_is_text[cid2] == 0:
+    # cre_is_text is a KIND now (1 text, 2 comment, 3 processing instruction).
+    # Only a real Text child contributes to the parent's textContent: a comment
+    # or a PI must not, or `<div><!--x--></div>`.textContent reads back "x".
+    if cid2 < 0 or cre_is_text[cid2] != 1:
         return
     tsbuf: Array[8192, uint8]
     tw: int32 = 0
@@ -2307,6 +2342,7 @@ def _append_sync_text(parentv: int32, childv: int32):
 # parent.appendChild(child) with explicit values — shared by the NID_APPEND
 # dispatch and the DocumentFragment flush (which replays each child through it).
 def _append_child_v(parentv: int32, childv: int32):
+    _detach_from_parent_v(childv)
     ch: int32 = _find_cre_by_obj(childv)
     if ch >= 0:
         cre_gone[ch] = 0                                  # (re)attach
@@ -2381,16 +2417,36 @@ def _mount_dispatch(rel: int32) -> int32:
         cval: int32 = js_new_string(&dom_txtbuf[0], 0)
         if js_arg_count() >= 1:
             cval = js_arg(0)
-        cmt: int32 = js_new_object_v()
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeType"), 8, js_number(8.0))
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeName"), 8, \
-                    js_new_string(cast[Ptr[uint8]]("#comment"), 8))
-        js_set_prop(cmt, cast[Ptr[uint8]]("nodeValue"), 9, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("data"), 4, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("textContent"), 11, cval)
-        js_set_prop(cmt, cast[Ptr[uint8]]("parentNode"), 10, js_null())
-        _node_identity(cmt, g_proto_comm)
-        return cmt
+        return _cre_make_chardata(cval, 2, js_undefined())
+    if rel == NID_CREATEPI:
+        # document.createProcessingInstruction(target, data). The target must be
+        # an XML Name and the data must not contain "?>" — WPT
+        # Document-createProcessingInstruction.js is 11 rows of exactly that,
+        # and it wants an InvalidCharacterError, not a TypeError.
+        pitv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        pidv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            pitn: int32 = _js_str_to_cbuf(js_arg(0), &pi_tbuf[0], 255)
+            pitv = js_new_string(&pi_tbuf[0], cast[uint64](pitn))
+            if _validate_pi_target(&pi_tbuf[0], pitn) == 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidCharacterError"), \
+                                     21, \
+                                     cast[Ptr[uint8]]("invalid PI target"), 17)
+        else:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                                 cast[Ptr[uint8]]("invalid PI target"), 17)
+        if js_arg_count() >= 2:
+            pidv = js_arg(1)
+            pidp: Ptr[uint8] = js_str_bytes(pidv)
+            pidn: int32 = js_str_bytelen(pidv)
+            pk2: int32 = 0
+            while pk2 + 1 < pidn:
+                if pidp[pk2] == 63 and pidp[pk2 + 1] == 62:        # "?>"
+                    return _throw_domexc( \
+                        cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                        cast[Ptr[uint8]]("PI data contains ?>"), 19)
+                pk2 = pk2 + 1
+        return _cre_make_chardata(pidv, 3, pitv)
     if rel == NID_CREATEFRAG:
         frag: int32 = js_new_object_v()
         js_set_prop(frag, cast[Ptr[uint8]]("nodeType"), 8, js_number(11.0))
@@ -2512,7 +2568,10 @@ def _inner_accessor(rel: int32) -> int32:
         return v
     if rel == NID_IH_GET:
         if idx < 0:
-            return js_undefined()
+            ccid: int32 = _find_cre_by_obj(thisv)
+            if ccid < 0:
+                return js_undefined()
+            return _serialize_inner_cre(ccid)
         # NOT memoised any more. The memo installed an own data property that
         # shadowed this accessor for the rest of the page's life, so the FIRST
         # read froze innerHTML at its parse-time value — which is half of why
@@ -2792,13 +2851,1593 @@ def _mutation_touches_source() -> int32:
     return 0
 
 
+# ---- Node.prototype generics ------------------------------------------------
+# hasChildNodes / normalize / isEqualNode / isSameNode / compareDocumentPosition
+# / getRootNode / lookupNamespaceURI / lookupPrefix / isDefaultNamespace.
+#
+# All of these are written against the JS-VISIBLE node shape (nodeType,
+# parentNode, childNodes, attributes, namespaceURI, prefix, localName, data)
+# rather than the source-element index, so ONE implementation serves source
+# elements, createElement nodes, text, comments, fragments and the document.
+#
+# Every expected value below was MEASURED against `chromium --headless`
+# (scratch fixture c1.html) before it was written, not read off the spec:
+#   div.compareDocumentPosition(div.firstChild)  -> 20  (CONTAINED_BY|FOLLOWING)
+#   div.firstChild.compareDocumentPosition(div)  -> 10  (CONTAINS|PRECEDING)
+#   disconnected                                 -> 37  (DISCONNECTED|FOLLOWING|
+#                                                        IMPLEMENTATION_SPECIFIC)
+#   createElementNS('fooNamespace','prefix:elem').lookupNamespaceURI('xml')
+#                                                -> the XML namespace
+#   textNode.lookupNamespaceURI(null)            -> the XHTML namespace
+#   document.createDocumentFragment().lookupNamespaceURI(null) -> null
+
+ndg_pfx: Array[256, uint8]           # lookup* prefix / namespace argument
+ndg_pfxn: int32 = 0
+ndg_attrname: Array[256, uint8]      # "xmlns:<prefix>" probe
+
+
+def _nd_type(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return 0
+    nt: int32 = js_get_prop(v, cast[Ptr[uint8]]("nodeType"), 8)
+    if js_type_of(nt) != TAG_NUM:
+        return 0
+    return cast[int32](js_to_number(nt))
+
+
+# A node's live child list, or 0 when it has none the JS layer can see.
+def _nd_kids(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return 0
+    k: int32 = js_get_prop(v, cast[Ptr[uint8]]("childNodes"), 10)
+    if js_is_array(k) == 0:
+        return 0
+    return k
+
+
+def _nd_parent(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return js_null()
+    return js_get_prop(v, cast[Ptr[uint8]]("parentNode"), 10)
+
+
+# The nearest ELEMENT ancestor, used by the namespace lookups (a text node
+# resolves its namespace through its parent element, measured in chromium).
+def _nd_parent_el(v: int32) -> int32:
+    p: int32 = _nd_parent(v)
+    d: int32 = 0
+    while d < 256 and js_type_of(p) == TAG_OBJ:
+        if _nd_type(p) == 1:
+            return p
+        p = _nd_parent(p)
+        d = d + 1
+    return js_null()
+
+
+# String value of `v`, or 0 bytes when it is not a string.
+def _nd_str_eq(v: int32, p: Ptr[uint8], n: int32) -> int32:
+    if js_type_of(v) != TAG_STR:
+        return 0
+    return _bytes_eq(js_str_bytes(v), js_str_bytelen(v), p, n)
+
+
+def _nd_str_empty(v: int32) -> int32:
+    if js_type_of(v) != TAG_STR:
+        return 1
+    if js_str_bytelen(v) == 0:
+        return 1
+    return 0
+
+
+# Read argument 0 as the prefix / namespace operand into ndg_pfx. Returns 1 when
+# the argument was null or undefined (which the algorithms treat exactly the
+# same as the empty string, per the spec's "if prefix is the empty string, set
+# it to null" step) and 0 otherwise.
+def _nd_read_arg0() -> int32:
+    ndg_pfxn = 0
+    if js_arg_count() < 1:
+        return 1
+    a: int32 = js_arg(0)
+    if js_type_of(a) == TAG_NULL or js_type_of(a) == TAG_UNDEF:
+        return 1
+    ndg_pfxn = _js_str_to_cbuf(a, &ndg_pfx[0], 255)
+    if ndg_pfxn == 0:
+        return 1
+    return 0
+
+
+# "locate a namespace": the namespace URI in scope for `prefix` at `node`.
+# Returns a JS string, or js_null().
+def _nd_lookup_ns(node: int32, isnull: int32, depth: int32) -> int32:
+    if depth > 64 or js_type_of(node) != TAG_OBJ:
+        return js_null()
+    kind: int32 = _nd_type(node)
+    if kind == 9:                                          # Document
+        de: int32 = js_get_prop(node, cast[Ptr[uint8]]("documentElement"), 15)
+        if js_type_of(de) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(de, isnull, depth + 1)
+    if kind == 10 or kind == 11:                           # DocumentType/Fragment
+        return js_null()
+    if kind == 2:                                          # Attr
+        oe: int32 = js_get_prop(node, cast[Ptr[uint8]]("ownerElement"), 12)
+        if js_type_of(oe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(oe, isnull, depth + 1)
+    if kind != 1:                                          # Text/Comment/PI/...
+        pe: int32 = _nd_parent_el(node)
+        if js_type_of(pe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(pe, isnull, depth + 1)
+    # Element. The `xml` and `xmlns` prefixes are implicitly declared on every
+    # element and on nothing else: MEASURED in chromium, a DocumentFragment and
+    # a documentElement-less Document both answer null for both prefixes, while
+    # any element answers the XML / XMLNS namespace regardless of its own.
+    if isnull == 0:
+        if _bytes_eq(&ndg_pfx[0], ndg_pfxn, cast[Ptr[uint8]]("xml"), 3) != 0:
+            return js_new_string( \
+                cast[Ptr[uint8]]("http://www.w3.org/XML/1998/namespace"), 36)
+        if _bytes_eq(&ndg_pfx[0], ndg_pfxn, cast[Ptr[uint8]]("xmlns"), 5) != 0:
+            return js_new_string( \
+                cast[Ptr[uint8]]("http://www.w3.org/2000/xmlns/"), 29)
+    # its own namespace first, then its xmlns declarations.
+    nsv: int32 = js_get_prop(node, cast[Ptr[uint8]]("namespaceURI"), 12)
+    pfv: int32 = js_get_prop(node, cast[Ptr[uint8]]("prefix"), 6)
+    if _nd_str_empty(nsv) == 0:
+        if isnull != 0:
+            if _nd_str_empty(pfv) != 0:
+                return nsv
+        elif _nd_str_eq(pfv, &ndg_pfx[0], ndg_pfxn) != 0:
+            return nsv
+    at: int32 = js_get_prop(node, cast[Ptr[uint8]]("attributes"), 10)
+    if js_is_array(at) != 0:
+        # the probe name: "xmlns" for the default namespace, "xmlns:<prefix>"
+        # otherwise.
+        pn: int32 = 5
+        ndg_attrname[0] = 120                              # 'x'
+        ndg_attrname[1] = 109                              # 'm'
+        ndg_attrname[2] = 108                              # 'l'
+        ndg_attrname[3] = 110                              # 'n'
+        ndg_attrname[4] = 115                              # 's'
+        if isnull == 0:
+            ndg_attrname[5] = 58                           # ':'
+            pn = 6
+            j: int32 = 0
+            while j < ndg_pfxn and pn < 255:
+                ndg_attrname[pn] = ndg_pfx[j]
+                pn = pn + 1
+                j = j + 1
+        i: int32 = 0
+        an: int32 = js_array_len(at)
+        while i < an:
+            av: int32 = js_array_get(at, i)
+            anm: int32 = js_get_prop(av, cast[Ptr[uint8]]("name"), 4)
+            if _nd_str_eq(anm, &ndg_attrname[0], pn) != 0:
+                val: int32 = js_get_prop(av, cast[Ptr[uint8]]("value"), 5)
+                if _nd_str_empty(val) != 0:
+                    return js_null()
+                return val
+            i = i + 1
+    up: int32 = _nd_parent_el(node)
+    if js_type_of(up) != TAG_OBJ:
+        return js_null()
+    return _nd_lookup_ns(up, isnull, depth + 1)
+
+
+# "locate a prefix": the prefix bound to the namespace now in ndg_pfx at `node`.
+def _nd_lookup_prefix(node: int32, depth: int32) -> int32:
+    if depth > 64 or js_type_of(node) != TAG_OBJ:
+        return js_null()
+    kind: int32 = _nd_type(node)
+    if kind == 9:
+        de: int32 = js_get_prop(node, cast[Ptr[uint8]]("documentElement"), 15)
+        if js_type_of(de) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(de, depth + 1)
+    if kind == 10 or kind == 11:
+        return js_null()
+    if kind == 2:
+        oe: int32 = js_get_prop(node, cast[Ptr[uint8]]("ownerElement"), 12)
+        if js_type_of(oe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(oe, depth + 1)
+    if kind != 1:
+        pe: int32 = _nd_parent_el(node)
+        if js_type_of(pe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(pe, depth + 1)
+    nsv: int32 = js_get_prop(node, cast[Ptr[uint8]]("namespaceURI"), 12)
+    pfv: int32 = js_get_prop(node, cast[Ptr[uint8]]("prefix"), 6)
+    if _nd_str_eq(nsv, &ndg_pfx[0], ndg_pfxn) != 0 and _nd_str_empty(pfv) == 0:
+        return pfv
+    at: int32 = js_get_prop(node, cast[Ptr[uint8]]("attributes"), 10)
+    if js_is_array(at) != 0:
+        i: int32 = 0
+        an: int32 = js_array_len(at)
+        while i < an:
+            av: int32 = js_array_get(at, i)
+            anm: int32 = js_get_prop(av, cast[Ptr[uint8]]("name"), 4)
+            if js_type_of(anm) == TAG_STR and js_str_bytelen(anm) > 6:
+                ap: Ptr[uint8] = js_str_bytes(anm)
+                if _bytes_eq(ap, 6, cast[Ptr[uint8]]("xmlns:"), 6) != 0:
+                    val: int32 = js_get_prop(av, cast[Ptr[uint8]]("value"), 5)
+                    if _nd_str_eq(val, &ndg_pfx[0], ndg_pfxn) != 0:
+                        return js_new_string(&ap[6], \
+                                             cast[uint64](js_str_bytelen(anm) - 6))
+            i = i + 1
+    up: int32 = _nd_parent_el(node)
+    if js_type_of(up) != TAG_OBJ:
+        return js_null()
+    return _nd_lookup_prefix(up, depth + 1)
+
+
+# The node's data/value for equality: `data` on CharacterData, `value` on Attr.
+def _nd_data_eq(a: int32, b: int32, nm: Ptr[uint8], nn: uint64) -> int32:
+    av: int32 = js_get_prop(a, nm, nn)
+    bv: int32 = js_get_prop(b, nm, nn)
+    if js_type_of(av) != js_type_of(bv):
+        return 0
+    if js_type_of(av) != TAG_STR:
+        return 1
+    return _bytes_eq(js_str_bytes(av), js_str_bytelen(av), \
+                     js_str_bytes(bv), js_str_bytelen(bv))
+
+
+def _nd_is_equal(a: int32, b: int32, depth: int32) -> int32:
+    if a == b:
+        return 1
+    if js_type_of(a) != TAG_OBJ or js_type_of(b) != TAG_OBJ:
+        return 0
+    if depth > 64:
+        return 0
+    ka: int32 = _nd_type(a)
+    if ka != _nd_type(b):
+        return 0
+    if ka == 10:                                           # DocumentType
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("name"), 4) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("publicId"), 8) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("systemId"), 8) == 0:
+            return 0
+    elif ka == 1:                                          # Element
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("namespaceURI"), 12) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("prefix"), 6) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("localName"), 9) == 0:
+            return 0
+        aa: int32 = js_get_prop(a, cast[Ptr[uint8]]("attributes"), 10)
+        ba: int32 = js_get_prop(b, cast[Ptr[uint8]]("attributes"), 10)
+        an: int32 = 0
+        bn: int32 = 0
+        if js_is_array(aa) != 0:
+            an = js_array_len(aa)
+        if js_is_array(ba) != 0:
+            bn = js_array_len(ba)
+        if an != bn:
+            return 0
+        i: int32 = 0
+        while i < an:
+            avv: int32 = js_array_get(aa, i)
+            anm: int32 = js_get_prop(avv, cast[Ptr[uint8]]("name"), 4)
+            hit: int32 = 0
+            j: int32 = 0
+            while j < bn:
+                bvv: int32 = js_array_get(ba, j)
+                bnm: int32 = js_get_prop(bvv, cast[Ptr[uint8]]("name"), 4)
+                if js_type_of(anm) == TAG_STR and js_type_of(bnm) == TAG_STR and \
+                   _bytes_eq(js_str_bytes(anm), js_str_bytelen(anm), \
+                             js_str_bytes(bnm), js_str_bytelen(bnm)) != 0:
+                    if _nd_data_eq(avv, bvv, cast[Ptr[uint8]]("value"), 5) != 0:
+                        hit = 1
+                j = j + 1
+            if hit == 0:
+                return 0
+            i = i + 1
+    elif ka == 2:                                          # Attr
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("namespaceURI"), 12) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("localName"), 9) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("value"), 5) == 0:
+            return 0
+        return 1
+    elif ka == 7:                                          # ProcessingInstruction
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("target"), 6) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("data"), 4) == 0:
+            return 0
+    elif ka == 3 or ka == 4 or ka == 8:                    # Text/CDATA/Comment
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("data"), 4) == 0:
+            return 0
+    ak2: int32 = _nd_kids(a)
+    bk2: int32 = _nd_kids(b)
+    al: int32 = 0
+    bl: int32 = 0
+    if ak2 != 0:
+        al = js_array_len(ak2)
+    if bk2 != 0:
+        bl = js_array_len(bk2)
+    if al != bl:
+        return 0
+    k: int32 = 0
+    while k < al:
+        if _nd_is_equal(js_array_get(ak2, k), js_array_get(bk2, k), depth + 1) == 0:
+            return 0
+        k = k + 1
+    return 1
+
+
+# Is `anc` an inclusive ancestor of `n`?
+def _nd_is_ancestor(anc: int32, n: int32) -> int32:
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        if cur == anc:
+            return 1
+        cur = _nd_parent(cur)
+        d = d + 1
+    return 0
+
+
+def _nd_root(n: int32) -> int32:
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256:
+        p: int32 = _nd_parent(cur)
+        if js_type_of(p) != TAG_OBJ:
+            return cur
+        cur = p
+        d = d + 1
+    return cur
+
+
+# Index of `child` inside `parent`'s child list, or -1.
+def _nd_child_index(parent: int32, child: int32) -> int32:
+    ks: int32 = _nd_kids(parent)
+    if ks == 0:
+        return -1
+    i: int32 = 0
+    n: int32 = js_array_len(ks)
+    while i < n:
+        if js_array_get(ks, i) == child:
+            return i
+        i = i + 1
+    return -1
+
+
+# node.compareDocumentPosition(other). Chromium-measured values above.
+def _nd_compare_pos(a: int32, b: int32) -> int32:
+    if a == b:
+        return 0
+    if js_type_of(b) != TAG_OBJ:
+        return 0
+    if _nd_root(a) != _nd_root(b):
+        # DISCONNECTED | IMPLEMENTATION_SPECIFIC | a consistent direction. The
+        # direction must be STABLE and OPPOSITE for the reversed call (WPT
+        # asserts exactly that), so it is derived from the handle order.
+        if a < b:
+            return 37                                      # 1|4|32
+        return 35                                          # 1|2|32
+    if _nd_is_ancestor(a, b) != 0:
+        return 20                                          # CONTAINED_BY|FOLLOWING
+    if _nd_is_ancestor(b, a) != 0:
+        return 10                                          # CONTAINS|PRECEDING
+    # Neither contains the other: walk both ancestor chains to their first
+    # divergence and compare sibling index there.
+    ca: int32 = a
+    da: int32 = 0
+    while da < 256:
+        pa: int32 = _nd_parent(ca)
+        if js_type_of(pa) != TAG_OBJ:
+            break
+        cb: int32 = b
+        db: int32 = 0
+        while db < 256:
+            pb: int32 = _nd_parent(cb)
+            if js_type_of(pb) != TAG_OBJ:
+                break
+            if pa == pb:
+                ia: int32 = _nd_child_index(pa, ca)
+                ib: int32 = _nd_child_index(pa, cb)
+                if ia >= 0 and ib >= 0:
+                    if ia < ib:
+                        return 4                           # FOLLOWING
+                    return 2                               # PRECEDING
+                break
+            cb = pb
+            db = db + 1
+        ca = pa
+        da = da + 1
+    if a < b:
+        return 4
+    return 2
+
+
+ndg_cat: Array[16384, uint8]         # normalize() text-merge scratch
+
+
+# Concatenate two JS strings through a BSS scratch buffer (no stack buffers —
+# the native user stack is one 4 KiB page).
+def _nd_concat(a: int32, b: int32) -> int32:
+    w: int32 = 0
+    if js_type_of(a) == TAG_STR:
+        ap: Ptr[uint8] = js_str_bytes(a)
+        an: int32 = js_str_bytelen(a)
+        i: int32 = 0
+        while i < an and w < 16383:
+            ndg_cat[w] = ap[i]
+            w = w + 1
+            i = i + 1
+    if js_type_of(b) == TAG_STR:
+        bp: Ptr[uint8] = js_str_bytes(b)
+        bn: int32 = js_str_bytelen(b)
+        j: int32 = 0
+        while j < bn and w < 16383:
+            ndg_cat[w] = bp[j]
+            w = w + 1
+            j = j + 1
+    return js_new_string(&ndg_cat[0], cast[uint64](w))
+
+
+# node.normalize(): drop empty Text children and merge adjacent ones, then
+# recurse. Operates on the live JS child list, so it serves created subtrees
+# (which is what every WPT normalize test builds).
+def _nd_normalize(n: int32, depth: int32):
+    if depth > 64 or js_type_of(n) != TAG_OBJ:
+        return
+    ks: int32 = _nd_kids(n)
+    if ks == 0:
+        return
+    ln: int32 = js_array_len(ks)
+    nw: int32 = js_new_array_v()
+    prev: int32 = 0
+    i: int32 = 0
+    while i < ln:
+        c: int32 = js_array_get(ks, i)
+        if _nd_type(c) == 3:
+            dv: int32 = js_get_prop(c, cast[Ptr[uint8]]("data"), 4)
+            if _nd_str_empty(dv) != 0:
+                i = i + 1
+                continue
+            if prev != 0:
+                pv: int32 = js_get_prop(prev, cast[Ptr[uint8]]("data"), 4)
+                merged: int32 = _nd_concat(pv, dv)
+                js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("nodeValue"), 9, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("textContent"), 11, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("length"), 6, \
+                            js_number(cast[float64](js_str_bytelen(merged))))
+                js_set_prop(c, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                i = i + 1
+                continue
+            prev = c
+        else:
+            prev = 0
+            _nd_normalize(c, depth + 1)
+        js_array_push(nw, c)
+        i = i + 1
+    js_set_own(n, cast[Ptr[uint8]]("childNodes"), 10, nw)
+
+
+# ---- "ensure pre-insertion validity" (DOM 4.2.1) ----------------------------
+# ONE algorithm shared by appendChild / insertBefore / replaceChild and the
+# whole ChildNode / ParentNode mutation family. Measured worth: 44 WPT subtests
+# were failing with a bare `assert_throws_dom: function ... did not throw`, and
+# a further 29 with "threw object TypeError ... that is not a DOMException" —
+# the tests are checking these rejections, not the happy path.
+#
+# Returns 1 when it has THROWN (the caller must return immediately), 0 when the
+# insertion is valid.
+def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
+    pk: int32 = _nd_type(parentv)
+    # 1. parent must be a Document, DocumentFragment or Element.
+    if pk != 9 and pk != 11 and pk != 1:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("parent cannot have children"), 27)
+        return 1
+    # 2. node must not be an inclusive ancestor of parent.
+    if js_type_of(nodev) == TAG_OBJ and _nd_is_ancestor(nodev, parentv) != 0:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("node is an ancestor of parent"), 29)
+        return 1
+    # 3. a non-null reference child must actually be a child of parent.
+    if js_type_of(childv) == TAG_OBJ:
+        if _nd_child_index(parentv, childv) < 0:
+            _throw_domexc(cast[Ptr[uint8]]("NotFoundError"), 13, \
+                          cast[Ptr[uint8]]("reference node is not a child"), 29)
+            return 1
+    nk: int32 = _nd_type(nodev)
+    # 4. node must be a DocumentFragment, DocumentType, Element, CharacterData
+    #    or ProcessingInstruction. Anything else (a plain object, a Document)
+    #    is a HierarchyRequestError, NOT a TypeError.
+    if nk != 11 and nk != 10 and nk != 1 and nk != 3 and nk != 4 and \
+       nk != 7 and nk != 8:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("node is not insertable"), 22)
+        return 1
+    # 5. Text may not be a child of a Document; a doctype may only be.
+    if nk == 3 and pk == 9:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("text cannot be a child of a document"), 36)
+        return 1
+    if nk == 10 and pk != 9:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("doctype must be a child of a document"), 37)
+        return 1
+    # 6. Document parents accept at most one element child, and a fragment may
+    #    not carry more than one element into one.
+    if pk == 9:
+        if nk == 11:
+            fk: int32 = _nd_kids(nodev)
+            nel: int32 = 0
+            if fk != 0:
+                fi: int32 = 0
+                fn: int32 = js_array_len(fk)
+                while fi < fn:
+                    if _nd_type(js_array_get(fk, fi)) == 1:
+                        nel = nel + 1
+                    elif _nd_type(js_array_get(fk, fi)) == 3:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                                      cast[Ptr[uint8]]("text in fragment"), 16)
+                        return 1
+                    fi = fi + 1
+            if nel > 1:
+                _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                              cast[Ptr[uint8]]("fragment has multiple elements"), 30)
+                return 1
+    return 0
+
+
+# Mark every parent->child edge pointing at created node `cid` as unlinked.
+def _unlink_cre_edges(cid: int32):
+    b: int32 = 0
+    while b < cc_n:
+        if cc_child[b] == cid:
+            cc_removed[b] = 1
+        b = b + 1
+    a: int32 = 0
+    while a < ap_n:
+        if ap_child[a] == cid:
+            ap_removed[a] = 1
+        a = a + 1
+
+
+# Spec step "if node's parent is non-null, remove node" — an insertion MOVES a
+# node rather than duplicating it. Without this the WPT ChildNode/ParentNode
+# files, which deliberately re-append ONE child object into a series of fresh
+# parents, saw it accumulate in every parent at once
+# ("text<!--test--><!--test-->").
+#
+# Deliberately does NOT set cre_gone: the caller is about to re-insert, and a
+# node that is only ever unlinked here must stay renderable at its new home.
+def _detach_from_parent_v(childv: int32):
+    if js_type_of(childv) != TAG_OBJ:
+        return
+    par: int32 = js_get_prop(childv, cast[Ptr[uint8]]("parentNode"), 10)
+    cid: int32 = _find_cre_by_obj(childv)
+    if cid >= 0:
+        _unlink_cre_edges(cid)
+    if js_type_of(par) == TAG_OBJ:
+        _dom_children_drop(par, childv)
+        _wire_sibling_links(js_get_prop(par, cast[Ptr[uint8]]("children"), 8), par)
+    js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+
+
+# parent.insertBefore(newv, refv) with EXPLICIT values (refv == js_null()
+# appends). Factored out of the NID_INSBEF handler so the ChildNode /
+# ParentNode mutation methods (before / after / replaceWith / prepend /
+# replaceChildren) can reuse the one insertion path instead of growing a second
+# copy of the source-element vs created-node bookkeeping.
+def _insert_before_v(parentv: int32, newv: int32, refv: int32):
+    _detach_from_parent_v(newv)
+    nch: int32 = _find_cre_by_obj(newv)
+    if nch >= 0:
+        cre_gone[nch] = 0
+        rch: int32 = -1
+        if js_type_of(refv) == TAG_OBJ:
+            rch = _find_cre_by_obj(refv)
+        par2: int32 = _find_el_by_obj(parentv)
+        if par2 >= 0:
+            at: int32 = -1
+            if rch >= 0:
+                at = _ap_find(par2, rch)
+            _ap_add(par2, nch, at)
+            js_set_prop(newv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par2])
+            js_set_prop(newv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par2])
+            _dom_children_insert(parentv, newv, refv)
+        else:
+            pcid2: int32 = _find_cre_by_obj(parentv)
+            if pcid2 >= 0:
+                at2: int32 = -1
+                if rch >= 0:
+                    at2 = _cc_find(pcid2, rch)
+                _cc_add(pcid2, nch, at2)
+                js_set_prop(newv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+                js_set_prop(newv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+                _dom_children_insert(parentv, newv, refv)
+    _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
+                        parentv)
+    _mo_record_childlist(parentv, newv, -1)
+
+
+# Detach `childv` from `parentv`, mirroring the NID_REMCHILD handler.
+def _remove_child_v(parentv: int32, childv: int32):
+    rc: int32 = _find_cre_by_obj(childv)
+    rcs: int32 = -1
+    if rc < 0:
+        rcs = _find_el_by_obj(childv)
+    if rc >= 0 or rcs >= 0:
+        if rc >= 0:
+            cre_gone[rc] = 1
+        else:
+            dom_detached[rcs] = 1
+        js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+        js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+        _dom_children_drop(parentv, childv)
+        _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
+                            parentv)
+        _mo_record_childlist(parentv, -1, childv)
+
+
+# ChildNode / ParentNode take (Node or DOMString)... — a bare string argument
+# becomes a Text node. Returns the node object for `v`.
+def _nd_as_node(v: int32) -> int32:
+    if js_type_of(v) == TAG_OBJ and _nd_type(v) != 0:
+        return v
+    sv: int32 = v
+    if js_type_of(v) != TAG_STR:
+        sv = js_new_string(js_str_ptr(v), cast[uint64](_cstr_len(js_str_ptr(v))))
+    return _cre_make_text(sv)
+
+
+# ---- ChildNode.before/after/replaceWith + ParentNode.prepend/replaceChildren --
+# Written entirely in terms of _insert_before_v / _remove_child_v, so they share
+# the insertion bookkeeping with insertBefore rather than reimplementing it.
+# A DocumentFragment argument contributes its CHILDREN, not itself (spec).
+def _nd_insert_nodes(parentv: int32, refv: int32, from_arg: int32):
+    # The spec converts the whole argument list into ONE DocumentFragment and
+    # pre-inserts that, so a single invalid member rejects the entire call and
+    # nothing is inserted. Validate first, mutate second.
+    i: int32 = from_arg
+    n: int32 = js_arg_count()
+    while i < n:
+        a0: int32 = js_arg(i)
+        if js_type_of(a0) == TAG_OBJ and _nd_type(a0) != 0:
+            if _pre_insert_invalid(parentv, a0, js_null()) != 0:
+                return
+        i = i + 1
+    i = from_arg
+    while i < n:
+        a: int32 = js_arg(i)
+        if _is_fragment(a) != 0:
+            fk: int32 = js_get_prop(a, cast[Ptr[uint8]]("children"), 8)
+            if js_is_array(fk) != 0:
+                j: int32 = 0
+                fn: int32 = js_array_len(fk)
+                while j < fn:
+                    _insert_before_v(parentv, js_array_get(fk, j), refv)
+                    j = j + 1
+            _frag_clear(a)
+        else:
+            _insert_before_v(parentv, _nd_as_node(a), refv)
+        i = i + 1
+
+
+# Is `v` one of the current call's arguments?
+def _nd_arg_is(v: int32) -> int32:
+    i: int32 = 0
+    n: int32 = js_arg_count()
+    while i < n:
+        if js_arg(i) == v:
+            return 1
+        i = i + 1
+    return 0
+
+
+# ---- CharacterData -----------------------------------------------------------
+# One backing field (__cd) behind data / nodeValue / textContent / length, plus
+# the five mutation methods and splitText. Offsets and counts are UTF-16 code
+# units, which is both what the DOM specifies and what our String.prototype
+# already models (js_str_u16_len / js_str_sub_u16 expose the interpreter's own
+# view, so the two can never disagree — "\u8cc7\u6599".length is 2 in both).
+def _cd_get(node: int32) -> int32:
+    v: int32 = js_get_prop(node, cast[Ptr[uint8]]("__cd"), 4)
+    if js_type_of(v) != TAG_STR:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    return v
+
+
+# Store new data and fire a MutationObserver characterData record.
+def _cd_set(node: int32, v: int32):
+    js_set_own(node, cast[Ptr[uint8]]("__cd"), 4, v)
+    if mreg_n != 0:
+        _mo_record_chardata(node)
+
+
+# Coerce an argument the way a DOMString parameter does: null becomes "null",
+# undefined becomes "undefined", 0 becomes "0" — MEASURED in chromium
+# (CharacterData-data.html asserts all three).
+def _cd_arg_str(i: int32) -> int32:
+    if js_arg_count() <= i:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    a: int32 = js_arg(i)
+    if js_type_of(a) == TAG_STR:
+        return a
+    if js_type_of(a) == TAG_NULL:
+        return js_new_string(cast[Ptr[uint8]]("null"), 4)
+    return js_new_string(js_str_bytes(a), cast[uint64](js_str_bytelen(a)))
+
+
+# Splice: data[0,off) + ins + data[off+count, len).
+def _cd_splice(node: int32, off: int32, count: int32, ins: int32) -> int32:
+    cur: int32 = _cd_get(node)
+    n: int32 = js_str_u16_len(cur)
+    if off > n or off < 0:
+        _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                      cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        return 1
+    if count < 0 or off + count > n:
+        count = n - off
+    head: int32 = js_str_sub_u16(cur, 0, off)
+    tail: int32 = js_str_sub_u16(cur, off + count, n)
+    _cd_set(node, _nd_concat(_nd_concat(head, ins), tail))
+    return 0
+
+
+def _chardata_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_CD_DATA_GET:
+        return _cd_get(thisv)
+    if rel == NID_CD_DATA_SET:
+        _cd_set(thisv, _cd_arg_str(0))
+        return js_undefined()
+    if rel == NID_CD_LEN_GET:
+        return js_number(cast[float64](js_str_u16_len(_cd_get(thisv))))
+    if rel == NID_CD_LEN_SET:
+        return js_undefined()                              # readonly
+    # Every remaining method takes at least one numeric offset. An arity that is
+    # too short is a TypeError, not an IndexSizeError (the WPT files check the
+    # distinction explicitly).
+    need: int32 = 2
+    if rel == NID_CD_APPENDD or rel == NID_TEXT_SPLIT:
+        need = 1
+    if rel == NID_CD_REPLACED:
+        need = 3
+    if js_arg_count() < need:
+        js_throw_type_error(cast[Ptr[uint8]]("not enough arguments"))
+        return js_undefined()
+    if rel == NID_CD_APPENDD:
+        cur: int32 = _cd_get(thisv)
+        _cd_set(thisv, _nd_concat(cur, _cd_arg_str(0)))
+        return js_undefined()
+    off: int32 = cast[int32](js_to_number(js_arg(0)))
+    if rel == NID_TEXT_SPLIT:
+        # text.splitText(offset): this keeps [0,offset), a NEW Text node with
+        # the remainder is inserted as this node's next sibling and returned.
+        cur2: int32 = _cd_get(thisv)
+        n2: int32 = js_str_u16_len(cur2)
+        if off < 0 or off > n2:
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        rest: int32 = js_str_sub_u16(cur2, off, n2)
+        _cd_set(thisv, js_str_sub_u16(cur2, 0, off))
+        newt: int32 = _cre_make_text(rest)
+        par2: int32 = _nd_parent(thisv)
+        if js_type_of(par2) == TAG_OBJ:
+            kids: int32 = _nd_kids(par2)
+            ix: int32 = _nd_child_index(par2, thisv)
+            ref: int32 = js_null()
+            if kids != 0 and ix >= 0 and ix + 1 < js_array_len(kids):
+                ref = js_array_get(kids, ix + 1)
+            _insert_before_v(par2, newt, ref)
+        return newt
+    if rel == NID_CD_SUBSTR:
+        cur3: int32 = _cd_get(thisv)
+        n3: int32 = js_str_u16_len(cur3)
+        cnt: int32 = cast[int32](js_to_number(js_arg(1)))
+        if off < 0 or off > n3:
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        if cnt < 0 or off + cnt > n3:
+            cnt = n3 - off
+        return js_str_sub_u16(cur3, off, off + cnt)
+    if rel == NID_CD_INSERTD:
+        _cd_splice(thisv, off, 0, _cd_arg_str(1))
+        return js_undefined()
+    if rel == NID_CD_DELETED:
+        _cd_splice(thisv, off, cast[int32](js_to_number(js_arg(1))), \
+                   js_new_string(cast[Ptr[uint8]](""), 0))
+        return js_undefined()
+    # NID_CD_REPLACED
+    _cd_splice(thisv, off, cast[int32](js_to_number(js_arg(1))), _cd_arg_str(2))
+    return js_undefined()
+
+
+# ---- Range + TreeWalker + NodeIterator ---------------------------------------
+# Boundary points and traversal state live as OWN PROPERTIES on the JS object
+# (startContainer/startOffset/endContainer/endOffset, root/whatToShow/filter/
+# currentNode), read back through js_this(). No parallel arrays: a Range is not
+# a scarce resource here and the object IS the state, so nothing can go stale.
+#
+# The two DERIVED attributes are accessors, not snapshots: `collapsed` and
+# `commonAncestorContainer` must track the boundary points as they move, and
+# 26 of the 54 range files register ZERO subtests today because createRange()
+# throws during setup and takes the whole file with it.
+
+# The "length" of a node for boundary-point purposes: character length for
+# CharacterData, child count for anything else.
+def _rng_node_len(n: int32) -> int32:
+    k: int32 = _nd_type(n)
+    if k == 3 or k == 4 or k == 7 or k == 8:
+        return js_str_u16_len(_cd_get(n))
+    ks: int32 = _nd_kids(n)
+    if ks == 0:
+        return 0
+    return js_array_len(ks)
+
+
+# Compare boundary points (na, oa) and (nb, ob) in document order:
+# -1 before, 0 equal, 1 after.
+def _rng_cmp_bp(na: int32, oa: int32, nb: int32, ob: int32) -> int32:
+    if na == nb:
+        if oa < ob:
+            return -1
+        if oa > ob:
+            return 1
+        return 0
+    # If one container contains the other, compare the offset against the index
+    # of the containing chain's child.
+    if _nd_is_ancestor(na, nb) != 0:
+        c: int32 = nb
+        d: int32 = 0
+        while d < 256 and js_type_of(c) == TAG_OBJ:
+            p: int32 = _nd_parent(c)
+            if p == na:
+                ci: int32 = _nd_child_index(na, c)
+                if ci < oa:
+                    return 1
+                return -1
+            c = p
+            d = d + 1
+    if _nd_is_ancestor(nb, na) != 0:
+        c2: int32 = na
+        d2: int32 = 0
+        while d2 < 256 and js_type_of(c2) == TAG_OBJ:
+            p2: int32 = _nd_parent(c2)
+            if p2 == nb:
+                ci2: int32 = _nd_child_index(nb, c2)
+                if ci2 < ob:
+                    return -1
+                return 1
+            c2 = p2
+            d2 = d2 + 1
+    dp: int32 = _nd_compare_pos(na, nb)
+    if (dp & 4) != 0:                                      # nb FOLLOWS na
+        return -1
+    if (dp & 2) != 0:
+        return 1
+    return 0
+
+
+def _rng_get(r: int32, nm: Ptr[uint8], n: uint64) -> int32:
+    return js_get_prop(r, nm, n)
+
+
+def _rng_off(r: int32, nm: Ptr[uint8], n: uint64) -> int32:
+    return cast[int32](js_to_number(js_get_prop(r, nm, n)))
+
+
+def _rng_set_start(r: int32, node: int32, off: int32):
+    js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, node)
+    js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, js_number(cast[float64](off)))
+    ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if js_type_of(ec) != TAG_OBJ or _nd_root(ec) != _nd_root(node) or \
+       _rng_cmp_bp(node, off, ec, eo) > 0:
+        js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, node)
+        js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, \
+                   js_number(cast[float64](off)))
+
+
+def _rng_set_end(r: int32, node: int32, off: int32):
+    js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, node)
+    js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, js_number(cast[float64](off)))
+    sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    if js_type_of(sc) != TAG_OBJ or _nd_root(sc) != _nd_root(node) or \
+       _rng_cmp_bp(sc, so, node, off) > 0:
+        js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, node)
+        js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, \
+                   js_number(cast[float64](off)))
+
+
+# A fresh Range, collapsed at (document, 0) as the spec requires.
+def _rng_new() -> int32:
+    r: int32 = js_new_object_v()
+    if g_proto_range != 0:
+        js_set_proto_v(r, g_proto_range)
+    js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, js_doc)
+    js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, js_number(0.0))
+    js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, js_doc)
+    js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, js_number(0.0))
+    return r
+
+
+# Accumulate the text a range covers into rw_buf (range.toString()).
+def _rng_stringify(r: int32) -> int32:
+    sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if js_type_of(sc) != TAG_OBJ:
+        return js_new_string(cast[Ptr[uint8]](""), 0)
+    if sc == ec and _nd_type(sc) == 3:
+        return js_str_sub_u16(_cd_get(sc), so, eo)
+    out: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+    cur: int32 = sc
+    if _nd_type(sc) == 3:
+        out = js_str_sub_u16(_cd_get(sc), so, js_str_u16_len(_cd_get(sc)))
+    steps: int32 = 0
+    while steps < 4096:
+        cur = _rng_next_in_order(cur)
+        if js_type_of(cur) != TAG_OBJ:
+            return out
+        if cur == ec:
+            if _nd_type(ec) == 3:
+                out = _nd_concat(out, js_str_sub_u16(_cd_get(ec), 0, eo))
+            return out
+        if _nd_type(cur) == 3:
+            out = _nd_concat(out, _cd_get(cur))
+        steps = steps + 1
+    return out
+
+
+# The next node in document order (pre-order), or js_null() at the end.
+def _rng_next_in_order(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks != 0 and js_array_len(ks) > 0:
+        return js_array_get(ks, 0)
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        p: int32 = _nd_parent(cur)
+        if js_type_of(p) != TAG_OBJ:
+            return js_null()
+        pk2: int32 = _nd_kids(p)
+        ix: int32 = _nd_child_index(p, cur)
+        if pk2 != 0 and ix >= 0 and ix + 1 < js_array_len(pk2):
+            return js_array_get(pk2, ix + 1)
+        cur = p
+        d = d + 1
+    return js_null()
+
+
+# ---- traversal ---------------------------------------------------------------
+# whatToShow is a bitmask over (1 << (nodeType - 1)); NodeFilter.SHOW_ALL is
+# 0xFFFFFFFF. The filter is a function OR an object with an acceptNode method,
+# and both forms appear in the WPT files.
+def _tv_show_ok(w: int32, node: int32) -> int32:
+    k: int32 = _nd_type(node)
+    if k <= 0 or k > 32:
+        return 0
+    if (w & (1 << (k - 1))) != 0:
+        return 1
+    return 0
+
+
+# 1 = FILTER_ACCEPT, 2 = FILTER_REJECT, 3 = FILTER_SKIP.
+def _tv_filter(tv: int32, node: int32) -> int32:
+    w: int32 = cast[int32](js_to_number(js_get_prop(tv, \
+                           cast[Ptr[uint8]]("whatToShow"), 10)))
+    if _tv_show_ok(w, node) == 0:
+        return 3                                           # SKIP, never REJECT
+    f: int32 = js_get_prop(tv, cast[Ptr[uint8]]("filter"), 6)
+    if js_type_of(f) != TAG_OBJ:
+        return 1
+    fn: int32 = f
+    if js_is_callable(f) == 0:
+        fn = js_get_prop(f, cast[Ptr[uint8]]("acceptNode"), 10)
+        if js_is_callable(fn) == 0:
+            return 1
+    g_argv1[0] = node
+    rv: int32 = js_call_fn(fn, f, &g_argv1[0], 1)
+    r: int32 = cast[int32](js_to_number(rv))
+    if r == 2:
+        return 2
+    if r == 3:
+        return 3
+    return 1
+
+
+def _tv_root(tv: int32) -> int32:
+    return js_get_prop(tv, cast[Ptr[uint8]]("root"), 4)
+
+
+def _tv_first_child(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or js_array_len(ks) == 0:
+        return js_null()
+    return js_array_get(ks, 0)
+
+
+def _tv_last_child(n: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or js_array_len(ks) == 0:
+        return js_null()
+    return js_array_get(ks, js_array_len(ks) - 1)
+
+
+def _tv_sibling(n: int32, dir: int32) -> int32:
+    p: int32 = _nd_parent(n)
+    if js_type_of(p) != TAG_OBJ:
+        return js_null()
+    ks: int32 = _nd_kids(p)
+    ix: int32 = _nd_child_index(p, n)
+    if ks == 0 or ix < 0:
+        return js_null()
+    j: int32 = ix + dir
+    if j < 0 or j >= js_array_len(ks):
+        return js_null()
+    return js_array_get(ks, j)
+
+
+# TreeWalker child traversal (spec "traverse children"): descend, skipping
+# SKIP nodes into their own children and stepping over REJECTed subtrees.
+def _tw_traverse_children(tv: int32, first: int32) -> int32:
+    cur: int32 = js_get_prop(tv, cast[Ptr[uint8]]("currentNode"), 11)
+    n: int32 = _tv_first_child(cur)
+    if first == 0:
+        n = _tv_last_child(cur)
+    steps: int32 = 0
+    while steps < 4096 and js_type_of(n) == TAG_OBJ:
+        steps = steps + 1
+        f: int32 = _tv_filter(tv, n)
+        if f == 1:
+            js_set_own(tv, cast[Ptr[uint8]]("currentNode"), 11, n)
+            return n
+        if f == 3:
+            c: int32 = _tv_first_child(n)
+            if first == 0:
+                c = _tv_last_child(n)
+            if js_type_of(c) == TAG_OBJ:
+                n = c
+                continue
+        # step sideways, climbing while there is no sibling
+        d: int32 = 0
+        while d < 256:
+            sib: int32 = _tv_sibling(n, 1)
+            if first == 0:
+                sib = _tv_sibling(n, -1)
+            if js_type_of(sib) == TAG_OBJ:
+                n = sib
+                d = 256
+            else:
+                pn: int32 = _nd_parent(n)
+                if js_type_of(pn) != TAG_OBJ or pn == _tv_root(tv) or pn == cur:
+                    return js_null()
+                n = pn
+                d = d + 1
+    return js_null()
+
+
+def _tw_traverse_siblings(tv: int32, dir: int32) -> int32:
+    cur: int32 = js_get_prop(tv, cast[Ptr[uint8]]("currentNode"), 11)
+    n: int32 = cur
+    if n == _tv_root(tv):
+        return js_null()
+    steps: int32 = 0
+    while steps < 4096:
+        steps = steps + 1
+        sib: int32 = _tv_sibling(n, dir)
+        while js_type_of(sib) == TAG_OBJ:
+            f: int32 = _tv_filter(tv, sib)
+            if f == 1:
+                js_set_own(tv, cast[Ptr[uint8]]("currentNode"), 11, sib)
+                return sib
+            n = sib
+            inner: int32 = _tv_first_child(sib)
+            if dir < 0:
+                inner = _tv_last_child(sib)
+            if f == 2 or js_type_of(inner) != TAG_OBJ:
+                sib = _tv_sibling(sib, dir)
+            else:
+                sib = inner
+        n = _nd_parent(n)
+        if js_type_of(n) != TAG_OBJ or n == _tv_root(tv):
+            return js_null()
+        if _tv_filter(tv, n) == 1:
+            return js_null()
+    return js_null()
+
+
+def _rng_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_CREATERANGE or rel == NID_RNG_CTOR:
+        return _rng_new()
+    if rel == NID_STATICRANGE_CTOR:
+        sr: int32 = js_new_object_v()
+        if js_arg_count() >= 1 and js_type_of(js_arg(0)) == TAG_OBJ:
+            init: int32 = js_arg(0)
+            js_set_prop(sr, cast[Ptr[uint8]]("startContainer"), 14, \
+                        js_get_prop(init, cast[Ptr[uint8]]("startContainer"), 14))
+            js_set_prop(sr, cast[Ptr[uint8]]("startOffset"), 11, \
+                        js_get_prop(init, cast[Ptr[uint8]]("startOffset"), 11))
+            js_set_prop(sr, cast[Ptr[uint8]]("endContainer"), 12, \
+                        js_get_prop(init, cast[Ptr[uint8]]("endContainer"), 12))
+            js_set_prop(sr, cast[Ptr[uint8]]("endOffset"), 9, \
+                        js_get_prop(init, cast[Ptr[uint8]]("endOffset"), 9))
+        return sr
+    if rel == NID_CREATETW or rel == NID_CREATENI:
+        tv: int32 = js_new_object_v()
+        rootv: int32 = js_null()
+        if js_arg_count() >= 1:
+            rootv = js_arg(0)
+        showv: int32 = -1
+        if js_arg_count() >= 2:
+            showv = cast[int32](js_to_number(js_arg(1)))
+        filtv: int32 = js_null()
+        if js_arg_count() >= 3:
+            filtv = js_arg(2)
+        js_set_prop(tv, cast[Ptr[uint8]]("root"), 4, rootv)
+        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, \
+                    js_number(cast[float64](showv)))
+        js_set_prop(tv, cast[Ptr[uint8]]("filter"), 6, filtv)
+        if rel == NID_CREATETW:
+            js_set_prop(tv, cast[Ptr[uint8]]("currentNode"), 11, rootv)
+            if g_proto_tw != 0:
+                js_set_proto_v(tv, g_proto_tw)
+        else:
+            js_set_prop(tv, cast[Ptr[uint8]]("referenceNode"), 13, rootv)
+            js_set_prop(tv, cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26, \
+                        js_bool(1))
+            if g_proto_ni != 0:
+                js_set_proto_v(tv, g_proto_ni)
+        return tv
+    # ---- Range instance methods ----
+    if rel >= NID_RNG_SETSTART and rel <= NID_RNG_CAC:
+        return _rng_method(rel, thisv)
+    # ---- TreeWalker ----
+    if rel == NID_TW_PARENT:
+        cur: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        n: int32 = _nd_parent(cur)
+        d: int32 = 0
+        while d < 256 and js_type_of(n) == TAG_OBJ:
+            if _tv_filter(thisv, n) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, n)
+                return n
+            if n == _tv_root(thisv):
+                return js_null()
+            n = _nd_parent(n)
+            d = d + 1
+        return js_null()
+    if rel == NID_TW_FIRSTCHILD:
+        return _tw_traverse_children(thisv, 1)
+    if rel == NID_TW_LASTCHILD:
+        return _tw_traverse_children(thisv, 0)
+    if rel == NID_TW_NEXTSIB:
+        return _tw_traverse_siblings(thisv, 1)
+    if rel == NID_TW_PREVSIB:
+        return _tw_traverse_siblings(thisv, -1)
+    if rel == NID_TW_NEXTNODE:
+        cur2: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        s2: int32 = 0
+        while s2 < 4096 and js_type_of(cur2) == TAG_OBJ:
+            s2 = s2 + 1
+            nx: int32 = _tv_next_within(cur2, _tv_root(thisv))
+            if js_type_of(nx) != TAG_OBJ:
+                return js_null()
+            cur2 = nx
+            if _tv_filter(thisv, cur2) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, cur2)
+                return cur2
+        return js_null()
+    if rel == NID_TW_PREVNODE:
+        cur3: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("currentNode"), 11)
+        s3: int32 = 0
+        while s3 < 4096 and js_type_of(cur3) == TAG_OBJ:
+            s3 = s3 + 1
+            pv: int32 = _tv_prev_within(cur3, _tv_root(thisv))
+            if js_type_of(pv) != TAG_OBJ:
+                return js_null()
+            cur3 = pv
+            if _tv_filter(thisv, cur3) == 1:
+                js_set_own(thisv, cast[Ptr[uint8]]("currentNode"), 11, cur3)
+                return cur3
+        return js_null()
+    if rel == NID_NI_DETACH:
+        return js_undefined()
+    # ---- NodeIterator next/previous ----
+    fwd: int32 = 0
+    if rel == NID_NI_NEXTNODE:
+        fwd = 1
+    ref: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("referenceNode"), 13)
+    before: int32 = js_to_bool(js_get_prop(thisv, \
+                    cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26))
+    s4: int32 = 0
+    while s4 < 8192 and js_type_of(ref) == TAG_OBJ:
+        s4 = s4 + 1
+        if fwd != 0:
+            if before != 0:
+                before = 0
+            else:
+                ref = _tv_next_within(ref, _tv_root(thisv))
+                if js_type_of(ref) != TAG_OBJ:
+                    return js_null()
+        else:
+            if before == 0:
+                before = 1
+            else:
+                ref = _tv_prev_within(ref, _tv_root(thisv))
+                if js_type_of(ref) != TAG_OBJ:
+                    return js_null()
+        if _tv_filter(thisv, ref) == 1:
+            js_set_own(thisv, cast[Ptr[uint8]]("referenceNode"), 13, ref)
+            js_set_own(thisv, cast[Ptr[uint8]]("pointerBeforeReferenceNode"), 26, \
+                       js_bool(before))
+            return ref
+    return js_null()
+
+
+# Pre-order successor of `n` that stays inside `root`.
+def _tv_next_within(n: int32, root: int32) -> int32:
+    c: int32 = _tv_first_child(n)
+    if js_type_of(c) == TAG_OBJ:
+        return c
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        if cur == root:
+            return js_null()
+        sib: int32 = _tv_sibling(cur, 1)
+        if js_type_of(sib) == TAG_OBJ:
+            return sib
+        cur = _nd_parent(cur)
+        d = d + 1
+    return js_null()
+
+
+# Pre-order predecessor of `n` that stays inside `root`.
+def _tv_prev_within(n: int32, root: int32) -> int32:
+    if n == root:
+        return js_null()
+    sib: int32 = _tv_sibling(n, -1)
+    if js_type_of(sib) != TAG_OBJ:
+        p: int32 = _nd_parent(n)
+        if js_type_of(p) != TAG_OBJ:
+            return js_null()
+        return p
+    d: int32 = 0
+    while d < 256:
+        last: int32 = _tv_last_child(sib)
+        if js_type_of(last) != TAG_OBJ:
+            return sib
+        sib = last
+        d = d + 1
+    return sib
+
+
+def _rng_method(rel: int32, r: int32) -> int32:
+    a0: int32 = js_null()
+    if js_arg_count() >= 1:
+        a0 = js_arg(0)
+    if rel == NID_RNG_COLLAPSED:
+        sc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        ec: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+        if sc == ec and _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11) == \
+           _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9):
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_RNG_RO_SET:
+        return js_undefined()
+    if rel == NID_RNG_CAC:
+        sc2: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        ec2: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+        cur: int32 = sc2
+        d: int32 = 0
+        while d < 256 and js_type_of(cur) == TAG_OBJ:
+            if _nd_is_ancestor(cur, ec2) != 0:
+                return cur
+            cur = _nd_parent(cur)
+            d = d + 1
+        return sc2
+    if rel == NID_RNG_DETACH:
+        return js_undefined()
+    if rel == NID_RNG_TOSTRING:
+        return _rng_stringify(r)
+    if rel == NID_RNG_CLONERANGE:
+        c2: int32 = _rng_new()
+        js_set_own(c2, cast[Ptr[uint8]]("startContainer"), 14, \
+                   _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14))
+        js_set_own(c2, cast[Ptr[uint8]]("startOffset"), 11, \
+                   _rng_get(r, cast[Ptr[uint8]]("startOffset"), 11))
+        js_set_own(c2, cast[Ptr[uint8]]("endContainer"), 12, \
+                   _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12))
+        js_set_own(c2, cast[Ptr[uint8]]("endOffset"), 9, \
+                   _rng_get(r, cast[Ptr[uint8]]("endOffset"), 9))
+        return c2
+    if rel == NID_RNG_COLLAPSE:
+        tostart: int32 = 0
+        if js_arg_count() >= 1 and js_to_bool(a0) != 0:
+            tostart = 1
+        if tostart != 0:
+            js_set_own(r, cast[Ptr[uint8]]("endContainer"), 12, \
+                       _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14))
+            js_set_own(r, cast[Ptr[uint8]]("endOffset"), 9, \
+                       _rng_get(r, cast[Ptr[uint8]]("startOffset"), 11))
+        else:
+            js_set_own(r, cast[Ptr[uint8]]("startContainer"), 14, \
+                       _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12))
+            js_set_own(r, cast[Ptr[uint8]]("startOffset"), 11, \
+                       _rng_get(r, cast[Ptr[uint8]]("endOffset"), 9))
+        return js_undefined()
+    if js_type_of(a0) != TAG_OBJ:
+        return js_undefined()
+    if rel == NID_RNG_SETSTART or rel == NID_RNG_SETEND:
+        off: int32 = 0
+        if js_arg_count() >= 2:
+            off = cast[int32](js_to_number(js_arg(1)))
+        if off < 0 or off > _rng_node_len(a0):
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+        if rel == NID_RNG_SETSTART:
+            _rng_set_start(r, a0, off)
+        else:
+            _rng_set_end(r, a0, off)
+        return js_undefined()
+    if rel == NID_RNG_SELNODECONT:
+        _rng_set_start(r, a0, 0)
+        _rng_set_end(r, a0, _rng_node_len(a0))
+        return js_undefined()
+    par: int32 = _nd_parent(a0)
+    if js_type_of(par) != TAG_OBJ:
+        if rel == NID_RNG_INTERSECTS or rel == NID_RNG_ISPOINTIN:
+            return js_bool(0)
+        if rel == NID_RNG_COMPAREPOINT:
+            return js_number(0.0)
+        if rel == NID_RNG_SELNODE or rel == NID_RNG_SETSTARTBEF or \
+           rel == NID_RNG_SETSTARTAFT or rel == NID_RNG_SETENDBEF or \
+           rel == NID_RNG_SETENDAFT:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidNodeTypeError"), 20, \
+                                 cast[Ptr[uint8]]("node has no parent"), 18)
+    ix: int32 = _nd_child_index(par, a0)
+    if rel == NID_RNG_SELNODE:
+        _rng_set_start(r, par, ix)
+        _rng_set_end(r, par, ix + 1)
+        return js_undefined()
+    if rel == NID_RNG_SETSTARTBEF:
+        _rng_set_start(r, par, ix)
+        return js_undefined()
+    if rel == NID_RNG_SETSTARTAFT:
+        _rng_set_start(r, par, ix + 1)
+        return js_undefined()
+    if rel == NID_RNG_SETENDBEF:
+        _rng_set_end(r, par, ix)
+        return js_undefined()
+    if rel == NID_RNG_SETENDAFT:
+        _rng_set_end(r, par, ix + 1)
+        return js_undefined()
+    sc3: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+    so3: int32 = _rng_off(r, cast[Ptr[uint8]]("startOffset"), 11)
+    ec3: int32 = _rng_get(r, cast[Ptr[uint8]]("endContainer"), 12)
+    eo3: int32 = _rng_off(r, cast[Ptr[uint8]]("endOffset"), 9)
+    if rel == NID_RNG_INTERSECTS:
+        if _rng_cmp_bp(par, ix, ec3, eo3) < 0 and \
+           _rng_cmp_bp(par, ix + 1, sc3, so3) > 0:
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_RNG_COMPAREPOINT or rel == NID_RNG_ISPOINTIN:
+        poff: int32 = 0
+        if js_arg_count() >= 2:
+            poff = cast[int32](js_to_number(js_arg(1)))
+        cs: int32 = _rng_cmp_bp(a0, poff, sc3, so3)
+        ce: int32 = _rng_cmp_bp(a0, poff, ec3, eo3)
+        if rel == NID_RNG_ISPOINTIN:
+            if cs >= 0 and ce <= 0:
+                return js_bool(1)
+            return js_bool(0)
+        if cs < 0:
+            return js_number(-1.0)
+        if ce > 0:
+            return js_number(1.0)
+        return js_number(0.0)
+    if rel == NID_RNG_COMPAREBP:
+        how: int32 = 0
+        if js_arg_count() >= 1:
+            how = cast[int32](js_to_number(js_arg(0)))
+        other: int32 = js_null()
+        if js_arg_count() >= 2:
+            other = js_arg(1)
+        if js_type_of(other) != TAG_OBJ:
+            return js_number(0.0)
+        na: int32 = sc3
+        oa: int32 = so3
+        nb: int32 = _rng_get(other, cast[Ptr[uint8]]("startContainer"), 14)
+        ob: int32 = _rng_off(other, cast[Ptr[uint8]]("startOffset"), 11)
+        if how == 1 or how == 3:                           # START_TO_END/END_TO_END
+            na = ec3
+            oa = eo3
+        if how == 1 or how == 2:                           # START_TO_END/END_TO_START
+            nb = _rng_get(other, cast[Ptr[uint8]]("endContainer"), 12)
+            ob = _rng_off(other, cast[Ptr[uint8]]("endOffset"), 9)
+        return js_number(cast[float64](_rng_cmp_bp(na, oa, nb, ob)))
+    if rel == NID_RNG_INSERTNODE:
+        _insert_before_v(sc3, a0, _rng_child_at(sc3, so3))
+        return js_undefined()
+    # NID_RNG_DELETECONT
+    if sc3 == ec3 and _nd_type(sc3) == 3:
+        _cd_splice(sc3, so3, eo3 - so3, js_new_string(cast[Ptr[uint8]](""), 0))
+        return js_undefined()
+    return js_undefined()
+
+
+def _rng_child_at(n: int32, i: int32) -> int32:
+    ks: int32 = _nd_kids(n)
+    if ks == 0 or i < 0 or i >= js_array_len(ks):
+        return js_null()
+    return js_array_get(ks, i)
+
+
+def _child_parent_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_PN_PREPEND or rel == NID_PN_REPLKIDS:
+        if rel == NID_PN_REPLKIDS:
+            # replaceChildren: drop every existing child first, then append.
+            ks: int32 = _nd_kids(thisv)
+            if ks != 0:
+                snap: int32 = js_new_array_v()
+                i2: int32 = 0
+                kn: int32 = js_array_len(ks)
+                while i2 < kn:
+                    js_array_push(snap, js_array_get(ks, i2))
+                    i2 = i2 + 1
+                i2 = 0
+                while i2 < kn:
+                    _remove_child_v(thisv, js_array_get(snap, i2))
+                    i2 = i2 + 1
+            _nd_insert_nodes(thisv, js_null(), 0)
+            return js_undefined()
+        first: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("firstChild"), 10)
+        if js_type_of(first) != TAG_OBJ:
+            first = js_null()
+        _nd_insert_nodes(thisv, first, 0)
+        return js_undefined()
+    # ChildNode: all three need a parent; with none they are a spec no-op.
+    par: int32 = _nd_parent(thisv)
+    if js_type_of(par) != TAG_OBJ:
+        return js_undefined()
+    # The "viable sibling" step. before/after/replaceWith do NOT insert next to
+    # `this`: they insert next to the first sibling that is NOT itself one of
+    # the arguments, computed BEFORE the arguments are unlinked. Skipping it
+    # reversed the result whenever a page passed existing siblings back in
+    # (`child.after(x, y)` where x is already child.nextSibling produced
+    # "<y><z><x>" instead of leaving the tree alone).
+    kids: int32 = _nd_kids(par)
+    idx: int32 = _nd_child_index(par, thisv)
+    vs: int32 = js_null()
+    if kids != 0 and idx >= 0:
+        kn2: int32 = js_array_len(kids)
+        if rel == NID_CN_AFTER:
+            k2: int32 = idx + 1
+            while k2 < kn2:
+                if _nd_arg_is(js_array_get(kids, k2)) == 0:
+                    vs = js_array_get(kids, k2)
+                    k2 = kn2
+                else:
+                    k2 = k2 + 1
+        else:
+            k3: int32 = idx - 1
+            while k3 >= 0:
+                if _nd_arg_is(js_array_get(kids, k3)) == 0:
+                    vs = js_array_get(kids, k3)
+                    k3 = -1
+                else:
+                    k3 = k3 - 1
+    # Unlink every node argument now (the spec turns them into one fragment,
+    # which removes them), so the reference below is resolved against the tree
+    # as it will actually be at insertion time.
+    ai: int32 = 0
+    an2: int32 = js_arg_count()
+    while ai < an2:
+        if js_type_of(js_arg(ai)) == TAG_OBJ and _nd_type(js_arg(ai)) != 0:
+            _detach_from_parent_v(js_arg(ai))
+        ai = ai + 1
+    if rel == NID_CN_REPLWITH:
+        _remove_child_v(par, thisv)
+    ref: int32 = js_null()
+    if rel == NID_CN_AFTER:
+        ref = vs
+    elif js_type_of(vs) != TAG_OBJ:
+        # no viable previous sibling: insert at the front
+        kids2: int32 = _nd_kids(par)
+        if kids2 != 0 and js_array_len(kids2) > 0:
+            ref = js_array_get(kids2, 0)
+    else:
+        kids3: int32 = _nd_kids(par)
+        vi: int32 = _nd_child_index(par, vs)
+        if kids3 != 0 and vi >= 0 and vi + 1 < js_array_len(kids3):
+            ref = js_array_get(kids3, vi + 1)
+    _nd_insert_nodes(par, ref, 0)
+    return js_undefined()
+
+
+def _node_generic_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_HASKIDS:
+        ks: int32 = _nd_kids(thisv)
+        if ks == 0:
+            return js_bool(0)
+        if js_array_len(ks) > 0:
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_ISSAME:
+        if js_arg_count() < 1:
+            return js_bool(0)
+        if thisv == js_arg(0):
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_GETROOTNODE:
+        return _nd_root(thisv)
+    if rel == NID_NORMALIZE:
+        _nd_normalize(thisv, 0)
+        return js_undefined()
+    if rel == NID_ISEQUAL:
+        if js_arg_count() < 1:
+            return js_bool(0)
+        return js_bool(_nd_is_equal(thisv, js_arg(0), 0))
+    if rel == NID_CMPDOCPOS:
+        if js_arg_count() < 1:
+            return js_number(0.0)
+        return js_number(cast[float64](_nd_compare_pos(thisv, js_arg(0))))
+    if rel == NID_LOOKUPNSURI:
+        isn: int32 = _nd_read_arg0()
+        return _nd_lookup_ns(thisv, isn, 0)
+    if rel == NID_LOOKUPPREFIX:
+        if _nd_read_arg0() != 0:
+            return js_null()
+        return _nd_lookup_prefix(thisv, 0)
+    # NID_ISDEFAULTNS: isDefaultNamespace(ns) is lookupNamespaceURI(null) == ns,
+    # with "" folded to null on both sides.
+    wantnull: int32 = _nd_read_arg0()
+    got: int32 = _nd_lookup_ns(thisv, 1, 0)
+    if wantnull != 0:
+        if _nd_str_empty(got) != 0:
+            return js_bool(1)
+        return js_bool(0)
+    if _nd_str_eq(got, &ndg_pfx[0], ndg_pfxn) != 0:
+        return js_bool(1)
+    return js_bool(0)
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
+    if rel >= NID_HASKIDS and rel <= NID_ISDEFAULTNS:
+        return _node_generic_dispatch(rel)
+    if (rel >= NID_CN_BEFORE and rel <= NID_PN_PREPEND) or rel == NID_PN_REPLKIDS:
+        if _mutation_touches_source() != 0:
+            g_dom_mutated = 1
+            g_dom_gen = g_dom_gen + 1
+        return _child_parent_dispatch(rel)
     if _nid_mutates(rel) != 0 and _mutation_touches_source() != 0:
         g_dom_mutated = 1
         g_dom_gen = g_dom_gen + 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
+    if rel >= NID_CREATERANGE and rel <= NID_NI_DETACH:
+        return _rng_dispatch(rel)
+    if rel >= NID_CD_DATA_GET and rel <= NID_TEXT_SPLIT:
+        return _chardata_dispatch(rel)
+    if rel == NID_TEXT_CTOR or rel == NID_COMMENT_CTOR:
+        cdv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            cdv = _cd_arg_str(0)
+        if rel == NID_TEXT_CTOR:
+            return _cre_make_text(cdv)
+        return _cre_make_chardata(cdv, 2, js_undefined())
+    if rel == NID_CREATEPI:
+        return _mount_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
         return _mount_dispatch(rel)
     if rel == NID_COOKIE_GET:
@@ -3533,6 +5172,20 @@ def _js_host_dispatch(id: int32) -> int32:
         clo: int32 = js_new_object_v()
         js_set_prop(clo, cast[Ptr[uint8]]("tagName"), 7, \
                     _tagname_upper(&dom_idbuf[cre_tag_off[clid]], tagl))
+        # The node-identity trio. A clone used to carry NO nodeType at all,
+        # which is invisible until something asks: `empty.appendChild(
+        # validInput.cloneNode())` in html/semantics/selectors/pseudo-classes/
+        # valid-invalid.html now reaches the pre-insertion validity check, and a
+        # node with no nodeType is "not insertable".
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeType"), 8, js_number(1.0))
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeName"), 8, \
+                    _tagname_upper(&dom_idbuf[cre_tag_off[clid]], tagl))
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+        js_set_prop(clo, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                    js_get_prop(base, cast[Ptr[uint8]]("namespaceURI"), 12))
+        _clo_kids: int32 = js_new_array_v()
+        js_set_prop(clo, cast[Ptr[uint8]]("children"), 8, _clo_kids)
+        js_set_prop(clo, cast[Ptr[uint8]]("childNodes"), 10, _clo_kids)
         js_set_prop(clo, cast[Ptr[uint8]]("id"), 2, \
                     js_get_prop(base, cast[Ptr[uint8]]("id"), 2))
         js_set_prop(clo, cast[Ptr[uint8]]("className"), 9, \
@@ -3686,15 +5339,14 @@ def _js_host_dispatch(id: int32) -> int32:
         tval: int32 = js_new_string(&dom_txtbuf[0], 0)
         if js_arg_count() >= 1:
             tval = js_arg(0)
-        js_set_prop(tco, cast[Ptr[uint8]]("textContent"), 11, tval)
-        # a text node: nodeType 3 (TEXT_NODE), nodeName "#text", nodeValue == data.
+        # a text node: nodeType 3 (TEXT_NODE), nodeName "#text". data /
+        # nodeValue / textContent / length all read this one backing field
+        # through CharacterData.prototype's accessors — which is what makes
+        # React's `u.stateNode.nodeValue = …` visible through `.data`.
         js_set_prop(tco, cast[Ptr[uint8]]("nodeType"), 8, js_number(cast[float64](3)))
         js_set_prop(tco, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
-        js_set_prop(tco, cast[Ptr[uint8]]("nodeValue"), 9, tval)
-        # `data` is the CharacterData alias React writes when it updates a text
-        # host (`u.stateNode.nodeValue = …` reads back through .data).
-        js_set_prop(tco, cast[Ptr[uint8]]("data"), 4, tval)
+        js_set_prop(tco, cast[Ptr[uint8]]("__cd"), 4, tval)
         _node_identity(tco, g_proto_text)
         cre_obj[tcid] = tco
         cre_n = tcid + 1
@@ -3912,6 +5564,9 @@ def _js_host_dispatch(id: int32) -> int32:
         # A DocumentFragment argument is not itself inserted: per spec its
         # CHILDREN move into the parent and the fragment is left empty. Frameworks
         # build an offscreen subtree in a fragment and commit it with one append.
+        if js_arg_count() >= 1 and \
+           _pre_insert_invalid(js_this(), js_arg(0), js_null()) != 0:
+            return js_undefined()
         if js_arg_count() >= 1 and _is_fragment(js_arg(0)) != 0:
             fkids: int32 = js_get_prop(js_arg(0), cast[Ptr[uint8]]("children"), 8)
             fn2: int32 = 0
@@ -3999,42 +5654,12 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_INSBEF:
         # parent.insertBefore(newNode, refNode) — refNode null => append.
         if js_arg_count() >= 1:
-            nch: int32 = _find_cre_by_obj(js_arg(0))
-            if nch >= 0:
-                cre_gone[nch] = 0
-                rch: int32 = -1
-                if js_arg_count() >= 2:
-                    rch = _find_cre_by_obj(js_arg(1))
-                refv: int32 = js_null()
-                if js_arg_count() >= 2:
-                    refv = js_arg(1)
-                par2: int32 = _find_el_by_obj(js_this())
-                if par2 >= 0:
-                    at: int32 = -1
-                    if rch >= 0:
-                        at = _ap_find(par2, rch)
-                    _ap_add(par2, nch, at)
-                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                dom_obj[par2])
-                    js_set_prop(js_arg(0), \
-                                cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par2])
-                    _dom_children_insert(js_this(), js_arg(0), refv)
-                else:
-                    pcid2: int32 = _find_cre_by_obj(js_this())
-                    if pcid2 >= 0:
-                        at2: int32 = -1
-                        if rch >= 0:
-                            at2 = _cc_find(pcid2, rch)
-                        _cc_add(pcid2, nch, at2)
-                        js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                    js_this())
-                        js_set_prop(js_arg(0), \
-                                    cast[Ptr[uint8]]("parentElement"), 13, js_this())
-                        _dom_children_insert(js_this(), js_arg(0), refv)
-        if js_arg_count() >= 1:
-            _wire_sibling_links(js_get_prop(js_this(), \
-                                cast[Ptr[uint8]]("children"), 8), js_this())
-            _mo_record_childlist(js_this(), js_arg(0), -1)
+            refv: int32 = js_null()
+            if js_arg_count() >= 2:
+                refv = js_arg(1)
+            if _pre_insert_invalid(js_this(), js_arg(0), refv) != 0:
+                return js_undefined()
+            _insert_before_v(js_this(), js_arg(0), refv)
         return js_arg(0)
     if rel == NID_REMCHILD:
         # parent.removeChild(child) — detach the child. Created nodes flip
@@ -4068,6 +5693,8 @@ def _js_host_dispatch(id: int32) -> int32:
         # position, detach oldNode. Returns oldNode (spec). Both must be created
         # nodes (the same constraint appendChild/insertBefore already carry).
         if js_arg_count() >= 2:
+            if _pre_insert_invalid(js_this(), js_arg(0), js_arg(1)) != 0:
+                return js_undefined()
             rnew: int32 = _find_cre_by_obj(js_arg(0))
             rold: int32 = _find_cre_by_obj(js_arg(1))
             if rnew >= 0 and rold >= 0:
@@ -4917,8 +6544,7 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeType"), 8, js_number(3.0))
         js_set_prop(tnode, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#text"), 5))
-        js_set_prop(tnode, cast[Ptr[uint8]]("data"), 4, titlev)
-        js_set_prop(tnode, cast[Ptr[uint8]]("nodeValue"), 9, titlev)
+        js_set_prop(tnode, cast[Ptr[uint8]]("__cd"), 4, titlev)
         js_set_prop(tnode, cast[Ptr[uint8]]("textContent"), 11, titlev)
         _bare_append(titleel, tnode)
         _bare_append(headel, titleel)
@@ -4969,6 +6595,14 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(d, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(d, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
+    js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
@@ -5097,6 +6731,23 @@ def _validate_qname(qp: Ptr[uint8], qn: int32, nsp: Ptr[uint8], nsn: int32) -> i
     if xmlns_ns != 0 and pfx_xmlns == 0 and is_xmlns_q == 0:
         return 2
     return 0
+
+
+pi_tbuf: Array[256, uint8]           # createProcessingInstruction target
+
+
+# Is p[0..n) a legal XML Name (the ProcessingInstruction target production)?
+def _validate_pi_target(p: Ptr[uint8], n: int32) -> int32:
+    if n <= 0:
+        return 0
+    if _xml_name_start(p[0]) == 0:
+        return 0
+    i: int32 = 1
+    while i < n:
+        if _xml_name_char(p[i]) == 0:
+            return 0
+        i = i + 1
+    return 1
 
 
 def _throw_qname(code: int32) -> int32:
@@ -5268,6 +6919,14 @@ def _impl_dispatch(rel: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CTEXT))
     js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(d, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(d, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
+    js_set_prop(d, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
@@ -5548,6 +7207,43 @@ def _brand_by_tag(o: int32):
     if ii >= 0 and g_iface_proto[ii] != 0:
         js_set_proto_v(o, g_iface_proto[ii])
 
+# Swap a DOM interface object's backing native for a real constructor, keeping
+# the prototype identity _dom_interface already established (so
+# `x instanceof Text` and `Text.prototype` both keep working).
+# The NodeFilter namespace object: SHOW_* bit constants and the three
+# FILTER_* return codes. Scripts read them off the global, and the interface
+# object is also usable as `NodeFilter.SHOW_ELEMENT` inside a filter callback.
+def _build_nodefilter():
+    nf: int32 = js_new_object_v()
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_ACCEPT"), 13, js_number(1.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_REJECT"), 13, js_number(2.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("FILTER_SKIP"), 11, js_number(3.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ALL"), 8, js_number(4294967295.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ELEMENT"), 12, js_number(1.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ATTRIBUTE"), 14, js_number(2.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_TEXT"), 9, js_number(4.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_CDATA_SECTION"), 18, js_number(8.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ENTITY_REFERENCE"), 21, js_number(16.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_ENTITY"), 11, js_number(32.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_PROCESSING_INSTRUCTION"), 27, \
+                js_number(64.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_COMMENT"), 12, js_number(128.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT"), 13, js_number(256.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT_TYPE"), 18, js_number(512.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_DOCUMENT_FRAGMENT"), 22, \
+                js_number(1024.0))
+    js_set_prop(nf, cast[Ptr[uint8]]("SHOW_NOTATION"), 13, js_number(2048.0))
+    js_global_set(cast[Ptr[uint8]]("NodeFilter"), 10, nf)
+    g_nodefilter = nf
+
+
+def _rebrand_ctor(proto: int32, nid: int32) -> int32:
+    c: int32 = js_new_native_fn(js_hbase + nid)
+    js_set_fn_prototype(c, proto)
+    js_set_prop(proto, cast[Ptr[uint8]]("constructor"), 11, c)
+    return c
+
+
 def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32:
     ctor: int32 = js_new_native_fn(js_hbase + NID_NODE_CTOR)
     js_global_set(name, nlen, ctor)
@@ -5600,6 +7296,11 @@ def _build_dom_interfaces():
     nodector: int32 = js_global_get(cast[Ptr[uint8]]("Node"), 4)
     _node_constants(nodector)
     _node_constants(g_proto_node)
+    # EventTarget + Node methods live HERE, so Text / Comment / Document /
+    # DocumentFragment / DocumentType / Attr inherit appendChild / cloneNode /
+    # normalize / isEqualNode / lookupNamespaceURI instead of reporting them
+    # `undefined` (94 WPT subtests were failing on the missing-method TypeError).
+    _attach_node_natives(g_proto_node)
     g_proto_elem = _dom_interface(cast[Ptr[uint8]]("Element"), 7, g_proto_node)
     # HTMLElement inherits Element; elements are branded with the HTMLElement
     # prototype so `el instanceof HTMLElement`, `instanceof Element` and
@@ -5659,17 +7360,52 @@ def _build_dom_interfaces():
     # here (not on the element interfaces, whose per-tag class we do not model).
     js_tag_object(g_proto_clslist, cast[Ptr[uint8]]("DOMTokenList"))
     js_tag_object(g_proto_style, cast[Ptr[uint8]]("CSSStyleDeclaration"))
+    _attach_childnode_mixin(g_proto_elem)
+    _attach_parentnode_mixin(g_proto_elem)
     chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
+    _attach_childnode_mixin(chard)
+    _attach_chardata_natives(chard)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
+    js_set_prop(g_proto_text, cast[Ptr[uint8]]("splitText"), 9, \
+                js_new_native_fn(js_hbase + NID_TEXT_SPLIT))
+    # `new Text(data)` / `new Comment(data)` — the interface objects _dom_interface
+    # minted are generic NID_NODE_CTOR stubs, which threw "value is not a
+    # constructor"; point them at real factories instead.
+    js_global_set(cast[Ptr[uint8]]("Text"), 4, \
+                  _rebrand_ctor(g_proto_text, NID_TEXT_CTOR))
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
+    js_global_set(cast[Ptr[uint8]]("Comment"), 7, \
+                  _rebrand_ctor(g_proto_comm, NID_COMMENT_CTOR))
+    g_proto_pi = _dom_interface(cast[Ptr[uint8]]("ProcessingInstruction"), 21, \
+                                chard)
+    _attach_childnode_mixin(g_proto_pi)
     g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
                                   g_proto_node)
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
     _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
     _dom_interface(cast[Ptr[uint8]]("XMLDocument"), 11, g_proto_doc)
+    _attach_parentnode_mixin(g_proto_frag)
+    _attach_parentnode_mixin(g_proto_doc)
     g_proto_doctype = _dom_interface(cast[Ptr[uint8]]("DocumentType"), 12, \
                                      g_proto_node)
+    _attach_childnode_mixin(g_proto_doctype)
     g_proto_attr = _dom_interface(cast[Ptr[uint8]]("Attr"), 4, g_proto_node)
+    # Range / StaticRange / TreeWalker / NodeIterator / NodeFilter.
+    g_proto_range = _dom_interface(cast[Ptr[uint8]]("Range"), 5, 0)
+    js_global_set(cast[Ptr[uint8]]("Range"), 5, \
+                  _rebrand_ctor(g_proto_range, NID_RNG_CTOR))
+    _attach_range_natives(g_proto_range)
+    js_tag_object(g_proto_range, cast[Ptr[uint8]]("Range"))
+    sproto: int32 = _dom_interface(cast[Ptr[uint8]]("StaticRange"), 11, 0)
+    js_global_set(cast[Ptr[uint8]]("StaticRange"), 11, \
+                  _rebrand_ctor(sproto, NID_STATICRANGE_CTOR))
+    g_proto_tw = _dom_interface(cast[Ptr[uint8]]("TreeWalker"), 10, 0)
+    _attach_tw_natives(g_proto_tw)
+    js_tag_object(g_proto_tw, cast[Ptr[uint8]]("TreeWalker"))
+    g_proto_ni = _dom_interface(cast[Ptr[uint8]]("NodeIterator"), 12, 0)
+    _attach_ni_natives(g_proto_ni)
+    js_tag_object(g_proto_ni, cast[Ptr[uint8]]("NodeIterator"))
+    _build_nodefilter()
     g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
     g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
     js_tag_object(g_proto_doctype, cast[Ptr[uint8]]("DocumentType"))
@@ -5896,6 +7632,14 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_CREATE_NS))
     js_set_prop(doc, cast[Ptr[uint8]]("createComment"), 13, \
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(doc, cast[Ptr[uint8]]("createRange"), 11, \
+                js_new_native_fn(js_hbase + NID_CREATERANGE))
+    js_set_prop(doc, cast[Ptr[uint8]]("createTreeWalker"), 16, \
+                js_new_native_fn(js_hbase + NID_CREATETW))
+    js_set_prop(doc, cast[Ptr[uint8]]("createNodeIterator"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATENI))
+    js_set_prop(doc, cast[Ptr[uint8]]("createProcessingInstruction"), 27, \
+                js_new_native_fn(js_hbase + NID_CREATEPI))
     js_set_prop(doc, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
     # A document's ownerDocument is null (it IS the document) — code that walks
@@ -7009,6 +8753,20 @@ def _rw_dec(v: int32):
 
 
 # Emit escaped text (rewriting '<' and '&') from a JS string value.
+# Write a JS string to the rewrite buffer with NO markup escaping. Comment and
+# processing-instruction data are serialised verbatim (chromium:
+# document.createComment("a<b").parentElement.innerHTML is "<!--a<b-->").
+def _rw_verbatim(v: int32):
+    p: Ptr[uint8] = js_str_ptr(v)
+    n: int32 = _cstr_len(p)
+    if _is_undef_str(p, n) != 0:
+        return
+    i: int32 = 0
+    while i < n:
+        _rw_ch(p[i])
+        i = i + 1
+
+
 def _rw_js_escaped(v: int32):
     p: Ptr[uint8] = js_str_ptr(v)
     n: int32 = _cstr_len(p)
@@ -7123,6 +8881,19 @@ def _emit_created(cid: int32):
     if cre_gone[cid] != 0:
         return
     co: int32 = cre_obj[cid]
+    if cre_is_text[cid] == 2:
+        # <!--data-->, verbatim: comment data is NOT escaped.
+        _rw_cstr(cast[Ptr[uint8]]("<!--"))
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("data"), 4))
+        _rw_cstr(cast[Ptr[uint8]]("-->"))
+        return
+    if cre_is_text[cid] == 3:
+        _rw_cstr(cast[Ptr[uint8]]("<?"))
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("target"), 6))
+        _rw_ch(32)
+        _rw_verbatim(js_get_prop(co, cast[Ptr[uint8]]("data"), 4))
+        _rw_cstr(cast[Ptr[uint8]]("?>"))
+        return
     if cre_is_text[cid] != 0:
         _rw_js_escaped(js_get_prop(co, cast[Ptr[uint8]]("textContent"), 11))
         return
@@ -7191,7 +8962,14 @@ def _emit_created(cid: int32):
         _rw_cstr(cast[Ptr[uint8]]("\">"))
     dom_ov_len = dom_ov_len_save                          # scratch reclaim
     # inner: innerHTML (raw) wins; else textContent (escaped) + nested children.
-    hv: int32 = js_get_prop(co, cast[Ptr[uint8]]("innerHTML"), 9)
+    # OWN property only. innerHTML is an ACCESSOR on HTMLElement.prototype that
+    # now serialises created subtrees (see _serialize_inner_cre), so a plain
+    # js_get_prop here would call back into this function and never return.
+    # An own innerHTML exists exactly when the page ASSIGNED one, which is the
+    # case this branch wants.
+    hv: int32 = js_undefined()
+    if js_has_own(co, cast[Ptr[uint8]]("innerHTML"), 9) != 0:
+        hv = js_get_prop(co, cast[Ptr[uint8]]("innerHTML"), 9)
     hp: Ptr[uint8] = js_str_ptr(hv)
     hn: int32 = _cstr_len(hp)
     if hn > 0 and _is_undef_str(hp, hn) == 0:
@@ -7495,6 +9273,35 @@ def _serialize_inner_of(idx: int32) -> int32:
     while a < ap_n:
         if ap_removed[a] == 0 and ap_parent[a] == idx:
             _emit_created(ap_child[a])
+        a = a + 1
+    v: int32 = js_new_string(&rw_buf[0], rw_len)
+    rw_len = save_rw
+    g_ser_mode = 0
+    he_click_links = save_links
+    return v
+
+
+# innerHTML of a CREATED element (createElement / cloneNode / innerHTML
+# fragment) — the ones with no source span. Until this existed, `innerHTML` on
+# anything a script built read back `undefined`, which is not a small gap: the
+# whole ChildNode-before/after/replaceWith and ParentNode-prepend/
+# replaceChildren family asserts on `parent.innerHTML` after building `parent`
+# with document.createElement, so 176 subtests could never pass no matter how
+# correct the mutation methods were.
+#
+# Reuses _emit_created in g_ser_mode (the DOM-serialisation mode that drops the
+# renderer's synthetic event-link wraps), exactly as _serialize_inner_of does
+# for source elements.
+def _serialize_inner_cre(cid: int32) -> int32:
+    save_links: int32 = he_click_links
+    save_rw: uint64 = rw_len
+    he_click_links = 0
+    g_ser_mode = 1
+    rw_len = 0
+    a: int32 = 0
+    while a < cc_n:
+        if cc_removed[a] == 0 and cc_owner[a] == cid:
+            _emit_created(cc_child[a])
         a = a + 1
     v: int32 = js_new_string(&rw_buf[0], rw_len)
     rw_len = save_rw

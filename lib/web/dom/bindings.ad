@@ -537,6 +537,58 @@ cs_buf:  Array[4194304, uint8]
 cs_done: int32 = 0
 
 
+# Does a <script> or <style> START TAG open at src_ptr[i] (which is '<')?
+def _cs_raw_open(i: uint64) -> int32:
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("script"), 6) != 0:
+        return 1
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("style"), 5) != 0:
+        return 1
+    return 0
+
+
+# Case-insensitive tag-name match at src_ptr[i..], followed by a tag-name
+# terminator (whitespace, '>' or '/').
+def _cs_word_at(i: uint64, w: Ptr[uint8], n: int32) -> int32:
+    k: int32 = 0
+    while k < n:
+        if i + cast[uint64](k) >= src_len:
+            return 0
+        c: uint8 = src_ptr[i + cast[uint64](k)]
+        if c >= 65 and c <= 90:
+            c = c + 32
+        if c != w[k]:
+            return 0
+        k = k + 1
+    if i + cast[uint64](n) >= src_len:
+        return 0
+    t: uint8 = src_ptr[i + cast[uint64](n)]
+    if t == 32 or t == 9 or t == 10 or t == 13 or t == 62 or t == 47:
+        return 1
+    return 0
+
+
+# End offset (exclusive) of the raw-text element opening at src_ptr[i],
+# INCLUDING its close tag. An unterminated one runs to end of source.
+def _cs_raw_close(i: uint64) -> uint64:
+    nm: Ptr[uint8] = cast[Ptr[uint8]]("script")
+    nl: int32 = 6
+    if _cs_word_at(i + 1, cast[Ptr[uint8]]("style"), 5) != 0:
+        nm = cast[Ptr[uint8]]("style")
+        nl = 5
+    j: uint64 = i + 1
+    while j < src_len:
+        if src_ptr[j] == 60 and j + 1 < src_len and src_ptr[j + 1] == 47 and \
+           _cs_word_at(j + 2, nm, nl) != 0:
+            k2: uint64 = j + 2 + cast[uint64](nl)
+            while k2 < src_len and src_ptr[k2] != 62:
+                k2 = k2 + 1
+            if k2 < src_len:
+                return k2 + 1
+            return src_len
+        j = j + 1
+    return src_len
+
+
 def _strip_comments():
     # Idempotent: safe to call again on an already-stripped buffer.
     if src_len == 0:
@@ -544,6 +596,20 @@ def _strip_comments():
     w: uint64 = 0
     i: uint64 = 0
     while i < src_len and w < CS_CAP - 1:
+        # <script> and <style> bodies are RAW TEXT: "<!--" inside them opens
+        # nothing. Stripping them anyway silently destroyed any JS string
+        # containing the sequence — MEASURED on dom/nodes/ChildNode-before.html,
+        # whose `test_before(document.createComment('test'), 'Comment',
+        # '<!--test-->')` had its third argument rewritten to "" before the
+        # parser ever saw it, so 15 subtests were comparing against the wrong
+        # expectation. Copy the whole element through untouched.
+        if src_ptr[i] == 60 and _cs_raw_open(i) != 0:
+            e: uint64 = _cs_raw_close(i)
+            while i < e and w < CS_CAP - 1:
+                cs_buf[w] = src_ptr[i]
+                w = w + 1
+                i = i + 1
+            continue
         # A comment opens with the exact 4-byte lead-in "<!--".
         if src_ptr[i] == 60 and i + 3 < src_len and \
            src_ptr[i + 1] == 33 and src_ptr[i + 2] == 45 and \
@@ -1102,7 +1168,84 @@ NID_CN_BEFORE:     int32 = 173       # node.before(...nodes)
 NID_CN_AFTER:      int32 = 174       # node.after(...nodes)
 NID_CN_REPLWITH:   int32 = 175       # node.replaceWith(...nodes)
 NID_PN_PREPEND:    int32 = 176       # parent.prepend(...nodes)
+NID_PN_REPLKIDS:   int32 = 187       # parent.replaceChildren(...nodes)
+NID_CREATEPI:      int32 = 188       # document.createProcessingInstruction(t,d)
+# --- CharacterData (Text / Comment / ProcessingInstruction) ------------------
+# data / nodeValue / textContent / length are ONE piece of state, exposed as
+# accessors on CharacterData.prototype (an own data property would shadow them
+# and let the four drift apart). Offsets are UTF-16 code units, as the DOM
+# specifies and as js_str_u16_len / js_str_sub_u16 model them.
+NID_CD_DATA_GET:   int32 = 189       # characterData.data / nodeValue / textContent
+NID_CD_DATA_SET:   int32 = 190
+NID_CD_LEN_GET:    int32 = 191       # characterData.length
+NID_CD_LEN_SET:    int32 = 192
+NID_CD_SUBSTR:     int32 = 193       # substringData(offset, count)
+NID_CD_APPENDD:    int32 = 194       # appendData(data)
+NID_CD_INSERTD:    int32 = 195       # insertData(offset, data)
+NID_CD_DELETED:    int32 = 196       # deleteData(offset, count)
+NID_CD_REPLACED:   int32 = 197       # replaceData(offset, count, data)
+NID_TEXT_SPLIT:    int32 = 198       # text.splitText(offset)
+NID_TEXT_CTOR:     int32 = 199       # new Text(data)
+NID_COMMENT_CTOR:  int32 = 200       # new Comment(data)
+# --- Range + Traversal -------------------------------------------------------
+# A contiguous block [201..230]; _js_host_dispatch delegates the whole span to
+# _rng_dispatch (canvas.ad). Boundary points live as own properties on the JS
+# object (startContainer/startOffset/endContainer/endOffset, and
+# root/whatToShow/filter/currentNode on the traversal objects), read back via
+# js_this() inside each method -- no parallel arrays. The DERIVED attributes
+# (collapsed, commonAncestorContainer) are accessors, because they must track
+# the boundary points rather than be snapshots.
+NID_CREATERANGE:      int32 = 201     # document.createRange() -> Range
+NID_RNG_CTOR:         int32 = 202     # new Range()
+NID_RNG_SETSTART:     int32 = 203     # range.setStart(node, offset)
+NID_RNG_SETEND:       int32 = 204     # range.setEnd(node, offset)
+NID_RNG_SETSTARTBEF:  int32 = 205     # range.setStartBefore(node)
+NID_RNG_SETSTARTAFT:  int32 = 206     # range.setStartAfter(node)
+NID_RNG_SETENDBEF:    int32 = 207     # range.setEndBefore(node)
+NID_RNG_SETENDAFT:    int32 = 208     # range.setEndAfter(node)
+NID_RNG_SELNODE:      int32 = 209     # range.selectNode(node)
+NID_RNG_SELNODECONT:  int32 = 210     # range.selectNodeContents(node)
+NID_RNG_COLLAPSE:     int32 = 211     # range.collapse(toStart)
+NID_RNG_CLONERANGE:   int32 = 212     # range.cloneRange()
+NID_RNG_COMPAREBP:    int32 = 213     # range.compareBoundaryPoints(how, other)
+NID_RNG_COMPAREPOINT: int32 = 214     # range.comparePoint(node, offset)
+NID_RNG_ISPOINTIN:    int32 = 215     # range.isPointInRange(node, offset)
+NID_RNG_INTERSECTS:   int32 = 216     # range.intersectsNode(node)
+NID_RNG_INSERTNODE:   int32 = 217     # range.insertNode(node)
+NID_RNG_DELETECONT:   int32 = 218     # range.deleteContents()
+NID_RNG_DETACH:       int32 = 219     # range.detach() (no-op per modern spec)
+NID_RNG_TOSTRING:     int32 = 220     # range.toString()
+NID_RNG_COLLAPSED:    int32 = 221     # range.collapsed getter
+NID_RNG_CAC:          int32 = 222     # range.commonAncestorContainer getter
+NID_RNG_RO_SET:       int32 = 223     # shared no-op setter for the two above
+NID_STATICRANGE_CTOR: int32 = 224     # new StaticRange(init)
+# TreeWalker / NodeIterator
+NID_CREATETW:         int32 = 225     # document.createTreeWalker(root, show, f)
+NID_CREATENI:         int32 = 226     # document.createNodeIterator(root, show, f)
+NID_TW_PARENT:        int32 = 227     # walker.parentNode()
+NID_TW_FIRSTCHILD:    int32 = 228     # walker.firstChild()
+NID_TW_LASTCHILD:     int32 = 229     # walker.lastChild()
+NID_TW_NEXTSIB:       int32 = 230     # walker.nextSibling()
+NID_TW_PREVSIB:       int32 = 231     # walker.previousSibling()
+NID_TW_NEXTNODE:      int32 = 232     # walker.nextNode()
+NID_TW_PREVNODE:      int32 = 233     # walker.previousNode()
+NID_NI_NEXTNODE:      int32 = 234     # iterator.nextNode()
+NID_NI_PREVNODE:      int32 = 235     # iterator.previousNode()
+NID_NI_DETACH:        int32 = 236     # iterator.detach() (no-op per modern spec)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
+# --- Node.prototype generics (round 10) --------------------------------------
+# Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
+# them, not just elements.
+NID_HASKIDS:       int32 = 178       # node.hasChildNodes()
+NID_NORMALIZE:     int32 = 179       # node.normalize()
+NID_ISEQUAL:       int32 = 180       # node.isEqualNode(other)
+NID_ISSAME:        int32 = 181       # node.isSameNode(other)
+NID_CMPDOCPOS:     int32 = 182       # node.compareDocumentPosition(other)
+NID_GETROOTNODE:   int32 = 183       # node.getRootNode()
+NID_LOOKUPNSURI:   int32 = 184       # node.lookupNamespaceURI(prefix)
+NID_LOOKUPPREFIX:  int32 = 185       # node.lookupPrefix(ns)
+NID_ISDEFAULTNS:   int32 = 186       # node.isDefaultNamespace(ns)
+#      (187 is NID_PN_REPLKIDS, declared with the rest of the ParentNode set)
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every
@@ -1172,6 +1315,11 @@ g_proto_doc:   int32 = 0             # Document.prototype
 g_proto_doctype: int32 = 0           # DocumentType.prototype
 g_proto_impl:  int32 = 0             # DOMImplementation.prototype
 g_proto_attr:  int32 = 0             # Attr.prototype
+g_proto_pi:    int32 = 0             # ProcessingInstruction.prototype
+g_proto_range: int32 = 0             # Range.prototype (createRange() links here)
+g_proto_tw:    int32 = 0             # TreeWalker.prototype
+g_proto_ni:    int32 = 0             # NodeIterator.prototype
+g_nodefilter:  int32 = 0             # the global NodeFilter constants object
 g_proto_nnm:   int32 = 0             # NamedNodeMap.prototype
 g_proto_html:  int32 = 0             # HTMLHtmlElement.prototype
 g_proto_head:  int32 = 0             # HTMLHeadElement.prototype
@@ -1273,6 +1421,11 @@ def _dom_reset():
     g_proto_doctype = 0
     g_proto_impl = 0
     g_proto_attr = 0
+    g_proto_pi = 0
+    g_proto_range = 0
+    g_proto_tw = 0
+    g_proto_ni = 0
+    g_nodefilter = 0
     g_proto_nnm = 0
     g_proto_html = 0
     g_proto_head = 0

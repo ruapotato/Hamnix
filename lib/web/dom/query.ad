@@ -1204,6 +1204,191 @@ def _attach_validity(o: int32):
     js_set_prop(o, cast[Ptr[uint8]]("willValidate"), 12, js_bool(1))
 
 
+# The EventTarget + Node half of the surface: methods every node type carries,
+# not just elements. These used to live only on HTMLElement.prototype, which is
+# why `text.appendChild`, `doc.cloneNode`, `comment.insertBefore` and friends
+# were `undefined` — MEASURED as 94 WPT subtests failing with
+# "assert_throws_dom: ... threw object TypeError: appendChild is not a function":
+# the tests were asking whether a CharacterData node REJECTS a child, and got a
+# missing-method TypeError instead of the HierarchyRequestError they wanted.
+#
+# Attached to Node.prototype so Text / Comment / Document / DocumentFragment /
+# DocumentType / Attr all inherit them, exactly as in a browser (Chromium:
+# `Object.getOwnPropertyNames(Node.prototype)` lists appendChild / cloneNode /
+# contains / normalize / isEqualNode / compareDocumentPosition, and
+# `text.appendChild === document.appendChild` is true).
+#
+# HTMLElement.prototype keeps its own copies (_attach_el_natives still installs
+# them) so nothing about element dispatch changes; the duplicate costs one
+# function object per PROTOTYPE, not per element.
+def _attach_node_natives(o: int32):
+    js_set_prop(o, cast[Ptr[uint8]]("addEventListener"), 16, \
+                js_new_native_fn(js_hbase + NID_ADDEVT))
+    js_set_prop(o, cast[Ptr[uint8]]("removeEventListener"), 19, \
+                js_new_native_fn(js_hbase + NID_REMEVT))
+    js_set_prop(o, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                js_new_native_fn(js_hbase + NID_DISPATCH))
+    js_set_prop(o, cast[Ptr[uint8]]("appendChild"), 11, \
+                js_new_native_fn(js_hbase + NID_APPEND))
+    js_set_prop(o, cast[Ptr[uint8]]("insertBefore"), 12, \
+                js_new_native_fn(js_hbase + NID_INSBEF))
+    js_set_prop(o, cast[Ptr[uint8]]("removeChild"), 11, \
+                js_new_native_fn(js_hbase + NID_REMCHILD))
+    js_set_prop(o, cast[Ptr[uint8]]("replaceChild"), 12, \
+                js_new_native_fn(js_hbase + NID_REPLCHILD))
+    js_set_prop(o, cast[Ptr[uint8]]("cloneNode"), 9, \
+                js_new_native_fn(js_hbase + NID_CLONE))
+    js_set_prop(o, cast[Ptr[uint8]]("contains"), 8, \
+                js_new_native_fn(js_hbase + NID_CONTAINS))
+    js_set_prop(o, cast[Ptr[uint8]]("hasChildNodes"), 13, \
+                js_new_native_fn(js_hbase + NID_HASKIDS))
+    js_set_prop(o, cast[Ptr[uint8]]("normalize"), 9, \
+                js_new_native_fn(js_hbase + NID_NORMALIZE))
+    js_set_prop(o, cast[Ptr[uint8]]("isEqualNode"), 11, \
+                js_new_native_fn(js_hbase + NID_ISEQUAL))
+    js_set_prop(o, cast[Ptr[uint8]]("isSameNode"), 10, \
+                js_new_native_fn(js_hbase + NID_ISSAME))
+    js_set_prop(o, cast[Ptr[uint8]]("compareDocumentPosition"), 23, \
+                js_new_native_fn(js_hbase + NID_CMPDOCPOS))
+    js_set_prop(o, cast[Ptr[uint8]]("getRootNode"), 11, \
+                js_new_native_fn(js_hbase + NID_GETROOTNODE))
+    js_set_prop(o, cast[Ptr[uint8]]("lookupNamespaceURI"), 18, \
+                js_new_native_fn(js_hbase + NID_LOOKUPNSURI))
+    js_set_prop(o, cast[Ptr[uint8]]("lookupPrefix"), 12, \
+                js_new_native_fn(js_hbase + NID_LOOKUPPREFIX))
+    js_set_prop(o, cast[Ptr[uint8]]("isDefaultNamespace"), 18, \
+                js_new_native_fn(js_hbase + NID_ISDEFAULTNS))
+
+
+# Range.prototype. collapsed and commonAncestorContainer are ACCESSORS, not
+# snapshots: they are derived from the boundary points and must track them as
+# setStart/setEnd move them.
+def _attach_range_natives(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("setStart"), 8, \
+                js_new_native_fn(js_hbase + NID_RNG_SETSTART))
+    js_set_prop(p, cast[Ptr[uint8]]("setEnd"), 6, \
+                js_new_native_fn(js_hbase + NID_RNG_SETEND))
+    js_set_prop(p, cast[Ptr[uint8]]("setStartBefore"), 14, \
+                js_new_native_fn(js_hbase + NID_RNG_SETSTARTBEF))
+    js_set_prop(p, cast[Ptr[uint8]]("setStartAfter"), 13, \
+                js_new_native_fn(js_hbase + NID_RNG_SETSTARTAFT))
+    js_set_prop(p, cast[Ptr[uint8]]("setEndBefore"), 12, \
+                js_new_native_fn(js_hbase + NID_RNG_SETENDBEF))
+    js_set_prop(p, cast[Ptr[uint8]]("setEndAfter"), 11, \
+                js_new_native_fn(js_hbase + NID_RNG_SETENDAFT))
+    js_set_prop(p, cast[Ptr[uint8]]("selectNode"), 10, \
+                js_new_native_fn(js_hbase + NID_RNG_SELNODE))
+    js_set_prop(p, cast[Ptr[uint8]]("selectNodeContents"), 18, \
+                js_new_native_fn(js_hbase + NID_RNG_SELNODECONT))
+    js_set_prop(p, cast[Ptr[uint8]]("collapse"), 8, \
+                js_new_native_fn(js_hbase + NID_RNG_COLLAPSE))
+    js_set_prop(p, cast[Ptr[uint8]]("cloneRange"), 10, \
+                js_new_native_fn(js_hbase + NID_RNG_CLONERANGE))
+    js_set_prop(p, cast[Ptr[uint8]]("compareBoundaryPoints"), 21, \
+                js_new_native_fn(js_hbase + NID_RNG_COMPAREBP))
+    js_set_prop(p, cast[Ptr[uint8]]("comparePoint"), 12, \
+                js_new_native_fn(js_hbase + NID_RNG_COMPAREPOINT))
+    js_set_prop(p, cast[Ptr[uint8]]("isPointInRange"), 14, \
+                js_new_native_fn(js_hbase + NID_RNG_ISPOINTIN))
+    js_set_prop(p, cast[Ptr[uint8]]("intersectsNode"), 14, \
+                js_new_native_fn(js_hbase + NID_RNG_INTERSECTS))
+    js_set_prop(p, cast[Ptr[uint8]]("insertNode"), 10, \
+                js_new_native_fn(js_hbase + NID_RNG_INSERTNODE))
+    js_set_prop(p, cast[Ptr[uint8]]("deleteContents"), 14, \
+                js_new_native_fn(js_hbase + NID_RNG_DELETECONT))
+    js_set_prop(p, cast[Ptr[uint8]]("detach"), 6, \
+                js_new_native_fn(js_hbase + NID_RNG_DETACH))
+    js_set_prop(p, cast[Ptr[uint8]]("toString"), 8, \
+                js_new_native_fn(js_hbase + NID_RNG_TOSTRING))
+    js_define_accessor(p, cast[Ptr[uint8]]("collapsed"), 9, \
+                       js_new_native_fn(js_hbase + NID_RNG_COLLAPSED), \
+                       js_new_native_fn(js_hbase + NID_RNG_RO_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("commonAncestorContainer"), 23, \
+                       js_new_native_fn(js_hbase + NID_RNG_CAC), \
+                       js_new_native_fn(js_hbase + NID_RNG_RO_SET))
+    js_set_prop(p, cast[Ptr[uint8]]("START_TO_START"), 14, js_number(0.0))
+    js_set_prop(p, cast[Ptr[uint8]]("START_TO_END"), 12, js_number(1.0))
+    js_set_prop(p, cast[Ptr[uint8]]("END_TO_END"), 10, js_number(2.0))
+    js_set_prop(p, cast[Ptr[uint8]]("END_TO_START"), 12, js_number(3.0))
+
+
+def _attach_tw_natives(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("parentNode"), 10, \
+                js_new_native_fn(js_hbase + NID_TW_PARENT))
+    js_set_prop(p, cast[Ptr[uint8]]("firstChild"), 10, \
+                js_new_native_fn(js_hbase + NID_TW_FIRSTCHILD))
+    js_set_prop(p, cast[Ptr[uint8]]("lastChild"), 9, \
+                js_new_native_fn(js_hbase + NID_TW_LASTCHILD))
+    js_set_prop(p, cast[Ptr[uint8]]("nextSibling"), 11, \
+                js_new_native_fn(js_hbase + NID_TW_NEXTSIB))
+    js_set_prop(p, cast[Ptr[uint8]]("previousSibling"), 15, \
+                js_new_native_fn(js_hbase + NID_TW_PREVSIB))
+    js_set_prop(p, cast[Ptr[uint8]]("nextNode"), 8, \
+                js_new_native_fn(js_hbase + NID_TW_NEXTNODE))
+    js_set_prop(p, cast[Ptr[uint8]]("previousNode"), 12, \
+                js_new_native_fn(js_hbase + NID_TW_PREVNODE))
+
+
+def _attach_ni_natives(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("nextNode"), 8, \
+                js_new_native_fn(js_hbase + NID_NI_NEXTNODE))
+    js_set_prop(p, cast[Ptr[uint8]]("previousNode"), 12, \
+                js_new_native_fn(js_hbase + NID_NI_PREVNODE))
+    js_set_prop(p, cast[Ptr[uint8]]("detach"), 6, \
+                js_new_native_fn(js_hbase + NID_NI_DETACH))
+
+
+# CharacterData.prototype: data / nodeValue / textContent / length as accessors
+# over one backing field, plus the five mutation methods. Accessors, not data
+# properties, because the four names are ONE piece of state -- as own data
+# properties they drifted apart the moment anything wrote one of them.
+def _attach_chardata_natives(p: int32):
+    js_define_accessor(p, cast[Ptr[uint8]]("data"), 4, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("nodeValue"), 9, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("textContent"), 11, \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_DATA_SET))
+    js_define_accessor(p, cast[Ptr[uint8]]("length"), 6, \
+                       js_new_native_fn(js_hbase + NID_CD_LEN_GET), \
+                       js_new_native_fn(js_hbase + NID_CD_LEN_SET))
+    js_set_prop(p, cast[Ptr[uint8]]("substringData"), 13, \
+                js_new_native_fn(js_hbase + NID_CD_SUBSTR))
+    js_set_prop(p, cast[Ptr[uint8]]("appendData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_APPENDD))
+    js_set_prop(p, cast[Ptr[uint8]]("insertData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_INSERTD))
+    js_set_prop(p, cast[Ptr[uint8]]("deleteData"), 10, \
+                js_new_native_fn(js_hbase + NID_CD_DELETED))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceData"), 11, \
+                js_new_native_fn(js_hbase + NID_CD_REPLACED))
+
+
+# The ChildNode mixin: before / after / replaceWith. Per the DOM spec these live
+# on Element, CharacterData (Text/Comment/ProcessingInstruction) and
+# DocumentType — NOT on Node, Document or DocumentFragment, and WPT's
+# dom/historical.html and the idlharness files check exactly that boundary.
+def _attach_childnode_mixin(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("before"), 6, \
+                js_new_native_fn(js_hbase + NID_CN_BEFORE))
+    js_set_prop(p, cast[Ptr[uint8]]("after"), 5, \
+                js_new_native_fn(js_hbase + NID_CN_AFTER))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceWith"), 11, \
+                js_new_native_fn(js_hbase + NID_CN_REPLWITH))
+
+
+# The ParentNode mixin: prepend / replaceChildren (append already lives on the
+# element natives). Element, Document and DocumentFragment only.
+def _attach_parentnode_mixin(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("prepend"), 7, \
+                js_new_native_fn(js_hbase + NID_PN_PREPEND))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceChildren"), 15, \
+                js_new_native_fn(js_hbase + NID_PN_REPLKIDS))
+
+
 # The stateless half: every element method whose behaviour depends only on the
 # receiver (`this`), so ONE function object can serve every element.
 def _attach_el_natives(o: int32):
