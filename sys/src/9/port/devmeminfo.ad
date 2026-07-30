@@ -49,7 +49,9 @@ from mm.page_alloc import (
 )
 from kernel.printk.printk import printk0, printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
-from mm.cow import cow_ledger_enable, cow_ledger_dump
+from mm.cow import (
+    cow_ledger_enable, cow_ledger_dump, cow_origin_dump, cow_net_dump,
+)
 from mm.slab import (
     kmalloc_live_objects, kmalloc_live_slabs, kmalloc, kfree, km_set_site,
     KM_SITE_SELFTEST, KM_SITE_VFS, KM_SITE_UNKNOWN,
@@ -442,6 +444,9 @@ def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
     #   echo track reset > /proc/meminfo   re-baseline the counters
     #   echo track dump  > /proc/meminfo   EMERG report to the console
     #   echo track off   > /proc/meminfo
+    #   echo track ledger> /proc/meminfo   per-CALL-SITE COW reference balance
+    #   echo track origin> /proc/meminfo   per-FRAME-ORIGIN balance + born/died
+    #   echo track net   > /proc/meminfo   ONE line: added/dropped/live frames
     #
     # A completed line that is not a `track` verb still returns -1, so
     # every pre-existing "meminfo is read-only" expectation holds.
@@ -502,6 +507,17 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
     # scan — so unlike `track census` it can be taken every cycle.
     if _mi_wmatch(line, n, "track ledger") != 0:
         cow_ledger_dump()
+        return cast[int64](count)
+    # ORIGIN-KEYED ledger (leak pass 14): the same references bucketed by the
+    # arm that took each FRAME's first reference. Same cost class as
+    # `track ledger` — O(arms), no walk, no scan.
+    if _mi_wmatch(line, n, "track origin") != 0:
+        cow_origin_dump()
+        return cast[int64](count)
+    # ONE line. Cheap enough to sample after every app LAUNCH, which is how a
+    # bursty leak gets a name instead of a slope.
+    if _mi_wmatch(line, n, "track net") != 0:
+        cow_net_dump()
         return cast[int64](count)
     if _mi_wmatch(line, n, "track reset") != 0:
         page_alloc_track_reset()
