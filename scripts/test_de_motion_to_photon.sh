@@ -134,6 +134,46 @@
 # lightweight boot and did not see this tail. On the real desktop it is 98.4%
 # (idle) / 99.4% (loaded) under 1 ms with a hard 90-120 ms tail.
 #
+# WHAT THAT TAIL TURNED OUT TO BE (fifth pass, five KVM boots, all with
+# stalls=0 and tickgap_max 10.2-13.7 ms against a host loadavg of 4.0-6.4):
+#
+#   * It is ONE TASK. sshd, in 4 of 4 idle outliers and 6 of 7 loaded ones on
+#     boot 1, and again on boot 2 under a different pid. Every one of them was
+#     woken while hampanel held the cpu and dispatched immediately after
+#     hampanel. vwake == vdisp on every sample: the waiter never runs during
+#     its own wait.
+#   * It is NOT the picker. ismin=0 for every stalled snapshot, the picker's
+#     own run-list view (lminv/lnrdy) agrees with the task-table view exactly,
+#     and ghostn=0 -- no READY task is ever off the list _pick_next walks.
+#   * It is NOT an in-place wake (a wake stamped on a task that never left the
+#     cpu, whose stamp is then closed against an unrelated later dispatch):
+#     0 of 13,216 idle and 4 of 14,233 loaded. Disproved by count.
+#   * It is NOT a stale-high placement ratchet: gfloor tracks the live runqueue
+#     minimum to within 1,280 units, exactly `thresh`.
+#
+#   * IT IS A CHARGE-RATE INVERSION. With the real-cpu ledger read beside the
+#     vruntime it is supposed to represent (wklat probe, viccpu_us/mincpu_us):
+#
+#       task                    vruntime   real cpu    charged per real us
+#       sshd (the waiter)        105,187   141,547us   0.743  = 29.0x true
+#       hamdesktop (the minimum)  63,800   596,420us   0.107  =  4.2x true
+#       correct rate at nice 0                         0.0256
+#
+#     hamdesktop had used 4.2x MORE cpu than sshd and held a LOWER vruntime, so
+#     sshd -- which had run 455 ms less -- was the task made to wait. In the
+#     loaded arm the inversion reaches 263x (waiter 4,086us of cpu against the
+#     minimum holder's 1,073,718us). preempt_tick bills a WHOLE tick to whoever
+#     is on-cpu at the 100 Hz boundary, and how often that happens tracks a
+#     short-burst poller's WAKE RATE rather than its cpu use.
+#
+#     The ledger is conservative: _sched_charge_elapsed clamps its delta at one
+#     tick, so it UNDER-counts long-slice tasks -- which understates
+#     hamdesktop's cpu and makes the inversion larger than reported, not
+#     smaller.
+#
+#   Raising VOVER_CAP so the existing refund could repay that debt was tried
+#   and REVERTED: it did not close the tail (see kernel/sched/core.ad).
+#
 # But the tail is IDENTICAL idle and loaded (1 and 3, both arms), so CPU load
 # does not create it -- and m2p in those very same windows stayed flat at
 # ~9.6 ms. A 120 ms wake stall therefore does NOT reach the pointer, which is
@@ -315,8 +355,21 @@ done
     "shell never echoed the readiness marker -- serial injection dropped, nothing measured"
 echo "$TAG shell ready."
 
+# WKLAT_RESUME=0 restores the PRE-FIX wake accounting: a wake stamped on a
+# task that never left the cpu (the wq poll loop's hlt) is left armed and
+# closed against that task's next, unrelated dispatch. That is the arm that
+# reproduces the >60 ms wake->dispatch tail; the outlier ring's inpl=1 field
+# names it. Default 1 = the shipped behaviour.
+WKLAT_RESUME="${WKLAT_RESUME:-1}"
+
 arm_instruments() {  # arm_instruments <arm-name>
     printf 'echo "m2p 1" > /dev/wsys/ctl\n' >&3
+    sleep 2
+    if [ "$WKLAT_RESUME" = "0" ]; then
+        printf 'echo "wklat 7" > /dev/wsys/ctl\n' >&3
+    else
+        printf 'echo "wklat 8" > /dev/wsys/ctl\n' >&3
+    fi
     sleep 2
     printf 'echo "ptrlat 0" > /dev/wsys/ctl\n' >&3
     sleep 2
@@ -461,6 +514,75 @@ for i, run in enumerate(runs):
         print('              dispatched after pid=%-5s %-8s | dispatches=%s ticks=%s kicks=%s | on_cpu@wake=%s cpu %s->%s rq=%s'
               % (g('prev'), nm(g('pnm')), g('dispd'), g('jifd'), g('kickd'),
                  g('oncpu'), g('scpu'), g('dcpu'), g('rqcpu')))
+        # inpl=1 means the waitee was STILL the incumbent when the wake was
+        # raised: it was sitting in the wq poll loop's hlt and never left the
+        # cpu, so no dispatch was ever owed to it and this interval is not a
+        # wake->dispatch latency at all.
+        print('              in-place-wake=%s | ready-queue=%s | vwake=%s vdisp=%s floor=%s | guest-stalls=%s'
+              % (g('inpl'), g('nrdy'), g('vwake'), g('vdisp'), g('floor'),
+                 g('stalld')))
+        # lead = how far ABOVE the ratchet floor this task was placed when it
+        # was woken. _sched_wake_place only ever pulls a sleeper UP toward that
+        # ratchet, so a positive lead here is a lead the scheduler GAVE it.
+        try:
+            lead = int(g('vwake')) - int(g('wfloor'))
+        except Exception:
+            lead = '?'
+        print('              ratchet-floor@wake=%s -> lead=%s units (%s whole nice-0 tick charges)'
+              % (g('wfloor'), lead,
+                 (lead // 256) if isinstance(lead, int) else '?'))
+PYEOF
+
+# The stalled-wake snapshots: who was AT the runqueue minimum while the waiter
+# sat there, and how many READY tasks it was queued behind. `ismin=0` with a
+# named holder of the minimum is the difference between "the picker is broken"
+# and "the placement gave this task a lead it then had to wait out".
+python3 - "$OUT_DIR/wklat.txt" <<'PYEOF' | tee "$OUT_DIR/wklat_stalls.txt"
+import re, sys
+def nm(h):
+    try: v = int(h, 16)
+    except Exception: return '?'
+    b = v.to_bytes(8, 'big').rstrip(b'\x00')
+    return ''.join(chr(c) if 32 <= c < 127 else '.' for c in b) or '-'
+runs, cur = [], None
+for line in open(sys.argv[1], errors='replace'):
+    m = re.search(r'\[wklat\] stalled_snapshots=(\d+)', line)
+    if m:
+        cur = {'n': int(m.group(1)), 'rec': {}}
+        runs.append(cur)
+        continue
+    if cur is None: continue
+    m = re.search(r'\[wklat\] s(\d+) (.*)', line)
+    if not m: continue
+    r = cur['rec'].setdefault(int(m.group(1)), {})
+    for k, v in re.findall(r'(\w+)=(\w+)', m.group(2)):
+        r[k] = v
+for i, run in enumerate(runs):
+    print('--- wklat stalled-wake snapshots, report %d (n=%d) ---' % (i + 1, run['n']))
+    for idx in sorted(run['rec']):
+        r = run['rec'][idx]
+        g = lambda k: r.get(k, '?')
+        try:
+            lead = int(g('vrun')) - int(g('minv'))
+        except Exception:
+            lead = '?'
+        print('    waiter pid=%-5s stalled %sus | vrun=%s  ismin=%s  ready=%s  behind=%s tasks'
+              % (g('pid'), g('age_us'), g('vrun'), g('ismin'), g('nrdy'), g('nbelow')))
+        print('        runqueue MINIMUM %s held by pid=%-5s %-8s state=%s | lead=%s units | ratchet floor=%s'
+              % (g('minv'), g('minpid'), nm(g('minnm')), g('minst'), lead, g('gfloor')))
+        print('        picker-list view: lnrdy=%s lminv=%s ghosts=%s | on-cpu now pid=%s vrun=%s'
+              % (g('lnrdy'), g('lminv'), g('ghostn'), g('curpid'), g('curvrun')))
+        # EARNED OR FABRICATED. 256 vruntime units == one 10 ms tick at nice 0,
+        # so a lead of L units claims the waiter ran L/256*10ms more than the
+        # task at the minimum. Compare that claim against the real on-cpu
+        # ledger; a gap is vruntime the scheduler invented.
+        try:
+            dus  = int(g('viccpu_us')) - int(g('mincpu_us'))
+            claim = lead * 10000 // 256
+            print('        cpu ledger: waiter %sus vs minimum %sus (delta %sus) | the %s-unit lead CLAIMS %sus | fabricated %sus'
+                  % (g('viccpu_us'), g('mincpu_us'), dus, lead, claim, claim - dus))
+        except Exception:
+            print('        cpu ledger: waiter %s vs minimum %s' % (g('viccpu_us'), g('mincpu_us')))
 PYEOF
 echo "$TAG --- end ---"
 

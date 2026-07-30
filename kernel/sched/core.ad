@@ -2372,8 +2372,56 @@ TICK_NS: uint64 = 10000000
 g_exec_start_ns: Array[512, uint64]
 g_vover:         Array[512, uint64]
 # Cap the accumulator so a task parked as the incumbent across a long idle
-# stretch cannot bank an unbounded refund. Eight nice-0 tick charges is far more
-# than the one-tick over-charge this exists to undo.
+# stretch cannot bank an unbounded refund.
+#
+# THE CHARGE-RATE INVERSION THIS DOES NOT FIX - the standing finding, and the
+# thing any future work on the wake->dispatch tail has to attack.
+#
+# preempt_tick bills whichever task is on-cpu at the 100 Hz boundary a WHOLE
+# tick of vruntime regardless of how long it actually held the cpu, and the
+# over-charge that produces is NOT proportional to a task's cpu use - it is
+# proportional to how often the task happens to be on-cpu at a tick boundary,
+# which for a short-burst poller tracks its WAKE RATE. So two tasks on the same
+# runqueue are billed at wildly different rates per microsecond actually run.
+#
+# MEASURED on a live DE (build/m2p/ledger, wklat probe, idle arm, stalls=0,
+# tickgap_max 10263us, host loadavg 4.7), with the real-cpu ledger beside the
+# vruntime it is supposed to represent:
+#
+#   task                    vruntime   real cpu     charged per real us
+#   sshd (the waiter)        105,187    141,547us   0.743   = 29.0x the true rate
+#   hamdesktop (the minimum)  63,800    596,420us   0.107   =  4.2x
+#   correct rate at nice 0                          0.0256  (256 units / 10ms)
+#
+# hamdesktop had used 4.2x MORE cpu than sshd and held a LOWER vruntime, so
+# sshd - which had run 455 ms less - was the one made to wait. In the loaded arm
+# the same inversion reached 263x: the waiter had 4,086us of cpu against the
+# minimum holder's 1,073,718us. That inversion IS the >60 ms wake->dispatch
+# tail: sshd is serving a debt of ~41,000 units it never ran.
+#
+# The refund below is the existing attempt to undo this, and it recovers ~0.4%
+# of what is fabricated: 68-74 refunds per ~13,000 wakes returning 7,561-9,662
+# units in total, against a ~41,000-unit standing lead on ONE task.
+#
+# THE CAP IS NOT WHY. MEASURED AND REVERTED. Raising this to 1,048,576 and re-booting the live DE
+# did NOT close the tail (build/m2p/fix-boot1, stalls=0, tickgap_max 10494us
+# idle / 11147us loaded, host loadavg 4.1-4.6):
+#
+#            over60ms   max_us    refunds / units
+#   before    2 / 2     62215     68 / 9662   (idle), 284 / 25931 (loaded)
+#   after     0 / 4     59957     21 / 7899   (idle), 170 / 23254 (loaded)
+#
+# The idle arm's 2 -> 0 is a TWO-SAMPLE change and is not evidence; the loaded
+# arm went 2 -> 4 with max 130477us against 130664us before. Refund COUNT fell
+# while units held, i.e. each refund returned more (376 units against 142) - so
+# the cap was doing what a cap does, and it was never the binding constraint.
+# g_vover is simply near zero at most wakes: the previous wake drained it, and
+# _sched_note_overcharge can only bank what a tick that actually lands on the
+# task exposes. A 41,000-unit standing lead cannot be repaid from a bank that
+# rarely holds more than a few hundred.
+#
+# Left at the measured value. The defect is upstream of the cap - the whole-tick
+# charge itself - see the charge-rate inversion recorded on _sched_note_overcharge.
 VOVER_CAP: uint64 = 2048
 # Diagnostics (reported by wklat verb 6): how often a refund fired and how much
 # vruntime it returned in total.
@@ -2381,6 +2429,25 @@ g_vover_refunds: uint64 = 0
 g_vover_units:   uint64 = 0
 # How many wakes were re-placed by the sleeper clamp (_sched_wake_place).
 g_wake_places:   uint64 = 0
+
+
+# REAL ON-CPU TIME, kept beside the vruntime it is supposed to represent.
+#
+# The whole tail reduces to one number: sshd carries a 14,000-73,000 unit
+# vruntime lead over hamdesktop and waits it out. That is either FAIR (sshd
+# really used that much more cpu) or FABRICATED (it was billed for time it did
+# not run) — and a vruntime alone cannot tell the two apart, which is why four
+# passes of fairness tuning could not settle it. 256 units IS one 10 ms tick at
+# nice 0, so charged-vs-run is a direct comparison once the real time is
+# recorded. Accumulated at exactly the two sites that charge vruntime, so a
+# divergence between the two ledgers is a charging bug by construction.
+g_cpu_ns: Array[512, uint64]
+
+
+def sched_cpu_ns(slot: uint64) -> uint64:
+    if slot >= NTASKS:
+        return 0
+    return g_cpu_ns[slot]
 
 
 def _sched_note_overcharge(slot: uint64, charge: uint64):
@@ -2397,6 +2464,12 @@ def _sched_note_overcharge(slot: uint64, charge: uint64):
     if st == 0 or now <= st:
         return
     ran: uint64 = now - st
+    # Ledger: the real time behind this tick charge. Capped at one tick for the
+    # same reason the charge is — a longer delta can only be a missed re-stamp.
+    if ran >= TICK_NS:
+        g_cpu_ns[slot] = g_cpu_ns[slot] + TICK_NS
+    else:
+        g_cpu_ns[slot] = g_cpu_ns[slot] + ran
     if ran >= TICK_NS:
         return                       # earned the whole charge; nothing to refund
     over: uint64 = (charge * (TICK_NS - ran)) / TICK_NS
@@ -2445,6 +2518,7 @@ def _sched_charge_elapsed(slot: uint64):
     # charge a fiction.
     if d > TICK_NS:
         d = TICK_NS
+    g_cpu_ns[slot] = g_cpu_ns[slot] + d
     w: uint64 = task_table[slot].sched_weight
     if w == 0:
         w = NICE0_WEIGHT
@@ -2903,6 +2977,34 @@ g_wake_jif:   Array[512, uint64]   # jiffies at wake
 g_wake_kick:  Array[512, uint64]   # wakeup_preempt_kicks at wake
 g_wake_oncpu: Array[512, uint64]   # waitee's on_cpu at wake (sleep-window)
 g_wake_stall: Array[512, uint64]   # wklat_stall_n at wake (machine-stall control)
+# THE IN-PLACE WAKE, and why it is the only field that can make the >60 ms tail
+# stop being a scheduler question.
+#
+# wq_wait_commit / wq_wait_commit_timeout / _wq_wait_common are POLLING LOOPS
+# run by the waiter ITSELF: the task sets STATE_WAIT, links onto the queue, and
+# then either schedule()s away (if another task is ready) or sits in
+# `hlt` — WITHOUT LEAVING THE CPU. In the hlt case the waiter is still the
+# incumbent. When the producer's ISR calls wq_wake_one on that CPU it flips
+# WAIT->READY and _wq_place_woken stamps a wake — but there is no dispatch to
+# consume that stamp, because the task never left the cpu. It falls out of the
+# hlt, sees still_waiting==0, breaks, and runs on.
+#
+# The stamp therefore stays armed, and _wklat_account closes it against the
+# task's NEXT dispatch, which can be an arbitrary time later and has nothing to
+# do with the wake. That interval is not a wake->dispatch latency at all. It is
+# rare (it needs the task to run on, block by some path that does NOT re-stamp,
+# and be re-dispatched), it is load-independent, and it puts 13-45 context
+# switches inside the "wait" — which is precisely the signature four passes
+# have been chasing. `inpl` is one load on the wake path and it settles it.
+g_wake_inpl:  Array[512, uint64]   # 1 = waitee was still the incumbent at wake
+# The MONOTONIC RATCHET as it stood when this wake was PLACED. _sched_wake_place
+# clamps a waking task UP toward g_sched_vruntime_floor, and that ratchet only
+# ever rises: it records the minimum vruntime seen at some past instant, not the
+# minimum now. If the low end of the runqueue is below it, the clamp places the
+# sleeper ABOVE every task down there — manufacturing the lead the sleeper then
+# has to wait out. One load on the wake path; it makes that visible per outlier.
+g_wake_floor: Array[512, uint64]
+wklat_inpl_n: uint64 = 0           # in-place wakes seen this window
 # _pick_next's ONLY input for a SCHED_OTHER task is vruntime, so once the
 # machine-stall, non-preemptible-section and sleep-window explanations are
 # excluded by the fields above, "why was this task passed over N times" reduces
@@ -2981,6 +3083,8 @@ wko_vdisp: Array[8, uint64]        # waitee vruntime at dispatch
 wko_vprev: Array[8, uint64]        # vruntime of whoever ran immediately before
 wko_floor: Array[8, uint64]        # sched_vruntime_floor() at dispatch
 wko_nrdy:  Array[8, uint64]        # READY tasks homed on this cpu at dispatch
+wko_inpl:  Array[8, uint64]        # 1 = waitee never left the cpu (in-place wake)
+wko_wfloor: Array[8, uint64]       # the ratchet floor when the wake was placed
 
 
 def _wklat_out_clear():
@@ -3007,6 +3111,8 @@ def _wklat_out_clear():
         wko_vprev[i] = 0
         wko_floor[i] = 0
         wko_nrdy[i]  = 0
+        wko_inpl[i]  = 0
+        wko_wfloor[i] = 0
         i = i + 1
 
 
@@ -3023,6 +3129,8 @@ def wklat_reset():
     wklat_tick_last_ns    = 0
     wklat_tick_gap_max_ns = 0
     wklat_stall_n         = 0
+    wklat_inpl_n          = 0
+    wklat_resume_n        = 0
     i: uint64 = 0
     while i < NTASKS:
         g_wake_stamp_ns[i] = 0
@@ -3034,6 +3142,8 @@ def wklat_reset():
         g_wake_oncpu[i]    = 0
         g_wake_stall[i]    = 0
         g_wake_vrun[i]     = 0
+        g_wake_inpl[i]     = 0
+        g_wake_floor[i]    = 0
         i = i + 1
     _wklat_out_clear()
     _wklat_probe_clear()
@@ -3071,6 +3181,22 @@ def _wklat_stamp(slot: uint64):
     g_wake_oncpu[slot] = task_table[slot].on_cpu
     g_wake_stall[slot] = wklat_stall_n
     g_wake_vrun[slot]  = task_table[slot].vruntime
+    # In-place wake: is the waitee STILL the incumbent somewhere? Two loads,
+    # not a scan of all NR_RQ runqueues — the waking cpu (the ISR case that
+    # matters, and the only one that exists on the 1-vcpu DE boot) and the
+    # cpu that owns the waitee.
+    ip: uint64 = 0
+    if g_rq_current_init != 0:
+        if cid < NR_RQ and g_rq_current[cid] == slot:
+            ip = 1
+        else:
+            oc: uint64 = task_table[slot].rq_cpu
+            if oc < NR_RQ and g_rq_current[oc] == slot:
+                ip = 1
+    g_wake_inpl[slot] = ip
+    g_wake_floor[slot] = g_sched_vruntime_floor
+    if ip != 0:
+        wklat_inpl_n = wklat_inpl_n + 1
 
 
 def _wklat_account(slot: uint64, prev: uint64):
@@ -3112,6 +3238,41 @@ def _wklat_account(slot: uint64, prev: uint64):
         _wklat_out_capture(slot, prev, d)
 
 
+# --- closing the interval when NOBODY had to dispatch ------------------
+#
+# Runtime switch so ONE boot can measure both arms: `wklat 7` restores the old
+# (leave-the-stamp-armed) behaviour, `wklat 8` re-enables the close. Two arms
+# of one boot is the only way to A/B a 1-in-13,000 event without the host-load
+# variable swamping it.
+wklat_resume_on: int32  = 1
+wklat_resume_n:  uint64 = 0
+
+
+def wklat_resume_set(on: int32):
+    wklat_resume_on = on
+
+
+def wklat_note_resume(slot: uint64):
+    # A wq waiter has come back round its poll loop, so it is RUNNING again.
+    # If a wake was stamped for it while it never left the cpu, the wake->run
+    # interval ENDS HERE: no dispatch was needed and none will come. Leaving
+    # the stamp armed hands it to this task's NEXT, unrelated dispatch and
+    # books that whole gap as scheduler latency.
+    #
+    # A waiter that genuinely schedule()d away has already had its stamp
+    # consumed by _wklat_account at its dispatch, so this is a no-op for it.
+    if wklat_on == 0:
+        return
+    if wklat_resume_on == 0:
+        return
+    if slot >= NTASKS:
+        return
+    if g_wake_stamp_ns[slot] == 0:
+        return
+    wklat_resume_n = wklat_resume_n + 1
+    _wklat_account(slot, RQ_CUR_NONE)
+
+
 def _wklat_out_capture(slot: uint64, prev: uint64, d: uint64):
     # Record one tail sample's context. Called only on the >25 ms branch, i.e.
     # a handful of times per run, so nothing here is on a hot path.
@@ -3141,6 +3302,8 @@ def _wklat_out_capture(slot: uint64, prev: uint64, d: uint64):
     wko_dcpu[i]  = get_cpu_id()
     wko_rqcpu[i] = task_table[slot].rq_cpu
     wko_stalld[i] = wklat_stall_n - g_wake_stall[slot]
+    wko_inpl[i]   = g_wake_inpl[slot]
+    wko_wfloor[i] = g_wake_floor[slot]
     wko_vwake[i] = g_wake_vrun[slot]
     wko_vdisp[i] = task_table[slot].vruntime
     if prev < NTASKS:
@@ -3199,7 +3362,10 @@ def wklat_out_report():
         printk3("[wklat] o%d vprev=%d floor=%d\n", i, wko_vprev[i],
                 wko_floor[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
-        printk2("[wklat] o%d nrdy=%d\n", i, wko_nrdy[i])
+        printk3("[wklat] o%d nrdy=%d inpl=%d\n", i, wko_nrdy[i],
+                wko_inpl[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] o%d wfloor=%d\n", i, wko_wfloor[i])
         i = i + 1
 
 
@@ -3256,6 +3422,25 @@ wkp_ghostv:  Array[4, uint64]
 wkp_ghostp:  Array[4, uint64]
 wkp_ghostnm: Array[4, uint64]
 wkp_ghostst: Array[4, uint64]
+# WHO IS AT THE MINIMUM, and how many tasks the waiter is queued behind.
+#
+# The first run of this probe on a live DE answered "ismin=0, minv 42,094 units
+# below the waiter" — _pick_next was right to pass sshd over, and the question
+# stopped being "why was it skipped" and became "who is DOWN THERE, and how did
+# the waiter get so far above them". A bare minimum cannot answer either. These
+# name the holder of the minimum and count the READY tasks the waiter has to
+# wait out, which is the wait expressed in the only unit that predicts it.
+wkp_minpid:  Array[4, uint64]
+wkp_minnm:   Array[4, uint64]
+wkp_minst:   Array[4, uint64]
+wkp_nbelow:  Array[4, uint64]
+wkp_floor:   Array[4, uint64]
+# The two ledgers, for the waiter and for the task holding the minimum. 256
+# vruntime units == one 10 ms tick at nice 0, so (vrun difference) and
+# (cpu_us difference / 10000 * 256) are the SAME quantity measured two ways.
+# They agree iff the lead the waiter is serving is a lead it earned.
+wkp_vicus:   Array[4, uint64]
+wkp_minus:   Array[4, uint64]
 
 
 def _wklat_probe_clear():
@@ -3281,6 +3466,13 @@ def _wklat_probe_clear():
         wkp_ghostp[i]  = 0
         wkp_ghostnm[i] = 0
         wkp_ghostst[i] = 0
+        wkp_minpid[i]  = 0
+        wkp_minnm[i]   = 0
+        wkp_minst[i]   = 0
+        wkp_nbelow[i]  = 0
+        wkp_floor[i]   = 0
+        wkp_vicus[i]   = 0
+        wkp_minus[i]   = 0
         i = i + 1
 
 
@@ -3329,6 +3521,9 @@ def wklat_probe_stalled():
     nr:   uint64 = 0
     minv: uint64 = 0
     have: uint64 = 0
+    mins: uint64 = NTASKS
+    nbel: uint64 = 0
+    vvic: uint64 = task_table[victim].vruntime
     t: uint64 = 0
     while t < NTASKS:
         if task_table[t].state == STATE_READY and task_table[t].rq_cpu == cpu:
@@ -3337,8 +3532,23 @@ def wklat_probe_stalled():
                 v: uint64 = task_table[t].vruntime
                 if have == 0 or v < minv:
                     minv = v
+                    mins = t
                     have = 1
+                if v < vvic:
+                    nbel = nbel + 1
         t = t + 1
+    wkp_nbelow[k] = nbel
+    wkp_floor[k]  = g_sched_vruntime_floor
+    wkp_vicus[k] = g_cpu_ns[victim] / 1000
+    if mins < NTASKS:
+        wkp_minpid[k] = task_table[mins].pid
+        wkp_minnm[k]  = task_table[mins].name0
+        wkp_minst[k]  = task_table[mins].state
+        wkp_minus[k]  = g_cpu_ns[mins] / 1000
+    else:
+        wkp_minpid[k] = RQ_CUR_NONE
+        wkp_minnm[k]  = 0
+        wkp_minst[k]  = 0
     wkp_nrdy[k] = nr
     wkp_minv[k] = minv
     if have != 0 and task_table[victim].vruntime <= minv:
@@ -3411,6 +3621,17 @@ def wklat_probe_report():
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d nrdy=%d minv=%d\n", i, wkp_nrdy[i], wkp_minv[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d minpid=%d minnm=%x\n", i, wkp_minpid[i],
+                wkp_minnm[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d minst=%d nbelow=%d\n", i, wkp_minst[i],
+                wkp_nbelow[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] s%d gfloor=%d\n", i, wkp_floor[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d viccpu_us=%d mincpu_us=%d\n", i, wkp_vicus[i],
+                wkp_minus[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
                 wkp_rqcpu[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
@@ -3463,6 +3684,13 @@ def wklat_report():
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[wklat] stalls=%d tickgap_max_us=%d\n", wklat_stall_n,
             wklat_tick_gap_max_ns / 1000)
+    # IN-PLACE WAKES: wakes raised on a waitee that never left the cpu (it was
+    # sitting in the wq poll loop's hlt). Those need no dispatch, so any stamp
+    # left armed by one is closed against an unrelated later dispatch. If this
+    # is a large fraction of n, the histogram's tail is measuring that and not
+    # the scheduler.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] inplace=%d resumed=%d\n", wklat_inpl_n, wklat_resume_n)
 
 
 # --- the IRQ-driven probe ---------------------------------------------
@@ -3540,6 +3768,7 @@ def wklat_ctl(verb: int64) -> int32:
     #   3 = print report
     #   4 = disable instrument
     #   6 = print the outlier CONTEXT ring (waker / waitee / what held the cpu)
+    #   7 = resume-close OFF (pre-fix arm)   8 = resume-close ON
     # ACK every accepted verb. Without this a control write that is silently
     # refused (a permission gate, a parse miss) looks exactly like a working
     # one from userland, and the A/B measurement runs BOTH arms in the same
@@ -3572,6 +3801,16 @@ def wklat_ctl(verb: int64) -> int32:
         wklat_out_report()
         wklat_probe_report()
         sched_vover_report()
+        return 1
+    if verb == 7:
+        wklat_resume_set(0)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack resume_close=0\n")
+        return 1
+    if verb == 8:
+        wklat_resume_set(1)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[wklat] ack resume_close=1\n")
         return 1
     if verb == 5:
         if _wklat_probe_start() == 0:
@@ -10910,6 +11149,10 @@ def wq_sleep_interruptible(wq: Ptr[WaitQueue]) -> int32:
 
     rc: int32 = 0
     while True:
+        # wklat: if a wake was stamped while we sat in the hlt below, we are
+        # running again NOW and the interval ends here — nothing dispatched
+        # us because we never left the cpu.
+        wklat_note_resume(cur)
         # Are we still asleep on the queue? A producer wake (wq_wake_*)
         # or a signal force-wake flips us to STATE_READY and unlinks us.
         _wq_lock_irq()
@@ -11026,6 +11269,10 @@ def wq_wait_commit(wq: Ptr[WaitQueue]) -> int32:
     cur: uint64 = current_idx_pcpu
     rc: int32 = 0
     while True:
+        # wklat: if a wake was stamped while we sat in the hlt below, we are
+        # running again NOW and the interval ends here — nothing dispatched
+        # us because we never left the cpu.
+        wklat_note_resume(cur)
         _wq_lock_irq()
         still_waiting: uint64 = 0
         if task_table[cur].state == STATE_WAIT:
@@ -11110,6 +11357,10 @@ def wq_wait_commit_timeout(wq: Ptr[WaitQueue], ticks: uint64) -> int32:
 
     rc: int32 = 0
     while True:
+        # wklat: if a wake was stamped while we sat in the hlt below, we are
+        # running again NOW and the interval ends here — nothing dispatched
+        # us because we never left the cpu.
+        wklat_note_resume(cur)
         _wq_lock_irq()
         still_waiting: uint64 = 0
         if task_table[cur].state == STATE_WAIT:
