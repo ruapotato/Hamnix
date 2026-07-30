@@ -1,6 +1,6 @@
 # Web Platform Tests: the external browser score
 
-**Current, 2026-07-29: 632 / 4112 subtests = 15.37 %** across 706 vendored WPT
+**Current, 2026-07-29: 1964 / 4800 subtests = 40.9 %** across 706 vendored WPT
 tests (first baseline the same day: 395 / 3760 = 10.51 %). Chromium, through the
 same reporter on the same tests, scores 91.4 % overall and 99.4 % with the
 file://-origin outliers set aside — so the number below is ours, not the
@@ -13,10 +13,17 @@ This is the first browser number here that we did not grade ourselves.
 | | PASS | subtests | score | files reporting | harness `OK` |
 |---|---:|---:|---:|---:|---:|
 | first baseline | 395 | 3760 | 10.51 % | 484 | 6 |
-| after the four fixes below | **632** | 4112 | **15.37 %** | 532 | **499** |
+| after the four fixes below | 632 | 4112 | 15.37 % | 532 | 499 |
+| + event loop / DOM round | 885 | 4118 | 21.49 % | 534 | 504 |
+| + `DOMImplementation`, `attributes` | 1123 | 4613 | 24.34 % | 538 | 503 |
+| + `createDocument`, namespaced `createElementNS` | 1660 | 4766 | 34.83 % | 540 | 504 |
+| + namespaced attributes, `CRE_MAX` | 1952 | 4753 | 41.07 % | 535 | 502 |
+| + per-tag interface prototypes | **1964** | 4800 | **40.92 %** | 535 | **502** |
 
-Note the *denominator* grew too: 3760 → 4112 observable subtests. Both effects
-are real progress — a subtest that never reported was not passing either.
+Note the *denominator* grew too: 3760 → 4800 observable subtests. Both effects
+are real progress — a subtest that never reported was not passing either, and
+the score can fall while the engine strictly improves (1952 → 1964 PASS reads
+as 41.07 % → 40.92 % because 47 more subtests became observable).
 
 Four engine fixes, each verified value-by-value against `chromium --headless`
 or `node`, and all ten render-corpus pages byte-identical before and after on
@@ -220,70 +227,105 @@ guessed; the repro column is a minimal page that reproduces it.
 Gaps 1 (`getComputedStyle` re-entrancy), 2 (timers draining between `<script>`
 elements), 9 (regex `\uXXXX` ranges) and 10 (`document.readyState`) are done —
 see [Movement so far](#movement-so-far). `document.createEvent` and
-`DOMException` are done too. The list below is re-measured against the current
-run, not edited down.
+`DOMException` are done too.
 
-### 1. `document.implementation` does not exist — **~296 subtests**
+Done on 2026-07-29, in the order the score said they paid:
 
-Still the largest single symbol. `hasFeature` 136 failures,
-`createHTMLDocument` 117, plus `createDocument` / `createDocumentType` /
-`doctype` silencing whole files. Much of `dom/nodes` (2,236 subtests, still the
-largest area) is gated behind building a second document to compare against.
+* **`document.implementation`** — `hasFeature` (spec'd true for every argument
+  list; 136 subtests in one file), `createHTMLDocument`, `createDocument`
+  (a real `XMLDocument`: 432 of 434 subtests), `createDocumentType` (80 of 82).
+* **`Element.attributes`** as a live `NamedNodeMap` of `Attr` nodes. This was
+  not only a missing API. testharness.js's `format_value()` reads
+  `val.attributes.length` for *every element it prints*, so its absence
+  replaced **188 real failure messages** with
+  `cannot read property 'length' of null or undefined` — which is what old
+  gap #3 below actually was. It hid the messages; it did not cause the failures.
+* **Namespace-aware DOM** — `localName`, `prefix`, `setAttributeNS`,
+  `getAttributeNS`, `hasAttributeNS`, `removeAttributeNS`,
+  `getElementsByTagNameNS`, and a `createElementNS` that validates and extracts
+  the qualified name (throwing `InvalidCharacterError` / `NamespaceError`),
+  preserves case, and answers `namespaceURI` `null` for `""`.
+  `dom/nodes/case.html` went 39 → 283 of 285.
+* **Per-tag interface prototypes** — 68 of them, so `div instanceof
+  HTMLDivElement` and `"HTMLDivElement" in window` are both true.
 
-### 2. Namespace-aware DOM — **~280 subtests**
+Three engine bugs found by this work, each of which would bite a real page:
 
-`setAttributeNS` 106 + 89, `element.prefix` 53, `getElementsByTagNameNS` 32,
-`localName` undefined. `createElementNS` exists but its result carries no
-namespace identity.
+1. `document.createElement(...).classList` silently did nothing. The
+   `DOMTokenList` family resolved its owner only through the source-element
+   table, so `add`/`remove`/`toggle`/`replace`/`item` no-oped on any created
+   element.
+2. A created element's `setAttribute()` only wrote a JS property, so it was
+   invisible to `element.attributes` and `getAttribute` was case-sensitive on
+   it.
+3. `CRE_MAX` was **256** created nodes per page — a few seconds of any
+   framework render — and `document.createElement` returned `null` past it
+   *silently*, so the page died on `.appendChild of null` with no diagnosis.
+   Raised to 8192 with a loud ceiling note.
 
-### 3. `cannot read property 'length' of null or undefined` — **246 subtests**
+### 1. `document.createProcessingInstruction` — **139 subtests**
 
-Now the single biggest *message*, and it is not yet attributed to one cause.
-Worth an hour of triage before any of the feature work below: it is likely two
-or three distinct getters returning null where a collection is expected, and it
-also accounts for 12 of the fully-silent files.
+`processing-instruction-attributes.html` (140) and
+`Document-createProcessingInstruction.html` alone, plus it silences part of
+`Node-textContent` (75). Half the file also wants `DOMParser`, so budget the
+two together.
 
-### 4. Range and traversal APIs — **~256 subtests**
+### 2. Range and traversal APIs — **~250 subtests**
 
-`document.createRange`, `window.Range`, `createTreeWalker`,
-`createNodeIterator`, `NodeFilter` all undefined. `dom/ranges` 1/206,
-`dom/traversal` 0/50, and **26 of the 54 range files are still fully silent**,
-so the true figure is much larger — chromium reports 34,000+ subtests there.
-Self-contained and well-specified, but note the range files also need
-`createCDATASection` (10 silent files) and `createProcessingInstruction` (101),
-so budget those with it rather than separately.
+`document.createRange` (47), `createTreeWalker` (44), `createValueRange` (79),
+`NodeFilter`. `dom/ranges` 1/206, `dom/traversal` 0/50, and **26 of the 54
+range files are still fully silent**, so the true figure is much larger —
+chromium reports 34,000+ subtests there.
 
-### 5. Event subclass constructors — **~55 subtests**
+### 3. `Node.cloneNode` on created nodes — **135 subtests**
+
+`cloneNode is not a function` on several node kinds, and the clone does not
+carry nodeType/attributes. One file, well specified.
+
+### 4. `Node.lookupNamespaceURI` / `lookupPrefix` / `isDefaultNamespace` — **70**
+
+Now that elements carry real namespace identity, this is the remaining half of
+the namespace story.
+
+### 5. ChildNode / ParentNode mutation methods — **~150 subtests**
+
+`before` (45), `after` (45), `replaceWith` (33), `prepend` (22). Still
+undefined; `append` and `closest` exist.
+
+### 6. `document.createAttribute` / `setAttributeNode` — **~85 subtests**
+
+`createAttribute` 49 plus `Document-createAttribute.html` 36. The `Attr` node
+now exists (it backs `element.attributes`), so this is wiring, not modelling.
+
+### 7. `assert_throws_dom ... is not a DOMException` — **94 subtests**
+
+Spread across files. Our host natives throw an object that carries `name`,
+`code` and `constructor`, but testharness's DOMException identity check still
+rejects it somewhere. One fix, wide reach.
+
+### 8. Event subclass constructors — **~55 subtests**
 
 `new UIEvent(...)` gives "value is not a constructor". `document.createEvent`
-now covers the legacy factory path, so this is the remaining half.
+covers the legacy factory path; this is the remaining half.
 
-### 6. `previousElementSibling` — **57 subtests**
+### 9. `previousElementSibling` — **57 subtests**
 
-Sibling traversal on the live tree. Small and self-contained.
+All 57 are in `css/css-cascade/scope-*`, and the message is
+`cannot read property 'previousElementSibling' of null` — the RECEIVER is null,
+so the real gap is the `@scope` selector support that returns it, not the
+sibling getter (which exists and works).
 
-### 7. ChildNode / ParentNode mutation methods — **~150 subtests**
+### 10. `:heading` pseudo-class — **56 subtests**
 
-`before`, `after`, `replaceWith`, `prepend` undefined; `append` and `closest`
-exist.
+`html/semantics/sections/headingoffset-and-headingreset.html`, one selector.
 
-### 8. `DOMParser` / `XMLSerializer` — **~60 subtests**
+### 11. `DOMParser` / `XMLSerializer` — **~47 subtests**
 
-Both undefined. Also the natural implementation route for #1.
+Both undefined.
 
-### 9. Long tail, each silencing whole files
+### 12. The 171 files that produce no subtest results
 
-`createCDATASection` (10 files), the `Function` constructor / dynamic code (6),
-`Array.prototype.forEach` on host collections (4), `unshift` (2),
-`CSSStyleSheet.insertRule`, `customElements`, `moveBefore`, `TextEncoder` /
-`TextDecoder` (`encoding` still 0.0 %), `window.CSS`, `WeakRef`.
-
-### 10. The 99 files that complete with ZERO subtests
-
-Up from 71, because more files now reach completion at all. These no longer
-fail on a missing symbol — the harness runs and reports done having registered
-nothing. That is a different shape of bug from the rest of this list and is
-probably one or two causes; it is the largest single silent bucket left.
+Each is usually one missing symbol. Still the cheapest bucket per unit of work.
 
 ### Confirmed gap by area (we fail, chromium passes — 2,634 subtests)
 
@@ -311,32 +353,32 @@ Current run. `silent` = files producing no subtest results at all.
 
 | area | files | pass | total | score | silent files |
 |---|---:|---:|---:|---:|---:|
-| dom/nodes | 264 | 304 | 2236 | 13.6 % | 66 |
-| dom/events | 73 | 76 | 344 | 22.1 % | 17 |
+| dom/nodes | 264 | 1470 | 2893 | 50.8 % | 62 |
+| dom/events | 73 | 172 | 387 | 44.4 % | 16 |
 | css/css-cascade | 77 | 4 | 290 | 1.4 % | 15 |
 | dom/ranges | 54 | 1 | 206 | 0.5 % | 26 |
-| dom/lists | 5 | 140 | 189 | **74.1 %** | 0 |
-| html/semantics/tabular-data | 29 | 8 | 153 | 5.2 % | 0 |
-| dom (misc) | 8 | 50 | 123 | 40.7 % | 0 |
-| html/semantics/document-metadata | 81 | 7 | 87 | 8.0 % | 28 |
+| dom/lists | 5 | 168 | 189 | **88.9 %** | 0 |
+| html/semantics/tabular-data | 29 | 8 | 152 | 5.3 % | 0 |
+| dom (misc) | 8 | 83 | 114 | 72.8 % | 0 |
+| html/semantics/document-metadata | 81 | 7 | 85 | 8.2 % | 30 |
 | html/semantics/selectors | 26 | 18 | 78 | 23.1 % | 6 |
 | html/semantics/the-button-element | 15 | 0 | 76 | 0.0 % | 1 |
 | html/semantics/sections | 2 | 0 | 63 | 0.0 % | 0 |
 | html/semantics/links | 7 | 2 | 55 | 3.6 % | 2 |
 | dom/traversal | 17 | 0 | 50 | 0.0 % | 5 |
 | dom/collections | 9 | 9 | 48 | 18.8 % | 0 |
-| html/semantics/grouping-content | 14 | 5 | 47 | 10.6 % | 0 |
-| encoding | 8 | 0 | 28 | 0.0 % | 3 |
+| html/semantics/grouping-content | 14 | 12 | 47 | 25.5 % | 0 |
+| html/semantics/text-level-semantics | 9 | 10 | 23 | 43.5 % | 4 |
 
-**174 of 706 files still produce no subtest results at all** (was 222). These
+**171 of 706 files still produce no subtest results at all** (was 222). These
 remain the cheapest wins: one missing API silences an entire file.
 
 ## Reading the number honestly
 
-15.37 % is a floor, not a verdict. What still depresses it:
+40.9 % is a floor, not a verdict. What still depresses it:
 
-* **174 files are silenced by a single missing symbol each** (was 222), and 99
-  of those now run to completion registering zero subtests — a different and
+* **171 files are silenced by a single missing symbol each** (was 222), and
+  most of those run to completion registering zero subtests — a different and
   currently un-diagnosed shape of bug.
 * `dom/ranges` and `dom/traversal` are near-zero because Range and the
   traversal APIs do not exist at all, and half the range files cannot report.
@@ -350,11 +392,11 @@ first run, the exclusions are published per-file, and nothing that fails was
 excluded for failing. No vendored test was edited and no exclusion was added to
 move the score.
 
-**On the growing denominator.** 3,760 → 4,112 observable subtests. A fix that
+**On the growing denominator.** 3,760 → 4,800 observable subtests. A fix that
 un-silences a file can *lower* the percentage while strictly improving the
 engine, so the ratchet tracks the absolute PASS count (`#!PASS_FLOOR`), not the
 ratio. Read both columns.
 
-The corresponding claim in the other direction — that our 275 hand-written gates
+The corresponding claim in the other direction — that our 281 hand-written gates
 are all green — was compatible with 10.51 % external conformance, and is still
-compatible with 15.37 %. That is the number to move.
+compatible with 40.9 %. That is the number to move.
