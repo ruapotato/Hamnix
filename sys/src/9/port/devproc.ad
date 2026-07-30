@@ -160,6 +160,8 @@ from mm.vma import vma_maps_render, task_vsize_bytes, task_rss_pages
 # enable/spin/disable warmup rusage_selftest uses. start_kernel runs
 # IF-blocked, so without this the busy-spin would never see jiffies move.
 from arch.x86.kernel.time import get_jiffies
+# sysirq: the IF-off-duration-per-syscall instrument's control surface.
+from arch.x86.kernel.time import sysirq_ctl
 extern def local_irq_enable()
 extern def local_irq_disable()
 extern def cpu_relax()
@@ -2117,6 +2119,26 @@ def devproc_write(file_idx: uint32, buf: Ptr[uint8],
                 set_current_errstr("ctl: bad control message")
                 return -1
             if wklat_ctl(parsed) == 0:
+                set_current_errstr("ctl: bad control message")
+                return -1
+            return cast[int64](count)
+        # `sysirq <n>` — SYSTEM-WIDE interrupt-masked-duration instrument,
+        # attributed per syscall number (arch/x86/kernel/time.ad).
+        #   0 disarm   1 arm+reset   2 print report   3 reset (stay armed)
+        # Same control surface and same privilege rule as `wklat`: it changes
+        # global kernel behaviour, and the reproducer that drives it is a
+        # plain uid-0 hamsh which is not the host owner — a gate that cannot
+        # reach its own control surface measures nothing.
+        si_arg: int64 = _ctl_match_verb(buf, count, "sysirq")
+        if si_arg >= 0:
+            if task_is_hostowner(ctl_caller_uid) == 0 and ctl_caller_uid != 0:
+                set_current_errstr("ctl: permission denied")
+                return -1
+            if _ctl_parse_signed(buf, count, cast[uint64](si_arg),
+                                 &parsed) == 0:
+                set_current_errstr("ctl: bad control message")
+                return -1
+            if sysirq_ctl(parsed) == 0:
                 set_current_errstr("ctl: bad control message")
                 return -1
             return cast[int64](count)
