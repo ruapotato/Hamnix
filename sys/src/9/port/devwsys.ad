@@ -237,6 +237,12 @@ from arch.x86.kernel.time import (
     ptrlat_get_b15, ptrlat_get_b30, ptrlat_get_b60, ptrlat_get_b120,
     ptrlat_get_b250, ptrlat_get_over,
 )
+# Wake->dispatch latency instrument (kernel/sched/core.ad). Exposed here for
+# the same reason `sysirq` is: /proc/self/ctl's `wklat` verb is uid-0-or-
+# hostowner only, so the instrument could never be armed from a live desktop
+# session (which runs as the default NOBODY uid). Until this existed the
+# scheduler disproof rested entirely on a kthread in a lightweight boot.
+from kernel.sched.core import wklat_ctl
 
 
 # --- per-wid table ---------------------------------------------------
@@ -3401,6 +3407,24 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         if _wsys_scene_next_int(buf, &p0, count, &siv) == 0:
             siv = 2
         if sysirq_ctl(siv) == 0:
+            return -1
+        return cast[int64](count)
+
+    # `wklat <n>` — the WAKE->DISPATCH latency instrument + the wakeup
+    # preemption kill-switch (kernel/sched/core.ad).
+    #   0 wakeup preemption OFF   1 ON   2 reset+arm   3 report   4 disarm
+    #   5 start the in-kernel probe
+    # Parsed before the hostowner gate for exactly the reason `sysirq` and
+    # `ptrlat` are. /proc/self/ctl's `wklat` verb is uid-0-or-hostowner only,
+    # so on a real DE boot it answers "ctl write refused rc=-1" and measures
+    # nothing — which is why the scheduler measurement had, until now, only
+    # ever been taken against a kthread in a lightweight boot and never
+    # against a live desktop. Same instrument, same verbs, reachable surface.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "wklat") == 1:
+        wkv: int64 = 3
+        if _wsys_scene_next_int(buf, &p0, count, &wkv) == 0:
+            wkv = 3
+        if wklat_ctl(wkv) == 0:
             return -1
         return cast[int64](count)
 
