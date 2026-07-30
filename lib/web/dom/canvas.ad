@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_node_natives, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -2512,7 +2512,10 @@ def _inner_accessor(rel: int32) -> int32:
         return v
     if rel == NID_IH_GET:
         if idx < 0:
-            return js_undefined()
+            ccid: int32 = _find_cre_by_obj(thisv)
+            if ccid < 0:
+                return js_undefined()
+            return _serialize_inner_cre(ccid)
         # NOT memoised any more. The memo installed an own data property that
         # shadowed this accessor for the rest of the page's life, so the FIRST
         # read froze innerHTML at its parse-time value — which is half of why
@@ -3262,6 +3265,217 @@ def _nd_normalize(n: int32, depth: int32):
     js_set_own(n, cast[Ptr[uint8]]("childNodes"), 10, nw)
 
 
+# ---- "ensure pre-insertion validity" (DOM 4.2.1) ----------------------------
+# ONE algorithm shared by appendChild / insertBefore / replaceChild and the
+# whole ChildNode / ParentNode mutation family. Measured worth: 44 WPT subtests
+# were failing with a bare `assert_throws_dom: function ... did not throw`, and
+# a further 29 with "threw object TypeError ... that is not a DOMException" —
+# the tests are checking these rejections, not the happy path.
+#
+# Returns 1 when it has THROWN (the caller must return immediately), 0 when the
+# insertion is valid.
+def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
+    pk: int32 = _nd_type(parentv)
+    # 1. parent must be a Document, DocumentFragment or Element.
+    if pk != 9 and pk != 11 and pk != 1:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("parent cannot have children"), 27)
+        return 1
+    # 2. node must not be an inclusive ancestor of parent.
+    if js_type_of(nodev) == TAG_OBJ and _nd_is_ancestor(nodev, parentv) != 0:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("node is an ancestor of parent"), 29)
+        return 1
+    # 3. a non-null reference child must actually be a child of parent.
+    if js_type_of(childv) == TAG_OBJ:
+        if _nd_child_index(parentv, childv) < 0:
+            _throw_domexc(cast[Ptr[uint8]]("NotFoundError"), 13, \
+                          cast[Ptr[uint8]]("reference node is not a child"), 29)
+            return 1
+    nk: int32 = _nd_type(nodev)
+    # 4. node must be a DocumentFragment, DocumentType, Element, CharacterData
+    #    or ProcessingInstruction. Anything else (a plain object, a Document)
+    #    is a HierarchyRequestError, NOT a TypeError.
+    if nk != 11 and nk != 10 and nk != 1 and nk != 3 and nk != 4 and \
+       nk != 7 and nk != 8:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("node is not insertable"), 22)
+        return 1
+    # 5. Text may not be a child of a Document; a doctype may only be.
+    if nk == 3 and pk == 9:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("text cannot be a child of a document"), 36)
+        return 1
+    if nk == 10 and pk != 9:
+        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                      cast[Ptr[uint8]]("doctype must be a child of a document"), 37)
+        return 1
+    # 6. Document parents accept at most one element child, and a fragment may
+    #    not carry more than one element into one.
+    if pk == 9:
+        if nk == 11:
+            fk: int32 = _nd_kids(nodev)
+            nel: int32 = 0
+            if fk != 0:
+                fi: int32 = 0
+                fn: int32 = js_array_len(fk)
+                while fi < fn:
+                    if _nd_type(js_array_get(fk, fi)) == 1:
+                        nel = nel + 1
+                    elif _nd_type(js_array_get(fk, fi)) == 3:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                                      cast[Ptr[uint8]]("text in fragment"), 16)
+                        return 1
+                    fi = fi + 1
+            if nel > 1:
+                _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                              cast[Ptr[uint8]]("fragment has multiple elements"), 30)
+                return 1
+    return 0
+
+
+# parent.insertBefore(newv, refv) with EXPLICIT values (refv == js_null()
+# appends). Factored out of the NID_INSBEF handler so the ChildNode /
+# ParentNode mutation methods (before / after / replaceWith / prepend /
+# replaceChildren) can reuse the one insertion path instead of growing a second
+# copy of the source-element vs created-node bookkeeping.
+def _insert_before_v(parentv: int32, newv: int32, refv: int32):
+    nch: int32 = _find_cre_by_obj(newv)
+    if nch >= 0:
+        cre_gone[nch] = 0
+        rch: int32 = -1
+        if js_type_of(refv) == TAG_OBJ:
+            rch = _find_cre_by_obj(refv)
+        par2: int32 = _find_el_by_obj(parentv)
+        if par2 >= 0:
+            at: int32 = -1
+            if rch >= 0:
+                at = _ap_find(par2, rch)
+            _ap_add(par2, nch, at)
+            js_set_prop(newv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par2])
+            js_set_prop(newv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par2])
+            _dom_children_insert(parentv, newv, refv)
+        else:
+            pcid2: int32 = _find_cre_by_obj(parentv)
+            if pcid2 >= 0:
+                at2: int32 = -1
+                if rch >= 0:
+                    at2 = _cc_find(pcid2, rch)
+                _cc_add(pcid2, nch, at2)
+                js_set_prop(newv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+                js_set_prop(newv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+                _dom_children_insert(parentv, newv, refv)
+    _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
+                        parentv)
+    _mo_record_childlist(parentv, newv, -1)
+
+
+# Detach `childv` from `parentv`, mirroring the NID_REMCHILD handler.
+def _remove_child_v(parentv: int32, childv: int32):
+    rc: int32 = _find_cre_by_obj(childv)
+    rcs: int32 = -1
+    if rc < 0:
+        rcs = _find_el_by_obj(childv)
+    if rc >= 0 or rcs >= 0:
+        if rc >= 0:
+            cre_gone[rc] = 1
+        else:
+            dom_detached[rcs] = 1
+        js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+        js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+        _dom_children_drop(parentv, childv)
+        _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
+                            parentv)
+        _mo_record_childlist(parentv, -1, childv)
+
+
+# ChildNode / ParentNode take (Node or DOMString)... — a bare string argument
+# becomes a Text node. Returns the node object for `v`.
+def _nd_as_node(v: int32) -> int32:
+    if js_type_of(v) == TAG_OBJ and _nd_type(v) != 0:
+        return v
+    sv: int32 = v
+    if js_type_of(v) != TAG_STR:
+        sv = js_new_string(js_str_ptr(v), cast[uint64](_cstr_len(js_str_ptr(v))))
+    return _cre_make_text(sv)
+
+
+# ---- ChildNode.before/after/replaceWith + ParentNode.prepend/replaceChildren --
+# Written entirely in terms of _insert_before_v / _remove_child_v, so they share
+# the insertion bookkeeping with insertBefore rather than reimplementing it.
+# A DocumentFragment argument contributes its CHILDREN, not itself (spec).
+def _nd_insert_nodes(parentv: int32, refv: int32, from_arg: int32):
+    # The spec converts the whole argument list into ONE DocumentFragment and
+    # pre-inserts that, so a single invalid member rejects the entire call and
+    # nothing is inserted. Validate first, mutate second.
+    i: int32 = from_arg
+    n: int32 = js_arg_count()
+    while i < n:
+        a0: int32 = js_arg(i)
+        if js_type_of(a0) == TAG_OBJ and _nd_type(a0) != 0:
+            if _pre_insert_invalid(parentv, a0, js_null()) != 0:
+                return
+        i = i + 1
+    i = from_arg
+    while i < n:
+        a: int32 = js_arg(i)
+        if _is_fragment(a) != 0:
+            fk: int32 = js_get_prop(a, cast[Ptr[uint8]]("children"), 8)
+            if js_is_array(fk) != 0:
+                j: int32 = 0
+                fn: int32 = js_array_len(fk)
+                while j < fn:
+                    _insert_before_v(parentv, js_array_get(fk, j), refv)
+                    j = j + 1
+            _frag_clear(a)
+        else:
+            _insert_before_v(parentv, _nd_as_node(a), refv)
+        i = i + 1
+
+
+def _child_parent_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_PN_PREPEND or rel == NID_PN_REPLKIDS:
+        if rel == NID_PN_REPLKIDS:
+            # replaceChildren: drop every existing child first, then append.
+            ks: int32 = _nd_kids(thisv)
+            if ks != 0:
+                snap: int32 = js_new_array_v()
+                i2: int32 = 0
+                kn: int32 = js_array_len(ks)
+                while i2 < kn:
+                    js_array_push(snap, js_array_get(ks, i2))
+                    i2 = i2 + 1
+                i2 = 0
+                while i2 < kn:
+                    _remove_child_v(thisv, js_array_get(snap, i2))
+                    i2 = i2 + 1
+            _nd_insert_nodes(thisv, js_null(), 0)
+            return js_undefined()
+        first: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("firstChild"), 10)
+        if js_type_of(first) != TAG_OBJ:
+            first = js_null()
+        _nd_insert_nodes(thisv, first, 0)
+        return js_undefined()
+    # ChildNode: all three need a parent; with none they are a spec no-op.
+    par: int32 = _nd_parent(thisv)
+    if js_type_of(par) != TAG_OBJ:
+        return js_undefined()
+    if rel == NID_CN_BEFORE:
+        _nd_insert_nodes(par, thisv, 0)
+        return js_undefined()
+    if rel == NID_CN_AFTER:
+        nxt: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("nextSibling"), 11)
+        if js_type_of(nxt) != TAG_OBJ:
+            nxt = js_null()
+        _nd_insert_nodes(par, nxt, 0)
+        return js_undefined()
+    # NID_CN_REPLWITH
+    _nd_insert_nodes(par, thisv, 0)
+    _remove_child_v(par, thisv)
+    return js_undefined()
+
+
 def _node_generic_dispatch(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_HASKIDS:
@@ -3314,6 +3528,11 @@ def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_HASKIDS and rel <= NID_ISDEFAULTNS:
         return _node_generic_dispatch(rel)
+    if (rel >= NID_CN_BEFORE and rel <= NID_PN_PREPEND) or rel == NID_PN_REPLKIDS:
+        if _mutation_touches_source() != 0:
+            g_dom_mutated = 1
+            g_dom_gen = g_dom_gen + 1
+        return _child_parent_dispatch(rel)
     if _nid_mutates(rel) != 0 and _mutation_touches_source() != 0:
         g_dom_mutated = 1
         g_dom_gen = g_dom_gen + 1
@@ -4053,6 +4272,20 @@ def _js_host_dispatch(id: int32) -> int32:
         clo: int32 = js_new_object_v()
         js_set_prop(clo, cast[Ptr[uint8]]("tagName"), 7, \
                     _tagname_upper(&dom_idbuf[cre_tag_off[clid]], tagl))
+        # The node-identity trio. A clone used to carry NO nodeType at all,
+        # which is invisible until something asks: `empty.appendChild(
+        # validInput.cloneNode())` in html/semantics/selectors/pseudo-classes/
+        # valid-invalid.html now reaches the pre-insertion validity check, and a
+        # node with no nodeType is "not insertable".
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeType"), 8, js_number(1.0))
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeName"), 8, \
+                    _tagname_upper(&dom_idbuf[cre_tag_off[clid]], tagl))
+        js_set_prop(clo, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+        js_set_prop(clo, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                    js_get_prop(base, cast[Ptr[uint8]]("namespaceURI"), 12))
+        _clo_kids: int32 = js_new_array_v()
+        js_set_prop(clo, cast[Ptr[uint8]]("children"), 8, _clo_kids)
+        js_set_prop(clo, cast[Ptr[uint8]]("childNodes"), 10, _clo_kids)
         js_set_prop(clo, cast[Ptr[uint8]]("id"), 2, \
                     js_get_prop(base, cast[Ptr[uint8]]("id"), 2))
         js_set_prop(clo, cast[Ptr[uint8]]("className"), 9, \
@@ -4432,6 +4665,9 @@ def _js_host_dispatch(id: int32) -> int32:
         # A DocumentFragment argument is not itself inserted: per spec its
         # CHILDREN move into the parent and the fragment is left empty. Frameworks
         # build an offscreen subtree in a fragment and commit it with one append.
+        if js_arg_count() >= 1 and \
+           _pre_insert_invalid(js_this(), js_arg(0), js_null()) != 0:
+            return js_undefined()
         if js_arg_count() >= 1 and _is_fragment(js_arg(0)) != 0:
             fkids: int32 = js_get_prop(js_arg(0), cast[Ptr[uint8]]("children"), 8)
             fn2: int32 = 0
@@ -4519,42 +4755,12 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_INSBEF:
         # parent.insertBefore(newNode, refNode) — refNode null => append.
         if js_arg_count() >= 1:
-            nch: int32 = _find_cre_by_obj(js_arg(0))
-            if nch >= 0:
-                cre_gone[nch] = 0
-                rch: int32 = -1
-                if js_arg_count() >= 2:
-                    rch = _find_cre_by_obj(js_arg(1))
-                refv: int32 = js_null()
-                if js_arg_count() >= 2:
-                    refv = js_arg(1)
-                par2: int32 = _find_el_by_obj(js_this())
-                if par2 >= 0:
-                    at: int32 = -1
-                    if rch >= 0:
-                        at = _ap_find(par2, rch)
-                    _ap_add(par2, nch, at)
-                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                dom_obj[par2])
-                    js_set_prop(js_arg(0), \
-                                cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par2])
-                    _dom_children_insert(js_this(), js_arg(0), refv)
-                else:
-                    pcid2: int32 = _find_cre_by_obj(js_this())
-                    if pcid2 >= 0:
-                        at2: int32 = -1
-                        if rch >= 0:
-                            at2 = _cc_find(pcid2, rch)
-                        _cc_add(pcid2, nch, at2)
-                        js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                    js_this())
-                        js_set_prop(js_arg(0), \
-                                    cast[Ptr[uint8]]("parentElement"), 13, js_this())
-                        _dom_children_insert(js_this(), js_arg(0), refv)
-        if js_arg_count() >= 1:
-            _wire_sibling_links(js_get_prop(js_this(), \
-                                cast[Ptr[uint8]]("children"), 8), js_this())
-            _mo_record_childlist(js_this(), js_arg(0), -1)
+            refv: int32 = js_null()
+            if js_arg_count() >= 2:
+                refv = js_arg(1)
+            if _pre_insert_invalid(js_this(), js_arg(0), refv) != 0:
+                return js_undefined()
+            _insert_before_v(js_this(), js_arg(0), refv)
         return js_arg(0)
     if rel == NID_REMCHILD:
         # parent.removeChild(child) — detach the child. Created nodes flip
@@ -4588,6 +4794,8 @@ def _js_host_dispatch(id: int32) -> int32:
         # position, detach oldNode. Returns oldNode (spec). Both must be created
         # nodes (the same constraint appendChild/insertBefore already carry).
         if js_arg_count() >= 2:
+            if _pre_insert_invalid(js_this(), js_arg(0), js_arg(1)) != 0:
+                return js_undefined()
             rnew: int32 = _find_cre_by_obj(js_arg(0))
             rold: int32 = _find_cre_by_obj(js_arg(1))
             if rnew >= 0 and rold >= 0:
@@ -6184,7 +6392,10 @@ def _build_dom_interfaces():
     # here (not on the element interfaces, whose per-tag class we do not model).
     js_tag_object(g_proto_clslist, cast[Ptr[uint8]]("DOMTokenList"))
     js_tag_object(g_proto_style, cast[Ptr[uint8]]("CSSStyleDeclaration"))
+    _attach_childnode_mixin(g_proto_elem)
+    _attach_parentnode_mixin(g_proto_elem)
     chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
+    _attach_childnode_mixin(chard)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
     g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
@@ -6192,8 +6403,11 @@ def _build_dom_interfaces():
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
     _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
     _dom_interface(cast[Ptr[uint8]]("XMLDocument"), 11, g_proto_doc)
+    _attach_parentnode_mixin(g_proto_frag)
+    _attach_parentnode_mixin(g_proto_doc)
     g_proto_doctype = _dom_interface(cast[Ptr[uint8]]("DocumentType"), 12, \
                                      g_proto_node)
+    _attach_childnode_mixin(g_proto_doctype)
     g_proto_attr = _dom_interface(cast[Ptr[uint8]]("Attr"), 4, g_proto_node)
     g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
     g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
@@ -7716,7 +7930,14 @@ def _emit_created(cid: int32):
         _rw_cstr(cast[Ptr[uint8]]("\">"))
     dom_ov_len = dom_ov_len_save                          # scratch reclaim
     # inner: innerHTML (raw) wins; else textContent (escaped) + nested children.
-    hv: int32 = js_get_prop(co, cast[Ptr[uint8]]("innerHTML"), 9)
+    # OWN property only. innerHTML is an ACCESSOR on HTMLElement.prototype that
+    # now serialises created subtrees (see _serialize_inner_cre), so a plain
+    # js_get_prop here would call back into this function and never return.
+    # An own innerHTML exists exactly when the page ASSIGNED one, which is the
+    # case this branch wants.
+    hv: int32 = js_undefined()
+    if js_has_own(co, cast[Ptr[uint8]]("innerHTML"), 9) != 0:
+        hv = js_get_prop(co, cast[Ptr[uint8]]("innerHTML"), 9)
     hp: Ptr[uint8] = js_str_ptr(hv)
     hn: int32 = _cstr_len(hp)
     if hn > 0 and _is_undef_str(hp, hn) == 0:
@@ -8020,6 +8241,35 @@ def _serialize_inner_of(idx: int32) -> int32:
     while a < ap_n:
         if ap_removed[a] == 0 and ap_parent[a] == idx:
             _emit_created(ap_child[a])
+        a = a + 1
+    v: int32 = js_new_string(&rw_buf[0], rw_len)
+    rw_len = save_rw
+    g_ser_mode = 0
+    he_click_links = save_links
+    return v
+
+
+# innerHTML of a CREATED element (createElement / cloneNode / innerHTML
+# fragment) — the ones with no source span. Until this existed, `innerHTML` on
+# anything a script built read back `undefined`, which is not a small gap: the
+# whole ChildNode-before/after/replaceWith and ParentNode-prepend/
+# replaceChildren family asserts on `parent.innerHTML` after building `parent`
+# with document.createElement, so 176 subtests could never pass no matter how
+# correct the mutation methods were.
+#
+# Reuses _emit_created in g_ser_mode (the DOM-serialisation mode that drops the
+# renderer's synthetic event-link wraps), exactly as _serialize_inner_of does
+# for source elements.
+def _serialize_inner_cre(cid: int32) -> int32:
+    save_links: int32 = he_click_links
+    save_rw: uint64 = rw_len
+    he_click_links = 0
+    g_ser_mode = 1
+    rw_len = 0
+    a: int32 = 0
+    while a < cc_n:
+        if cc_removed[a] == 0 and cc_owner[a] == cid:
+            _emit_created(cc_child[a])
         a = a + 1
     v: int32 = js_new_string(&rw_buf[0], rw_len)
     rw_len = save_rw

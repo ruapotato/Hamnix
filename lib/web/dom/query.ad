@@ -1260,6 +1260,28 @@ def _attach_node_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_ISDEFAULTNS))
 
 
+# The ChildNode mixin: before / after / replaceWith. Per the DOM spec these live
+# on Element, CharacterData (Text/Comment/ProcessingInstruction) and
+# DocumentType — NOT on Node, Document or DocumentFragment, and WPT's
+# dom/historical.html and the idlharness files check exactly that boundary.
+def _attach_childnode_mixin(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("before"), 6, \
+                js_new_native_fn(js_hbase + NID_CN_BEFORE))
+    js_set_prop(p, cast[Ptr[uint8]]("after"), 5, \
+                js_new_native_fn(js_hbase + NID_CN_AFTER))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceWith"), 11, \
+                js_new_native_fn(js_hbase + NID_CN_REPLWITH))
+
+
+# The ParentNode mixin: prepend / replaceChildren (append already lives on the
+# element natives). Element, Document and DocumentFragment only.
+def _attach_parentnode_mixin(p: int32):
+    js_set_prop(p, cast[Ptr[uint8]]("prepend"), 7, \
+                js_new_native_fn(js_hbase + NID_PN_PREPEND))
+    js_set_prop(p, cast[Ptr[uint8]]("replaceChildren"), 15, \
+                js_new_native_fn(js_hbase + NID_PN_REPLKIDS))
+
+
 # The stateless half: every element method whose behaviour depends only on the
 # receiver (`this`), so ONE function object can serve every element.
 def _attach_el_natives(o: int32):

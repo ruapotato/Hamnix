@@ -1102,6 +1102,7 @@ NID_CN_BEFORE:     int32 = 173       # node.before(...nodes)
 NID_CN_AFTER:      int32 = 174       # node.after(...nodes)
 NID_CN_REPLWITH:   int32 = 175       # node.replaceWith(...nodes)
 NID_PN_PREPEND:    int32 = 176       # parent.prepend(...nodes)
+NID_PN_REPLKIDS:   int32 = 187       # parent.replaceChildren(...nodes)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1115,6 +1116,7 @@ NID_GETROOTNODE:   int32 = 183       # node.getRootNode()
 NID_LOOKUPNSURI:   int32 = 184       # node.lookupNamespaceURI(prefix)
 NID_LOOKUPPREFIX:  int32 = 185       # node.lookupPrefix(ns)
 NID_ISDEFAULTNS:   int32 = 186       # node.isDefaultNamespace(ns)
+#      (187 is NID_PN_REPLKIDS, declared with the rest of the ParentNode set)
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every

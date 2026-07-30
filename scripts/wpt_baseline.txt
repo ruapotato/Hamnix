@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 2032
+#!PASS_FLOOR 2136
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -445,6 +445,7 @@ dom/events/Event-dispatch-click.html	disconnected checkbox should be checked fro
 dom/events/Event-dispatch-click.html	disconnected radio should be checked
 dom/events/Event-dispatch-click.html	disconnected radio should be checked from dispatchEvent(new MouseEvent('click'))
 dom/events/Event-dispatch-click.html	look at parents only when event bubbles
+dom/events/Event-dispatch-click.html	look at parents when event bubbles
 dom/events/Event-dispatch-click.html	pick the first with activation behavior <input type=checkbox>
 dom/events/Event-dispatch-click.html	pick the first with activation behavior <input type=radio>
 dom/events/Event-dispatch-detached-click.html	Click event can be dispatched to an element that is not in the document.
@@ -641,15 +642,11 @@ dom/lists/DOMTokenList-iteration.html	classList.keys
 dom/lists/DOMTokenList-iteration.html	classList.values
 dom/lists/DOMTokenList-stringifier.html	Untitled
 dom/lists/DOMTokenList-value.html	Untitled
-dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Comment)
 dom/nodes/CharacterData-appendChild.html	Comment.appendChild(ProcessingInstruction)
-dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Text)
 dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Comment)
 dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(ProcessingInstruction)
 dom/nodes/CharacterData-appendChild.html	ProcessingInstruction.appendChild(Text)
-dom/nodes/CharacterData-appendChild.html	Text.appendChild(Comment)
 dom/nodes/CharacterData-appendChild.html	Text.appendChild(ProcessingInstruction)
-dom/nodes/CharacterData-appendChild.html	Text.appendChild(Text)
 dom/nodes/CharacterData-appendData.html	Comment.appendData('')
 dom/nodes/CharacterData-appendData.html	Comment.appendData('', 'bar')
 dom/nodes/CharacterData-appendData.html	Comment.appendData('bar')
@@ -790,126 +787,80 @@ dom/nodes/CharacterData-surrogates.html	Text.substringData() splitting surrogate
 dom/nodes/ChildNode-after.html	Comment.after() on a child without any parent.
 dom/nodes/ChildNode-after.html	Comment.after() when pre-insert behaves like append.
 dom/nodes/ChildNode-after.html	Comment.after() with all siblings of child as arguments.
-dom/nodes/ChildNode-after.html	Comment.after() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-after.html	Comment.after() with context object itself as the argument.
 dom/nodes/ChildNode-after.html	Comment.after() with null as an argument.
 dom/nodes/ChildNode-after.html	Comment.after() with one element and text as arguments.
 dom/nodes/ChildNode-after.html	Comment.after() with one sibling of child and text as arguments.
 dom/nodes/ChildNode-after.html	Comment.after() with only one element as an argument.
 dom/nodes/ChildNode-after.html	Comment.after() with only text as an argument.
-dom/nodes/ChildNode-after.html	Comment.after() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-after.html	Comment.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Comment.after() with undefined as an argument.
-dom/nodes/ChildNode-after.html	Comment.after() without any argument.
-dom/nodes/ChildNode-after.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-after.html	Element.after() on a child without any parent.
 dom/nodes/ChildNode-after.html	Element.after() when pre-insert behaves like append.
 dom/nodes/ChildNode-after.html	Element.after() with all siblings of child as arguments.
 dom/nodes/ChildNode-after.html	Element.after() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-after.html	Element.after() with context object itself as the argument.
-dom/nodes/ChildNode-after.html	Element.after() with null as an argument.
-dom/nodes/ChildNode-after.html	Element.after() with one element and text as arguments.
 dom/nodes/ChildNode-after.html	Element.after() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-after.html	Element.after() with only one element as an argument.
-dom/nodes/ChildNode-after.html	Element.after() with only text as an argument.
 dom/nodes/ChildNode-after.html	Element.after() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-after.html	Element.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Element.after() with undefined as an argument.
-dom/nodes/ChildNode-after.html	Element.after() without any argument.
 dom/nodes/ChildNode-after.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-after.html	Text.after() on a child without any parent.
 dom/nodes/ChildNode-after.html	Text.after() when pre-insert behaves like append.
 dom/nodes/ChildNode-after.html	Text.after() with all siblings of child as arguments.
 dom/nodes/ChildNode-after.html	Text.after() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-after.html	Text.after() with context object itself as the argument.
-dom/nodes/ChildNode-after.html	Text.after() with null as an argument.
-dom/nodes/ChildNode-after.html	Text.after() with one element and text as arguments.
 dom/nodes/ChildNode-after.html	Text.after() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-after.html	Text.after() with only one element as an argument.
-dom/nodes/ChildNode-after.html	Text.after() with only text as an argument.
 dom/nodes/ChildNode-after.html	Text.after() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-after.html	Text.after() with the empty string as an argument.
 dom/nodes/ChildNode-after.html	Text.after() with undefined as an argument.
-dom/nodes/ChildNode-after.html	Text.after() without any argument.
 dom/nodes/ChildNode-after.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Comment.before() on a child without any parent.
 dom/nodes/ChildNode-before.html	Comment.before() when pre-insert behaves like prepend.
 dom/nodes/ChildNode-before.html	Comment.before() with all siblings of child as arguments.
-dom/nodes/ChildNode-before.html	Comment.before() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-before.html	Comment.before() with context object itself as the argument.
 dom/nodes/ChildNode-before.html	Comment.before() with null as an argument.
 dom/nodes/ChildNode-before.html	Comment.before() with one element and text as arguments.
 dom/nodes/ChildNode-before.html	Comment.before() with one sibling of child and text as arguments.
 dom/nodes/ChildNode-before.html	Comment.before() with only one element as an argument.
 dom/nodes/ChildNode-before.html	Comment.before() with only text as an argument.
-dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree.
-dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Comment.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Comment.before() with undefined as an argument.
-dom/nodes/ChildNode-before.html	Comment.before() without any argument.
 dom/nodes/ChildNode-before.html	Element.before() on a child without any parent.
 dom/nodes/ChildNode-before.html	Element.before() when pre-insert behaves like prepend.
 dom/nodes/ChildNode-before.html	Element.before() with all siblings of child as arguments.
 dom/nodes/ChildNode-before.html	Element.before() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-before.html	Element.before() with context object itself as the argument.
-dom/nodes/ChildNode-before.html	Element.before() with null as an argument.
-dom/nodes/ChildNode-before.html	Element.before() with one element and text as arguments.
 dom/nodes/ChildNode-before.html	Element.before() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-before.html	Element.before() with only one element as an argument.
-dom/nodes/ChildNode-before.html	Element.before() with only text as an argument.
 dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-before.html	Element.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Element.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Element.before() with undefined as an argument.
-dom/nodes/ChildNode-before.html	Element.before() without any argument.
 dom/nodes/ChildNode-before.html	Text.before() on a child without any parent.
 dom/nodes/ChildNode-before.html	Text.before() when pre-insert behaves like prepend.
 dom/nodes/ChildNode-before.html	Text.before() with all siblings of child as arguments.
 dom/nodes/ChildNode-before.html	Text.before() with context object itself and node as the arguments, switching positions.
 dom/nodes/ChildNode-before.html	Text.before() with context object itself as the argument.
-dom/nodes/ChildNode-before.html	Text.before() with null as an argument.
-dom/nodes/ChildNode-before.html	Text.before() with one element and text as arguments.
 dom/nodes/ChildNode-before.html	Text.before() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-before.html	Text.before() with only one element as an argument.
-dom/nodes/ChildNode-before.html	Text.before() with only text as an argument.
 dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree.
 dom/nodes/ChildNode-before.html	Text.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
 dom/nodes/ChildNode-before.html	Text.before() with the empty string as an argument.
 dom/nodes/ChildNode-before.html	Text.before() with undefined as an argument.
-dom/nodes/ChildNode-before.html	Text.before() without any argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() on a parentless child with two elements as arguments.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with empty string as an argument.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with null as an argument.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one element and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and child itself as arguments.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and text as arguments.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only one element as an argument.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with only text as an argument.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() without any argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() on a parentless child with two elements as arguments.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with empty string as an argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with null as an argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one element and text as arguments.
 dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and child itself as arguments.
 dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only one element as an argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only text as an argument.
 dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() without any argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() on a parentless child with two elements as arguments.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with empty string as an argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with null as an argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one element and text as arguments.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and child itself as arguments.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one sibling of child and text as arguments.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only one element as an argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only text as an argument.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with sibling of child as arguments.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with undefined as an argument.
-dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() without any argument.
 dom/nodes/Comment-constructor.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,null,false,function "function () { [native code] }"
 dom/nodes/DOMImplementation-createDocument.html	createDocument with missing arguments
@@ -1168,9 +1119,7 @@ dom/nodes/Node-appendChild.html	Appending a document
 dom/nodes/Node-appendChild.html	Appending null to a comment
 dom/nodes/Node-appendChild.html	Appending null to a doctype
 dom/nodes/Node-appendChild.html	Appending null to a text node
-dom/nodes/Node-appendChild.html	Appending to a comment
 dom/nodes/Node-appendChild.html	Appending to a doctype
-dom/nodes/Node-appendChild.html	Appending to a text node
 dom/nodes/Node-appendChild.html	WebIDL tests
 dom/nodes/Node-baseURI.html	For attributes in elements belonging to document fragments in document, baseURI should be document URL
 dom/nodes/Node-baseURI.html	For attributes in elements belonging to document fragments, baseURI should be document URL
@@ -1328,46 +1277,29 @@ dom/nodes/Node-cloneNode.html	implementation.createHTMLDocument
 dom/nodes/Node-cloneNode.html	node with children
 dom/nodes/Node-compareDocumentPosition.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Node-contains.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Comment must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node DocumentType must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node ProcessingInstruction must throw HIERARCHY_REQUEST_ERR.
-dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Text must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node Comment must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node DocumentType must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node ProcessingInstruction must throw TypeError.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with a non-Node first argument on a leaf node Text must throw TypeError.
-dom/nodes/Node-insertBefore.html	Calling insertBefore with a reference child whose parent is not the context node must throw a NotFoundError.
-dom/nodes/Node-insertBefore.html	Calling insertBefore with an inclusive ancestor of the context object must throw HIERARCHY_REQUEST_ERR.
 dom/nodes/Node-insertBefore.html	Calling insertBefore with second argument missing, or other than Node, null, or undefined, must throw TypeError.
 dom/nodes/Node-insertBefore.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
 dom/nodes/Node-insertBefore.html	If node is a doctype and parent is a document with an element, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is a doctype and parent is a document with another doctype, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
 dom/nodes/Node-insertBefore.html	If node is an Element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
-dom/nodes/Node-insertBefore.html	If the context node is a DocumentFragment, inserting a document or a doctype should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document and a doctype is following the reference child, inserting a DocumentFragment with an element should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document and a doctype is following the reference child, inserting an element should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document with and element child, appending a doctype should throw a HierarchyRequestError.
-dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a DocumentFragment that contains a text node or too many elements should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a DocumentFragment with an element before the doctype should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a DocumentFragment with an element if there already is an element child should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a doctype after the document element should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a doctype if there already is a doctype child should throw a HierarchyRequestError.
-dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a document or text node should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting an element before the doctype should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	If the context node is a document, inserting an element if there already is an element child should throw a HierarchyRequestError.
-dom/nodes/Node-insertBefore.html	If the context node is an element, inserting a document or a doctype should throw a HierarchyRequestError.
 dom/nodes/Node-insertBefore.html	Inserting a node before itself should not move the node
-dom/nodes/Node-insertBefore.html	Should check that 'node' is not an ancestor of 'parent' before checking whether 'child' is a child of 'parent'
 dom/nodes/Node-insertBefore.html	Should check the 'parent' type before checking whether 'child' is a child of 'parent'
 dom/nodes/Node-insertBefore.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' can be inserted into the document given the kids the document has right now.
-dom/nodes/Node-insertBefore.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
-dom/nodes/Node-insertBefore.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
 dom/nodes/Node-isConnected-shadow-dom.html	Node.isConnected in a closed shadow tree
 dom/nodes/Node-isConnected-shadow-dom.html	Node.isConnected in a open shadow tree
 dom/nodes/Node-isConnected.html	Test with iframes
@@ -1450,20 +1382,13 @@ dom/nodes/Node-removeChild.html	Passing a non-detached text from a frame documen
 dom/nodes/Node-removeChild.html	Passing a non-detached text from a synthetic document to removeChild should not affect it.
 dom/nodes/Node-removeChild.html	Passing a non-detached text from the main document to removeChild should not affect it.
 dom/nodes/Node-removeChild.html	Passing a value that is not a Node reference to removeChild should throw TypeError.
-dom/nodes/Node-replaceChild.html	If child's parent is not the context node, a NotFoundError exception should be thrown
-dom/nodes/Node-replaceChild.html	If node is an inclusive ancestor of the context node, a HierarchyRequestError should be thrown.
-dom/nodes/Node-replaceChild.html	If the context node is a DocumentFragment, inserting a document or a doctype should throw a HierarchyRequestError.
-dom/nodes/Node-replaceChild.html	If the context node is a document (without element children), inserting a DocumentFragment that contains multiple elements should throw a HierarchyRequestError.
-dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a DocumentFragment that contains a text node or too many elements should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a DocumentFragment with an element before the doctype should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a DocumentFragment with an element if there already is an element child should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a doctype after the document element should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a doctype if there already is a doctype child should throw a HierarchyRequestError.
-dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a document or text node should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a new doctype should work.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting an element before the doctype should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is a document, inserting an element if there already is an element child should throw a HierarchyRequestError.
-dom/nodes/Node-replaceChild.html	If the context node is an element, inserting a document or a doctype should throw a HierarchyRequestError.
 dom/nodes/Node-replaceChild.html	If the context node is not a node that can contain children, a HierarchyRequestError exception should be thrown
 dom/nodes/Node-replaceChild.html	Passing null to replaceChild should throw a TypeError.
 dom/nodes/Node-replaceChild.html	Replacing a node with its next sibling should work (2 children)
@@ -1472,11 +1397,8 @@ dom/nodes/Node-replaceChild.html	Replacing an element with a DocumentFragment sh
 dom/nodes/Node-replaceChild.html	Replacing the document element with a DocumentFragment containing a single element and comments should work.
 dom/nodes/Node-replaceChild.html	Replacing the document element with a DocumentFragment containing a single element should work.
 dom/nodes/Node-replaceChild.html	Replacing the document element with a single element should work.
-dom/nodes/Node-replaceChild.html	Should check that 'node' is not an ancestor of 'parent' before checking whether 'child' is a child of 'parent'
 dom/nodes/Node-replaceChild.html	Should check the 'parent' type before checking whether 'child' is a child of 'parent'
 dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' can be inserted into the document given the kids the document has right now.
-dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
-dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
 dom/nodes/Node-replaceChild.html	replaceChild should work in the presence of mutation events.
 dom/nodes/Node-textContent.html	DocumentFragment with children
 dom/nodes/Node-textContent.html	DocumentFragment with children set to ""
@@ -1571,21 +1493,9 @@ dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with only one eleme
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with only text as an argument, on a parent having no child.
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with undefined as an argument, on a parent having no child.
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() without any argument, on a parent having no child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having a child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having no child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with one element and text as argument, on a parent having a child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with only one element as an argument, on a parent having no child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with only text as an argument, on a parent having no child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() with undefined as an argument, on a parent having no child.
-dom/nodes/ParentNode-prepend.html	Element.prepend() without any argument, on a parent having no child.
 dom/nodes/ParentNode-prepend.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-prepend.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-prepend.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
 dom/nodes/ParentNode-prepend.html	If node is a doctype and parent is a document with another doctype, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-prepend.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-prepend.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
 dom/nodes/ParentNode-prepend.html	If node is an Element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-prepend.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
 dom/nodes/ParentNode-querySelector-All.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/ParentNode-querySelector-case-insensitive.html	querySelector
 dom/nodes/ParentNode-querySelector-case-insensitive.html	querySelectorAll
@@ -1612,21 +1522,6 @@ dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() wit
 dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() without any argument, on a parent having a child.
 dom/nodes/ParentNode-replaceChildren.html	DocumentFragment.replaceChildren() without any argument, on a parent having no child.
 dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() should move nodes in the right order
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with null as an argument, on a parent having a child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with null as an argument, on a parent having no child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with one element and text as argument, on a parent having a child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with only one element as an argument, on a parent having no child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with only text as an argument, on a parent having no child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with undefined as an argument, on a parent having no child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() without any argument, on a parent having a child.
-dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() without any argument, on a parent having no child.
-dom/nodes/ParentNode-replaceChildren.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-replaceChildren.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-replaceChildren.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-replaceChildren.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-replaceChildren.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-replaceChildren.html	There should be MutationRecords for the nodes removed from another parent node.
-dom/nodes/ParentNode-replaceChildren.html	There should be a MutationRecord for the node removed from another parent node.
 dom/nodes/Text-constructor.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Text-splitText.html	Split child
 dom/nodes/Text-splitText.html	Split empty text
@@ -1803,9 +1698,7 @@ dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected cont
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from a disconnected container to a disconnected new parent without a shared ancestor throws a HIERARCHY_REQUEST_ERR
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from connected->disconnected throws a HIERARCHY_REQUEST_ERR
 dom/nodes/moveBefore/Node-moveBefore.html	Moving a node from disconnected->connected throws a HIERARCHY_REQUEST_ERR
-dom/nodes/moveBefore/Node-moveBefore.html	No custom element callbacks are run during disconnected moveBefore()
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore on a paragraph's Text node child
-dom/nodes/moveBefore/Node-moveBefore.html	moveBefore with an Element or CharacterData succeeds
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore with reference child whose parent is NOT the destination parent (context node) throws a NotFoundError.
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() CharacterData into a Document
 dom/nodes/moveBefore/Node-moveBefore.html	moveBefore() into a Document throws a HierarchyRequestError
@@ -3309,6 +3202,56 @@ url/failure.html	Loading data…
 +dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
 +dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/2000/svg namespace should be undefined.
 +dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in null namespace should be undefined.
++dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Comment)
++dom/nodes/CharacterData-appendChild.html	Comment.appendChild(Text)
++dom/nodes/CharacterData-appendChild.html	Text.appendChild(Comment)
++dom/nodes/CharacterData-appendChild.html	Text.appendChild(Text)
++dom/nodes/ChildNode-after.html	Comment.after() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-after.html	Comment.after() with some siblings of child as arguments; no changes in tree.
++dom/nodes/ChildNode-after.html	Comment.after() without any argument.
++dom/nodes/ChildNode-after.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
++dom/nodes/ChildNode-after.html	Element.after() with null as an argument.
++dom/nodes/ChildNode-after.html	Element.after() with one element and text as arguments.
++dom/nodes/ChildNode-after.html	Element.after() with only one element as an argument.
++dom/nodes/ChildNode-after.html	Element.after() with only text as an argument.
++dom/nodes/ChildNode-after.html	Element.after() without any argument.
++dom/nodes/ChildNode-after.html	Text.after() with null as an argument.
++dom/nodes/ChildNode-after.html	Text.after() with one element and text as arguments.
++dom/nodes/ChildNode-after.html	Text.after() with only one element as an argument.
++dom/nodes/ChildNode-after.html	Text.after() with only text as an argument.
++dom/nodes/ChildNode-after.html	Text.after() without any argument.
++dom/nodes/ChildNode-before.html	Comment.before() with context object itself and node as the arguments, switching positions.
++dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree.
++dom/nodes/ChildNode-before.html	Comment.before() with some siblings of child as arguments; no changes in tree; viable sibling is first child.
++dom/nodes/ChildNode-before.html	Comment.before() without any argument.
++dom/nodes/ChildNode-before.html	Element.before() with null as an argument.
++dom/nodes/ChildNode-before.html	Element.before() with one element and text as arguments.
++dom/nodes/ChildNode-before.html	Element.before() with only one element as an argument.
++dom/nodes/ChildNode-before.html	Element.before() with only text as an argument.
++dom/nodes/ChildNode-before.html	Element.before() without any argument.
++dom/nodes/ChildNode-before.html	Text.before() with null as an argument.
++dom/nodes/ChildNode-before.html	Text.before() with one element and text as arguments.
++dom/nodes/ChildNode-before.html	Text.before() with only one element as an argument.
++dom/nodes/ChildNode-before.html	Text.before() with only text as an argument.
++dom/nodes/ChildNode-before.html	Text.before() without any argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() on a parentless child with two elements as arguments.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with empty string as an argument.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() with one sibling of child and child itself as arguments.
++dom/nodes/ChildNode-replaceWith.html	Comment.replaceWith() without any argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() on a parentless child with two elements as arguments.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with empty string as an argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with null as an argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with one element and text as arguments.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only one element as an argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() with only text as an argument.
++dom/nodes/ChildNode-replaceWith.html	Element.replaceWith() without any argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() on a parentless child with two elements as arguments.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with empty string as an argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with null as an argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with one element and text as arguments.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only one element as an argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with only text as an argument.
++dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() without any argument.
 +dom/nodes/DOMImplementation-createDocument.html	Untitled
 +dom/nodes/DOMImplementation-createDocument.html	createDocument test: "",":foo",null,"INVALID_CHARACTER_ERR"
 +dom/nodes/DOMImplementation-createDocument.html	createDocument test: "","f:oo",null,"NAMESPACE_ERR"
@@ -4358,7 +4301,9 @@ url/failure.html	Loading data…
 +dom/nodes/MutationObserver-sanity.html	Should not throw if childList is true
 +dom/nodes/MutationObserver-takeRecords.html	No more records present
 +dom/nodes/MutationObserver-takeRecords.html	unreachabled test
++dom/nodes/Node-appendChild.html	Appending to a comment
 +dom/nodes/Node-appendChild.html	Appending to a leaf node.
++dom/nodes/Node-appendChild.html	Appending to a text node
 +dom/nodes/Node-baseURI.html	For elements belonging to document fragments in document, baseURI should be document URL
 +dom/nodes/Node-baseURI.html	For elements belonging to document fragments, baseURI should be document URL
 +dom/nodes/Node-baseURI.html	For elements belonging to document, baseURI should be document URL
@@ -4373,6 +4318,23 @@ url/failure.html	Loading data…
 +dom/nodes/Node-constants.html	Constants for nodeType on Node interface object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Node prototype object.
 +dom/nodes/Node-constants.html	Constants for nodeType on Text object.
++dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Comment must throw HIERARCHY_REQUEST_ERR.
++dom/nodes/Node-insertBefore.html	Calling insertBefore an a leaf node Text must throw HIERARCHY_REQUEST_ERR.
++dom/nodes/Node-insertBefore.html	Calling insertBefore with a reference child whose parent is not the context node must throw a NotFoundError.
++dom/nodes/Node-insertBefore.html	Calling insertBefore with an inclusive ancestor of the context object must throw HIERARCHY_REQUEST_ERR.
++dom/nodes/Node-insertBefore.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If node is a doctype and parent is a document with another doctype, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
++dom/nodes/Node-insertBefore.html	If the context node is a DocumentFragment, inserting a document or a doctype should throw a HierarchyRequestError.
++dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a DocumentFragment that contains a text node or too many elements should throw a HierarchyRequestError.
++dom/nodes/Node-insertBefore.html	If the context node is a document, inserting a document or text node should throw a HierarchyRequestError.
++dom/nodes/Node-insertBefore.html	If the context node is an element, inserting a document or a doctype should throw a HierarchyRequestError.
++dom/nodes/Node-insertBefore.html	Should check that 'node' is not an ancestor of 'parent' before checking whether 'child' is a child of 'parent'
++dom/nodes/Node-insertBefore.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
++dom/nodes/Node-insertBefore.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
 +dom/nodes/Node-isEqualNode.html	comments should be compared on data
 +dom/nodes/Node-isEqualNode.html	doctypes should be compared on name, public ID, and system ID
 +dom/nodes/Node-isEqualNode.html	document fragments should not be compared based on properties
@@ -4447,7 +4409,17 @@ url/failure.html	Loading data…
 +dom/nodes/Node-normalize.html	Empty text nodes
 +dom/nodes/Node-normalize.html	Empty text nodes separated by a non-empty text node
 +dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (element)
++dom/nodes/Node-replaceChild.html	If child's parent is not the context node, a NotFoundError exception should be thrown
++dom/nodes/Node-replaceChild.html	If node is an inclusive ancestor of the context node, a HierarchyRequestError should be thrown.
++dom/nodes/Node-replaceChild.html	If the context node is a DocumentFragment, inserting a document or a doctype should throw a HierarchyRequestError.
++dom/nodes/Node-replaceChild.html	If the context node is a document (without element children), inserting a DocumentFragment that contains multiple elements should throw a HierarchyRequestError.
++dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a DocumentFragment that contains a text node or too many elements should throw a HierarchyRequestError.
++dom/nodes/Node-replaceChild.html	If the context node is a document, inserting a document or text node should throw a HierarchyRequestError.
++dom/nodes/Node-replaceChild.html	If the context node is an element, inserting a document or a doctype should throw a HierarchyRequestError.
 +dom/nodes/Node-replaceChild.html	Replacing a node with itself should not move the node
++dom/nodes/Node-replaceChild.html	Should check that 'node' is not an ancestor of 'parent' before checking whether 'child' is a child of 'parent'
++dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
++dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
 +dom/nodes/Node-textContent.html	DocumentFragment without children set to ""
 +dom/nodes/Node-textContent.html	For a Comment with data, textContent should be that data
 +dom/nodes/Node-textContent.html	For a Text with data, textContent should be that data
@@ -4459,6 +4431,18 @@ url/failure.html	Loading data…
 +dom/nodes/NodeList-Iterable.html	NodeList is iterable via for-of loop.
 +dom/nodes/NodeList-Iterable.html	NodeList responds to Object.keys correctly
 +dom/nodes/NodeList-Iterable.html	live NodeLists are for-of iterable and update appropriately
++dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having a child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having no child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() with one element and text as argument, on a parent having a child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() with only one element as an argument, on a parent having no child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() with only text as an argument, on a parent having no child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() with undefined as an argument, on a parent having no child.
++dom/nodes/ParentNode-prepend.html	Element.prepend() without any argument, on a parent having no child.
++dom/nodes/ParentNode-prepend.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-prepend.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-prepend.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-prepend.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-prepend.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
 +dom/nodes/ParentNode-querySelector-escapes.html	"&B" should match with "#\\26 B"
 +dom/nodes/ParentNode-querySelector-escapes.html	"--" should match with "#--"
 +dom/nodes/ParentNode-querySelector-escapes.html	"---" should match with "#---"
@@ -4529,6 +4513,19 @@ url/failure.html	Loading data…
 +dom/nodes/ParentNode-querySelectors-exclusive.html	Untitled
 +dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelector
 +dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelectorAll
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with null as an argument, on a parent having a child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with null as an argument, on a parent having no child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with one element and text as argument, on a parent having a child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with only one element as an argument, on a parent having no child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with only text as an argument, on a parent having no child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() with undefined as an argument, on a parent having no child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() without any argument, on a parent having a child.
++dom/nodes/ParentNode-replaceChildren.html	Element.replaceChildren() without any argument, on a parent having no child.
++dom/nodes/ParentNode-replaceChildren.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-replaceChildren.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-replaceChildren.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-replaceChildren.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
++dom/nodes/ParentNode-replaceChildren.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
 +dom/nodes/attributes-namednodemap.html	setting an attribute should not overwrite the length property of an `NamedNodeMap` object
 +dom/nodes/attributes-namednodemap.html	setting an attribute should not overwrite the methods defined by prototype ancestors of an `NamedNodeMap` object
 +dom/nodes/attributes.html	A namespace is required to use a prefix.
