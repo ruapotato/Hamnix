@@ -39,6 +39,11 @@ from arch.x86.kernel.apic import ioapic_redirect_isa
 # symbol resolution, not a load-order dependency.
 from drivers.input.atkbd import atkbd_process_byte
 from arch.x86.kernel.irq import register_irq_handler
+# Motion-to-photon instrument (arch/x86/kernel/time.ad). t0 is stamped HERE,
+# at the moment a packet lands in the ring, because that is the earliest point
+# the kernel can see the event; stamping it any later would silently exclude
+# the ring wait, which is exactly the half of the interval under suspicion.
+from arch.x86.kernel.time import m2p_note_ingest
 
 
 # --- i8042 ports + bits -------------------------------------------------
@@ -304,6 +309,7 @@ def _mouse_ring_push(dx: int32, dy: int32, buttons: uint32, dz: int32):
     mouse_ring[mouse_ring_tail].dz = dz      # IntelliMouse wheel notch
     mouse_ring[mouse_ring_tail].aflag = 0   # PS/2 packets are relative
     mouse_ring_tail = nxt
+    m2p_note_ingest()
 
 
 # Scroll-wheel delta of the event most recently returned by mouse_rx_pop().
@@ -419,6 +425,7 @@ def mouse_rx_push(encoded: int32) -> int32:
     mouse_ring[mouse_ring_tail].dz = 0      # no-wheel path: legacy-compatible
     mouse_ring[mouse_ring_tail].aflag = 0   # relative event
     mouse_ring_tail = nxt
+    m2p_note_ingest()
     return 0
 
 
@@ -446,6 +453,7 @@ def mouse_rx_push_dz(encoded: int32, dz: int32) -> int32:
     mouse_ring[mouse_ring_tail].dz = dz
     mouse_ring[mouse_ring_tail].aflag = 0   # relative event
     mouse_ring_tail = nxt
+    m2p_note_ingest()
     return 0
 
 
@@ -468,6 +476,7 @@ def mouse_rx_push_abs(ax: int32, ay: int32, buttons: uint32,
     mouse_ring[mouse_ring_tail].dz = dz
     mouse_ring[mouse_ring_tail].aflag = 1   # absolute event
     mouse_ring_tail = nxt
+    m2p_note_ingest()
     return 0
 
 

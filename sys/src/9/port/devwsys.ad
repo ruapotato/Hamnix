@@ -237,6 +237,18 @@ from arch.x86.kernel.time import (
     ptrlat_get_b15, ptrlat_get_b30, ptrlat_get_b60, ptrlat_get_b120,
     ptrlat_get_b250, ptrlat_get_over,
 )
+# Wake->dispatch latency instrument (kernel/sched/core.ad). Exposed here for
+# the same reason `sysirq` is: /proc/self/ctl's `wklat` verb is uid-0-or-
+# hostowner only, so the instrument could never be armed from a live desktop
+# session (which runs as the default NOBODY uid). Until this existed the
+# scheduler disproof rested entirely on a kthread in a lightweight boot.
+from kernel.sched.core import wklat_ctl
+# Motion-to-photon instrument (arch/x86/kernel/time.ad). Two of its three
+# seams are here: t1 in _wsys_route_common (the pump has the packet) and t2
+# at the end of _wsys_present_cursor_locked (the sprite is in scanout).
+from arch.x86.kernel.time import (
+    m2p_ctl, m2p_note_service, m2p_note_photon,
+)
 
 
 # --- per-wid table ---------------------------------------------------
@@ -3401,6 +3413,39 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         if _wsys_scene_next_int(buf, &p0, count, &siv) == 0:
             siv = 2
         if sysirq_ctl(siv) == 0:
+            return -1
+        return cast[int64](count)
+
+    # `wklat <n>` — the WAKE->DISPATCH latency instrument + the wakeup
+    # preemption kill-switch (kernel/sched/core.ad).
+    #   0 wakeup preemption OFF   1 ON   2 reset+arm   3 report   4 disarm
+    #   5 start the in-kernel probe
+    # Parsed before the hostowner gate for exactly the reason `sysirq` and
+    # `ptrlat` are. /proc/self/ctl's `wklat` verb is uid-0-or-hostowner only,
+    # so on a real DE boot it answers "ctl write refused rc=-1" and measures
+    # nothing — which is why the scheduler measurement had, until now, only
+    # ever been taken against a kthread in a lightweight boot and never
+    # against a live desktop. Same instrument, same verbs, reachable surface.
+    # `m2p <n>` — MOTION-TO-PHOTON for the pointer: the age of a mouse packet
+    # at the instant its cursor pixels reach scanout, split into the delivery
+    # half and the compositor half (arch/x86/kernel/time.ad).
+    #   0 disarm   1 arm+reset   2 report   3 reset (stay armed)
+    # Default OFF: it costs an RDTSC on the input path and is only meaningful
+    # across a window someone deliberately opened. Before the hostowner gate
+    # for the same reason as every other instrument verb here.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "m2p") == 1:
+        mpv: int64 = 2
+        if _wsys_scene_next_int(buf, &p0, count, &mpv) == 0:
+            mpv = 2
+        if m2p_ctl(mpv) == 0:
+            return -1
+        return cast[int64](count)
+
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "wklat") == 1:
+        wkv: int64 = 3
+        if _wsys_scene_next_int(buf, &p0, count, &wkv) == 0:
+            wkv = 3
+        if wklat_ctl(wkv) == 0:
             return -1
         return cast[int64](count)
 
@@ -11673,6 +11718,11 @@ def _wsys_present_cursor_locked():
     wsys_cursor_prev_x = ox
     wsys_cursor_prev_y = oy
     wsys_cursor_drawn = 1
+    # m2p t2: both the restored old footprint and the new sprite are now in
+    # scanout — this is the photon. The early returns above deliberately do NOT
+    # close the interval: no pixels moved, so the packet is still un-serviced
+    # and its age keeps accruing until a present that really draws it.
+    m2p_note_photon()
 
 
 def _wsys_outline_erase_rect(rx: int64, ry: int64, rw: int64, rh: int64):
@@ -12958,6 +13008,10 @@ def wsys_de_is_live() -> int32:
 
 def _wsys_route_common(sx: int64, sy: int64, buttons: uint32, dz: int64):
     # Shared hit-test + focus + drag + event-forward logic.
+    # m2p t1: the pump has picked this packet out of the ring and cursor work
+    # starts here. Everything before this instant is INPUT DELIVERY; everything
+    # after it, up to the scanout flush, is the COMPOSITOR.
+    m2p_note_service()
     pressed: int32 = 0
     if (buttons & 1) != 0 and (wsys_prev_buttons & 1) == 0:
         pressed = 1
