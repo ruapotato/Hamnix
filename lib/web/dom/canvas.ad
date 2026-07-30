@@ -4663,6 +4663,26 @@ def _js_host_dispatch(id: int32) -> int32:
         return js_get_prop(g_js_location, cast[Ptr[uint8]]("href"), cast[uint64](4))
     if rel == NID_LOC_RELOAD:
         return js_undefined()
+    if rel == NID_NAMED_GLOBAL:
+        # HTML "named access on the Window object". The interpreter reached
+        # here only because ordinary scope lookup MISSED, so answering
+        # undefined leaves the ReferenceError exactly as it was.
+        nmv: int32 = js_named_global_value()
+        nmn: int32 = js_str_bytelen(nmv)
+        if nmn <= 0 or nmn >= 256 or tx_built == 0:
+            return js_undefined()
+        nmp: Ptr[uint8] = js_str_bytes(nmv)
+        nk: int32 = 0
+        while nk < nmn:
+            dom_idtmp[nk] = nmp[nk]
+            nk = nk + 1
+        dom_idtmp[nmn] = 0
+        if _dom_find_by_id(&dom_idtmp[0], nmn) != 0:
+            return _dom_register_el()
+        ncid: int32 = _cre_find_by_id(&dom_idtmp[0], nmn)
+        if ncid >= 0:
+            return ncid
+        return js_undefined()
     if rel == NID_GETBYID:
         if js_arg_count() < 1:
             return js_null()
@@ -8609,6 +8629,7 @@ def _run_scripts() -> int32:
     js_hbase = js_host_base()
     js_set_host_dispatch(cast[Fn[int32, int32]](cast[uint64](_js_host_dispatch)))
     js_set_member_hook(cast[Fn[int32, int32]](cast[uint64](_js_member_set_hook)))
+    js_set_named_global_hook(js_hbase + NID_NAMED_GLOBAL)
     _js_build_document()
     _dom_build_tree_index()                               # parent/child overlay (round 2)
     js_ctx_live = 1

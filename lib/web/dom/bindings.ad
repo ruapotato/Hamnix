@@ -1303,6 +1303,9 @@ NID_PSIB_ACC:     int32 = 241        # get el.previousSibling
 NID_PSIB_ACC_SET: int32 = 242        # set el.previousSibling
 NID_NSIB_ACC:     int32 = 243        # get el.nextSibling
 NID_NSIB_ACC_SET: int32 = 244        # set el.nextSibling
+# HTML "named access on the Window object": an id in the document is a global.
+# Answered only after ordinary scope lookup misses (see g_named_lookup_nid).
+NID_NAMED_GLOBAL: int32 = 245        # resolve a bare identifier as an element id
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries

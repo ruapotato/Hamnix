@@ -767,6 +767,17 @@ def js_set_host_dispatch(fn: Fn[int32, int32]):
     host_dispatch_set = 1
 
 
+# ---- named-global seam (see g_named_lookup_nid) ----
+# Install the host NID that answers an unresolved bare identifier, and read the
+# name back inside it. `nid` is the FULL native id (js_hbase + rel).
+def js_set_named_global_hook(nid: int32):
+    g_named_lookup_nid = nid
+
+
+def js_named_global_value() -> int32:
+    return v_string_id(g_named_lookup_str)
+
+
 # ---- member-set notification seam (see member_set) ----
 def js_set_member_hook(fn: Fn[int32, int32]):
     member_set_hook_addr = cast[uint64](fn)

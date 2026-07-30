@@ -872,6 +872,17 @@ err_str:  Array[256, uint8]
 host_dispatch_addr: uint64 = 0
 host_dispatch_set: int32 = 0
 
+# ---- named-global seam (HTML "named access on the Window object") ----
+# `<div id=main>` makes `main` a global in every browser, and WPT leans on it
+# heavily: 49 subtests in one file died on "main is not defined", plus target /
+# style / el / aform / inp / ta3 / host / scroller / templateLink elsewhere.
+# The interpreter stays DOM-FREE: on an UNRESOLVED identifier it calls the host
+# dispatcher with this NID and publishes the name in g_named_lookup_str; the
+# DOM layer answers with an element or undefined. Zero cost for a name that
+# resolves, which is every name on a page that does not use the idiom.
+g_named_lookup_nid: int32 = 0        # 0 = no host installed
+g_named_lookup_str: int32 = 0        # strid of the name being resolved
+
 # ---- member-set notification seam ----
 # An embedder may register a hook that fires AFTER every `obj.prop = val` on a
 # plain object (not arrays/globals). The browser uses it so assigning
