@@ -178,22 +178,73 @@ else
     echo "[cow_vma_origin] control OK: arm 23 run3 born=$db23"
 fi
 
-# THE ASSERTION, on the LAST inter-run delta only. By run 3 every one-time
-# population is already born, so a non-zero net is a frame this run's share
-# created and this run's teardown did not destroy — per run, counted.
+# THE ASSERTION, on the LAST inter-run delta — with the OWNER DISCRIMINATOR.
+#
+# A non-zero net alone is NOT a leak, and asserting that it is would be the
+# same category error as asserting absolute born == died. `cow_share_page`
+# takes a frame 0 -> 2 and the child's death returns it to 1: a page the
+# parent faulted in AFTER the previous fork takes its first refcount at THIS
+# fork and stays at 1 because the parent still maps it. That is a growing
+# resident set in a live process, and no teardown can or should reclaim it.
+#
+# The measured discriminator is the one the census introduced: a genuinely
+# STRANDED frame has either a DEAD owner or a live owner that NO LONGER MAPS
+# it. `track org N` reports exactly that per survivor. So:
+#
+#   net == 0                                             -> closed
+#   net > 0 and owner-dead == 0 and every survivor is
+#            still mapped by its live owner                -> residency
+#   anything else                                          -> LEAK
+#
+# `owner-unrecorded` is stated rather than swept: those frames were allocated
+# before `track full` armed the site table, so their owner genuinely is not
+# known and this gate does not pretend otherwise.
 for arm in 23 24; do
     line=$(awk -v a="$arm" '$1==a{print}' /tmp/.cvo_deltas.$$)
     [ -z "$line" ] && continue
     b3=$(echo "$line" | awk '{print $4}')
     d3=$(echo "$line" | awk '{print $5}')
     net=$((b3 - d3))
-    if [ "$net" -ne 0 ]; then
-        echo "[cow_vma_origin] UNMATCHED: arm=$arm run3 born=$b3 died=$d3 net=$net"
-        echo "                 — vma_fork_copy created $net frame(s) this run"
-        echo "                 that its teardown never destroyed."
-        fail=1
-    else
+    if [ "$net" -eq 0 ]; then
         echo "[cow_vma_origin] closed: arm=$arm run3 born=$b3 died=$d3 net=0"
+        continue
+    fi
+    dead=$(grep -oP "\[orgl\] org=$arm owner-dead=\K[0-9]+" "$LOG" | tail -1 || true)
+    unrec=$(grep -oP "\[orgl\] org=$arm owner-dead=[0-9]+ owner-unrecorded=\K[0-9]+" "$LOG" | tail -1 || true)
+    if [ -z "${dead:-}" ]; then
+        echo "[cow_vma_origin] FAIL: arm=$arm net=$net and NO \`track org $arm\`"
+        echo "                 dump to adjudicate it — inconclusive, not green."
+        fail=1
+        continue
+    fi
+    # Every detailed survivor must report its owner still mapping THAT frame.
+    stray=$(python3 - "$LOG" "$arm" <<'PY'
+import re, sys
+log = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').splitlines()
+arm = sys.argv[2]
+cur_phys, bad, inblock = None, 0, False
+for ln in log:
+    m = re.search(r'\[orgl\] org=(\d+) live\[\d+\] phys=(0x[0-9a-f]+)', ln)
+    if m:
+        inblock = (m.group(1) == arm)
+        cur_phys = m.group(2) if inblock else None
+        continue
+    if not inblock or cur_phys is None:
+        continue
+    m = re.search(r'owner maps here phys=(0x[0-9a-f]+)', ln)
+    if m and int(m.group(1), 16) != int(cur_phys, 16):
+        bad += 1
+print(bad)
+PY
+)
+    if [ "$dead" -eq 0 ] && [ "${stray:-1}" -eq 0 ]; then
+        echo "[cow_vma_origin] RESIDENCY (not a leak): arm=$arm run3 net=$net;" \
+             "owner-dead=0, every survivor still mapped by its live owner" \
+             "(owner-unrecorded=$unrec)"
+    else
+        echo "[cow_vma_origin] LEAK: arm=$arm run3 born=$b3 died=$d3 net=$net," \
+             "owner-dead=$dead, survivors no longer mapped by owner=$stray"
+        fail=1
     fi
 done
 rm -f /tmp/.cvo_deltas.$$
