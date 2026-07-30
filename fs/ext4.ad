@@ -2502,6 +2502,191 @@ def ext4_largedir_selftest():
         printk0("[ext4-largedir] FAIL\n")
 
 
+# --- LINEAR directory GROWTH self-test ---------------------------
+#
+# Gated on /etc/ext4-dirgrow-test (planted by build_initramfs.py when
+# ENABLE_EXT4_DIRGROW_TEST=1). Proves ext4_dir_insert GROWS a plain
+# (non-htree) directory past the one-block ceiling it used to fail at.
+#
+# Before the fix, ext4_dir_insert only ever examined the LAST block of a
+# linear directory; when that block ran out of slack it returned -1 and
+# every consumer above it lost the remaining files (the 199-package
+# repository mirror that shipped as 7 packages). At 4 KiB blocks with
+# ~25-char names the ceiling is ~112 entries.
+#
+#   (1) resolve the on-disk "growdir" directory and assert it is LINEAR
+#       (no EXT4_INDEX_FL) and exactly ONE block long,
+#   (2) create EXT4_DIRGROW_INSERT_COUNT files in it through the full
+#       ext4_create_file -> ext4_dir_insert path, recording the insert
+#       at which i_size first grew (that count IS the measured old
+#       ceiling — every insert past it used to fail),
+#   (3) assert the directory really grew (i_size spans several blocks),
+#   (4) look EVERY name back up and read its body byte, proving the
+#       dirent points at the right inode (no cross-linking / loss),
+#   (5) confirm the host-planted seed entries survived.
+# WRITES the mounted image, so opt-in via the marker.
+
+EXT4_DIRGROW_INSERT_COUNT: uint64 = 600
+# "hamnix-pkg-%06u.tar.zst" — 25 chars + NUL, the shape of the package
+# filenames whose loss motivated this gate.
+ext4_dirgrow_namebuf: Array[64, uint8]
+ext4_dirgrow_body:    Array[8, uint8]
+ext4_dirgrow_readbuf: Array[8, uint8]
+
+
+def _ext4_dirgrow_make_name(idx: uint64):
+    pfx: Ptr[uint8] = "hamnix-pkg-"
+    sfx: Ptr[uint8] = ".tar.zst"
+    i: uint64 = 0
+    while i < 11:
+        ext4_dirgrow_namebuf[i] = pfx[i]
+        i = i + 1
+    d: uint64 = idx
+    p: uint64 = 16
+    while p >= 11:
+        ext4_dirgrow_namebuf[p] = cast[uint8](0x30 + cast[uint8](d % 10))
+        d = d / 10
+        if p == 11:
+            p = 10                                           # exit
+        else:
+            p = p - 1
+    k: uint64 = 0
+    while k < 8:
+        ext4_dirgrow_namebuf[17 + k] = sfx[k]
+        k = k + 1
+    ext4_dirgrow_namebuf[25] = 0
+
+
+def ext4_dirgrow_selftest():
+    if ext4_blockdev_slot < 0:
+        printk0("[ext4-dirgrow] FAIL: ext4 not mounted\n")
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    ok_all: int32 = 1
+
+    dir_inum: uint32 = ext4_resolve_dir("growdir")
+    if dir_inum == 0:
+        printk0("[ext4-dirgrow] FAIL: cannot resolve /growdir\n")
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    dirbuf: Array[256, uint8]
+    if ext4_read_inode(cast[uint64](dir_inum), &dirbuf[0]) != 0:
+        printk0("[ext4-dirgrow] FAIL: cannot read growdir inode\n")
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    if ext4_inode_is_htree_dir(&dirbuf[0]) != 0:
+        printk0("[ext4-dirgrow] FAIL: growdir is an htree, not a linear dir\n")
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    blocks_before: uint64 = cast[uint64](
+        ext4_inode_size_lo(&dirbuf[0])) / ext4_block_size
+    if blocks_before != 1:
+        printk1("[ext4-dirgrow] FAIL: fixture growdir is %d blocks (want 1)\n",
+                blocks_before)
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    printk0("[ext4-dirgrow] PASS growdir is a 1-block LINEAR directory\n")
+
+    # A pre-existing seed must resolve up-front so we can prove the
+    # growth below does not lose it.
+    pre_inum: uint32 = ext4_dir_lookup(&dirbuf[0], "seed000")
+    if pre_inum == 0:
+        printk0("[ext4-dirgrow] FAIL: seed000 missing before inserts\n")
+        ok_all = 0
+
+    # Create files until the budget is exhausted. EVERY create must
+    # succeed: before the growth fix they failed the moment block 0 ran
+    # out of slack.
+    inserted: uint64 = 0
+    grew_at:  uint64 = 0
+    i: uint64 = 0
+    while i < EXT4_DIRGROW_INSERT_COUNT:
+        _ext4_dirgrow_make_name(i)
+        ext4_dirgrow_body[0] = cast[uint8](0x61 + cast[uint8](i % 26))
+        ni: uint32 = ext4_create_file(
+            cast[uint64](dir_inum),
+            cast[Ptr[char]](&ext4_dirgrow_namebuf[0]),
+            &ext4_dirgrow_body[0], 1)
+        if ni == 0:
+            printk1("[ext4-dirgrow] FAIL: create failed at entry #%d\n", i)
+            ok_all = 0
+            i = EXT4_DIRGROW_INSERT_COUNT
+        else:
+            inserted = inserted + 1
+            if grew_at == 0:
+                if ext4_read_inode(cast[uint64](dir_inum), &dirbuf[0]) == 0:
+                    now_blocks: uint64 = cast[uint64](
+                        ext4_inode_size_lo(&dirbuf[0])) / ext4_block_size
+                    if now_blocks > blocks_before:
+                        grew_at = inserted
+            i = i + 1
+    printk1("[ext4-dirgrow] inserted %d new entries\n", inserted)
+    # grew_at-1 new entries fit alongside the seeds in the single
+    # starting block: that is the MEASURED old ceiling.
+    printk1("[ext4-dirgrow] measured old 1-block ceiling: %d new entries\n",
+            grew_at - 1)
+
+    if ext4_read_inode(cast[uint64](dir_inum), &dirbuf[0]) != 0:
+        printk0("[ext4-dirgrow] FAIL: re-read growdir inode\n")
+        printk0("[ext4-dirgrow] FAIL\n")
+        return
+    blocks_after: uint64 = cast[uint64](
+        ext4_inode_size_lo(&dirbuf[0])) / ext4_block_size
+    if blocks_after <= blocks_before:
+        printk0("[ext4-dirgrow] FAIL: dir never grew (still 1 block)\n")
+        ok_all = 0
+    else:
+        printk2("[ext4-dirgrow] PASS dir grew %d -> %d blocks\n",
+                blocks_before, blocks_after)
+    if inserted != EXT4_DIRGROW_INSERT_COUNT:
+        printk2("[ext4-dirgrow] FAIL: only %d of %d creates succeeded\n",
+                inserted, EXT4_DIRGROW_INSERT_COUNT)
+        ok_all = 0
+
+    # Every inserted name must resolve AND its inode must hold the body
+    # byte we wrote — a dirent pointing at the wrong inode, or a name
+    # lost in a block the reader never walks, fails here.
+    verified: uint64 = 0
+    j: uint64 = 0
+    while j < inserted:
+        _ext4_dirgrow_make_name(j)
+        nmp: Ptr[char] = cast[Ptr[char]](&ext4_dirgrow_namebuf[0])
+        hit: uint32 = ext4_dir_lookup(&dirbuf[0], nmp)
+        if hit == 0:
+            printk1("[ext4-dirgrow] FAIL: lookup miss for entry #%d\n", j)
+            j = inserted
+        else:
+            ext4_dirgrow_readbuf[0] = 0
+            got: int64 = ext4_read_file(hit, 0, 1, &ext4_dirgrow_readbuf[0])
+            want: uint8 = cast[uint8](0x61 + cast[uint8](j % 26))
+            if got != 1 or ext4_dirgrow_readbuf[0] != want:
+                printk1("[ext4-dirgrow] FAIL: wrong body for entry #%d\n", j)
+                j = inserted
+            else:
+                verified = verified + 1
+                j = j + 1
+    if verified == inserted and inserted > 0:
+        printk1("[ext4-dirgrow] PASS all %d entries resolve and read back\n",
+                verified)
+    else:
+        printk2("[ext4-dirgrow] FAIL: only %d/%d entries verified\n",
+                verified, inserted)
+        ok_all = 0
+
+    # The host-planted seeds must survive the growth.
+    post_inum: uint32 = ext4_dir_lookup(&dirbuf[0], "seed000")
+    if post_inum != 0 and post_inum == pre_inum:
+        printk0("[ext4-dirgrow] PASS pre-existing seed survived the growth\n")
+    else:
+        printk0("[ext4-dirgrow] FAIL: pre-existing seed lost across growth\n")
+        ok_all = 0
+
+    if ok_all != 0:
+        printk0("[ext4-dirgrow] PASS\n")
+    else:
+        printk0("[ext4-dirgrow] FAIL\n")
+
+
 def _ext4_dir_lookup_linear(dir_inode_buf: Ptr[uint8],
                             name: Ptr[char]) -> uint32:
     # Pure linear all-block scan, used by the self-test to cross-check

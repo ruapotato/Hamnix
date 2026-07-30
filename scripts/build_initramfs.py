@@ -2316,6 +2316,18 @@ if os.environ.get("ENABLE_EXT4_HTINS_TEST") == "1":
 if os.environ.get("ENABLE_EXT4_LARGEDIR_TEST") == "1":
     FILES.append(("/etc/ext4-largedir-test", b"1\n"))
 
+# ext4 LINEAR directory GROWTH self-test. scripts/test_ext4_dirgrow.sh sets
+# ENABLE_EXT4_DIRGROW_TEST=1 to plant /etc/ext4-dirgrow-test. init/main.ad
+# detects the marker after the ext4 mount and calls ext4_dirgrow_selftest()
+# (fs/ext4.ad): it fills a one-block LINEAR "growdir" far past the ~112-entry
+# ceiling a single 4 KiB block holds, proving ext4_dir_insert allocates
+# additional directory blocks instead of returning -1 (the failure that made
+# a 199-package repository mirror ship as 7 packages), then looks every entry
+# back up and reads its body byte. WRITES the mounted image, so opt-in via
+# the marker; default boots omit it.
+if os.environ.get("ENABLE_EXT4_DIRGROW_TEST") == "1":
+    FILES.append(("/etc/ext4-dirgrow-test", b"1\n"))
+
 # ext4 extent-FREE / no-leak self-test. scripts/test_ext4_extent_free.sh
 # sets ENABLE_EXT4EXTFREE_TEST=1 to plant /etc/ext4extfree-test.
 # init/main.ad detects the marker after the ext4 mount and calls
