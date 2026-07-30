@@ -120,12 +120,6 @@ if ! "$MKFS" -F -q -b 4096 -N 4096 -t ext4 -L "HAMNIX_DGROW" \
 fi
 
 echo "[test_ext4_dirgrow] (2/6) Seed growdir with $SEEDS entries (debugfs, no mount/sudo)"
-{
-    echo "mkdir /growdir"
-    for i in $(seq -f '%03g' 0 $((SEEDS - 1))); do
-        echo "write /dev/null growdir/seed$i"
-    done
-} > "$LOG.dbg"
 # debugfs `write` needs a real source file; use a 1-byte one.
 printf 's' > "$LOG.seedsrc"
 {
