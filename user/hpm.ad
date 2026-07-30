@@ -681,13 +681,22 @@ def _set_repo_default():
     #   2. an on-image /iso-packages/ mirror if one is present (live /
     #      installer image → works OFFLINE, no --allow-unsigned needed since
     #      file:// is trusted-by-construction + signed by the local key),
-    #   3. the canonical hosted repo https://255.one/.
-    # An INSTALLED system has no /iso-packages, so it lands on 255.one.
+    #   3. the on-disk mirror /var/lib/hpm/repo/ that user/install.ad copies
+    #      off the install medium (INSTALLED system → also works OFFLINE),
+    #   4. the canonical hosted repo https://255.one/.
+    # An installed system with neither mirror lands on 255.one and needs a
+    # working network — which is what made the Software app look empty
+    # before install_package_repo existed.
     if _load_repo_config() == 0:
         return
     if _onimage_repo_present(cast[Ptr[char]]("/iso-packages/main/index.json")) != 0:
         _strcopy_cstr(&repo_url_buf[0],
                       cast[Ptr[uint8]]("file:///iso-packages/"), 1024)
+        return
+    if _onimage_repo_present(
+            cast[Ptr[char]]("/var/lib/hpm/repo/main/index.json")) != 0:
+        _strcopy_cstr(&repo_url_buf[0],
+                      cast[Ptr[uint8]]("file:///var/lib/hpm/repo/"), 1024)
         return
     s: Ptr[uint8] = "https://255.one/"
     _strcopy_cstr(&repo_url_buf[0], s, 1024)
