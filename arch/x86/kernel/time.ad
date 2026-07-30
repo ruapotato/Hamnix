@@ -458,26 +458,38 @@ def ptrlat_get_over() -> uint64:
 # be entirely wrong.
 #
 # THE MEASUREMENT. The timer tick is its own witness: a tick can only land
-# when IF is set, so "no tick arrived" is direct evidence that IF was clear.
-# Per syscall invocation we compute a SOUND LOWER BOUND on the longest masked
-# stretch inside it:
+# when IF is set, so a tick that is LATE is direct evidence that IF was clear
+# across the lateness. Per syscall invocation:
 #
 #   d       = wall duration of the call
 #   ticks   = timer ticks that landed during the call
 #   ingap   = longest interval between two consecutive ticks during the call
 #   tail    = time from the last tick to the syscall's return
+#   tk0     = stamp of the last tick BEFORE the call
 #
-#   ticks == 0  ->  blocked = d          (not one tick got in: IF was clear
-#                                         for the entire call)
-#   ticks >  0  ->  blocked = min(d, max(ingap, tail))
+#   ticks == 0  ->  the next tick was due at tk0 + TICK. Everything past that
+#                   is masked time:            blocked = now - (tk0 + TICK)
+#   ticks >  0  ->  blocked = min(d, max(ingap, tail) - TICK)
 #
-# The min(d, ...) clamp is load-bearing: `ingap` and `tail` are measured from
-# the previous tick, which may predate the syscall, so without the clamp a
-# 50 us syscall that happens to return 9 ms after a tick would be charged 9 ms.
-# Clamping makes every reported number an interval that provably lies inside
-# the call. It under-reports rather than over-reports (a masked stretch that
-# straddles entry is truncated at entry), which is the right direction for an
-# attribution instrument: everything it names is real.
+# THE `- TICK` IS THE WHOLE POINT, and leaving it out is the trap this
+# instrument fell into first. Ticks are 10 ms apart BY DESIGN; a syscall that
+# runs 11 ms and sees one tick has an inter-tick gap of ~10 ms for reasons
+# that have nothing to do with interrupt masking. Without the subtraction
+# every syscall longer than a tick period reports ~10 ms of "masked" time and
+# the instrument's headline number is just the tick period wearing a
+# disguise — the first run of this gate duly reported an 11.7 ms worst case
+# and it was 100% tick cadence and 0% evidence. Charging only the EXCESS over
+# the nominal period makes every reported nanosecond a nanosecond the timer
+# IRQ was demonstrably due and demonstrably undelivered.
+#
+# The min(d, ...) clamp is the other half: `ingap` and `tail` are measured
+# from a tick that may predate the call, so without it a 50 us syscall could
+# be charged for masking that happened before it started. Both adjustments
+# push the same way — this instrument UNDER-reports (a masked stretch that
+# straddles entry is truncated at entry, and one shorter than the remaining
+# tick period is invisible), which is the right direction for attribution:
+# everything it names is real, and a zero is not a proof of innocence.
+SYSIRQ_TICK_NS: uint64 = 10000000   # nominal 100 Hz period; see above
 #
 # NESTING. A blocking syscall yields, and the task that runs next enters
 # do_syscall too. The gap-max window is therefore saved on the C stack at
@@ -502,6 +514,10 @@ sysirq_gapmax_ns: uint64 = 0        # longest inter-tick gap in the CURRENT wind
 
 # Distribution of the attributed masked interval, over every sampled syscall.
 sysirq_n:      uint64 = 0
+# Samples with a NON-ZERO masked excess, i.e. syscalls that provably held the
+# timer IRQ off past its due time. With excess accounting this, not the mean,
+# is the headline: on a healthy tree it should be a vanishing fraction of n.
+sysirq_hit:    uint64 = 0
 sysirq_sum_ns: uint64 = 0
 sysirq_max_ns: uint64 = 0
 sysirq_b1:     uint64 = 0           # <=  1 ms — imperceptible
@@ -521,6 +537,7 @@ sysirq_max: Array[352, uint64]
 
 def sysirq_reset():
     sysirq_n      = 0
+    sysirq_hit    = 0
     sysirq_sum_ns = 0
     sysirq_max_ns = 0
     sysirq_b1     = 0
@@ -578,8 +595,14 @@ def sysirq_gap_take() -> uint64:
     return g
 
 
+def sysirq_last_tick_ns() -> uint64:
+    # Stamp of the most recent tick. Captured at syscall entry so the "no tick
+    # arrived" case knows when the next one was DUE.
+    return sysirq_tick_ns
+
+
 def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
-                   tick0: uint64, outer_gap: uint64):
+                   tick0: uint64, outer_gap: uint64, tk0: uint64):
     # Close one syscall's masked-time window. See the banner for the formula.
     ingap: uint64 = sysirq_gapmax_ns
     # Merge the enclosing window back: it must end up holding the max of what
@@ -592,15 +615,25 @@ def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
     if now <= t0:
         return
     d: uint64 = now - t0
-    blocked: uint64 = d
-    if sysirq_tick_n != tick0:
-        cand: uint64 = ingap
+    blocked: uint64 = 0
+    if sysirq_tick_n == tick0:
+        # Not one tick landed. The next one was due TICK after the last one
+        # seen before entry; everything past that instant is time the timer
+        # IRQ was pending and undeliverable.
+        due: uint64 = tk0 + SYSIRQ_TICK_NS
+        if tk0 != 0 and now > due:
+            blocked = now - due
+    else:
+        cand: uint64 = 0
+        if ingap > SYSIRQ_TICK_NS:
+            cand = ingap - SYSIRQ_TICK_NS
         if now > sysirq_tick_ns:
             tail: uint64 = now - sysirq_tick_ns
-            if tail > cand:
-                cand = tail
-        if cand < blocked:
-            blocked = cand
+            if tail > SYSIRQ_TICK_NS and (tail - SYSIRQ_TICK_NS) > cand:
+                cand = tail - SYSIRQ_TICK_NS
+        blocked = cand
+    if blocked > d:
+        blocked = d
     idx: uint64 = SYSIRQ_LINUX
     if is_linux == 0:
         idx = nr
@@ -611,6 +644,8 @@ def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
     if blocked > sysirq_max[idx]:
         sysirq_max[idx] = blocked
     sysirq_n = sysirq_n + 1
+    if blocked != 0:
+        sysirq_hit = sysirq_hit + 1
     sysirq_sum_ns = sysirq_sum_ns + blocked
     if blocked > sysirq_max_ns:
         sysirq_max_ns = blocked
@@ -660,6 +695,14 @@ def sysirq_name(nr: uint64) -> Ptr[char]:
         return "mkdir"
     if nr == 24:
         return "yield"
+    if nr == 2:
+        return "get_jiffies"
+    if nr == 4:
+        return "getpid"
+    if nr == 1:
+        return "exit"
+    if nr == 299:
+        return "waitpid_jc"
     if nr == 20:
         return "getcwd"
     if nr == 256:
@@ -711,6 +754,8 @@ def sysirq_report():
         mean = sysirq_sum_ns / sysirq_n
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[sysirq] n=%d armed=%d\n", sysirq_n, cast[uint64](sysirq_on))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] delayed=%d tick_ns=%d\n", sysirq_hit, SYSIRQ_TICK_NS)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[sysirq] max_us=%d mean_us=%d\n", sysirq_max_ns / 1000,
             mean / 1000)

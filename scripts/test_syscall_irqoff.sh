@@ -32,14 +32,33 @@
 # iteration, so an instrument that timed syscalls would name nanosleep the
 # worst offender and be entirely wrong.
 #
+# WHAT THE INSTRUMENT REPORTS. Not syscall duration: the EXCESS over the
+# nominal tick period, i.e. how late a timer IRQ that was already DUE got
+# delivered because a syscall was holding IF clear. A syscall that never
+# delays a due tick reports zero. See the banner over SYSIRQ_TICK_NS in
+# arch/x86/kernel/time.ad for why the subtraction is load-bearing.
+#
 # WHAT IS ASSERTED
-#   * max_us -- the longest stretch anywhere in the window that the kernel can
-#     PROVE was interrupt-masked inside a single syscall -- stays under one
-#     100 Hz tick plus slack, in BOTH arms.
-#   * the bulk of the distribution is inside one tick.
+#   * max_us -- the longest tick delay attributable to a single syscall --
+#     stays well inside one 100 Hz tick, in BOTH arms.
+#   * NO syscall anywhere in the window delayed a tick by more than 5 ms.
+#     Half a tick of masking is already visible cursor stutter, so this is a
+#     zero-tolerance bucket rather than a percentile.
+#   * the fraction of syscalls that delay a tick at ALL stays small.
 #   * the loaded arm did not degrade relative to the idle arm beyond a ratio.
 #     This is the arm that encodes the user's complaint: four processes at
 #     100% CPU must not lengthen the masked stretches.
+#
+# MEASURED ON THIS TREE (-smp 1, TCG, hamsh boot, no DE):
+#   idle    n=320530  delayed=287 (0.09%)   max=1915us
+#   loaded  n=1439771 delayed=801 (0.056%)  max=1237us
+#   worst offenders, both arms: write (nr=8) 1.2-1.9 ms, open (nr=5) ~0.1 ms.
+#   `yield` (nr=24) heads the table with a max that tracks write's to within
+#   ~20 us in both arms -- it is a yield SPANNING another task's write, not a
+#   masked region of its own; see the cross-context-switch caveat in the
+#   instrument banner. The real ceiling is write, and 1.9 ms is a FIFTH of a
+#   tick: on this workload the syscall path does NOT mask interrupts long
+#   enough to drop a tick, so it is not the source of a visible freeze.
 #
 # The report also NAMES the worst offenders (`[sysirq] top+ ... name=`), which
 # is the attribution this gate exists to keep alive; the names are echoed into
@@ -53,8 +72,8 @@
 #                 dropped). An unobserved assertion is never a pass.
 #
 # Env overrides:
-#   SYSIRQ_MAX_US        per-arm ceiling on the masked stretch, us (30000)
-#   SYSIRQ_TICK_PCT      min % of samples within 12 ms            (99)
+#   SYSIRQ_MAX_US        per-arm ceiling on the tick delay, us    (6000)
+#   SYSIRQ_DELAY_PCT     max % of syscalls that delay a tick      (5)
 #   SYSIRQ_MIN_SAMPLES   samples required per arm                 (500)
 #   BOOT_WAIT            overall qemu timeout, s                  (300)
 #   KEEP_LOG             1 = keep the serial log on PASS
@@ -67,8 +86,10 @@ TAG="[sysirq]"
 VTAG="sysirq"
 source "$PROJ_ROOT/scripts/_verdict.sh"
 
-SYSIRQ_MAX_US="${SYSIRQ_MAX_US:-30000}"
-SYSIRQ_TICK_PCT="${SYSIRQ_TICK_PCT:-99}"
+# 6000 us: ~3x the measured worst case (1915 us) and still well inside one
+# 10 ms tick, so a real regression is caught long before a tick is dropped.
+SYSIRQ_MAX_US="${SYSIRQ_MAX_US:-6000}"
+SYSIRQ_DELAY_PCT="${SYSIRQ_DELAY_PCT:-5}"
 SYSIRQ_MIN_SAMPLES="${SYSIRQ_MIN_SAMPLES:-500}"
 BOOT_WAIT="${BOOT_WAIT:-300}"
 
@@ -223,6 +244,7 @@ for line in txt.splitlines():
     if cur is None:
         continue
     for pat, keys in (
+        (r'\[sysirq\] delayed=(\d+) tick_ns=(\d+)', ('delayed', 'tick_ns')),
         (r'\[sysirq\] max_us=(\d+) mean_us=(\d+)',  ('max_us', 'mean_us')),
         (r'\[sysirq\] le1ms=(\d+) le5ms=(\d+)',     ('le1ms', 'le5ms')),
         (r'\[sysirq\] le12ms=(\d+) le25ms=(\d+)',   ('le12ms', 'le25ms')),
@@ -253,18 +275,25 @@ while read -r blk; do
     arm=$((arm + 1))
     n="${L_n:-0}"
     [ "$n" -lt 1 ] && n=1
-    within=$(( ( ${L_le1ms:-0} + ${L_le5ms:-0} + ${L_le12ms:-0} ) * 100 / n ))
-    # THE BOUND. The longest stretch the kernel can PROVE was interrupt-masked
-    # inside one syscall. A masked stretch longer than a tick means a dropped
-    # tick, and a dropped tick is a pointer that did not move.
+    # Samples that delayed a due tick by MORE THAN 5 ms. Zero tolerance: half
+    # a tick of masking is already a visible cursor stutter, and unlike a
+    # percentile this cannot be diluted by simply issuing more cheap syscalls.
+    over5=$(( ${L_le12ms:-0} + ${L_le25ms:-0} + ${L_le60ms:-0} + ${L_over60ms:-0} ))
+    delay_pct=$(( ${L_delayed:-0} * 100 / n ))
+    # THE BOUND. The longest delay the kernel can PROVE it imposed on a timer
+    # IRQ that was already due, inside one syscall. Past a tick that means a
+    # DROPPED tick, and a dropped tick is a pointer that did not move.
     if [ "${L_max_us:-999999}" -gt "$SYSIRQ_MAX_US" ]; then
-        echo "$TAG FAIL: arm $arm masked stretch max ${L_max_us}us > ${SYSIRQ_MAX_US}us (n=${L_n}, mean=${L_mean_us}us)" >&2
+        echo "$TAG FAIL: arm $arm delayed a due timer IRQ by ${L_max_us}us > ${SYSIRQ_MAX_US}us (n=${L_n}, delayed=${L_delayed:-?})" >&2
         fail=1
-    elif [ "$within" -lt "$SYSIRQ_TICK_PCT" ]; then
-        echo "$TAG FAIL: arm $arm only ${within}% of syscalls kept interrupts masked for under 12 ms (need ${SYSIRQ_TICK_PCT}%, n=${L_n}, max=${L_max_us}us)" >&2
+    elif [ "$over5" -gt 0 ]; then
+        echo "$TAG FAIL: arm $arm had $over5 syscall(s) that delayed a due timer IRQ by more than 5 ms (n=${L_n}, max=${L_max_us}us)" >&2
+        fail=1
+    elif [ "$delay_pct" -gt "$SYSIRQ_DELAY_PCT" ]; then
+        echo "$TAG FAIL: arm $arm — ${delay_pct}% of syscalls delayed a due timer IRQ (limit ${SYSIRQ_DELAY_PCT}%, n=${L_n}, delayed=${L_delayed:-?})" >&2
         fail=1
     else
-        echo "$TAG arm $arm: n=${L_n} ${within}% <12ms max=${L_max_us}us mean=${L_mean_us}us"
+        echo "$TAG arm $arm: n=${L_n} delayed=${L_delayed:-?} (${delay_pct}%) max=${L_max_us}us over5ms=$over5"
     fi
     arm_max+=("${L_max_us:-0}")
     if [ "${L_n:-0}" -lt "$SYSIRQ_MIN_SAMPLES" ]; then
@@ -308,5 +337,5 @@ if [ "$fail" -ne 0 ]; then
     verdict_fail "$VTAG" "a syscall held interrupts masked long enough to drop a timer tick — the pointer freezes for exactly that long"
     exit 1
 fi
-verdict_pass "$VTAG" "no syscall masks interrupts past one tick + slack, idle or under four 100%-CPU processes (max <= ${SYSIRQ_MAX_US}us, >= ${SYSIRQ_TICK_PCT}% <12ms)"
+verdict_pass "$VTAG" "no syscall delays a due timer IRQ past ${SYSIRQ_MAX_US}us, idle or under four 100%-CPU processes (0 samples over 5 ms, <= ${SYSIRQ_DELAY_PCT}% delayed at all)"
 exit 0
