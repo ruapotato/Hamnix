@@ -13,23 +13,40 @@
 # arch, run x86 natively and aarch64 under qemu-aarch64, and assert byte-identical
 # output. Also asserts the aarch64 .ll contains `svc #0` and NO x86 `syscall`.
 #
-# NOT registered in the bare-metal battery (needs qemu-aarch64); a runnable host
-# gate only. Requires: host_ac.elf (LLVM backend), clang-19, aarch64 binutils,
-# qemu-aarch64.
+# Registered in scripts/ci_battery_manifest.txt (via ci_run_gate.sh). It needs
+# qemu-USER, not qemu-system: no boot, ~1 s. Requires clang-19, aarch64 binutils
+# and qemu-aarch64; a missing one is INCONCLUSIVE (125), never a soft green —
+# reporting PASS for a run that never executed anything is the exact false-green
+# this lane keeps getting burned by. host_ac.elf is bootstrapped when absent (it
+# is CONCATENATED from adder/compiler/*.ad, so a stale one measures the OLD
+# compiler and says nothing about the current one).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 CLANG="${CLANG:-clang-19}"
-HOST_AC="${ADDER_HOST_AC:-build/cutover/host_ac.elf}"
 SRC="${1:-tests/bench/llvm/whole_prog.ad}"
 W="build/arm64_usermode"
 mkdir -p "$W"
 
-fail() { echo "RESULT: FAIL — $*"; exit 1; }
-[ -x "$HOST_AC" ] || fail "no host_ac.elf at $HOST_AC (run: source scripts/_adder_cc.sh; adder_cc_bootstrap)"
-command -v "$CLANG"  >/dev/null || fail "$CLANG missing"
-command -v qemu-aarch64 >/dev/null || fail "qemu-aarch64 missing"
-command -v aarch64-linux-gnu-ld >/dev/null || fail "aarch64 binutils missing"
+fail()   { echo "RESULT: FAIL — $*"; exit 1; }
+inconc() { echo "RESULT: INCONCLUSIVE — $*"; exit 125; }
+command -v "$CLANG"  >/dev/null || inconc "$CLANG missing (the LLVM lane needs clang)"
+command -v qemu-aarch64 >/dev/null || inconc "qemu-aarch64 missing (apt install qemu-user)"
+command -v aarch64-linux-gnu-ld >/dev/null || inconc "aarch64 binutils missing (apt install binutils-aarch64-linux-gnu)"
+command -v ld >/dev/null || inconc "host ld missing"
+
+if [ -n "${ADDER_HOST_AC:-}" ]; then
+    HOST_AC="$ADDER_HOST_AC"
+else
+    HOST_AC="build/cutover/host_ac.elf"
+    echo "== 0) bootstrapping host_ac.elf (ssa*.ad is concatenated in; a stale one lies) =="
+    # shellcheck source=_adder_cc.sh
+    source "$ROOT/scripts/_adder_cc.sh"
+    adder_cc_bootstrap >"$W/bootstrap.log" 2>&1 \
+        || { sed 's/^/   | /' "$W/bootstrap.log"; fail "host_ac bootstrap"; }
+fi
+[ -x "$HOST_AC" ] || fail "no host_ac.elf at $HOST_AC"
+[ -f "$SRC" ] || fail "missing source $SRC"
 
 echo "== 1) emit BOTH targets from the compiler (no sed) =="
 "$HOST_AC" --backend=llvm                  "$SRC" "$W/prog_x86.ll"   || fail "x86 emit"

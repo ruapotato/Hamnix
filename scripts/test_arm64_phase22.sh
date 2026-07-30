@@ -3,6 +3,19 @@
 # (FUTEX_WAIT on a memory word / FUTEX_WAKE by a peer) on bare aarch64, built on
 # Phase 21's BLOCKED-state + resume-context-save + park-ctx blocking machinery.
 #
+# Not in ci_battery_manifest.txt because it is one RUNG of the standalone aarch64
+# ladder that scripts/test_arm64_phase49.sh (which IS registered) runs end to end:
+# arch/arm64/kmain.ad executes phases 1..49 in sequence in a SINGLE boot, each rung
+# gated on the previous rung's PASS marker, so a regression here stops that boot
+# long before "Phase 49 PASS" and reds the registered gate. Registering all 49
+# would be 49 identical seed-compiles and 49 identical ~6.5-min TCG boots for one
+# signal -- a manifest number going up, not coverage, and ~5 hours against a
+# 50-minute shard cap. Kept rather than deleted because when the registered gate
+# reds, running the rungs individually is how you find WHICH rung broke; this is
+# the on-demand bisection tool for that. Per the USER ruling of 2026-07-30 ARM64
+# ships on the LLVM path only, so the hand-written seed backend this lane
+# exercises is a frozen regression FIXTURE, not a track under active development.
+#
 # Phase 21 proved one kind of blocking: a task deschedules itself for a span of
 # time and a TIMER deadline wakes it. Phase 22 proves the OTHER kind: a task
 # blocks on a memory WORD and is woken by a PEER task signalling that word —

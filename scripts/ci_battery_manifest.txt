@@ -4481,7 +4481,54 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_build_integrity.sh
 # coverage this lane has — and a run that executed 0 programs FAILS rather than
 # reading as green. QEMU-SYSTEM-FREE, ~7 s for 25 programs. INCONCLUSIVE (125),
 # never a soft green, when the cross toolchain or qemu-user is absent.
+# test_arm64_usermode: the `--target=aarch64` EMITTER FLAG is a real retarget, not
+# a sed. It emits ONE program TWICE from the SAME host_ac -- x86_64 and aarch64 --
+# builds each with clang, RUNS the x86 one natively and the aarch64 one under
+# qemu-aarch64, and requires byte-identical stdout AND the same exit status. Same
+# source, same compiler, two backends, two executions: a divergence is an aarch64
+# lowering bug and nothing else. It also asserts the .ll carries the aarch64 triple,
+# `svc #0`, the remapped syscall number (x86 write 1 -> aarch64 64) and NO x86
+# `syscall` inline asm, so the ABI cannot silently regress to x86. qemu-USER, no
+# boot, ~12 s including the host_ac bootstrap. INCONCLUSIVE (125) when the cross
+# toolchain or qemu-user is absent.
+bash scripts/ci_run_gate.sh scripts/test_arm64_usermode.sh
 bash scripts/ci_run_gate.sh scripts/test_arm64_llvm_lane_diff.sh
+# test_arm64_a10_userland: the ONLY execution differential between an AArch64
+# miscompile and a user. It is not a serial grep: the kernel's own "A10 PASS"
+# compares the EL0 exit status against a CONSTANT in init/main.ad, and a constant
+# in the kernel is a lying gate waiting to happen (edit the program, the constant
+# goes stale; get a red, "fix" the constant). So this gate RECOMPUTES the oracle
+# every run -- it compiles the SAME user/arm64_a10_el0.ad for x86-64 with the SAME
+# host_ac, runs it NATIVELY, and requires (a) the aarch64 EL0 program's OWN output
+# (through a real write(2) svc) to carry that checksum, (b) the aarch64 exit status
+# to match it, and (c) init/main.ad's constant to AGREE with the fresh oracle, so
+# source, constant and ARM64 behaviour cannot drift apart. It also rebuilds the
+# embedded EL0 blob independently and requires it byte-identical (stale-blob
+# guard), requires all three syscalls to have reached the REAL dispatcher, and
+# requires ZERO exceptions in the diagnostic vector. The program mixes a sieve
+# (EL0 memory traffic), single recursion and double recursion into one checksum,
+# so any miscompile on that path or any break in the EL0 load/store or syscall
+# path moves the number. A8 and A9 are asserted as regression guards below it.
+# ~2.5 min, one QEMU (aarch64). INCONCLUSIVE (125), never a soft green, when the
+# cross toolchain is absent or the boot was too starved to reach the A10 rung.
+bash scripts/ci_run_gate.sh scripts/test_arm64_a10_userland.sh
+# test_arm64_phase49: the WHOLE standalone (non-LLVM) aarch64 lane, in ONE boot.
+# USER ruling 2026-07-30: ARM64 ships on the LLVM path only, and the hand-written
+# AArch64 seed backend (compiler/codegen_arm64.py, 1677 lines) is NOT being
+# extended -- but it still compiles this kernel, so it is a live regression
+# FIXTURE and it had zero CI coverage. There are 49 test_arm64_phase*.sh on disk
+# and this registers exactly ONE of them, deliberately: arch/arm64/kmain.ad runs
+# phases 1..49 IN SEQUENCE in a single boot, each rung gated on the previous
+# rung's PASS marker, so a Phase-N regression stops the boot long before "Phase 49
+# PASS" and this gate reds. Registering all 49 would be 49 identical compiles and
+# 49 identical boots for the same signal -- a number going up, not coverage. The
+# gate additionally pins P30..P49's PASS markers explicitly as regression guards.
+# It exercises the seed compiler end to end (kmain.ad -> aarch64 ELF) plus
+# virtio-blk/net, FAT16, ELF load, EL0 fork/execve/wait, pipes, futexes, signals,
+# demand paging and COW. ~6.5 min, one QEMU -- the single most expensive ARM64
+# line in the battery, and the reason the other 48 stay annotated rather than
+# registered.
+bash scripts/ci_run_gate.sh scripts/test_arm64_phase49.sh
 # Leak pass 16. The COW share arms, COUNTED under the ONE workload that ever
 # stranded frames: the DE terminal. Pass 15 closed those arms against
 # /bin/u_mmap_fork and said in writing that a leak needing a VMA shape

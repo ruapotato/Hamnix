@@ -2,6 +2,19 @@
 # scripts/test_arm64_phase33.sh — PHASE 33 multi-arch milestone: NATIVE
 # virtio-net over virtio-mmio on bare aarch64, proving a real packet round-trip.
 #
+# Not in ci_battery_manifest.txt because it is one RUNG of the standalone aarch64
+# ladder that scripts/test_arm64_phase49.sh (which IS registered) runs end to end:
+# arch/arm64/kmain.ad executes phases 1..49 in sequence in a SINGLE boot, each rung
+# gated on the previous rung's PASS marker, so a regression here stops that boot
+# long before "Phase 49 PASS" and reds the registered gate. Registering all 49
+# would be 49 identical seed-compiles and 49 identical ~6.5-min TCG boots for one
+# signal -- a manifest number going up, not coverage, and ~5 hours against a
+# 50-minute shard cap. Kept rather than deleted because when the registered gate
+# reds, running the rungs individually is how you find WHICH rung broke; this is
+# the on-demand bisection tool for that. Per the USER ruling of 2026-07-30 ARM64
+# ships on the LLVM path only, so the hand-written seed backend this lane
+# exercises is a frozen regression FIXTURE, not a track under active development.
+#
 # qemu `-machine virt` exposes 32 virtio-mmio transports at 0x0a000000 (0x200
 # apart). Phase 30 drives the virtio-blk one; Phase 33 (handed off from the
 # Phase-32 PASS) enumerates the SAME transport window array for a virtio-NET
