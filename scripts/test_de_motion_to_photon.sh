@@ -86,6 +86,62 @@
 # real desktop. It is reachable from /dev/wsys/ctl now; this gate is the first
 # thing to arm it there.
 #
+# MEASURED, first run of this gate (build/hamnix-installer.img under UEFI/OVMF
+# + KVM -cpu host, DE live past the rl5 flip, motion injected from the QEMU
+# monitor at ~20 Hz; loaded arm = four /bin/preempt_hog at 100% CPU plus a
+# 40-deep execve/ELF-load/virtio-block storm running concurrently):
+#
+#   arm      n    ingest  total_max  total_mean  deliver_max  render_max
+#   IDLE     337  337      9 690 us    3 365 us     9 269 us      607 us
+#   LOADED   351  351      9 587 us    3 517 us     9 305 us      473 us
+#
+#   100% of samples <= 15 ms in BOTH arms. over250ms = 0. ingest == n in both,
+#   i.e. every injected packet was ingested AND reached scanout; none dropped.
+#
+# READ THAT CAREFULLY, BECAUSE IT DISPROVES MOST OF THE REMAINING FIELD.
+#
+#   * LOAD CHANGES NOTHING. 9.59 ms loaded vs 9.69 ms idle -- the loaded arm is
+#     marginally FASTER. Four processes at 100% CPU plus an exec storm do not
+#     move pointer latency at all.
+#   * THE COMPOSITOR IS NOT THE PROBLEM. render_max is 473-607 us, ~3% of the
+#     interval, and it goes DOWN under load. The damage-diff, the layer-fb
+#     blit, the scene re-render and the cursor glyph draw together cost half a
+#     millisecond. Ruled out.
+#   * INPUT POLLING IS NOT STARVING. ingest == n in both arms; not one packet
+#     was lost or left unserviced, and deliver_max never exceeds one tick.
+#   * THE DE'S MAIN LOOP IS NOT IN THE PATH. It never was -- the cursor is
+#     composited in the timer IRQ -- and the numbers confirm no userland thread
+#     gates the pointer.
+#
+# WHAT THE TIME ACTUALLY IS: deliver_max 9.3 ms == one 100 Hz tick period, and
+# deliver_mean 3.0-3.2 ms == roughly a third of one. The pointer's latency is
+# the tick, essentially all of it, and it is CONSTANT rather than load-
+# sensitive. That is a QUANTISATION floor, not a freeze -- and a floor no
+# amount of CPU load raises.
+#
+# THE ONE THING THAT DID NOT COME OUT CLEAN, from wklat armed in the same
+# windows (the first time that instrument has EVER run on a real desktop --
+# /proc/self/ctl's verb is uid-0-or-hostowner and the DE session is NOBODY):
+#
+#   arm      n       max_us   <=1ms   <=5ms  <=12ms  <=25ms  <=60ms  >60ms
+#   IDLE     13 406   90 629  13 186    183      33       0       1      3
+#   LOADED   14 297  120 235  14 205     58      30       0       1      3
+#
+# The bucket sums equal n in both arms and wklat_ctl(2) resets the histogram,
+# so these are two independent windows, not one accumulating one. Four wakes
+# per window land past 25 ms, three of them past 60 ms, worst 120 ms. The
+# earlier disproof -- "99-100% under 1 ms" -- was taken against a kthread in a
+# lightweight boot and did not see this tail. On the real desktop it is 98.4%
+# (idle) / 99.4% (loaded) under 1 ms with a hard 90-120 ms tail.
+#
+# But the tail is IDENTICAL idle and loaded (1 and 3, both arms), so CPU load
+# does not create it -- and m2p in those very same windows stayed flat at
+# ~9.6 ms. A 120 ms wake stall therefore does NOT reach the pointer, which is
+# exactly what the architecture predicts: the cursor is composited from the
+# timer IRQ, not by a woken task. The tail is real and worth chasing for
+# APPLICATION responsiveness (menus, drags, carets -- anything a client
+# redraws), but it is not the reported pointer symptom.
+#
 # VERDICTS
 #   PASS          measured, under the ceiling
 #   FAIL          measured, over the ceiling
