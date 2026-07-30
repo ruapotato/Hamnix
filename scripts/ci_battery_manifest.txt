@@ -4391,3 +4391,18 @@ bash scripts/test_ext4_dirgrow.sh
 # re-asserts pass 14's user-stack fix (arm 21 must close exactly) on a
 # workload unrelated to the one that found it. ~1 boot + builds, one QEMU.
 bash scripts/ci_run_gate.sh scripts/test_cow_vma_fork_origin.sh
+
+# --- INTERRUPT-LATENCY GATE (the other half of the mouse-stutter report) ---
+# scripts/test_syscall_irqoff.sh — bounds how long a SYSCALL holds EFLAGS.IF
+# clear. IA32_FMASK = 0x0200 masks interrupts for the whole syscall body, and
+# the timer IRQ is the only thing that pumps the mouse, so a masked stretch is
+# a pointer freeze of exactly its own duration — a cause the scheduler gate
+# (test_wakeup_latency.sh) cannot see and the outcome gate
+# (test_pointer_latency_under_load.sh) cannot attribute. The kernel-side
+# instrument is default-DISARMED and armed over /proc/self/ctl for the window;
+# the tick is its own witness that IF was set, so every number reported is a
+# provable lower bound on a masked stretch inside one named syscall. Two arms
+# in one boot (idle vs four processes at 100% CPU) so the headline is a ratio.
+# INCONCLUSIVE (125), never FAIL, when nothing was observed. ~9 min incl.
+# builds, one QEMU.
+bash scripts/ci_run_gate.sh scripts/test_syscall_irqoff.sh

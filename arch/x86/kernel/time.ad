@@ -435,6 +435,425 @@ def ptrlat_get_over() -> uint64:
     return ptrlat_over
 
 
+# ======================================================================
+# sysirq — INTERRUPT-MASKED (EFLAGS.IF=0) DURATION, ATTRIBUTED BY SYSCALL
+# ======================================================================
+#
+# WHAT THIS MEASURES AND WHY IT IS NOT THE SAME AS "SYSCALL DURATION".
+#
+# IA32_FMASK = 0x0200, so SYSCALL entry clears IF and the syscall body runs
+# with interrupts masked unless something inside it re-enables them. While IF
+# is clear the timer IRQ cannot be DELIVERED, and the timer IRQ is the only
+# thing that pumps the mouse (mouse_pump_to_compositor, above). So a long
+# IF-off stretch is a hard pointer freeze of exactly its own duration, no
+# matter how responsive the scheduler is — the sibling wake->dispatch work
+# (kernel/sched/core.ad::wklat_*) measured the scheduler directly and cleared
+# it, which is what leaves this path as the remaining suspect.
+#
+# Wall-clock syscall duration is the WRONG number here and would badly
+# over-report: the blocking syscalls (nanosleep, blocking read, the
+# cond_resched spin loops) do sti+hlt+cli per iteration, so a 5-second sleep
+# is 5 seconds of syscall with interrupts ENABLED nearly the whole way. An
+# instrument that timed syscalls would name nanosleep the worst offender and
+# be entirely wrong.
+#
+# THE MEASUREMENT. The timer tick is its own witness: a tick can only land
+# when IF is set, so a tick that is LATE is direct evidence that IF was clear
+# across the lateness. Per syscall invocation:
+#
+#   d       = wall duration of the call
+#   ticks   = timer ticks that landed during the call
+#   ingap   = longest interval between two consecutive ticks during the call
+#   tail    = time from the last tick to the syscall's return
+#   tk0     = stamp of the last tick BEFORE the call
+#
+#   ticks == 0  ->  the next tick was due at tk0 + TICK. Everything past that
+#                   is masked time:            blocked = now - (tk0 + TICK)
+#   ticks >  0  ->  blocked = min(d, max(ingap, tail) - TICK)
+#
+# THE `- TICK` IS THE WHOLE POINT, and leaving it out is the trap this
+# instrument fell into first. Ticks are 10 ms apart BY DESIGN; a syscall that
+# runs 11 ms and sees one tick has an inter-tick gap of ~10 ms for reasons
+# that have nothing to do with interrupt masking. Without the subtraction
+# every syscall longer than a tick period reports ~10 ms of "masked" time and
+# the instrument's headline number is just the tick period wearing a
+# disguise — the first run of this gate duly reported an 11.7 ms worst case
+# and it was 100% tick cadence and 0% evidence. Charging only the EXCESS over
+# the nominal period makes every reported nanosecond a nanosecond the timer
+# IRQ was demonstrably due and demonstrably undelivered.
+#
+# The min(d, ...) clamp is the other half: `ingap` and `tail` are measured
+# from a tick that may predate the call, so without it a 50 us syscall could
+# be charged for masking that happened before it started. Both adjustments
+# push the same way — this instrument UNDER-reports (a masked stretch that
+# straddles entry is truncated at entry, and one shorter than the remaining
+# tick period is invisible), which is the right direction for attribution:
+# everything it names is real, and a zero is not a proof of innocence.
+SYSIRQ_TICK_NS: uint64 = 10000000   # nominal 100 Hz period; see above
+#
+# NESTING. A blocking syscall yields, and the task that runs next enters
+# do_syscall too. The gap-max window is therefore saved on the C stack at
+# entry and merged back at exit (sysirq_gap_take / the merge in
+# sysirq_account), so an inner call cannot steal or corrupt the outer call's
+# window. Attribution is still approximate across a context switch inside a
+# syscall — but only for syscalls that BLOCK, and those re-enable interrupts
+# by construction, so they contribute ~one tick and cannot masquerade as an
+# offender.
+#
+# COST WHEN DISARMED: one global load + branch in do_syscall, one in the tick.
+# Default off, armed at runtime through /proc/self/ctl `sysirq 1`, matching
+# the precedent of --track-allocs, kmtrack and wklat_*.
+SYSIRQ_NSLOT: uint64 = 352          # native syscall nrs run 0..324
+SYSIRQ_SPAN:  uint64 = 349          # window spanned a context switch (see below)
+SYSIRQ_OTHER: uint64 = 350          # native nr >= 350: lumped here
+SYSIRQ_LINUX: uint64 = 351          # any Linux-ABI syscall (different numbering)
+
+sysirq_on:        int32  = 0
+sysirq_tick_n:    uint64 = 0        # instrument-local monotonic BSP tick count
+sysirq_tick_ns:   uint64 = 0        # ns stamp of the most recent BSP tick
+sysirq_gapmax_ns: uint64 = 0        # longest inter-tick gap in the CURRENT window
+
+# Distribution of the attributed masked interval, over every sampled syscall.
+sysirq_n:      uint64 = 0
+# Samples with a NON-ZERO masked excess, i.e. syscalls that provably held the
+# timer IRQ off past its due time. With excess accounting this, not the mean,
+# is the headline: on a healthy tree it should be a vanishing fraction of n.
+sysirq_hit:    uint64 = 0
+# Samples discarded because the window spanned a context switch (see
+# sysirq_account). Reported, never asserted on: they are real masked time,
+# just not attributable to the syscall that happened to enclose them.
+sysirq_span:   uint64 = 0
+sysirq_sum_ns: uint64 = 0
+sysirq_max_ns: uint64 = 0
+sysirq_b1:     uint64 = 0           # <=  1 ms — imperceptible
+sysirq_b5:     uint64 = 0           # <=  5 ms
+sysirq_b12:    uint64 = 0           # <= 12 ms — one 100 Hz tick + slack
+sysirq_b25:    uint64 = 0           # <= 25 ms
+sysirq_b60:    uint64 = 0           # <= 60 ms
+sysirq_over:   uint64 = 0           # >  60 ms — a visible pointer freeze
+
+# Per-syscall attribution. Counts, summed masked ns, and the worst single
+# masked stretch. The MAX column is the one that matters: a long tail is the
+# whole complaint, and a mean hides it completely.
+sysirq_cnt: Array[352, uint64]
+sysirq_sum: Array[352, uint64]
+sysirq_max: Array[352, uint64]
+
+
+def sysirq_reset():
+    sysirq_n      = 0
+    sysirq_hit    = 0
+    sysirq_span   = 0
+    sysirq_sum_ns = 0
+    sysirq_max_ns = 0
+    sysirq_b1     = 0
+    sysirq_b5     = 0
+    sysirq_b12    = 0
+    sysirq_b25    = 0
+    sysirq_b60    = 0
+    sysirq_over   = 0
+    sysirq_gapmax_ns = 0
+    i: uint64 = 0
+    while i < SYSIRQ_NSLOT:
+        sysirq_cnt[i] = 0
+        sysirq_sum[i] = 0
+        sysirq_max[i] = 0
+        i = i + 1
+
+
+def sysirq_enable(on: int32):
+    sysirq_on = on
+    if on != 0:
+        sysirq_reset()
+        sysirq_tick_ns = 0
+
+
+def sysirq_is_on() -> int32:
+    return sysirq_on
+
+
+def sysirq_tick():
+    # Called from timer_interrupt on the BSP only, and only while armed. The
+    # tick IS the witness that IF was set at this instant; the interval since
+    # the previous tick is the longest stretch we can prove was masked.
+    now: uint64 = tsc_monotonic_ns()
+    sysirq_tick_n = sysirq_tick_n + 1
+    if sysirq_tick_ns != 0 and now > sysirq_tick_ns:
+        gap: uint64 = now - sysirq_tick_ns
+        if gap > sysirq_gapmax_ns:
+            sysirq_gapmax_ns = gap
+    sysirq_tick_ns = now
+
+
+def sysirq_now_ns() -> uint64:
+    return tsc_monotonic_ns()
+
+
+def sysirq_tick_count() -> uint64:
+    return sysirq_tick_n
+
+
+def sysirq_gap_take() -> uint64:
+    # Open a fresh gap-max window and hand the enclosing one back to the
+    # caller, which parks it on its own stack until sysirq_account merges it.
+    g: uint64 = sysirq_gapmax_ns
+    sysirq_gapmax_ns = 0
+    return g
+
+
+def sysirq_last_tick_ns() -> uint64:
+    # Stamp of the most recent tick. Captured at syscall entry so the "no tick
+    # arrived" case knows when the next one was DUE.
+    return sysirq_tick_ns
+
+
+def sysirq_account(nr: uint64, is_linux: uint64, t0: uint64,
+                   tick0: uint64, outer_gap: uint64, tk0: uint64,
+                   spanned: uint64):
+    # Close one syscall's masked-time window. See the banner for the formula.
+    ingap: uint64 = sysirq_gapmax_ns
+    # Merge the enclosing window back: it must end up holding the max of what
+    # it had before this call and what this call observed.
+    if outer_gap > ingap:
+        sysirq_gapmax_ns = outer_gap
+    if sysirq_on == 0:
+        return
+    now: uint64 = tsc_monotonic_ns()
+    if now <= t0:
+        return
+    d: uint64 = now - t0
+    blocked: uint64 = 0
+    if sysirq_tick_n == tick0:
+        # Not one tick landed. The next one was due TICK after the last one
+        # seen before entry; everything past that instant is time the timer
+        # IRQ was pending and undeliverable.
+        due: uint64 = tk0 + SYSIRQ_TICK_NS
+        if tk0 != 0 and now > due:
+            blocked = now - due
+    else:
+        cand: uint64 = 0
+        if ingap > SYSIRQ_TICK_NS:
+            cand = ingap - SYSIRQ_TICK_NS
+        if now > sysirq_tick_ns:
+            tail: uint64 = now - sysirq_tick_ns
+            if tail > SYSIRQ_TICK_NS and (tail - SYSIRQ_TICK_NS) > cand:
+                cand = tail - SYSIRQ_TICK_NS
+        blocked = cand
+    if blocked > d:
+        blocked = d
+    idx: uint64 = SYSIRQ_LINUX
+    if is_linux == 0:
+        idx = nr
+        if idx >= SYSIRQ_OTHER:
+            idx = SYSIRQ_OTHER
+    if spanned != 0:
+        # The window contained a context switch, so whatever masking it saw
+        # may belong to the task that ran in the middle -- and that task's own
+        # syscall recorded it too, so charging it here would double-count it
+        # AND name the wrong syscall. Park it in its own row: visible, and
+        # excluded from both the per-syscall attribution and the histogram
+        # the gate asserts on. Measured worth: with a 20 ms masked spin
+        # injected into getcwd, `yield` reported a max within 24 us of
+        # getcwd's purely by containing it.
+        idx = SYSIRQ_SPAN
+        sysirq_span = sysirq_span + 1
+        sysirq_cnt[idx] = sysirq_cnt[idx] + 1
+        sysirq_sum[idx] = sysirq_sum[idx] + blocked
+        if blocked > sysirq_max[idx]:
+            sysirq_max[idx] = blocked
+        return
+    sysirq_cnt[idx] = sysirq_cnt[idx] + 1
+    sysirq_sum[idx] = sysirq_sum[idx] + blocked
+    if blocked > sysirq_max[idx]:
+        sysirq_max[idx] = blocked
+    sysirq_n = sysirq_n + 1
+    if blocked != 0:
+        sysirq_hit = sysirq_hit + 1
+    sysirq_sum_ns = sysirq_sum_ns + blocked
+    if blocked > sysirq_max_ns:
+        sysirq_max_ns = blocked
+    if blocked <= 1000000:
+        sysirq_b1 = sysirq_b1 + 1
+    elif blocked <= 5000000:
+        sysirq_b5 = sysirq_b5 + 1
+    elif blocked <= 12000000:
+        sysirq_b12 = sysirq_b12 + 1
+    elif blocked <= 25000000:
+        sysirq_b25 = sysirq_b25 + 1
+    elif blocked <= 60000000:
+        sysirq_b60 = sysirq_b60 + 1
+    else:
+        sysirq_over = sysirq_over + 1
+
+
+def sysirq_name(nr: uint64) -> Ptr[char]:
+    # Names for the syscalls that can plausibly hold the CPU. Anything not
+    # listed still reports its number, so an unnamed offender is visible —
+    # it just has to be looked up. Ordered roughly by how often it shows up.
+    if nr == 8:
+        return "write"
+    if nr == 6:
+        return "read"
+    if nr == 5:
+        return "open"
+    if nr == 7:
+        return "close"
+    if nr == 13:
+        return "open_write"
+    if nr == 23:
+        return "read_nb"
+    if nr == 9:
+        return "lseek"
+    if nr == 10:
+        return "execve"
+    if nr == 3:
+        return "clone"
+    if nr == 12:
+        return "waitpid"
+    if nr == 14:
+        return "pipe"
+    if nr == 21:
+        return "unlink"
+    if nr == 22:
+        return "mkdir"
+    if nr == 24:
+        return "yield"
+    if nr == 2:
+        return "get_jiffies"
+    if nr == 4:
+        return "getpid"
+    if nr == 1:
+        return "exit"
+    if nr == 299:
+        return "waitpid_jc"
+    if nr == 20:
+        return "getcwd"
+    if nr == 256:
+        return "rfork"
+    if nr == 265:
+        return "errstr"
+    if nr == 269:
+        return "resolve"
+    if nr == 276:
+        return "srv_open"
+    if nr == 278:
+        return "fdbind"
+    if nr == 281:
+        return "openchan"
+    if nr == 293:
+        return "wsys_alloc"
+    if nr == 302:
+        return "mmap"
+    if nr == 303:
+        return "mprotect"
+    if nr == 304:
+        return "munmap"
+    if nr == 307:
+        return "clock_gettime"
+    if nr == 308:
+        return "nanosleep"
+    if nr == 312:
+        return "vk_window_frame"
+    if nr == 313:
+        return "waitfds"
+    if nr == 317:
+        return "msync"
+    if nr == 318:
+        return "listdir_records"
+    if nr == SYSIRQ_SPAN:
+        return "spanning(ctxsw)"
+    if nr == SYSIRQ_LINUX:
+        return "linux-abi(all)"
+    if nr == SYSIRQ_OTHER:
+        return "native(other)"
+    return "?"
+
+
+def sysirq_report():
+    # One parseable block, EMERG on every line: the console tightens its
+    # threshold to suppress INFO once an interactive shell is up
+    # (console_set_interactive), so an INFO-level report is invisible in
+    # exactly the situation this instrument is used in.
+    mean: uint64 = 0
+    if sysirq_n > 0:
+        mean = sysirq_sum_ns / sysirq_n
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] n=%d armed=%d\n", sysirq_n, cast[uint64](sysirq_on))
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] delayed=%d tick_ns=%d\n", sysirq_hit, SYSIRQ_TICK_NS)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[sysirq] spanning=%d\n", sysirq_span)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] max_us=%d mean_us=%d\n", sysirq_max_ns / 1000,
+            mean / 1000)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] le1ms=%d le5ms=%d\n", sysirq_b1, sysirq_b5)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] le12ms=%d le25ms=%d\n", sysirq_b12, sysirq_b25)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[sysirq] le60ms=%d over60ms=%d\n", sysirq_b60, sysirq_over)
+    # The worst offenders, by the WORST SINGLE masked stretch. Selection sort
+    # over the table, 8 passes; the table is small and this runs once per
+    # report, off the hot path entirely.
+    rank: uint64 = 0
+    while rank < 8:
+        best: uint64 = SYSIRQ_NSLOT
+        bestv: uint64 = 0
+        i: uint64 = 0
+        while i < SYSIRQ_NSLOT:
+            if sysirq_cnt[i] != 0 and sysirq_max[i] > bestv:
+                bestv = sysirq_max[i]
+                best = i
+            i = i + 1
+        if best >= SYSIRQ_NSLOT:
+            rank = 8
+        else:
+            # Two whole lines, not one line split across two printk calls: a
+            # concurrent printk from another CPU would interleave into the
+            # middle of a split line and the parser would silently lose the
+            # sample.
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[sysirq] top nr=%d n=%d max_us=%d\n",
+                    best, sysirq_cnt[best], sysirq_max[best] / 1000)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[sysirq] top+ nr=%d sum_us=%d name=%s\n", best,
+                    sysirq_sum[best] / 1000,
+                    cast[uint64](sysirq_name(best)))
+            # Consume it so the next pass finds the next-worst. The counter is
+            # kept so the entry is not resurrected by a later sample in the
+            # same report.
+            sysirq_max[best] = 0
+            rank = rank + 1
+
+
+def sysirq_ctl(verb: int64) -> int32:
+    # /proc/self/ctl `sysirq <n>`:
+    #   0 = disarm   1 = arm + reset   2 = report   3 = reset (stay armed)
+    # Every accepted verb ACKs. Without the ack a control write that is
+    # silently refused (a permission gate, a parse miss) is indistinguishable
+    # from a working one, and the measurement silently measures nothing —
+    # which is exactly how the wklat instrument's first two runs were lost.
+    if verb == 0:
+        sysirq_enable(0)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[sysirq] ack armed=0\n")
+        return 1
+    if verb == 1:
+        sysirq_enable(1)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[sysirq] ack armed=1\n")
+        return 1
+    if verb == 2:
+        sysirq_report()
+        return 1
+    if verb == 3:
+        sysirq_reset()
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[sysirq] ack reset\n")
+        return 1
+    return 0
+
+
 def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
                     interrupted_rsp: uint64):
     # Called from do_irq() when vector 32 fires.  Since M16.22 the
@@ -531,6 +950,10 @@ def timer_interrupt(interrupted_cs: uint64, interrupted_rip: uint64,
     # ptrlat_sample banner) and it is the number the latency gate asserts on.
     if get_cpu_id() == 0:
         ptrlat_sample(interrupted_rip, interrupted_cs)
+        # sysirq: this tick is the witness that EFLAGS.IF was set right now.
+        # Disarmed by default — one predictable-branch test per tick.
+        if sysirq_on != 0:
+            sysirq_tick()
     mouse_pump_to_compositor()
     # BUG 1 FIX: keyboard twin of the mouse pump. Drain the PS/2 keyboard
     # FIFO + UART RX ring and route each byte to the focused scene window's

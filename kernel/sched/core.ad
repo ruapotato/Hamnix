@@ -3719,7 +3719,22 @@ def sched_inherit_nice_to_child(child_slot: uint64, parent_slot: uint64):
     task_table[child_slot].cpu_affinity = task_table[parent_slot].cpu_affinity
 
 
+# Monotonic count of task dispatches. Read by the sysirq instrument
+# (arch/x86/kernel/time.ad) to tell whether a syscall's measurement window
+# SPANNED a context switch: if it did, any interrupt-masked stretch inside
+# that window may belong to whatever task ran in the middle, not to the
+# syscall being measured. Proven necessary, not hypothetical -- a mutation
+# that injected a 20 ms masked spin into getcwd showed up correctly on getcwd
+# AND on `yield`, whose window merely contained it.
+g_dispatch_count: uint64 = 0
+
+
+def sched_dispatch_count() -> uint64:
+    return g_dispatch_count
+
+
 def sched_note_dispatch(slot: uint64):
+    g_dispatch_count = g_dispatch_count + 1
     # Record that `slot` was just dispatched onto the current CPU. Bumps
     # the per-CPU run counter used by the SMP load-balance test to prove
     # a task ran on more than one core. Cheap; called from both the BSP

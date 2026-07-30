@@ -1,0 +1,227 @@
+# user/sysirqprobe.ad
+#
+# Reproducer for the INTERRUPT-LATENCY half of the mouse-stutter report.
+#
+#   "things that take up a lot of CPU make the mouse studder or freze, it
+#    would be nice if the mouse would keep working even if a process is
+#    taking up 100% cpu."
+#
+# The scheduler half is already ruled out with measurements (see
+# scripts/test_wakeup_latency.sh: wake -> dispatch is 12-56 us mean with
+# 99-100% of samples under 1 ms under four nice-0 hogs at 100% CPU). What is
+# left is interrupt DELIVERY: IA32_FMASK = 0x0200, so the syscall body runs
+# with EFLAGS.IF clear, and the timer IRQ -- the only thing that pumps the
+# mouse -- cannot be delivered until the syscall returns. No amount of
+# scheduler responsiveness can help there.
+#
+# This program drives the kernel-side sysirq instrument
+# (arch/x86/kernel/time.ad) across two arms in ONE boot, so the numbers are a
+# ratio and not a host-speed measurement:
+#
+#   idle arm     no load, syscall-heavy workload only. Establishes the
+#                baseline masked stretch of each syscall.
+#   loaded arm   the SAME workload with four /bin/wakelat_hog processes at
+#                100% CPU. If the hogs make the masked stretches longer, the
+#                interrupt path is load-sensitive and the attribution names
+#                which syscall does it.
+#
+# The workload is deliberately syscall-heavy in the shapes the pointer path
+# actually meets on a desktop: file open/read/close (virtio block + page
+# cache), directory work, console writes, and process launches (execve -> ELF
+# load -> block reads), which is where scripts/test_pointer_latency_under_load.sh
+# already located the freeze. A pure-CPU loop is NOT the workload under test:
+# ring 3 runs with IF set, the tick keeps firing, and the pointer is fine --
+# that is what the hogs are for, as the CONTROL.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_open(path: Ptr[char]) -> int32
+extern def sys_open_write(path: Ptr[char]) -> int32
+extern def sys_close(fd: int32) -> int32
+extern def sys_getcwd(buf: Ptr[uint8], count: uint64) -> int64
+extern def sys_get_jiffies() -> uint64
+extern def sys_exit(code: uint64)
+
+from lib.p9 import spawn_detached
+
+# Four saturates every configuration this is booted under and leaves a
+# surplus, so the workload genuinely contends for the CPU.
+NHOGS: uint64 = 4
+
+# Measurement window per arm, jiffies (100 Hz). Shorter than wakelat_hog's
+# own 700-jiffy life so the load is still running when the window closes.
+ARM_JIFFIES: uint64 = 420
+
+# Gap between arms. MUST outlast the previous arm's hogs or the second arm
+# runs under leftover load and the two arms are not comparable.
+GAP_JIFFIES: uint64 = 320
+
+hog_argv: Array[2, uint64]
+iobuf:    Array[512, uint8]
+numbuf:   Array[24, uint8]
+# Scratch for the `sysirqprobe <verb>` argv form. Prefilled with the verb
+# name so only the argument and the newline have to be appended.
+ctlbuf:   Array[32, uint8] = "sysirq "
+spin_accum: uint64 = 0
+
+
+def strlen_u8(s: Ptr[uint8]) -> uint64:
+    n: uint64 = 0
+    while s[n] != 0:
+        n = n + 1
+    return n
+
+
+def write_str(fd: int32, s: Ptr[uint8]):
+    sys_write(fd, s, strlen_u8(s))
+
+
+def write_u64_raw(fd: int32, v: uint64):
+    tmp: Array[24, uint8]
+    n: uint64 = 0
+    x: uint64 = v
+    if x == 0:
+        tmp[0] = cast[uint8](48)
+        n = 1
+    while x > 0:
+        d: uint64 = x % 10
+        tmp[n] = cast[uint8](48 + d)
+        x = x / 10
+        n = n + 1
+    i: uint64 = 0
+    while i < n:
+        numbuf[i] = tmp[n - 1 - i]
+        i = i + 1
+    sys_write(fd, &numbuf[0], n)
+
+
+def kv(name: Ptr[uint8], v: uint64):
+    write_str(1, name)
+    write_u64_raw(1, v)
+
+
+def write_nl():
+    nl: Array[1, uint8]
+    nl[0] = cast[uint8](10)
+    sys_write(1, &nl[0], 1)
+
+
+def ctl(verb: Ptr[uint8]):
+    # LOUD on failure. A control write that is silently refused looks exactly
+    # like a working one from here, and that is how an A/B ends up running
+    # both arms in the same configuration and reporting "no difference". Both
+    # the open and the write are checked, and the kernel ACKs every accepted
+    # verb on the console as an independent witness.
+    fd: int32 = sys_open_write("/proc/self/ctl")
+    if fd < 0:
+        write_str(1, "[sysirqprobe] FAIL: cannot open /proc/self/ctl\n")
+        return
+    n: int64 = sys_write(fd, verb, strlen_u8(verb))
+    sys_close(fd)
+    if n != cast[int64](strlen_u8(verb)):
+        write_str(1, "[sysirqprobe] FAIL: ctl write refused rc=")
+        write_u64_raw(1, cast[uint64](n))
+        write_str(1, " verb=")
+        write_str(1, verb)
+
+
+def spawn_hogs() -> uint64:
+    hog_path: Ptr[uint8] = cast[Ptr[uint8]]("/bin/wakelat_hog")
+    hog_argv[0] = cast[uint64](hog_path)
+    hog_argv[1] = 0
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < NHOGS:
+        # spawn_detached, not spawn: the hogs are never waited on, and a
+        # leaked address space per hog per arm would matter.
+        c: int32 = spawn_detached(cast[Ptr[char]](hog_path), &hog_argv[0],
+                                  -1, -1, cast[Ptr[uint64]](0))
+        if c >= 0:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+def syscall_burst() -> uint64:
+    # One lap of the syscall-heavy workload. Every call here runs with IF
+    # clear from SYSCALL entry to SYSRETQ unless its own body re-enables
+    # interrupts, so each is a candidate masked stretch and the kernel-side
+    # instrument charges whatever it can prove to that syscall's number.
+    laps: uint64 = 0
+    # File I/O against a real backing store: open -> read -> close.
+    fd: int32 = sys_open("/bin/wakelat_hog")
+    if fd >= 0:
+        r: int64 = 1
+        while r > 0:
+            r = sys_read(fd, &iobuf[0], 512)
+            laps = laps + 1
+        sys_close(fd)
+    # Console write: goes through the tty/serial path, which is one of the
+    # longer IF-off regions on an ordinary desktop (each byte is a busy-wait
+    # on the UART's THR-empty bit at 115200 baud).
+    write_str(1, ".")
+    # Namespace / cwd walk.
+    sys_getcwd(&iobuf[0], 512)
+    laps = laps + 3
+    return laps
+
+
+def run_arm(label: Ptr[uint8], with_hogs: uint64):
+    write_str(1, "[sysirqprobe] arm=")
+    write_str(1, label)
+    nh: uint64 = 0
+    if with_hogs != 0:
+        nh = spawn_hogs()
+        # Let the hogs get through execve + ELF load before the window opens,
+        # or the measured window is dominated by their own startup rather than
+        # by the steady-state 100%-CPU load under test.
+        warm: uint64 = sys_get_jiffies() + 40
+        while sys_get_jiffies() < warm:
+            syscall_burst()
+    kv(" hogs=", nh)
+    write_nl()
+    # Arm LAST: everything before this point (including the hogs' own execve)
+    # is setup and must not pollute the histogram.
+    ctl("sysirq 1\n")
+    laps: uint64 = 0
+    deadline: uint64 = sys_get_jiffies() + ARM_JIFFIES
+    while sys_get_jiffies() < deadline:
+        laps = laps + syscall_burst()
+    write_nl()
+    ctl("sysirq 2\n")
+    ctl("sysirq 0\n")
+    write_str(1, "[sysirqprobe] arm=")
+    write_str(1, label)
+    kv(" laps=", laps)
+    write_nl()
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    write_str(1, "[sysirqprobe] start\n")
+    # argv form: `sysirqprobe <verb>` is a bare control write, so the same
+    # binary can arm / report / disarm the instrument from a shell on a full
+    # DE image where this program's own workload is not what we want to
+    # measure. No argument runs the two-arm A/B below.
+    if argc >= 2:
+        v: Ptr[uint8] = cast[Ptr[uint8]](argv[1])
+        n: uint64 = strlen_u8(v)
+        if n > 8:
+            n = 8
+        i: uint64 = 0
+        while i < n:
+            ctlbuf[7 + i] = v[i]
+            i = i + 1
+        ctlbuf[7 + n] = cast[uint8](10)
+        ctlbuf[8 + n] = 0
+        ctl(&ctlbuf[0])
+        write_str(1, "[sysirqprobe] ctl done\n")
+        return 0
+    run_arm("idle", 0)
+    # Idle out the previous arm's hogs before the next one starts. Not a
+    # syscall-free spin: a spin loop here would itself be the load.
+    gap: uint64 = sys_get_jiffies() + GAP_JIFFIES
+    while sys_get_jiffies() < gap:
+        spin_accum = spin_accum + 1
+    run_arm("loaded", 1)
+    write_str(1, "[sysirqprobe] done\n")
+    return 0
