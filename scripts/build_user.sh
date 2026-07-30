@@ -487,6 +487,7 @@ build_adder_user nice_demo            # #151 CFS-lite: spawns nice_hi + nice_lo,
 build_adder_user test_hugepage        # §hugepage: 2 MiB MAP_HUGETLB mmap test (tests/test_hugepage.ad)
 build_adder_user test_errstr_perbackend  # TODO net-item: per-backend errstr prefixes + perror (tests/test_errstr_perbackend.ad)
 build_adder_user hpm                  # Hamnix package manager (docs/packages.md)
+build_adder_user ed25519_selftest     # ON-DEVICE RFC 8032 + real-index check of lib/ed25519 (the crypto hpm's signed-index trust rests on; scripts/test_ed25519_device.sh)
 build_adder_user mkfs_ext4            # installer: format a /dev/blk/<dev> as ext4 (via /ctl)
 build_adder_user mkfs_fat             # installer: format a /dev/blk/<dev> as FAT (via /ctl; stub)
 build_adder_user hamnix_partition     # installer: GPT init + ESP + rootfs mkpart on /dev/blk/<dev>

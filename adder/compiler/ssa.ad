@@ -600,6 +600,21 @@ def ssa_expr_sgn(node: uint32) -> uint32:
             ibnid: uint32 = nm_intern(nd_name_off[ibase], nd_name_len[ibase])
             if ibnid < NM_MAX and ssa_islocal[ibnid] != 0 and ssa_ismem[ibnid] != 0 and ssa_mem_isarr[ibnid] != 0:
                 return ssa_mem_esgn[ibnid]      # local array element signedness
+            # `p[i]` where p is a POINTER local/param: the POINTEE's
+            # signedness — the SAME value ssa_load_at is already given for
+            # this element (see the ND_INDEX rvalue path's ssa_ptr_esgn
+            # load). Without this the shift/div/compare selector saw
+            # "unknown" and defaulted to the UNSIGNED form, so
+            # `c: int64 = o[i] >> 16` on a `Ptr[int64]` parameter emitted
+            # `lshr` instead of `ashr`. That is the whole of Ed25519's field
+            # arithmetic (lib/ed25519.ad::_car25519, _pack25519, modL), so
+            # every app the LLVM lane built — including /bin/hpm — rejected
+            # every valid signature: `hpm refresh` against a file:// repo
+            # reported "LOCAL index signature INVALID" for its own
+            # correctly-signed, byte-perfect on-image index.
+            if ibnid < NM_MAX and ssa_islocal[ibnid] != 0 \
+                    and ssa_ptr_esz[ibnid] != 0:
+                return ssa_ptr_esgn[ibnid]
             igi: uint32 = ssa_global_array_1d(nd_name_off[ibase], nd_name_len[ibase])
             if igi != 0:
                 return ssa_array_elem_sgn(igi)
