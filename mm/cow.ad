@@ -112,9 +112,32 @@ _cow_lock: uint32 = 0
 # dropped; if they balance, the count is right and the census is reading
 # reachability wrong.
 #
-# Cost: one add inside a critical section that already takes a spinlock with
-# IRQs masked. Always on — a counter that is only compiled in when you
-# already suspect the answer is a counter you do not have when you need it.
+# THIS IS THE ONE UNCONDITIONAL ADDITION THE PASS-12 INSTRUMENTATION MAKES,
+# declared here rather than left for a reader to discover. Every OTHER probe
+# added in that pass — the orphan-detail collector, the span classifier, the
+# stale-leaf audit at reap and execve — is reachable only from `track census`
+# or returns immediately on page_alloc_track_mode() == 0, exactly the
+# runtime-armable precedent the census and kmtrack set. These four increments
+# are not gated.
+#
+# The cost, measured rather than asserted. A 13-cycle soak recorded
+# added=46289 dropped=43730 — ~6.9 k increments per soak cycle. Each is one
+# non-atomic add to a global (~5 cycles), so ~35 k cycles per soak cycle
+# against a ~40 s cycle (~1.2e11 cycles at 3 GHz): about 3e-7 of the budget.
+# Relative to the call it sits INSIDE it is smaller still — every one of
+# these sites already pays local_irq_save/restore (the popf is serialising,
+# ~20+ cycles) plus a lock-prefixed spinlock acquire, so the add cannot be
+# more than a few percent of work already being done. Gating it would cost a
+# global load plus a branch, the same order as the add itself, so a gate
+# would buy conformance rather than speed.
+#
+# /proc/meminfo is byte-identical: _build_meminfo is untouched and nothing
+# here is reachable from it (the rule two lost soaks paid for).
+#
+# Unconditional is the POINT. A counter that only starts existing once you
+# already suspect the answer is a counter you do not have when you need it,
+# and the reference ledger is what the next pass needs sloped from its FIRST
+# soak rather than its second.
 _cow_refs_added:   uint64 = 0
 _cow_refs_dropped: uint64 = 0
 
