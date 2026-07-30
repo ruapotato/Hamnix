@@ -1110,6 +1110,52 @@ def _cls_write_o(objv: int32, s: Ptr[uint8], sn: int32):
                 js_new_string(s, cast[uint64](sn)))
 
 
+# Does created element `elv` answer to getElementsByTagName(`np`[0..nn))?
+def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
+    if nn == 1 and np[0] == 42:                            # "*"
+        return 1
+    # The QUALIFIED name (prefix:localName), not tagName — tagName is the
+    # upper-cased form for HTML-namespace elements and would match "abc"
+    # against a node whose real qualified name is "Abc".
+    qv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("localName"), 9)
+    if js_type_of(qv) != TAG_STR:
+        return 1
+    qw: int32 = 0
+    pfv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("prefix"), 6)
+    if js_type_of(pfv) == TAG_STR:
+        pfp: Ptr[uint8] = js_str_bytes(pfv)
+        pfn: int32 = js_str_bytelen(pfv)
+        while qw < pfn and qw < 254:
+            gbt_qn[qw] = pfp[qw]
+            qw = qw + 1
+        gbt_qn[qw] = 58                                    # ':'
+        qw = qw + 1
+    lp: Ptr[uint8] = js_str_bytes(qv)
+    ln: int32 = js_str_bytelen(qv)
+    li: int32 = 0
+    while li < ln and qw < 255:
+        gbt_qn[qw] = lp[li]
+        qw = qw + 1
+        li = li + 1
+    if _bytes_eq(&gbt_qn[0], qw, np, nn) != 0:
+        return 1
+    nsv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("namespaceURI"), 12)
+    if js_type_of(nsv) != TAG_STR:
+        return 0
+    if _bytes_eq(js_str_bytes(nsv), js_str_bytelen(nsv), \
+                 cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28) == 0:
+        return 0
+    # HTML namespace: qualified name compared against the LOWERCASED argument.
+    if qw != nn:
+        return 0
+    i: int32 = 0
+    while i < nn:
+        if gbt_qn[i] != _hx_lower(np[i]):
+            return 0
+        i = i + 1
+    return 1
+
+
 # element.getAttribute(name) as a plain function of (element object, name) so
 # the NamedNodeMap builder below can reuse the EXACT same resolution order the
 # JS-visible method uses (override store -> source start tag -> reflected
@@ -2189,6 +2235,19 @@ def _mount_dispatch(rel: int32) -> int32:
 # what a missing own property returned before — created nodes already carry
 # their own textContent, and the rewrite path branches on `undefined` meaning
 # "never set".
+# The element's current innerHTML. Until the page's first source-tree mutation
+# the answer is provably the raw source slice, which is far cheaper than
+# re-serialising the subtree.
+def _inner_html_of(idx: int32) -> int32:
+    if g_dom_mutated == 0:
+        cs: int32 = dom_cstart[idx]
+        hn: int32 = dom_cend[idx] - cs
+        if hn < 0:
+            hn = 0
+        return js_new_string(&src_ptr[cast[uint64](cs)], cast[uint64](hn))
+    return _serialize_inner_of(idx)
+
+
 def _inner_accessor(rel: int32) -> int32:
     thisv: int32 = js_this()
     idx: int32 = _find_el_by_obj(thisv)
@@ -2209,13 +2268,34 @@ def _inner_accessor(rel: int32) -> int32:
         # every later mutation was invisible. A browser recomputes on every
         # read; so do we. Until the page's first mutation the answer is
         # provably the source slice, so that stays the cheap path.
-        if g_dom_mutated == 0:
-            cs: int32 = dom_cstart[idx]
-            hn: int32 = dom_cend[idx] - cs
-            if hn < 0:
-                hn = 0
-            return js_new_string(&src_ptr[cast[uint64](cs)], cast[uint64](hn))
-        return _serialize_inner_of(idx)
+        # Generation-keyed memo: still recomputed after every DOM mutation (a
+        # browser recomputes on every read), but a mutation-free run of reads
+        # of the SAME element reuses one string instead of re-serialising the
+        # subtree each time. Without this, testharness printing a 700-element
+        # array exhausted the 8 MiB string pool mid-file.
+        ic: int32 = 0
+        while ic < ihc_n:
+            if ihc_el[ic] == thisv:
+                if ihc_gen[ic] == g_dom_gen:
+                    return ihc_val[ic]
+                iv2: int32 = _inner_html_of(idx)
+                ihc_val[ic] = iv2
+                ihc_gen[ic] = g_dom_gen
+                return iv2
+            ic = ic + 1
+        iv: int32 = _inner_html_of(idx)
+        islot: int32 = ihc_n
+        if ihc_n < IHC_MAX:
+            ihc_n = ihc_n + 1
+        else:
+            islot = ihc_next
+            ihc_next = ihc_next + 1
+            if ihc_next >= IHC_MAX:
+                ihc_next = 0
+        ihc_el[islot] = thisv
+        ihc_val[islot] = iv
+        ihc_gen[islot] = g_dom_gen
+        return iv
     # ---- setters: install the own data property, then run the same side
     # effects member_set's hook would have run (an accessor set returns before
     # the hook fires, so the work has to happen here).
@@ -2414,6 +2494,7 @@ def _nid_mutates(rel: int32) -> int32:
        rel == NID_REMCHILD or rel == NID_REPLCHILD or rel == NID_REMOVE:
         return 1
     if rel == NID_SETATTR or rel == NID_REMATTR or rel == NID_TOGGLEATTR:
+        g_attr_gen = g_attr_gen + 1                # invalidate el.attributes
         return 1
     if rel == NID_CLSADD or rel == NID_CLSREM or rel == NID_CLSTOG or \
        rel == NID_CLSREPL:
@@ -2425,10 +2506,46 @@ def _nid_mutates(rel: int32) -> int32:
     return 0
 
 
+# Is `v` a node that is part of the SOURCE tree — itself a registered source
+# element, or a created node whose parent chain reaches one?
+def _in_source_tree(v: int32) -> int32:
+    cur: int32 = v
+    d: int32 = 0
+    while d < 64 and js_type_of(cur) == TAG_OBJ:
+        if _find_el_by_obj(cur) >= 0:
+            return 1
+        cur = js_get_prop(cur, cast[Ptr[uint8]]("parentNode"), 10)
+        d = d + 1
+    return 0
+
+
+# Does this mutating call touch the source tree at all? A page that builds a
+# DETACHED subtree (createElement + setAttribute + appendChild, before mounting)
+# cannot change any source element's innerHTML, so it must not latch
+# g_dom_mutated — which would put every innerHTML read for the rest of the
+# page's life on the re-serialising path. Mounting the subtree goes through a
+# call whose receiver or argument IS in the source tree, and that latches.
+def _mutation_touches_source() -> int32:
+    if js_this() == js_doc or js_this() == js_win:
+        return 1
+    if _in_source_tree(js_this()) != 0:
+        return 1
+    n: int32 = js_arg_count()
+    if n > 4:
+        n = 4
+    i: int32 = 0
+    while i < n:
+        if js_type_of(js_arg(i)) == TAG_OBJ and _in_source_tree(js_arg(i)) != 0:
+            return 1
+        i = i + 1
+    return 0
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
-    if _nid_mutates(rel) != 0:
+    if _nid_mutates(rel) != 0 and _mutation_touches_source() != 0:
         g_dom_mutated = 1
+        g_dom_gen = g_dom_gen + 1
     if rel >= NID_MO_CTOR and rel <= NID_OBS_DELIVER:
         return _obs_dispatch(rel)
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
@@ -2657,7 +2774,20 @@ def _js_host_dispatch(id: int32) -> int32:
             tnm: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
             _set_query_scope()
             _dom_collect_selector(&dom_idtmp[0], tnm, g_qlo, g_qhi, tarr)
-            _cre_collect(&dom_idtmp[0], tnm, tarr)         # + created nodes
+            traw: int32 = js_new_array_v()
+            _cre_collect(&dom_idtmp[0], tnm, traw)         # + created nodes
+            # The selector machinery matches tag names ASCII-case-INSENSITIVELY,
+            # which is right for parsed HTML but not for createElementNS nodes:
+            # per spec getElementsByTagName(name) in an HTML document matches an
+            # element whose qualified name is EXACTLY `name`, plus an
+            # HTML-namespace element whose qualified name is the lowercased
+            # `name`. So createElementNS(svg, "ABC") must NOT answer to "abc".
+            tk: int32 = 0
+            while tk < js_array_len(traw):
+                tel: int32 = js_array_get(traw, tk)
+                if _gbt_name_matches(tel, &dom_idtmp[0], tnm) != 0:
+                    js_array_push(tarr, tel)
+                tk = tk + 1
         return tarr
     if rel == NID_HASATTR:
         if js_arg_count() >= 1:
@@ -3155,7 +3285,7 @@ def _js_host_dispatch(id: int32) -> int32:
         cre_obj[clid] = clo
         cre_n = clid + 1
         return clo
-    if rel == NID_CREATE or rel == NID_CREATE_NS:
+    if rel == NID_CREATE or rel == NID_CREATE_NS or rel == NID_CREATE_XML:
         # createElement(tag) and createElementNS(ns, tag) build the SAME node —
         # only the argument slot and the resulting namespaceURI differ. The
         # engine has one (HTML) layout model, so an SVG-namespaced element is
@@ -3167,11 +3297,32 @@ def _js_host_dispatch(id: int32) -> int32:
         if js_arg_count() < nsarg + 1 or cre_n >= CRE_MAX:
             return js_null()
         tn: int32 = _arg_bytes(nsarg, &dom_idtmp[0], 256)
+        if rel == NID_CREATE_NS:
+            # createElementNS validates + extracts the qualified name and
+            # throws InvalidCharacterError / NamespaceError (WPT
+            # dom/nodes/Document-createElementNS.js is ~130 rows of exactly
+            # these). createElement() does NOT: it accepts anything the HTML
+            # parser would.
+            cnsn: int32 = -1
+            if js_type_of(js_arg(0)) != TAG_NULL and \
+               js_type_of(js_arg(0)) != TAG_UNDEF:
+                cnsn = _arg_bytes(0, &nsuri_buf[0], 256)
+                if cnsn == 0:
+                    cnsn = -1
+            cnsc: int32 = _validate_qname(&dom_idtmp[0], tn, &nsuri_buf[0], cnsn)
+            if cnsc != 0:
+                return _throw_qname(cnsc)
         cid: int32 = cre_n
         cre_tag_off[cid] = dom_idbuf_len
         k: int32 = 0
         while k < tn and dom_idbuf_len < DOM_ID_CAP:
-            dom_idbuf[dom_idbuf_len] = _hx_lower(dom_idtmp[k])
+            # An XML document's createElement is case-PRESERVING; the HTML one
+            # ASCII-lowercases (DOMImplementation-createDocument.html asserts
+            # doc.createElement("DIV").localName === "DIV" on an XML document).
+            if rel == NID_CREATE_XML or rel == NID_CREATE_NS:
+                dom_idbuf[dom_idbuf_len] = dom_idtmp[k]
+            else:
+                dom_idbuf[dom_idbuf_len] = _hx_lower(dom_idtmp[k])
             dom_idbuf_len = dom_idbuf_len + 1
             k = k + 1
         cre_tag_len[cid] = tn
@@ -3205,8 +3356,56 @@ def _js_host_dispatch(id: int32) -> int32:
         # removeChild / remove / set|getAttribute / addEventListener, so a
         # script can build + nest a whole subtree before mounting it.
         _attach_el_methods(co)
+        if rel == NID_CREATE_XML:
+            # tagName stays as authored, and so must localName — the prototype
+            # accessor would lowercase it.
+            js_set_own(co, cast[Ptr[uint8]]("localName"), 9, \
+                       js_new_string(&dom_idbuf[cre_tag_off[cid]], \
+                                     cast[uint64](tn)))
+            js_set_own(co, cast[Ptr[uint8]]("tagName"), 7, \
+                       js_new_string(&dom_idbuf[cre_tag_off[cid]], \
+                                     cast[uint64](tn)))
+            js_set_own(co, cast[Ptr[uint8]]("nodeName"), 8, \
+                       js_new_string(&dom_idbuf[cre_tag_off[cid]], \
+                                     cast[uint64](tn)))
         if rel == NID_CREATE_NS:
-            js_set_prop(co, cast[Ptr[uint8]]("namespaceURI"), 12, js_arg(0))
+            # createElementNS is case-PRESERVING and splits prefix/localName.
+            cq: Ptr[uint8] = &dom_idbuf[cre_tag_off[cid]]
+            cqv: int32 = js_new_string(cq, cast[uint64](tn))
+            ccol: int32 = -1
+            ci2: int32 = 0
+            while ci2 < tn:
+                if cq[ci2] == 58 and ccol < 0:
+                    ccol = ci2
+                ci2 = ci2 + 1
+            clv: int32 = cqv
+            cpv: int32 = js_null()
+            if ccol >= 0:
+                clv = js_new_string(&cq[ccol + 1], cast[uint64](tn - ccol - 1))
+                cpv = js_new_string(cq, cast[uint64](ccol))
+            # tagName is the qualified name UPPER-CASED for an element in the
+            # HTML namespace inside an HTML document, and verbatim otherwise
+            # (dom/nodes/Element-tagName.html asserts both halves). localName
+            # is always verbatim.
+            if cnsn > 0 and _bytes_eq(&nsuri_buf[0], cnsn, \
+                   cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28) != 0:
+                cui: int32 = 0
+                while cui < tn and cui < 127:
+                    cuc: uint8 = cq[cui]
+                    if cuc >= 97 and cuc <= 122:
+                        cuc = cuc - 32
+                    nsq_buf[cui] = cuc
+                    cui = cui + 1
+                cqv = js_new_string(&nsq_buf[0], cast[uint64](cui))
+            js_set_own(co, cast[Ptr[uint8]]("tagName"), 7, cqv)
+            js_set_own(co, cast[Ptr[uint8]]("nodeName"), 8, cqv)
+            js_set_own(co, cast[Ptr[uint8]]("localName"), 9, clv)
+            js_set_own(co, cast[Ptr[uint8]]("prefix"), 6, cpv)
+            if cnsn > 0:
+                js_set_prop(co, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                            js_new_string(&nsuri_buf[0], cast[uint64](cnsn)))
+            else:
+                js_set_prop(co, cast[Ptr[uint8]]("namespaceURI"), 12, js_null())
         cre_obj[cid] = co
         cre_n = cid + 1
         return co
@@ -4146,6 +4345,8 @@ def _scan_title() -> int32:
 # ====================================================================
 nnm_name: Array[80, uint8]           # NUL-terminated attribute-name scratch
 nsq_buf:  Array[128, uint8]          # qualified-name scratch for the *NS methods
+nsuri_buf: Array[256, uint8]         # namespace-URI scratch for the *NS methods
+gbt_qn:   Array[256, uint8]          # qualified-name scratch for getElementsByTagName
 impl_title: Array[1024, uint8]       # createHTMLDocument(title) scratch
 
 
@@ -4289,9 +4490,35 @@ def _el_prefix(thisv: int32) -> int32:
 def _nsattr_accessor(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_ATTRS_ACC:
+        # Memoised in a side table (NOT as an own property, which would shadow
+        # this accessor for good) and invalidated by g_attr_gen, so the map
+        # stays live across setAttribute()/removeAttribute() but a read loop
+        # over attributes[i] does not rebuild it on every iteration.
+        ai: int32 = 0
+        while ai < attrc_n:
+            if attrc_el[ai] == thisv:
+                if attrc_gen[ai] == g_attr_gen:
+                    return attrc_map[ai]
+                mv2: int32 = _build_attrs_map(thisv)
+                attrc_map[ai] = mv2
+                attrc_gen[ai] = g_attr_gen
+                return mv2
+            ai = ai + 1
         mv: int32 = _build_attrs_map(thisv)
-        # NOT memoised as an own property: setAttribute() after the first read
-        # must show up, and a browser's NamedNodeMap is live.
+        slot: int32 = attrc_n
+        if attrc_n < ATTRC_MAX:
+            attrc_n = attrc_n + 1
+        else:
+            # Never stop caching: a page with more elements than the table
+            # holds would otherwise rebuild a NamedNodeMap on EVERY property
+            # read, which is what exhausted the string pool.
+            slot = attrc_next
+            attrc_next = attrc_next + 1
+            if attrc_next >= ATTRC_MAX:
+                attrc_next = 0
+        attrc_el[slot] = thisv
+        attrc_map[slot] = mv
+        attrc_gen[slot] = g_attr_gen
         return mv
     if rel == NID_LOCALNAME_ACC:
         return _el_local_name(thisv)
@@ -4465,11 +4692,11 @@ def _new_html_document(has_title: int32, titlev: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_CREATECOMMENT))
     js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
                 js_new_native_fn(js_hbase + NID_CREATEFRAG))
-    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
+    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
     return d
 
 
-def _new_impl_obj() -> int32:
+def _new_impl_obj(docv: int32) -> int32:
     impl: int32 = js_new_object_v()
     if g_proto_impl != 0:
         js_set_proto_v(impl, g_proto_impl)
@@ -4481,7 +4708,163 @@ def _new_impl_obj() -> int32:
                 js_new_native_fn(js_hbase + NID_IMPL_CREDOC))
     js_set_prop(impl, cast[Ptr[uint8]]("createDocumentType"), 18, \
                 js_new_native_fn(js_hbase + NID_IMPL_CREDOCT))
+    if implown_n < IMPLOWN_MAX:
+        implown_impl[implown_n] = impl
+        implown_doc[implown_n] = docv
+        implown_n = implown_n + 1
     return impl
+
+
+# The Document a DOMImplementation belongs to (js_doc if we cannot tell).
+def _impl_doc_of(implv: int32) -> int32:
+    i: int32 = 0
+    while i < implown_n:
+        if implown_impl[i] == implv:
+            return implown_doc[i]
+        i = i + 1
+    return js_doc
+
+
+# ---- XML qualified-name validation ------------------------------------------
+# The rules below are the ones the vendored WPT table actually encodes
+# (tests/wpt/tests/dom/nodes/Document-createElementNS.js — ~130 rows read
+# row-by-row on 2026-07-29), NOT a from-memory reading of the XML Name
+# production, which disagrees with browsers on several of them (e.g. "f<oo" is
+# accepted and "foo>" is not).
+#
+#   * the first byte must be an ASCII letter, '_' or non-ASCII (>= 0x80)
+#   * no byte anywhere may be a space or '>'
+#   * with a ':' the name splits at the FIRST colon; the LOCAL part must be
+#     non-empty and every one of its bytes must be a strict NameChar
+#     (letter/digit/'.'/'-'/'_'/':'/non-ASCII). The PREFIX part is not
+#     character-checked ("0:a" is accepted).
+def _xml_name_start(c: uint8) -> int32:
+    if c >= 128:
+        return 1
+    if c >= 97 and c <= 122:
+        return 1
+    if c >= 65 and c <= 90:
+        return 1
+    if c == 95:                                            # '_'
+        return 1
+    return 0
+
+
+def _xml_name_char(c: uint8) -> int32:
+    if _xml_name_start(c) != 0:
+        return 1
+    if c >= 48 and c <= 57:                                # 0-9
+        return 1
+    if c == 45 or c == 46 or c == 58:                      # '-' '.' ':'
+        return 1
+    return 0
+
+
+# 0 = ok, 1 = InvalidCharacterError, 2 = NamespaceError.
+# `nsn` < 0 means the namespace argument was null/undefined.
+def _validate_qname(qp: Ptr[uint8], qn: int32, nsp: Ptr[uint8], nsn: int32) -> int32:
+    if qn <= 0:
+        return 1
+    colon: int32 = -1
+    i: int32 = 0
+    while i < qn:
+        c: uint8 = qp[i]
+        if c == 32 or c == 9 or c == 10 or c == 13 or c == 62:   # ws or '>'
+            return 1
+        if c == 58 and colon < 0:
+            colon = i
+        i = i + 1
+    if colon < 0:
+        if _xml_name_start(qp[0]) == 0:
+            return 1
+    else:
+        # With a prefix it is the LOCAL part that is character-checked; the
+        # prefix is not ("0:a" is accepted, "a:0" is not).
+        if colon == 0:
+            return 1                                       # empty prefix
+        if colon + 1 >= qn:
+            return 1                                       # empty local part
+        k: int32 = colon + 1
+        if _xml_name_start(qp[k]) == 0 and qp[k] != 58:
+            return 1
+        while k < qn:
+            if _xml_name_char(qp[k]) == 0:
+                return 1
+            k = k + 1
+    # --- namespace rules (DOM "validate and extract") ---
+    has_ns: int32 = 0
+    if nsn > 0:
+        has_ns = 1
+    if colon > 0 and has_ns == 0:
+        return 2                                           # prefix, no namespace
+    xmlns_ns: int32 = 0
+    if has_ns != 0 and _bytes_eq(nsp, nsn, \
+                     cast[Ptr[uint8]]("http://www.w3.org/2000/xmlns/"), 29) != 0:
+        xmlns_ns = 1
+    xml_ns: int32 = 0
+    if has_ns != 0 and _bytes_eq(nsp, nsn, \
+                     cast[Ptr[uint8]]("http://www.w3.org/XML/1998/namespace"), 36) != 0:
+        xml_ns = 1
+    is_xmlns_q: int32 = _bytes_eq(qp, qn, cast[Ptr[uint8]]("xmlns"), 5)
+    pfx_xml: int32 = 0
+    pfx_xmlns: int32 = 0
+    if colon > 0:
+        pfx_xml = _bytes_eq(qp, colon, cast[Ptr[uint8]]("xml"), 3)
+        pfx_xmlns = _bytes_eq(qp, colon, cast[Ptr[uint8]]("xmlns"), 5)
+    if pfx_xml != 0 and xml_ns == 0:
+        return 2
+    if (pfx_xmlns != 0 or is_xmlns_q != 0) and xmlns_ns == 0:
+        return 2
+    if xmlns_ns != 0 and pfx_xmlns == 0 and is_xmlns_q == 0:
+        return 2
+    return 0
+
+
+def _throw_qname(code: int32) -> int32:
+    if code == 2:
+        return _throw_domexc(cast[Ptr[uint8]]("NamespaceError"), 14, \
+                             cast[Ptr[uint8]]("invalid qualified name"), 22)
+    return _throw_domexc(cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                         cast[Ptr[uint8]]("invalid qualified name"), 22)
+
+
+# A namespaced element for a synthetic XML document: tagName is the qualified
+# name EXACTLY as given (XML documents do not upper/lower-case), split into
+# prefix + localName.
+def _new_xml_el(qp: Ptr[uint8], qn: int32, nsv: int32, docv: int32) -> int32:
+    e: int32 = js_new_object_v()
+    if g_proto_elem != 0:
+        js_set_proto_v(e, g_proto_elem)
+    else:
+        _attach_el_methods(e)
+    qv: int32 = js_new_string(qp, cast[uint64](qn))
+    colon: int32 = -1
+    i: int32 = 0
+    while i < qn:
+        if qp[i] == 58:
+            colon = i
+            i = qn
+        else:
+            i = i + 1
+    lv: int32 = qv
+    pv: int32 = js_null()
+    if colon >= 0:
+        lv = js_new_string(&qp[colon + 1], cast[uint64](qn - colon - 1))
+        pv = js_new_string(qp, cast[uint64](colon))
+    js_set_own(e, cast[Ptr[uint8]]("tagName"), 7, qv)
+    js_set_own(e, cast[Ptr[uint8]]("nodeName"), 8, qv)
+    js_set_own(e, cast[Ptr[uint8]]("localName"), 9, lv)
+    js_set_own(e, cast[Ptr[uint8]]("prefix"), 6, pv)
+    js_set_own(e, cast[Ptr[uint8]]("nodeType"), 8, js_number(1.0))
+    js_set_own(e, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+    js_set_own(e, cast[Ptr[uint8]]("namespaceURI"), 12, nsv)
+    js_set_own(e, cast[Ptr[uint8]]("ownerDocument"), 13, docv)
+    js_set_own(e, cast[Ptr[uint8]]("children"), 8, js_new_array_v())
+    js_set_own(e, cast[Ptr[uint8]]("childNodes"), 10, js_new_array_v())
+    js_set_own(e, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+    js_set_own(e, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+    js_set_own(e, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    return e
 
 
 def _impl_dispatch(rel: int32) -> int32:
@@ -4490,14 +4873,20 @@ def _impl_dispatch(rel: int32) -> int32:
     if rel == NID_IMPL_CREDOCT:
         dtn: int32 = 0
         if js_arg_count() >= 1:
-            dtn = _js_str_to_cbuf(js_arg(0), &nsq_buf[0], 128)
+            dtn = _arg_bytes(0, &nsq_buf[0], 128)
+        # NO name validation: the "validate" step was removed from
+        # createDocumentType in modern DOM, and WPT asserts that
+        # createDocumentType("1foo"|"@foo"|"edi:{", ...) all succeed.
         pubv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
         sysv: int32 = pubv
         if js_arg_count() >= 2:
             pubv = js_arg(1)
         if js_arg_count() >= 3:
             sysv = js_arg(2)
-        return _new_doctype_obj(&nsq_buf[0], dtn, pubv, sysv)
+        dt0: int32 = _new_doctype_obj(&nsq_buf[0], dtn, pubv, sysv)
+        js_set_prop(dt0, cast[Ptr[uint8]]("ownerDocument"), 13, \
+                    _impl_doc_of(js_this()))
+        return dt0
     if rel == NID_IMPL_CREHTMLD:
         # `title` is an OPTIONAL DOMString: omitted (or explicitly undefined)
         # means the synthetic <head> gets no <title> child at all, while
@@ -4507,42 +4896,102 @@ def _impl_dispatch(rel: int32) -> int32:
         tn2: int32 = _arg_bytes(0, &impl_title[0], 1024)
         return _new_html_document(1, js_new_string(&impl_title[0], \
                                                    cast[uint64](tn2)))
-    # createDocument(namespace, qualifiedName, doctype) — an XML document. The
-    # engine has one (HTML) node model, so this answers the same detached shape
-    # with the requested root element and NO head/body.
+    # ---- createDocument(namespace, qualifiedName, doctype) -> XMLDocument ----
+    nsn: int32 = -1
+    if js_arg_count() >= 1 and js_type_of(js_arg(0)) != TAG_NULL and \
+       js_type_of(js_arg(0)) != TAG_UNDEF:
+        nsn = _arg_bytes(0, &nsuri_buf[0], 256)
+        if nsn == 0:
+            nsn = -1                                       # "" == no namespace
+    # `namespace` is DOMString? (nullable: undefined -> null) but
+    # `qualifiedName` is a plain DOMString, so an explicit `undefined` really
+    # does become the seven-character name "undefined" and DOES get a root
+    # element. Only null (or a missing argument) omits it.
+    qn: int32 = 0
+    if js_arg_count() >= 2 and js_type_of(js_arg(1)) != TAG_NULL:
+        qn = _arg_bytes(1, &nsq_buf[0], 128)
+    if qn > 0:
+        qc: int32 = _validate_qname(&nsq_buf[0], qn, &nsuri_buf[0], nsn)
+        if qc != 0:
+            return _throw_qname(qc)
+    nsv: int32 = js_null()
+    if nsn > 0:
+        nsv = js_new_string(&nsuri_buf[0], cast[uint64](nsn))
     d: int32 = js_new_object_v()
-    if g_proto_doc != 0:
+    xmlctor: int32 = js_global_get(cast[Ptr[uint8]]("XMLDocument"), 11)
+    if js_type_of(xmlctor) == TAG_OBJ:
+        js_set_proto_v(d, js_fn_prototype(xmlctor))
+    elif g_proto_doc != 0:
         js_set_proto_v(d, g_proto_doc)
     _node_constants(d)
     js_set_prop(d, cast[Ptr[uint8]]("nodeType"), 8, js_number(9.0))
     js_set_prop(d, cast[Ptr[uint8]]("nodeName"), 8, \
                 js_new_string(cast[Ptr[uint8]]("#document"), 9))
+    js_set_prop(d, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
     js_set_prop(d, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    # contentType is derived from the ROOT NAMESPACE, not the document kind.
+    ctp: Ptr[uint8] = cast[Ptr[uint8]]("application/xml")
+    ctn: int32 = 15
+    if nsn > 0:
+        if _bytes_eq(&nsuri_buf[0], nsn, \
+                     cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28) != 0:
+            ctp = cast[Ptr[uint8]]("application/xhtml+xml")
+            ctn = 21
+        elif _bytes_eq(&nsuri_buf[0], nsn, \
+                       cast[Ptr[uint8]]("http://www.w3.org/2000/svg"), 26) != 0:
+            ctp = cast[Ptr[uint8]]("image/svg+xml")
+            ctn = 13
     js_set_prop(d, cast[Ptr[uint8]]("contentType"), 11, \
-                js_new_string(cast[Ptr[uint8]]("application/xml"), 15))
-    js_set_prop(d, cast[Ptr[uint8]]("doctype"), 7, js_null())
+                js_new_string(ctp, cast[uint64](ctn)))
     kids: int32 = js_new_array_v()
+    dtv: int32 = js_null()
+    if js_arg_count() >= 3 and js_type_of(js_arg(2)) == TAG_OBJ:
+        dtv = js_arg(2)
+        js_set_prop(dtv, cast[Ptr[uint8]]("ownerDocument"), 13, d)
+        js_set_prop(dtv, cast[Ptr[uint8]]("parentNode"), 10, d)
+        js_array_push(kids, dtv)
+    js_set_prop(d, cast[Ptr[uint8]]("doctype"), 7, dtv)
     root: int32 = js_null()
-    qn: int32 = 0
-    if js_arg_count() >= 2:
-        qn = _arg_bytes(1, &nsq_buf[0], 128)
     if qn > 0:
-        root = _new_bare_el(&nsq_buf[0], qn, 0)
-        if js_arg_count() >= 1:
-            js_set_prop(root, cast[Ptr[uint8]]("namespaceURI"), 12, js_arg(0))
+        root = _new_xml_el(&nsq_buf[0], qn, nsv, d)
         js_set_prop(root, cast[Ptr[uint8]]("parentNode"), 10, d)
         js_array_push(kids, root)
     js_set_own(d, cast[Ptr[uint8]]("childNodes"), 10, kids)
+    dech: int32 = js_new_array_v()
+    if qn > 0:
+        js_array_push(dech, root)
+    js_set_own(d, cast[Ptr[uint8]]("children"), 8, dech)
     js_set_prop(d, cast[Ptr[uint8]]("documentElement"), 15, root)
-    js_set_prop(d, cast[Ptr[uint8]]("firstChild"), 10, root)
-    js_set_prop(d, cast[Ptr[uint8]]("lastChild"), 9, root)
+    js_set_prop(d, cast[Ptr[uint8]]("firstChild"), 10, js_array_get(kids, 0))
+    js_set_prop(d, cast[Ptr[uint8]]("lastChild"), 9, \
+                js_array_get(kids, js_array_len(kids) - 1))
+    js_set_prop(d, cast[Ptr[uint8]]("location"), 8, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("defaultView"), 11, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("compatMode"), 10, \
+                js_new_string(cast[Ptr[uint8]]("CSS1Compat"), 10))
+    js_set_prop(d, cast[Ptr[uint8]]("characterSet"), 12, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("charset"), 7, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("inputEncoding"), 13, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("URL"), 3, \
+                js_new_string(cast[Ptr[uint8]]("about:blank"), 11))
+    js_set_prop(d, cast[Ptr[uint8]]("documentURI"), 11, \
+                js_new_string(cast[Ptr[uint8]]("about:blank"), 11))
+    # An XML document's createElement does NOT ASCII-lowercase the tag name.
     js_set_prop(d, cast[Ptr[uint8]]("createElement"), 13, \
-                js_new_native_fn(js_hbase + NID_CREATE))
+                js_new_native_fn(js_hbase + NID_CREATE_XML))
     js_set_prop(d, cast[Ptr[uint8]]("createElementNS"), 15, \
                 js_new_native_fn(js_hbase + NID_CREATE_NS))
     js_set_prop(d, cast[Ptr[uint8]]("createTextNode"), 14, \
                 js_new_native_fn(js_hbase + NID_CTEXT))
-    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
+    js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
+                js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
+                js_new_native_fn(js_hbase + NID_CREATEFRAG))
+    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(d))
     return d
 
 
@@ -4912,7 +5361,7 @@ def _js_build_document():
     # document.implementation — the DOMImplementation for THIS document. It is
     # a per-document object (Document-implementation.html asserts a scratch
     # document's implementation is a different object), minted once here.
-    js_set_prop(doc, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
+    js_set_prop(doc, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj(doc))
     # document.cookie — a live accessor over the jar (see _cookie_read/_write).
     js_define_accessor(doc, cast[Ptr[uint8]]("cookie"), 6, \
                        js_new_native_fn(js_hbase + NID_COOKIE_GET), \

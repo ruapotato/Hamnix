@@ -445,6 +445,41 @@ sattr_n:       int32 = 0
 # their token list used to resolve to "no element" and every add/remove/toggle
 # SILENTLY DID NOTHING (measured: createElement('div').classList.add('x') left
 # className empty). This table is the missing back-pointer.
+# DOMImplementation -> owning Document. createDocumentType() must stamp the
+# new doctype's ownerDocument with the document its implementation came from
+# (DOMImplementation-createDocumentType.html asserts exactly that, 79 subtests).
+# el.attributes MEMO. testharness.js's format_value() does
+#     for (var i = 0; i < val.attributes.length; i++)
+# so a NamedNodeMap rebuilt on every read is O(n^2) allocations per printed
+# element — measured: dom/nodes/case.html exhausted the 8 MiB string pool and
+# the run died at subtest 23 of 285. The map is cached per element and
+# invalidated by a generation counter that every attribute mutation bumps, so
+# it stays live without re-allocating on each property read.
+# Same story for el.innerHTML, which format_value() also reads for every
+# element it prints: with a mutated DOM each read re-SERIALISES the subtree, so
+# printing the same <html> element 200 times built 200 copies of the document.
+# Keyed on a DOM-mutation generation so a read after any mutation recomputes.
+IHC_MAX:     int32 = 512
+ihc_el:      Array[512, int32]
+ihc_val:     Array[512, int32]
+ihc_gen:     Array[512, int32]
+ihc_n:       int32 = 0
+ihc_next:    int32 = 0               # round-robin victim once the table is full
+g_dom_gen:   int32 = 1
+
+ATTRC_MAX:   int32 = 512
+attrc_el:    Array[512, int32]
+attrc_map:   Array[512, int32]
+attrc_gen:   Array[512, int32]
+attrc_n:     int32 = 0
+attrc_next:  int32 = 0               # round-robin victim once the table is full
+g_attr_gen:  int32 = 1
+
+IMPLOWN_MAX: int32 = 64
+implown_impl: Array[64, int32]
+implown_doc:  Array[64, int32]
+implown_n:    int32 = 0
+
 CLSOWN_MAX:  int32 = 1024
 clsown_list: Array[1024, int32]      # the DOMTokenList object handle
 clsown_obj:  Array[1024, int32]      # the element object that owns it
@@ -1039,6 +1074,7 @@ NID_CN_BEFORE:     int32 = 173       # node.before(...nodes)
 NID_CN_AFTER:      int32 = 174       # node.after(...nodes)
 NID_CN_REPLWITH:   int32 = 175       # node.replaceWith(...nodes)
 NID_PN_PREPEND:    int32 = 176       # parent.prepend(...nodes)
+NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- OFF-INTERFACE FEATURE DETECTION (round 9) -------------------------------
 # getContext / checkValidity / reportValidity / setCustomValidity / submit were
 # attached to HTMLElement.prototype and therefore resolved TRUTHY on every
@@ -1161,6 +1197,13 @@ def _dom_reset():
     sattr_n = 0
     sattr_buf_len = 0
     clsown_n = 0
+    implown_n = 0
+    attrc_n = 0
+    attrc_next = 0
+    g_attr_gen = 1
+    ihc_n = 0
+    ihc_next = 0
+    g_dom_gen = 1
     ddi: int32 = 0
     while ddi < DOM_MAX:
         dom_detached[ddi] = 0

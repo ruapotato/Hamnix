@@ -107,11 +107,23 @@ MAX_STR: int32 = 400000
 # minutes. A long-lived SPA is the same story on a slower clock. The fix is BYTE
 # reclamation (compacting sp_buf during gc_collect_strings, which first requires
 # retiring the raw-pointer and open-builder assumptions above), not a larger
-# SP_CAP. Until then the ceiling is deliberately LOUD: str_intern/emit_c report
+# SP_CAP.
+#
+# 8 MiB -> 16 MiB (2026-07-29), for one measured workload the numbers above did
+# not cover. testharness.js's format_value() prints an element as
+# "<tag attrs>" + el.innerHTML + "</tag>", and WPT pages carry testharness.js
+# INLINE, so documentElement.innerHTML on dom/nodes/case.html is 210 KB and one
+# printed element costs ~600 KB of concat intermediates. That file needs just
+# over 8 MiB and dies at subtest 23 of 285 without this; 16 MiB clears the whole
+# vendored suite with the largest single page peaking well under it. This does
+# NOT change the argument above — it is still a lifetime budget and still the
+# wrong tool for an unbounded loop; it is a right-sizing for the largest real
+# page the engine is now asked to serialise.
+# Until then the ceiling is deliberately LOUD: str_intern/emit_c report
 # "[engine] CEILING string pool exhausted" and set a catchable error rather than
 # corrupting BSS (scripts/test_jsengine_strpool_clean_host.sh pins that).
-SP_CAP:  int32 = 8388608
-sp_buf: Array[8388608, uint8]           # 8 MiB string pool (bump; freed only at js_init)
+SP_CAP:  int32 = 16777216
+sp_buf: Array[16777216, uint8]           # 8 MiB string pool (bump; freed only at js_init)
 sp_top: int32 = 0
 st_off: Array[400000, int32]
 st_len: Array[400000, int32]
