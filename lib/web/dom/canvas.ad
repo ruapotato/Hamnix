@@ -1280,7 +1280,7 @@ def _ns_dispatch(rel: int32) -> int32:
             if _ns_el_matches(gel, nsn, &nsa_lp[0], gln) != 0:
                 js_array_push(garr, gel)
             gi = gi + 1
-        return garr
+        return _brand_collection(garr, g_proto_htmlcoll)
     # the remaining four take (namespace, name-ish) — split per method below.
     if rel == NID_SETATTRNS:
         if js_arg_count() < 3:
@@ -4780,7 +4780,7 @@ def _js_host_dispatch(id: int32) -> int32:
             _set_query_scope()
             _dom_collect_selector(&dom_idtmp[0], qn, g_qlo, g_qhi, qarr)
             _cre_collect(&dom_idtmp[0], qn, qarr)           # + created nodes
-        return qarr
+        return _brand_collection(qarr, g_proto_nodelist)
     if rel == NID_GETBYCLASS:
         # Collect every element in scope, then filter on the CLASS ATTRIBUTE's
         # own token grammar. The old route — build the CSS selector "." + arg
@@ -4803,7 +4803,7 @@ def _js_host_dispatch(id: int32) -> int32:
                 if _gbc_matches(gel, &gbc_arg[0], cnm) != 0:
                     js_array_push(carr, gel)
                 gi = gi + 1
-        return carr
+        return _brand_collection(carr, g_proto_htmlcoll)
     if rel == NID_GETBYTAG:
         tarr: int32 = js_new_array_v()
         if js_arg_count() >= 1:
@@ -4824,7 +4824,7 @@ def _js_host_dispatch(id: int32) -> int32:
                 if _gbt_name_matches(tel, &dom_idtmp[0], tnm) != 0:
                     js_array_push(tarr, tel)
                 tk = tk + 1
-        return tarr
+        return _brand_collection(tarr, g_proto_htmlcoll)
     if rel == NID_HASATTR:
         if js_arg_count() >= 1:
             hn: Array[64, uint8]
@@ -5248,6 +5248,16 @@ def _js_host_dispatch(id: int32) -> int32:
         return _make_event(15)
     if rel == NID_IMAGE_CTOR:
         return _make_image()
+    if rel == NID_ABORTCTRL:
+        return _make_abort_controller()
+    if rel == NID_ABORT:
+        return _abort_controller_abort()
+    if rel == NID_ABORT_THROW:
+        asig: int32 = js_this()
+        if js_type_of(asig) == TAG_OBJ and \
+           js_to_bool(js_get_prop(asig, cast[Ptr[uint8]]("aborted"), 7)) != 0:
+            js_throw_value(js_get_prop(asig, cast[Ptr[uint8]]("reason"), 6))
+        return js_undefined()
     if rel == NID_CREATEATTR or rel == NID_CREATEATTRNS or \
        rel == NID_CREATEATTR_XML:
         # document.createAttribute(localName) / createAttributeNS(ns, qname).
@@ -5596,7 +5606,10 @@ def _js_host_dispatch(id: int32) -> int32:
             # Created/dynamic node (createElement/innerHTML): not in the source
             # tree, so store the listener ON the object for the click()/
             # dispatchEvent object-dispatch path (Phase-0 programmatic events).
-            if el < 0 and _find_cre_by_obj(js_this()) >= 0 and \
+            # Created/dynamic node, OR any other object that is an EventTarget
+            # in its own right (AbortSignal). The registry is keyed on the
+            # object, so it does not need a dom_* row.
+            if el < 0 and js_type_of(js_this()) == TAG_OBJ and \
                js_is_callable(js_arg(1)) != 0:
                 _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1))
             if (el >= 0 or el == DOC_EL) and js_is_callable(js_arg(1)) != 0:
@@ -7494,6 +7507,23 @@ def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32
 # The Node nodeType / DOCUMENT_POSITION constants, mirrored onto both `Node` and
 # every interface that inherits them (scripts read `Node.ELEMENT_NODE` and
 # `Element.ELEMENT_NODE` interchangeably; the spec puts them on both).
+# Array.prototype, or 0 when the builtin is somehow absent.
+def _array_prototype() -> int32:
+    av: int32 = js_global_get(cast[Ptr[uint8]]("Array"), 5)
+    if js_type_of(av) != TAG_OBJ:
+        return 0
+    return js_fn_prototype(av)
+
+
+# Brand a collection ARRAY with NodeList / HTMLCollection.prototype. Both
+# prototypes chain to Array.prototype, so nothing the value could do before
+# stops working; `instanceof` starts answering what a browser answers.
+def _brand_collection(arrv: int32, protov: int32) -> int32:
+    if protov != 0 and js_is_array(arrv) != 0:
+        js_set_proto_v(arrv, protov)
+    return arrv
+
+
 def _node_constants(target: int32):
     js_set_prop(target, cast[Ptr[uint8]]("ELEMENT_NODE"), 12, js_number(1.0))
     js_set_prop(target, cast[Ptr[uint8]]("ATTRIBUTE_NODE"), 14, js_number(2.0))
@@ -7530,7 +7560,10 @@ def _node_constants(target: int32):
 # be branded. Called FIRST in _js_build_document, before any element object is
 # registered, so _attach_el_methods can link elements as they are created.
 def _build_dom_interfaces():
-    g_proto_node = _dom_interface(cast[Ptr[uint8]]("Node"), 4, 0)
+    # EventTarget is the root of the node hierarchy (Node inherits it), and is
+    # what `addEventListener` is specified on. It was missing entirely.
+    g_proto_evtgt = _dom_interface(cast[Ptr[uint8]]("EventTarget"), 11, 0)
+    g_proto_node = _dom_interface(cast[Ptr[uint8]]("Node"), 4, g_proto_evtgt)
     nodector: int32 = js_global_get(cast[Ptr[uint8]]("Node"), 4)
     _node_constants(nodector)
     _node_constants(g_proto_node)
@@ -7659,6 +7692,18 @@ def _build_dom_interfaces():
     _build_nodefilter()
     g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
     g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
+    # NodeList / HTMLCollection. Collections are real JS ARRAYS here (length and
+    # [i] are the engine's own fast paths, which is how a browser's collections
+    # behave from script), so the interface prototype is chained to
+    # Array.prototype: branding a collection makes `instanceof HTMLCollection`
+    # true WITHOUT taking forEach/map/slice away from page code that has always
+    # had them on these values.
+    g_proto_nodelist = _dom_interface(cast[Ptr[uint8]]("NodeList"), 8, \
+                                      _array_prototype())
+    g_proto_htmlcoll = _dom_interface(cast[Ptr[uint8]]("HTMLCollection"), 14, \
+                                      _array_prototype())
+    js_tag_object(g_proto_nodelist, cast[Ptr[uint8]]("NodeList"))
+    js_tag_object(g_proto_htmlcoll, cast[Ptr[uint8]]("HTMLCollection"))
     js_tag_object(g_proto_doctype, cast[Ptr[uint8]]("DocumentType"))
     js_tag_object(g_proto_attr, cast[Ptr[uint8]]("Attr"))
     js_tag_object(g_proto_nnm, cast[Ptr[uint8]]("NamedNodeMap"))
@@ -8055,6 +8100,9 @@ def _js_build_document():
     # `new Image()` constructor — a common preload/beacon global (round: google).
     js_global_set(cast[Ptr[uint8]]("Image"), 5, \
                   js_new_native_fn(js_hbase + NID_IMAGE_CTOR))
+    # AbortController + AbortSignal. testharness.js's t.get_signal() constructs
+    # one, so their absence took out whole FILES rather than single subtests.
+    _build_abort_interfaces()
     # `new CSSStyleSheet()` — constructible stylesheet (adoptedStyleSheets +
     # replaceSync); inactive until adopted, so it adds nothing to the cascade
     # until `document.adoptedStyleSheets = [sheet]`.
@@ -10295,6 +10343,17 @@ def _obj_lp_name(typep: Ptr[uint8], typen: int32) -> int32:
     return 3 + i
 
 
+# Does this object carry at least one live listener for `type`?
+def _obj_has_listener(obj: int32, typep: Ptr[uint8], typen: int32) -> int32:
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        return 0
+    if js_array_len(arr) == 0:
+        return 0
+    return 1
+
+
 def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
@@ -10440,6 +10499,11 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
     g_stop_prop = 0
     g_stop_immediate = 0
     g_cur_event = evo
+    # `window.event` is defined only DURING a dispatch (and restores to the
+    # outer event when dispatches nest). It was set and never cleared, so an
+    # earlier dispatch left it readable for the rest of the page's life --
+    # dom/events/event-global.html asserts "undefined before dispatch".
+    sv_event: int32 = js_global_get(cast[Ptr[uint8]]("event"), 5)
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("target"), 6, targetobj)
         js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
@@ -10477,6 +10541,7 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, js_null())
         js_set_prop(evo, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
     g_cur_event = -1
+    js_global_set(cast[Ptr[uint8]]("event"), 5, sv_event)
     return ran
 
 
@@ -11155,6 +11220,90 @@ def _make_event(flavor: int32) -> int32:
         js_set_prop(ev, cast[Ptr[uint8]]("data"), 4, \
                     _evd_str(opt, cast[Ptr[uint8]]("data"), 4))
     return ev
+
+
+# ---- AbortController / AbortSignal ------------------------------------------
+# Both were missing entirely. testharness.js's `t.get_signal()` builds an
+# AbortController, so a test that uses it aborts the whole FILE, not one
+# subtest — and `new AbortController()` is ordinary page code (fetch
+# cancellation, addEventListener({signal})), not an exotic corner.
+# Both interfaces keep their methods on the PROTOTYPE, not on the instance.
+# That is what a browser does, and here it is load-bearing: testharness.js
+# constructs an AbortController for EVERY Test object (line 2755) and aborts it
+# in cleanup, so a per-instance copy of four native functions is four objects
+# per subtest. On a 434-subtest file that alone exhausted the 40,000-slot object
+# pool and truncated the run.
+def _build_abort_interfaces():
+    g_proto_abortsig = _dom_interface(cast[Ptr[uint8]]("AbortSignal"), 11, \
+                                      g_proto_evtgt)
+    js_tag_object(g_proto_abortsig, cast[Ptr[uint8]]("AbortSignal"))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("addEventListener"), 16, \
+                js_new_native_fn(js_hbase + NID_ADDEVT))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("removeEventListener"), 19, \
+                js_new_native_fn(js_hbase + NID_REMEVT))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                js_new_native_fn(js_hbase + NID_DISPATCH))
+    js_set_prop(g_proto_abortsig, cast[Ptr[uint8]]("throwIfAborted"), 14, \
+                js_new_native_fn(js_hbase + NID_ABORT_THROW))
+    actor: int32 = js_new_native_fn(js_hbase + NID_ABORTCTRL)
+    js_global_set(cast[Ptr[uint8]]("AbortController"), 15, actor)
+    g_proto_abortctl = js_fn_prototype(actor)
+    js_tag_object(g_proto_abortctl, cast[Ptr[uint8]]("AbortController"))
+    js_set_prop(g_proto_abortctl, cast[Ptr[uint8]]("abort"), 5, \
+                js_new_native_fn(js_hbase + NID_ABORT))
+
+
+def _new_abort_signal() -> int32:
+    sig: int32 = js_new_object_v()
+    if g_proto_abortsig != 0:
+        js_set_proto_v(sig, g_proto_abortsig)
+    js_set_prop(sig, cast[Ptr[uint8]]("aborted"), 7, js_bool(0))
+    js_set_prop(sig, cast[Ptr[uint8]]("reason"), 6, js_undefined())
+    js_set_prop(sig, cast[Ptr[uint8]]("onabort"), 7, js_null())
+    return sig
+
+
+def _make_abort_controller() -> int32:
+    ac: int32 = js_this()
+    if js_type_of(ac) != TAG_OBJ or _ev_this_is_global(ac) != 0:
+        ac = js_new_object_v()
+        if g_proto_abortctl != 0:
+            js_set_proto_v(ac, g_proto_abortctl)
+    js_set_prop(ac, cast[Ptr[uint8]]("signal"), 6, _new_abort_signal())
+    return ac
+
+
+# controller.abort([reason]) — idempotent. The default reason is an AbortError
+# DOMException, which is what `signal.throwIfAborted()` and a rejected fetch
+# both surface.
+def _abort_controller_abort() -> int32:
+    ac: int32 = js_this()
+    if js_type_of(ac) != TAG_OBJ:
+        return js_undefined()
+    sig: int32 = js_get_prop(ac, cast[Ptr[uint8]]("signal"), 6)
+    if js_type_of(sig) != TAG_OBJ:
+        return js_undefined()
+    if js_to_bool(js_get_prop(sig, cast[Ptr[uint8]]("aborted"), 7)) != 0:
+        return js_undefined()
+    rsn: int32 = js_undefined()
+    if js_arg_count() >= 1:
+        rsn = js_arg(0)
+    if js_type_of(rsn) == TAG_UNDEF:
+        rsn = _new_domexc(cast[Ptr[uint8]]("AbortError"), 10, \
+                          cast[Ptr[uint8]]("signal is aborted without reason"), 32)
+    js_set_prop(sig, cast[Ptr[uint8]]("aborted"), 7, js_bool(1))
+    js_set_prop(sig, cast[Ptr[uint8]]("reason"), 6, rsn)
+    # Only build and dispatch the `abort` event when something is listening.
+    # An abort with no listener is the overwhelmingly common case (testharness
+    # aborts its per-Test controller in cleanup) and the event object plus its
+    # method set is ~10 objects a time.
+    if _obj_has_listener(sig, cast[Ptr[uint8]]("abort"), 5) != 0 or \
+       js_is_callable(js_get_prop(sig, cast[Ptr[uint8]]("onabort"), 7)) != 0:
+        ev: int32 = _blank_event(0)
+        js_set_prop(ev, cast[Ptr[uint8]]("type"), 4, \
+                    js_new_string(cast[Ptr[uint8]]("abort"), 5))
+        ignore_ad: int32 = _obj_dispatch(sig, cast[Ptr[uint8]]("abort"), 5, ev, 0)
+    return js_undefined()
 
 
 # `new Image()` / `new Image(w, h)` -> a minimal HTMLImageElement stub. Real

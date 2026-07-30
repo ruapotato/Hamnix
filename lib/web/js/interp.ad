@@ -1342,6 +1342,12 @@ def eval_delete(tgt: int32, env: int32) -> int32:
                 return v_boolv(proxy_delete(objv, n_str[tgt]))
             if obj_find_prop(objid_of(objv), n_str[tgt]) >= 0:
                 return v_boolv(obj_del_prop(objid_of(objv), n_str[tgt]))
+            # `delete window.Event`. Every DOM interface object, constructor and
+            # builtin is a global-SCOPE binding that the global object mirrors,
+            # not an own property of it, so without this the delete reported
+            # success and left the interface fully readable.
+            if g_global_obj != 0 and objid_of(objv) == objid_of(g_global_obj):
+                ignore_gd: int32 = env_delete_local(g_env, n_str[tgt])
         return v_boolv(1)
     if tk == ND_INDEX:
         objv2: int32 = eval_expr(n_a[tgt], env)
@@ -1358,6 +1364,8 @@ def eval_delete(tgt: int32, env: int32) -> int32:
             dk: int32 = strid_of(to_string_val(keyv))
             if obj_find_prop(o, dk) >= 0:
                 return v_boolv(obj_del_prop(o, dk))
+            if g_global_obj != 0 and o == objid_of(g_global_obj):
+                ignore_gd2: int32 = env_delete_local(g_env, dk)
         return v_boolv(1)
     return v_boolv(1)
 
