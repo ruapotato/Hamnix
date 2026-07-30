@@ -1,0 +1,154 @@
+# tests/test_compiler_adjacent_strings.ad — adjacent string-literal
+# concatenation ("abc" "def" == "abcdef"), the C/Python rule.
+#
+# WHY: Adder used to SILENTLY DROP every fragment after the first. A
+# multi-line printk emitted only its opening fragment — INCLUDING the
+# trailing newline, so log lines merged. 35 kernel diagnostic sites were
+# measured emitting truncated text, 14 of them inside a leak-hunt
+# campaign's own instrumentation: we were debugging a kernel whose
+# diagnostics the compiler had rewritten. Worst-class defect: a tool that
+# reports success while discarding what it was given.
+#
+# The fix is to CONCATENATE (the seed already did; the native backend
+# consumed the extra tokens and threw them away — a seed/native semantic
+# divergence, i.e. a miscompile, on top of the drop). This fixture pins the
+# joined BYTES, not just a length, in every position a literal can appear:
+#   * a local initializer,
+#   * a direct return value,
+#   * a call argument,
+#   * a parenthesised, line-broken join (the exact printk shape),
+#   * three-way joins,
+#   * a join whose seam carries an escape (\n) — the byte that vanished,
+#   * empty fragments (must contribute nothing, and must not truncate).
+#
+# run_all() returns 0 on PASS, else a nonzero tag identifying the first
+# failing case. Exercised over BOTH backends (seed codegen_x86.py at
+# -O0/-O1/-O2 + native codegen.ad opt OFF/ON) by
+# scripts/test_compiler_adjacent_strings.sh. HOST-ONLY.
+
+# Byte-exact compare of a Ptr[uint8] against a reference literal, including
+# the NUL. Returns 1 on equal, 0 otherwise.
+def streq(a: Ptr[uint8], b: Ptr[uint8]) -> int64:
+    i: int64 = 0
+    while True:
+        ca: uint8 = a[i]
+        cb: uint8 = b[i]
+        if ca != cb:
+            return 0
+        if ca == 0:
+            return 1
+        i = i + 1
+    return 0
+
+
+def slen(a: Ptr[uint8]) -> int64:
+    i: int64 = 0
+    while a[i] != 0:
+        i = i + 1
+    return i
+
+
+def byte_at(a: Ptr[uint8], i: int64) -> int64:
+    return cast[int64](a[i])
+
+
+# --- the shapes under test -------------------------------------------------
+
+def two_on_one_line() -> Ptr[uint8]:
+    s: Ptr[uint8] = "abc" "def"
+    return s
+
+
+# Parenthesised + line-broken: the printk shape. Inside brackets the
+# newline is implicitly joined, so the fragments are adjacent tokens.
+def two_across_lines() -> Ptr[uint8]:
+    s: Ptr[uint8] = ("abc"
+                     "def")
+    return s
+
+
+def three_fragments() -> Ptr[uint8]:
+    s: Ptr[uint8] = "ab" "cd" "ef"
+    return s
+
+
+def returned_directly() -> Ptr[uint8]:
+    return "ret" "urn"
+
+
+# The seam carries the escape that used to vanish with the rest of the tail.
+def seam_with_escape() -> Ptr[uint8]:
+    return "line one\n" "line two\n"
+
+
+def empty_first() -> Ptr[uint8]:
+    return "" "tail"
+
+
+def empty_last() -> Ptr[uint8]:
+    return "head" ""
+
+
+def empty_middle() -> Ptr[uint8]:
+    return "he" "" "ad"
+
+
+# A joined literal passed straight as a call argument (no local).
+def arg_position() -> int64:
+    return slen("aaa" "bb" "c")
+
+
+def run_all() -> int64:
+    # --- two fragments, one line ------------------------------------------
+    if streq(two_on_one_line(), "abcdef") == 0:
+        return 1
+    if slen(two_on_one_line()) != 6:
+        return 2
+
+    # --- two fragments, parenthesised + line-broken (the printk shape) ----
+    if streq(two_across_lines(), "abcdef") == 0:
+        return 3
+    if slen(two_across_lines()) != 6:
+        return 4
+
+    # --- three fragments ---------------------------------------------------
+    if streq(three_fragments(), "abcdef") == 0:
+        return 5
+    if slen(three_fragments()) != 6:
+        return 6
+
+    # --- returned directly -------------------------------------------------
+    if streq(returned_directly(), "return") == 0:
+        return 7
+
+    # --- seam carrying an escape ------------------------------------------
+    # 10 = '\n'. Length 18 = "line one\n" (9) + "line two\n" (9); if the
+    # tail were dropped this is 9, and the FIRST newline would be the last
+    # byte — exactly how merged log lines were produced.
+    seam: Ptr[uint8] = seam_with_escape()
+    if slen(seam) != 18:
+        return 8
+    if byte_at(seam, 8) != 10:
+        return 9
+    if byte_at(seam, 17) != 10:
+        return 10
+    if byte_at(seam, 9) != 108:            # 'l' of "line two"
+        return 11
+
+    # --- empty fragments ---------------------------------------------------
+    if streq(empty_first(), "tail") == 0:
+        return 12
+    if streq(empty_last(), "head") == 0:
+        return 13
+    if streq(empty_middle(), "head") == 0:
+        return 14
+
+    # --- call-argument position --------------------------------------------
+    if arg_position() != 6:
+        return 15
+
+    # --- a joined literal is a value like any other -------------------------
+    if streq("in" "line", "inline") == 0:
+        return 16
+
+    return 0
