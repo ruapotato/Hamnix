@@ -825,11 +825,11 @@ def page_alloc_census_orphans(site: uint64) -> uint64:
 # One sweep, not three: page_alloc_orphan_sample is O(frames) PER SAMPLE,
 # and asking it for 16 samples x 3 fields would be 48 full scans of a
 # 512 K-frame table on a `track census` that already walks every page table.
-PA_ORPH_CAP: uint64 = 16
+PA_ORPH_CAP: uint64 = 64
 _pa_orph_n:     uint64 = 0
-_pa_orph_va:    Array[16, uint64]
-_pa_orph_phys:  Array[16, uint64]
-_pa_orph_owner: Array[16, uint64]
+_pa_orph_va:    Array[64, uint64]
+_pa_orph_phys:  Array[64, uint64]
+_pa_orph_owner: Array[64, uint64]
 
 
 def page_alloc_orphan_collect(site: uint64) -> uint64:

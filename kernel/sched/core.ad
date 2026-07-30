@@ -33,7 +33,7 @@ from mm.page_alloc import (
     page_alloc_orphan_phys, page_alloc_orphan_owner,
 )
 from mm.slab import kfree
-from mm.cow import cow_boot_cr3
+from mm.cow import cow_boot_cr3, cow_refcount
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
 # user stack at CPL=0, so the stores need RFLAGS.AC=1 under CR4.SMAP=1.
@@ -7479,35 +7479,37 @@ def _mm_census_dump_spans():
         i = i + 1
 
 
-def _mm_census_span_of(va: uint64) -> uint64:
-    # Classify a leaked VA against every LIVE task's spans. Returns a packed
-    # (slot << 8) | kind, or 0 when NO live task claims the address — which
-    # is itself the informative answer: the owner is gone, so the frame
-    # escaped a TEARDOWN rather than an in-life unmap.
+def _mm_census_span_mask(slot: uint64, va: uint64) -> uint64:
+    # EVERY span of `slot` that covers `va`, as a bitmask — not the first
+    # match. That distinction is load-bearing: a VA covered by BOTH a fixed
+    # span (which fs/elf.ad::vm_cow_share_all COW-shares by range at fork)
+    # AND a VmaNode (which mm/vma.ad::vma_fork_copy COW-shares again) has
+    # its per-PFN refcount bumped TWICE for ONE new mapper, and a frame with
+    # a permanently inflated count can never reach 0 — it is orphaned the
+    # moment its last real mapper COW-copies away from it. A first-match
+    # classifier reports such a page as "image" and hides the overlap that
+    # is the whole point of asking.
     #
-    #   kind 1 image   2 interp   3 ustack prefix   4 brk   5 VmaNode
-    i: uint64 = 0
-    while i < NTASKS:
-        if task_table[i].state != STATE_FREE and task_table[i].is_user != 0:
-            il: uint64 = task_table[i].image_lo
-            if il != 0 and va >= il and va < task_table[i].image_hi:
-                return (i << 8) | 1
-            nl: uint64 = task_table[i].interp_lo
-            if nl != 0 and va >= nl and va < task_table[i].interp_hi:
-                return (i << 8) | 2
-            ul: uint64 = task_table[i].ustack_lo
-            if ul != 0 and va >= ul and va < ul + task_table[i].ustack_sz:
-                return (i << 8) | 3
-            bl: uint64 = task_table[i].brk_base
-            if bl != 0 and va >= bl and va < task_table[i].brk_max:
-                return (i << 8) | 4
-            # VmaNode cover. Cross-module call into mm/vma.ad (no import:
-            # mm.vma imports core, so an import here would close a cycle;
-            # Adder merges all modules into one symbol table).
-            if vma_find(i, va) != 0:
-                return (i << 8) | 5
-        i = i + 1
-    return 0
+    #   bit0 image   bit1 interp   bit2 ustack prefix   bit3 brk   bit4 vma
+    m: uint64 = 0
+    il: uint64 = task_table[slot].image_lo
+    if il != 0 and va >= il and va < task_table[slot].image_hi:
+        m = m | 1
+    nl: uint64 = task_table[slot].interp_lo
+    if nl != 0 and va >= nl and va < task_table[slot].interp_hi:
+        m = m | 2
+    ul: uint64 = task_table[slot].ustack_lo
+    if ul != 0 and va >= ul and va < ul + task_table[slot].ustack_sz:
+        m = m | 4
+    bl: uint64 = task_table[slot].brk_base
+    if bl != 0 and va >= bl and va < task_table[slot].brk_max:
+        m = m | 8
+    # VmaNode cover. Cross-module call into mm/vma.ad (no import: mm.vma
+    # imports core, so an import here would close a cycle; Adder merges all
+    # modules into one symbol table).
+    if vma_find(slot, va) != 0:
+        m = m | 16
+    return m
 
 
 def _mm_census_classify(site: uint64):
@@ -7517,8 +7519,13 @@ def _mm_census_classify(site: uint64):
     n: uint64 = page_alloc_orphan_collect(site)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[cens2] site %d: describing %d orphan(s)\n", site, n)
+    # Detail the first 16 only — the histogram below covers all of them, and
+    # ~20 EMERG lines per orphan would drown the serial log the soak greps.
+    ndet: uint64 = n
+    if ndet > 16:
+        ndet = 16
     k: uint64 = 0
-    while k < n:
+    while k < ndet:
         va: uint64 = page_alloc_orphan_va(k)
         ow: uint64 = page_alloc_orphan_owner(k)
         printk_set_level(PRINTK_LEVEL_EMERG)
@@ -7543,17 +7550,59 @@ def _mm_census_classify(site: uint64):
                     k, os, olive)
             printk_set_level(PRINTK_LEVEL_EMERG)
             printk2("[cens2] orphan[%d] owner pid=%d\n", k, opid)
-        c: uint64 = _mm_census_span_of(va)
-        if c == 0:
+        # THE REFCOUNT IS THE DISCRIMINATOR. A frame with no mapper at all
+        # is only unfreeable because its per-PFN COW count never reached 0.
+        #   rc 0  -> untracked: every reclaimer refuses it BY RULE
+        #            (_cow_release_forked_range / vma_free_cow_strays free
+        #            only at exactly 1), so the copy was dropped to 0 by a
+        #            path that then declined to free it;
+        #   rc >=1 -> a holder that no longer maps it never dropped, or the
+        #            count was incremented more times than there were
+        #            mappers (a double COW-share at fork).
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[cens2] orphan[%d] cow_refcount=%d\n",
+                k, cow_refcount(page_alloc_orphan_phys(k)))
+        anyspan: uint64 = 0
+        si: uint64 = 0
+        while si < NTASKS:
+            if task_table[si].state != STATE_FREE \
+                    and task_table[si].is_user != 0:
+                m: uint64 = _mm_census_span_mask(si, va)
+                if m != 0:
+                    anyspan = 1
+                    printk_set_level(PRINTK_LEVEL_EMERG)
+                    printk3("[cens2] orphan[%d] span slot=%d mask=%d"
+                            " (1=img 2=interp 4=ustk 8=brk 16=vma)\n",
+                            k, si, m)
+            si = si + 1
+        if anyspan == 0:
             printk_set_level(PRINTK_LEVEL_EMERG)
             printk1("[cens2] orphan[%d] span: UNACCOUNTED (no live task"
                     " claims this VA — its owner is gone)\n", k)
-        else:
-            printk_set_level(PRINTK_LEVEL_EMERG)
-            printk3("[cens2] orphan[%d] span: slot=%d kind=%d"
-                    " (1=image 2=interp 3=ustack 4=brk 5=vma)\n",
-                    k, c >> 8, c & 255)
         k = k + 1
+    # REFCOUNT HISTOGRAM over every collected orphan. One line that says
+    # whether the population is uniformly untracked (a declined free) or
+    # uniformly over-counted (a double share) — the two have opposite fixes.
+    h0: uint64 = 0
+    h1: uint64 = 0
+    h2: uint64 = 0
+    hm: uint64 = 0
+    j: uint64 = 0
+    while j < n:
+        rc: uint64 = cow_refcount(page_alloc_orphan_phys(j))
+        if rc == 0:
+            h0 = h0 + 1
+        elif rc == 1:
+            h1 = h1 + 1
+        elif rc == 2:
+            h2 = h2 + 1
+        else:
+            hm = hm + 1
+        j = j + 1
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[cens2] orphan refcounts: rc0=%d rc1=%d rc2=%d\n", h0, h1, h2)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[cens2] orphan refcounts: rc>2=%d (of %d sampled)\n", hm, n)
 
 
 def mm_orphan_census() -> uint64:
