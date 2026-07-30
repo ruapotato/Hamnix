@@ -266,6 +266,14 @@ SAMPLE_RE = re.compile(r'^SOAKSMP_(\w+)_B\s*$(.*?)^SOAKSMP_\1_E\s*$',
                        re.S | re.M)
 LINE_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z_0-9]*):\s+([0-9 ]+?)\s*$', re.M)
 
+# kB-suffixed lines (MemTotal / MemFree / MemUsed) that LINE_RE deliberately
+# drops because its value group must end the line. MemTotal in particular is
+# NOT a constant in Hamnix — region carving reduces memblock avail without
+# raising used, so the machine's REPORTED total shrinks as apps run. A
+# MemFree slope measured against a moving total is not a leak measurement,
+# so the total has to be parsed in order to be checked.
+KB_LINE_RE = re.compile(r'^\s*(MemTotal|MemFree|MemUsed):\s+(\d+)\s*kB\s*$', re.M)
+
 
 def subkeys(key, count):
     """Names for the columns of a multi-value line."""
@@ -301,6 +309,11 @@ def parse(text):
                 continue
             for name, v in zip(subkeys(lm.group(1), len(nums)), nums):
                 vals[name] = v
+        # kB-suffixed counters, needed so MemTotal can be CHECKED (see
+        # KB_LINE_RE). Named with a _kB suffix so they cannot collide with a
+        # bare same-named counter.
+        for km in KB_LINE_RE.finditer(body):
+            vals[km.group(1) + "_kB"] = int(km.group(2))
         out.append((label, vals))
     return out
 
@@ -366,6 +379,31 @@ def report(samples, label, warmup, show_all, as_json):
               % (k[:34], r["first"], r["last"], r["steady"], r["ls"],
                  r["ts"], "; ".join(bits)))
     print("\n%d counter(s) moving above the noise floor." % moved)
+
+    # MemTotal DRIFT GUARD. MemTotal is not constant in Hamnix: region
+    # carving reduces memblock avail without raising used, so the machine's
+    # REPORTED total shrinks permanently as apps run (measured: 385983 ->
+    # 382023 kB after a single launch+exit on a bare kernel, never
+    # recovering). That matters here for one specific reason — a MemFree
+    # slope measured against a shrinking total is partly the DENOMINATOR
+    # moving, not memory being lost, and reporting it as a leak rate would be
+    # wrong in the same direction as a real leak, which is the worst kind of
+    # wrong. So say so whenever it moves, and name the counters that are
+    # immune.
+    tots = [v["MemTotal_kB"] for _, v in sel if "MemTotal_kB" in v]
+    if tots and len(set(tots)) > 1:
+        print("!! MemTotal MOVED during this window: %d -> %d kB (%d distinct "
+              "values, range %d kB)." % (tots[0], tots[-1], len(set(tots)),
+                                         max(tots) - min(tots)))
+        print("   MemFree/MemUsed slopes are measured against a MOVING total "
+              "and must NOT be quoted as leak rates on their own.")
+        print("   Prefer PagesInUse (an absolute count) and, better, the "
+              "orphan census (`track plant` + `track census`), which counts "
+              "unreachable frames directly and depends on no total at all.")
+        chg = [i for i in range(1, len(tots)) if tots[i] != tots[i - 1]]
+        print("   MemTotal changed at sample index(es): %s%s"
+              % (chg[:8], " (step-shaped, so `steady` absorbs it)"
+                 if len(chg) <= 3 else " (MANY steps — treat with suspicion)"))
 
     # EXTRAPOLATION TO THE STATED REQUIREMENT. A pages/cycle number does not
     # communicate "this box reboots itself every N months", which is the
