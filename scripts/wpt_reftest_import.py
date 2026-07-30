@@ -389,8 +389,17 @@ def excluded_for(wpt, rel, data=None):
     if data is None:
         return "missing", ("Referenced document is not present in the "
                            "checkout at this pin.")
+    # CASE-INSENSITIVE. Every needle here is either an HTML tag name -- and
+    # `<VIDEO`, `<IFrame` are perfectly legal HTML -- or a filename that WPT
+    # spells inconsistently. Measured: with a case-SENSITIVE match, the "Ahem"
+    # needle missed `<link rel=stylesheet href="/fonts/ahem.css">` and
+    # `font: 20px/1 ahem`, so four Ahem-dependent documents were vendored and
+    # scored. Those are exactly the documents the exclusion exists to keep out:
+    # with no webfont loader both sides fall back to DejaVu and the comparison
+    # measures our fallback metrics rather than the test's assertion.
+    low = data.lower()
     for needle, reason in EXCLUDE_IF_REFERENCES:
-        if needle.encode() in data:
+        if needle.lower().encode() in low:
             return "ref:" + needle, reason
     return None, None
 

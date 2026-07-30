@@ -45,7 +45,7 @@ The test itself is observable, but its REFERENCE is not, so the pair cannot be c
 - `css/CSS2/floats-clear/clear-on-replaced-element.html`
 - ... and 450 more
 
-## `ref:Ahem` -- 103 file(s)
+## `ref:Ahem` -- 106 file(s)
 
 Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree. Ahem is a metrics-exact font (every glyph a solid em square) that reftests use to make text geometry pixel-predictable. Our engine has no webfont loader, so both documents fall back to DejaVu and the comparison measures our fallback metrics rather than the test's assertion -- it can pass or fail for reasons the test is not about. Re-import when @font-face loading lands.
 
@@ -61,7 +61,7 @@ Requires the Ahem test font, pulled in via `@font-face` from WPT's /fonts/ tree.
 - `css/CSS2/box-display/block-in-inline-margin-with-multi-line-text-before.html`
 - `css/CSS2/box-display/block-in-inline-margin-with-text-then-block-in-inline.html`
 - `css/CSS2/box-display/block-in-inline-margins-collapse-with-trailing-block.html`
-- ... and 91 more
+- ... and 94 more
 
 ## `ref:reftest-wait.js` -- 95 file(s)
 
