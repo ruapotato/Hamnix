@@ -31,6 +31,7 @@ from mm.page_alloc import (
     page_alloc_census_orphans, PA_SITE_COW_RESOLVE,
     page_alloc_orphan_collect, page_alloc_orphan_va,
     page_alloc_orphan_phys, page_alloc_orphan_owner,
+    page_alloc_track_mode,
 )
 from mm.slab import kfree
 from mm.cow import (
@@ -7446,6 +7447,109 @@ def _mm_census_walk_task(su: uint64):
     local_irq_restore(irq)
 
 
+# Cumulative stale-leaf tally across every reap (see _mm_reap_stale_leaf_audit).
+_mm_stale_leaves_total: uint64 = 0
+_mm_stale_reaps:        uint64 = 0
+
+
+def mm_stale_leaves_total() -> uint64:
+    return _mm_stale_leaves_total
+
+
+def _mm_reap_stale_leaf_audit(su: uint64):
+    # Count the USER leaves this task still maps at the instant its page
+    # tables are destroyed — the references that die un-dropped.
+    #
+    # Only NON-IDENTITY 4 KiB leaves are counted, for the same reason the
+    # census marks only those: Hamnix identity-maps low user RAM, and a
+    # cracked private table re-derives that identity map, so a leaf with
+    # phys == VA is the kernel's own direct map showing through and holds no
+    # COW reference. A leaf with phys != VA is a real per-task mapping —
+    # a demand-faulted page, an installed image page, or a COW copy — and if
+    # it is still present HERE, no teardown arm walked its VA.
+    #
+    # Runs under the pristine boot CR3 with IRQs masked, exactly like
+    # _mm_census_walk_task: this dereferences another task's PDPT/PD/PT by
+    # RAW PHYSICAL address, and on a UEFI boot those pages can land above
+    # the live CR3's identity coverage (the observed cr2=0x3e63a000 #PF).
+    if page_alloc_track_mode() == 0:
+        return
+    if task_table[su].cr3 == 0:
+        return
+    boot_cr3: uint64 = cow_boot_cr3()
+    if boot_cr3 == 0:
+        return
+    PT_ADDR: uint64 = 0x000FFFFFFFFFF000
+    PT_PS:   uint64 = 0x80
+    PT_P:    uint64 = 0x1
+    live_cr3: uint64 = read_cr3()
+    irq: uint64 = local_irq_save()
+    load_cr3(boot_cr3)
+    pml4: Ptr[uint64] = cast[Ptr[uint64]](task_table[su].cr3 & PT_ADDR)
+    bpml4: Ptr[uint64] = cast[Ptr[uint64]](boot_cr3 & PT_ADDR)
+    stale: uint64 = 0
+    s0: uint64 = 0
+    s1: uint64 = 0
+    li: uint64 = 0
+    while li < 256:                          # USER half only
+        e: uint64 = pml4[li]
+        be: uint64 = bpml4[li]
+        if (e & PT_P) != 0 and e != be \
+                and _pt_subtable_phys_ok(e & PT_ADDR) != 0:
+            pdpt: Ptr[uint64] = cast[Ptr[uint64]](e & PT_ADDR)
+            bpdpt: Ptr[uint64] = cast[Ptr[uint64]](be & PT_ADDR)
+            pi: uint64 = 0
+            while pi < 512:
+                pe: uint64 = pdpt[pi]
+                bpe: uint64 = 0
+                if (be & PT_P) != 0:
+                    bpe = bpdpt[pi]
+                if (pe & PT_P) != 0 and pe != bpe and (pe & PT_PS) == 0 \
+                        and _pt_subtable_phys_ok(pe & PT_ADDR) != 0:
+                    pd: Ptr[uint64] = cast[Ptr[uint64]](pe & PT_ADDR)
+                    bpd: Ptr[uint64] = cast[Ptr[uint64]](bpe & PT_ADDR)
+                    di: uint64 = 0
+                    while di < 512:
+                        de: uint64 = pd[di]
+                        bde: uint64 = 0
+                        if (bpe & PT_P) != 0 and (bpe & PT_PS) == 0:
+                            bde = bpd[di]
+                        if (de & PT_P) != 0 and de != bde \
+                                and (de & PT_PS) == 0 \
+                                and _pt_subtable_phys_ok(de & PT_ADDR) != 0:
+                            pt: Ptr[uint64] = cast[Ptr[uint64]](de & PT_ADDR)
+                            ti: uint64 = 0
+                            while ti < 512:
+                                te: uint64 = pt[ti]
+                                if (te & PT_P) != 0:
+                                    lva: uint64 = (li << 39) | (pi << 30) \
+                                        | (di << 21) | (ti << 12)
+                                    if (te & PT_ADDR) != lva:
+                                        if stale == 0:
+                                            s0 = lva
+                                        elif stale == 1:
+                                            s1 = lva
+                                        stale = stale + 1
+                                ti = ti + 1
+                        di = di + 1
+                pi = pi + 1
+        li = li + 1
+    load_cr3(live_cr3)
+    local_irq_restore(irq)
+    _mm_stale_reaps = _mm_stale_reaps + 1
+    if stale == 0:
+        return
+    _mm_stale_leaves_total = _mm_stale_leaves_total + stale
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[stale] reap slot %d pid %d: %d live leaves at pagetable free\n",
+            su, task_table[su].pid, stale)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[stale] slot %d first VAs %p %p\n", su, s0, s1)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[stale] cumulative: %d leaves over %d reaps\n",
+            _mm_stale_leaves_total, _mm_stale_reaps)
+
+
 def _mm_census_dump_spans():
     # Print every live USER task's owner spans, ONCE per census.
     #
@@ -8194,6 +8298,19 @@ def task_reap(slot: int32):
     #    (Skipped via cr3==0 when the shared-mm guard above found a
     #    surviving thread-group sharer — the heir's final reap frees.)
     if task_table[su].cr3 != 0:
+        # STALE-LEAF AUDIT (leak pass 12). Every teardown arm above walks a
+        # RANGE — VmaNodes, brk, image, interp, ustack. Anything this task
+        # still maps OUTSIDE all of those ranges is about to have its page
+        # tables destroyed with the leaf PTE still PRESENT, which silently
+        # discards whatever COW reference that leaf held. The frame then has
+        # a per-PFN count with no mapper behind it, and every reclaimer
+        # refuses it forever: exactly the "cow_refcount == 1, zero mappers,
+        # owner still alive" population the orphan census reports.
+        #
+        # So count them, right here, at the last moment they are still
+        # visible. Default-off (armed with the allocator tracker) because it
+        # is an O(page tables) walk on the reap path.
+        _mm_reap_stale_leaf_audit(su)
         _free_task_user_pagetables(su)
         pml4_pg: uint64 = task_table[su].cr3 & 0x000FFFFFFFFFF000
         # Defence-in-depth: never hand the pristine boot snapshot or
