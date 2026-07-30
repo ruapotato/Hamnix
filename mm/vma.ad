@@ -2418,6 +2418,23 @@ def vma_node_prot(node: uint64) -> int32:
     return cast[Ptr[VmaNode]](node)[0].prot
 
 
+def vma_pte_phys_at(slot: uint64, vaddr: uint64) -> uint64:
+    # The PHYSICAL frame `slot` currently maps at `vaddr`, or 0 if nothing
+    # is present there. Diagnostic only (the orphan census asks it of a
+    # leaked frame's owner): "the owner maps a DIFFERENT frame here" means
+    # the copy was displaced by a later COW copy and some OTHER holder owes
+    # the missing drop; "the owner maps NOTHING here" means the PTE was
+    # cleared without a cow_drop_page, which is a different bug with a
+    # different fix. Read-only PT walk, no cracking.
+    pml4: uint64 = task_pml4(cast[int32](slot))
+    if pml4 == 0:
+        return 0
+    pte: uint64 = _vma_pte_lookup(pml4, vaddr)
+    if pte == 0:
+        return 0
+    return pte & VMA_PT_ADDR_MASK
+
+
 def vma_page_present(slot: uint64, vaddr: uint64) -> int32:
     # 1 iff the 4 KiB page at `vaddr` is present in `slot`'s page table.
     # The core dumper calls this per page before copying its bytes so an

@@ -103,6 +103,29 @@ cow_nr_frames:     uint64 = 0
 # also touches a refcount can never re-enter and self-deadlock on the word.
 _cow_lock: uint32 = 0
 
+# REFERENCE BALANCE (leak pass 12). Every COW reference this table hands out
+# must eventually be handed back; a frame that ends up mapped by NOBODY while
+# its count is still 1 — which is uniformly what the orphan census finds — is
+# by definition one un-returned reference. These two cumulative totals say
+# which SIDE of the ledger is wrong, which the per-frame refcount alone
+# cannot: if `added` outruns `dropped` by the orphan count, a holder never
+# dropped; if they balance, the count is right and the census is reading
+# reachability wrong.
+#
+# Cost: one add inside a critical section that already takes a spinlock with
+# IRQs masked. Always on — a counter that is only compiled in when you
+# already suspect the answer is a counter you do not have when you need it.
+_cow_refs_added:   uint64 = 0
+_cow_refs_dropped: uint64 = 0
+
+
+def cow_refs_added() -> uint64:
+    return _cow_refs_added
+
+
+def cow_refs_dropped() -> uint64:
+    return _cow_refs_dropped
+
 # Pristine boot page-table root (CR3), snapshotted in cow_init() before
 # any task exists. The COW page-table cracker compares against THIS to
 # decide whether a PML4 entry still aliases the shared boot identity
@@ -198,8 +221,10 @@ def cow_share_page(phys: uint64):
     cur: uint64 = cast[uint64](slot[0])
     if cur == 0:
         slot[0] = 2
+        _cow_refs_added = _cow_refs_added + 2
     elif cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
+        _cow_refs_added = _cow_refs_added + 1
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -220,6 +245,7 @@ def cow_ref_inc(phys: uint64):
     cur: uint64 = cast[uint64](slot[0])
     if cur < COW_REFCOUNT_MAX:
         slot[0] = cast[uint16](cur + 1)
+        _cow_refs_added = _cow_refs_added + 1
     spinlock_unlock(&_cow_lock)
     local_irq_restore(_flags)
 
@@ -254,6 +280,7 @@ def cow_drop_page(phys: uint64) -> int32:
         ret = 0
     else:
         slot[0] = cast[uint16](cur - 1)
+        _cow_refs_dropped = _cow_refs_dropped + 1
         if cur == 1:
             ret = 1
     spinlock_unlock(&_cow_lock)

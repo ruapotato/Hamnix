@@ -33,7 +33,9 @@ from mm.page_alloc import (
     page_alloc_orphan_phys, page_alloc_orphan_owner,
 )
 from mm.slab import kfree
-from mm.cow import cow_boot_cr3, cow_refcount
+from mm.cow import (
+    cow_boot_cr3, cow_refcount, cow_refs_added, cow_refs_dropped,
+)
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
 # user stack at CPL=0, so the stores need RFLAGS.AC=1 under CR4.SMAP=1.
@@ -7562,6 +7564,19 @@ def _mm_census_classify(site: uint64):
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk2("[cens2] orphan[%d] cow_refcount=%d\n",
                 k, cow_refcount(page_alloc_orphan_phys(k)))
+        # WHAT DOES THE OWNER MAP AT THAT VA NOW? This separates the two
+        # remaining stories, which need different fixes:
+        #   owner maps a DIFFERENT frame -> the copy was displaced by a
+        #     LATER COW copy, and the missing drop is owed by some other
+        #     holder of the displaced frame;
+        #   owner maps NOTHING            -> the PTE was cleared without a
+        #     cow_drop_page, and the fix is at whichever walk cleared it.
+        if ow != 0:
+            os2: uint64 = ow - 1
+            if os2 < NTASKS and task_table[os2].state != STATE_FREE:
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk2("[cens2] orphan[%d] owner now maps phys=%p here\n",
+                        k, vma_pte_phys_at(os2, va))
         anyspan: uint64 = 0
         si: uint64 = 0
         while si < NTASKS:
@@ -7603,6 +7618,16 @@ def _mm_census_classify(site: uint64):
     printk3("[cens2] orphan refcounts: rc0=%d rc1=%d rc2=%d\n", h0, h1, h2)
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk2("[cens2] orphan refcounts: rc>2=%d (of %d sampled)\n", hm, n)
+    # THE LEDGER. Cumulative COW references handed out vs handed back. The
+    # difference is the number of COW-mapped PTEs the table believes exist;
+    # if it grows cycle over cycle while the desktop's live mappings do not,
+    # references are being lost, not pages.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[cens2] cow refs: added=%d dropped=%d\n",
+            cow_refs_added(), cow_refs_dropped())
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[cens2] cow refs: outstanding=%d\n",
+            cow_refs_added() - cow_refs_dropped())
 
 
 def mm_orphan_census() -> uint64:
