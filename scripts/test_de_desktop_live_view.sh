@@ -44,7 +44,10 @@
 # MUTATION-TESTED: restoring PEND_TTL_JIF/DROP_TTL_JIF to 48 turns the panel
 # and desktop drop assertions RED while the live-view assertions stay green.
 #
-# SKIPS CLEANLY (exit 0) when KVM/OVMF/socat/the image are unavailable.
+# SKIPS CLEANLY (exit 0) when OVMF/socat/the image are unavailable. Without
+# /dev/kvm it reports INCONCLUSIVE (exit 125) rather than exit 0: nothing boots,
+# so no pixel assertion here is observed, and a green GitHub run would otherwise
+# read as "the desktop renders".
 
 set -uo pipefail
 
@@ -56,13 +59,23 @@ BOOT_WAIT="${BOOT_WAIT:-300}"
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT_DIR="${OUT_DIR:-build/de_desktop_live_view/$TS}"
 
+# Sourced up here, not next to the image guard below: the /dev/kvm check that
+# follows immediately needs verdict_inconclusive.
+# shellcheck source=_verdict.sh
+source "$PROJ_ROOT/scripts/_verdict.sh"
+
 fail=0
 ok()   { echo "[live_view] PASS $*"; }
 bad()  { echo "[live_view] FAIL $*" >&2; fail=1; }
 
 # --- environment gates --------------------------------------------------
+# INCONCLUSIVE, not exit 0: every assertion in this gate is about pixels on a
+# live desktop, and without /dev/kvm nothing is booted and nothing is rendered.
+# A green GitHub run here would read as "the desktop renders", which it cannot
+# possibly have checked. exit 125 -> ::warning:: via scripts/ci_run_gate.sh.
 if [ ! -e /dev/kvm ]; then
-    echo "[live_view] SKIP-RUNTIME: /dev/kvm absent" >&2; exit 0
+    verdict_inconclusive "de_desktop_live_view" \
+        "/dev/kvm absent: nothing was booted and no desktop pixels were observed. Run on a KVM host (scripts/ci_run_kvm_battery.sh)."
 fi
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then

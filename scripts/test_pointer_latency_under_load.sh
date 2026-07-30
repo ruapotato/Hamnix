@@ -136,7 +136,15 @@ need sys/src/9/port/devwsys.ad '[ptrlat] svc_runs='         'service-run counter
 echo "$TAG structural markers OK (metric fed from both routes; both service points wired; A/B switch present)."
 
 # --- environment gates ------------------------------------------------
-[ -e /dev/kvm ] || { echo "$TAG SKIP-RUNTIME: /dev/kvm absent" >&2; exit 0; }
+# INCONCLUSIVE, not exit 0. The structural half above HAS been asserted on
+# this runner, but the measurement -- which is the entire point of this gate --
+# needs a KVM boot of the shipped image, and on a GitHub runner (no /dev/kvm)
+# a silent exit 0 is counted as proof that the pointer stayed responsive under
+# load. It is not proof of anything. exit 125 becomes a ::warning:: via
+# scripts/ci_run_gate.sh, which is what an unobserved assertion deserves; the
+# real run happens on a KVM host via scripts/ci_run_kvm_battery.sh.
+[ -e /dev/kvm ] || verdict_inconclusive "$VTAG" \
+    "/dev/kvm absent: the structural seams were checked, but the latency measurement -- the assertion this gate exists for -- was NOT taken. Run it on a KVM host (scripts/ci_run_kvm_battery.sh)."
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then
     for c in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd \

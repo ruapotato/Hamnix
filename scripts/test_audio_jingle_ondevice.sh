@@ -24,7 +24,8 @@
 #
 # Pass marker:  [audio_jingle_ondevice] PASS
 # Fail marker:  [audio_jingle_ondevice] FAIL
-# Skip:         no /dev/kvm, no OVMF firmware (exit 0, loudly)
+# Skip:         no OVMF firmware (exit 0, loudly)
+# Inconclusive: no /dev/kvm -- nothing boots, so nothing is observed (exit 125)
 
 . "$(dirname "$0")/_build_lock.sh"
 
@@ -38,7 +39,18 @@ BOOT_WAIT="${BOOT_WAIT:-140}"
 JINGLE_S=7.44
 TOL=0.90
 
-[ -e /dev/kvm ] || { echo "[audio_jingle_ondevice] SKIP: /dev/kvm absent" >&2; exit 0; }
+# Sourced up here, not next to the image guard below: the /dev/kvm check that
+# follows immediately needs verdict_inconclusive.
+# shellcheck source=_verdict.sh
+source "$PROJ_ROOT/scripts/_verdict.sh"
+
+# INCONCLUSIVE, not exit 0: this gate asserts that the jingle plays on a real
+# boot, and without /dev/kvm no boot happens at all. exit 0 on a GitHub runner
+# would be counted as proof that on-device audio works. exit 125 (a
+# ::warning:: via scripts/ci_run_gate.sh) states the truth -- nothing was
+# observed. The real run is scripts/ci_run_kvm_battery.sh on a KVM host.
+[ -e /dev/kvm ] || verdict_inconclusive "audio_jingle_ondevice" \
+    "/dev/kvm absent: no boot happened, so the on-device jingle was never observed. Run on a KVM host (scripts/ci_run_kvm_battery.sh)."
 OVMF_FD=""
 for c in /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd \
          /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
