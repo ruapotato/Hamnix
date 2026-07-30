@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_node_natives, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -2792,8 +2792,528 @@ def _mutation_touches_source() -> int32:
     return 0
 
 
+# ---- Node.prototype generics ------------------------------------------------
+# hasChildNodes / normalize / isEqualNode / isSameNode / compareDocumentPosition
+# / getRootNode / lookupNamespaceURI / lookupPrefix / isDefaultNamespace.
+#
+# All of these are written against the JS-VISIBLE node shape (nodeType,
+# parentNode, childNodes, attributes, namespaceURI, prefix, localName, data)
+# rather than the source-element index, so ONE implementation serves source
+# elements, createElement nodes, text, comments, fragments and the document.
+#
+# Every expected value below was MEASURED against `chromium --headless`
+# (scratch fixture c1.html) before it was written, not read off the spec:
+#   div.compareDocumentPosition(div.firstChild)  -> 20  (CONTAINED_BY|FOLLOWING)
+#   div.firstChild.compareDocumentPosition(div)  -> 10  (CONTAINS|PRECEDING)
+#   disconnected                                 -> 37  (DISCONNECTED|FOLLOWING|
+#                                                        IMPLEMENTATION_SPECIFIC)
+#   createElementNS('fooNamespace','prefix:elem').lookupNamespaceURI('xml')
+#                                                -> the XML namespace
+#   textNode.lookupNamespaceURI(null)            -> the XHTML namespace
+#   document.createDocumentFragment().lookupNamespaceURI(null) -> null
+
+ndg_pfx: Array[256, uint8]           # lookup* prefix / namespace argument
+ndg_pfxn: int32 = 0
+ndg_attrname: Array[256, uint8]      # "xmlns:<prefix>" probe
+
+
+def _nd_type(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return 0
+    nt: int32 = js_get_prop(v, cast[Ptr[uint8]]("nodeType"), 8)
+    if js_type_of(nt) != TAG_NUM:
+        return 0
+    return cast[int32](js_to_number(nt))
+
+
+# A node's live child list, or 0 when it has none the JS layer can see.
+def _nd_kids(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return 0
+    k: int32 = js_get_prop(v, cast[Ptr[uint8]]("childNodes"), 10)
+    if js_is_array(k) == 0:
+        return 0
+    return k
+
+
+def _nd_parent(v: int32) -> int32:
+    if js_type_of(v) != TAG_OBJ:
+        return js_null()
+    return js_get_prop(v, cast[Ptr[uint8]]("parentNode"), 10)
+
+
+# The nearest ELEMENT ancestor, used by the namespace lookups (a text node
+# resolves its namespace through its parent element, measured in chromium).
+def _nd_parent_el(v: int32) -> int32:
+    p: int32 = _nd_parent(v)
+    d: int32 = 0
+    while d < 256 and js_type_of(p) == TAG_OBJ:
+        if _nd_type(p) == 1:
+            return p
+        p = _nd_parent(p)
+        d = d + 1
+    return js_null()
+
+
+# String value of `v`, or 0 bytes when it is not a string.
+def _nd_str_eq(v: int32, p: Ptr[uint8], n: int32) -> int32:
+    if js_type_of(v) != TAG_STR:
+        return 0
+    return _bytes_eq(js_str_bytes(v), js_str_bytelen(v), p, n)
+
+
+def _nd_str_empty(v: int32) -> int32:
+    if js_type_of(v) != TAG_STR:
+        return 1
+    if js_str_bytelen(v) == 0:
+        return 1
+    return 0
+
+
+# Read argument 0 as the prefix / namespace operand into ndg_pfx. Returns 1 when
+# the argument was null or undefined (which the algorithms treat exactly the
+# same as the empty string, per the spec's "if prefix is the empty string, set
+# it to null" step) and 0 otherwise.
+def _nd_read_arg0() -> int32:
+    ndg_pfxn = 0
+    if js_arg_count() < 1:
+        return 1
+    a: int32 = js_arg(0)
+    if js_type_of(a) == TAG_NULL or js_type_of(a) == TAG_UNDEF:
+        return 1
+    ndg_pfxn = _js_str_to_cbuf(a, &ndg_pfx[0], 255)
+    if ndg_pfxn == 0:
+        return 1
+    return 0
+
+
+# "locate a namespace": the namespace URI in scope for `prefix` at `node`.
+# Returns a JS string, or js_null().
+def _nd_lookup_ns(node: int32, isnull: int32, depth: int32) -> int32:
+    if depth > 64 or js_type_of(node) != TAG_OBJ:
+        return js_null()
+    kind: int32 = _nd_type(node)
+    if kind == 9:                                          # Document
+        de: int32 = js_get_prop(node, cast[Ptr[uint8]]("documentElement"), 15)
+        if js_type_of(de) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(de, isnull, depth + 1)
+    if kind == 10 or kind == 11:                           # DocumentType/Fragment
+        return js_null()
+    if kind == 2:                                          # Attr
+        oe: int32 = js_get_prop(node, cast[Ptr[uint8]]("ownerElement"), 12)
+        if js_type_of(oe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(oe, isnull, depth + 1)
+    if kind != 1:                                          # Text/Comment/PI/...
+        pe: int32 = _nd_parent_el(node)
+        if js_type_of(pe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_ns(pe, isnull, depth + 1)
+    # Element. The `xml` and `xmlns` prefixes are implicitly declared on every
+    # element and on nothing else: MEASURED in chromium, a DocumentFragment and
+    # a documentElement-less Document both answer null for both prefixes, while
+    # any element answers the XML / XMLNS namespace regardless of its own.
+    if isnull == 0:
+        if _bytes_eq(&ndg_pfx[0], ndg_pfxn, cast[Ptr[uint8]]("xml"), 3) != 0:
+            return js_new_string( \
+                cast[Ptr[uint8]]("http://www.w3.org/XML/1998/namespace"), 36)
+        if _bytes_eq(&ndg_pfx[0], ndg_pfxn, cast[Ptr[uint8]]("xmlns"), 5) != 0:
+            return js_new_string( \
+                cast[Ptr[uint8]]("http://www.w3.org/2000/xmlns/"), 29)
+    # its own namespace first, then its xmlns declarations.
+    nsv: int32 = js_get_prop(node, cast[Ptr[uint8]]("namespaceURI"), 12)
+    pfv: int32 = js_get_prop(node, cast[Ptr[uint8]]("prefix"), 6)
+    if _nd_str_empty(nsv) == 0:
+        if isnull != 0:
+            if _nd_str_empty(pfv) != 0:
+                return nsv
+        elif _nd_str_eq(pfv, &ndg_pfx[0], ndg_pfxn) != 0:
+            return nsv
+    at: int32 = js_get_prop(node, cast[Ptr[uint8]]("attributes"), 10)
+    if js_is_array(at) != 0:
+        # the probe name: "xmlns" for the default namespace, "xmlns:<prefix>"
+        # otherwise.
+        pn: int32 = 5
+        ndg_attrname[0] = 120                              # 'x'
+        ndg_attrname[1] = 109                              # 'm'
+        ndg_attrname[2] = 108                              # 'l'
+        ndg_attrname[3] = 110                              # 'n'
+        ndg_attrname[4] = 115                              # 's'
+        if isnull == 0:
+            ndg_attrname[5] = 58                           # ':'
+            pn = 6
+            j: int32 = 0
+            while j < ndg_pfxn and pn < 255:
+                ndg_attrname[pn] = ndg_pfx[j]
+                pn = pn + 1
+                j = j + 1
+        i: int32 = 0
+        an: int32 = js_array_len(at)
+        while i < an:
+            av: int32 = js_array_get(at, i)
+            anm: int32 = js_get_prop(av, cast[Ptr[uint8]]("name"), 4)
+            if _nd_str_eq(anm, &ndg_attrname[0], pn) != 0:
+                val: int32 = js_get_prop(av, cast[Ptr[uint8]]("value"), 5)
+                if _nd_str_empty(val) != 0:
+                    return js_null()
+                return val
+            i = i + 1
+    up: int32 = _nd_parent_el(node)
+    if js_type_of(up) != TAG_OBJ:
+        return js_null()
+    return _nd_lookup_ns(up, isnull, depth + 1)
+
+
+# "locate a prefix": the prefix bound to the namespace now in ndg_pfx at `node`.
+def _nd_lookup_prefix(node: int32, depth: int32) -> int32:
+    if depth > 64 or js_type_of(node) != TAG_OBJ:
+        return js_null()
+    kind: int32 = _nd_type(node)
+    if kind == 9:
+        de: int32 = js_get_prop(node, cast[Ptr[uint8]]("documentElement"), 15)
+        if js_type_of(de) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(de, depth + 1)
+    if kind == 10 or kind == 11:
+        return js_null()
+    if kind == 2:
+        oe: int32 = js_get_prop(node, cast[Ptr[uint8]]("ownerElement"), 12)
+        if js_type_of(oe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(oe, depth + 1)
+    if kind != 1:
+        pe: int32 = _nd_parent_el(node)
+        if js_type_of(pe) != TAG_OBJ:
+            return js_null()
+        return _nd_lookup_prefix(pe, depth + 1)
+    nsv: int32 = js_get_prop(node, cast[Ptr[uint8]]("namespaceURI"), 12)
+    pfv: int32 = js_get_prop(node, cast[Ptr[uint8]]("prefix"), 6)
+    if _nd_str_eq(nsv, &ndg_pfx[0], ndg_pfxn) != 0 and _nd_str_empty(pfv) == 0:
+        return pfv
+    at: int32 = js_get_prop(node, cast[Ptr[uint8]]("attributes"), 10)
+    if js_is_array(at) != 0:
+        i: int32 = 0
+        an: int32 = js_array_len(at)
+        while i < an:
+            av: int32 = js_array_get(at, i)
+            anm: int32 = js_get_prop(av, cast[Ptr[uint8]]("name"), 4)
+            if js_type_of(anm) == TAG_STR and js_str_bytelen(anm) > 6:
+                ap: Ptr[uint8] = js_str_bytes(anm)
+                if _bytes_eq(ap, 6, cast[Ptr[uint8]]("xmlns:"), 6) != 0:
+                    val: int32 = js_get_prop(av, cast[Ptr[uint8]]("value"), 5)
+                    if _nd_str_eq(val, &ndg_pfx[0], ndg_pfxn) != 0:
+                        return js_new_string(&ap[6], \
+                                             cast[uint64](js_str_bytelen(anm) - 6))
+            i = i + 1
+    up: int32 = _nd_parent_el(node)
+    if js_type_of(up) != TAG_OBJ:
+        return js_null()
+    return _nd_lookup_prefix(up, depth + 1)
+
+
+# The node's data/value for equality: `data` on CharacterData, `value` on Attr.
+def _nd_data_eq(a: int32, b: int32, nm: Ptr[uint8], nn: uint64) -> int32:
+    av: int32 = js_get_prop(a, nm, nn)
+    bv: int32 = js_get_prop(b, nm, nn)
+    if js_type_of(av) != js_type_of(bv):
+        return 0
+    if js_type_of(av) != TAG_STR:
+        return 1
+    return _bytes_eq(js_str_bytes(av), js_str_bytelen(av), \
+                     js_str_bytes(bv), js_str_bytelen(bv))
+
+
+def _nd_is_equal(a: int32, b: int32, depth: int32) -> int32:
+    if a == b:
+        return 1
+    if js_type_of(a) != TAG_OBJ or js_type_of(b) != TAG_OBJ:
+        return 0
+    if depth > 64:
+        return 0
+    ka: int32 = _nd_type(a)
+    if ka != _nd_type(b):
+        return 0
+    if ka == 10:                                           # DocumentType
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("name"), 4) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("publicId"), 8) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("systemId"), 8) == 0:
+            return 0
+    elif ka == 1:                                          # Element
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("namespaceURI"), 12) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("prefix"), 6) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("localName"), 9) == 0:
+            return 0
+        aa: int32 = js_get_prop(a, cast[Ptr[uint8]]("attributes"), 10)
+        ba: int32 = js_get_prop(b, cast[Ptr[uint8]]("attributes"), 10)
+        an: int32 = 0
+        bn: int32 = 0
+        if js_is_array(aa) != 0:
+            an = js_array_len(aa)
+        if js_is_array(ba) != 0:
+            bn = js_array_len(ba)
+        if an != bn:
+            return 0
+        i: int32 = 0
+        while i < an:
+            avv: int32 = js_array_get(aa, i)
+            anm: int32 = js_get_prop(avv, cast[Ptr[uint8]]("name"), 4)
+            hit: int32 = 0
+            j: int32 = 0
+            while j < bn:
+                bvv: int32 = js_array_get(ba, j)
+                bnm: int32 = js_get_prop(bvv, cast[Ptr[uint8]]("name"), 4)
+                if js_type_of(anm) == TAG_STR and js_type_of(bnm) == TAG_STR and \
+                   _bytes_eq(js_str_bytes(anm), js_str_bytelen(anm), \
+                             js_str_bytes(bnm), js_str_bytelen(bnm)) != 0:
+                    if _nd_data_eq(avv, bvv, cast[Ptr[uint8]]("value"), 5) != 0:
+                        hit = 1
+                j = j + 1
+            if hit == 0:
+                return 0
+            i = i + 1
+    elif ka == 2:                                          # Attr
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("namespaceURI"), 12) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("localName"), 9) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("value"), 5) == 0:
+            return 0
+        return 1
+    elif ka == 7:                                          # ProcessingInstruction
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("target"), 6) == 0:
+            return 0
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("data"), 4) == 0:
+            return 0
+    elif ka == 3 or ka == 4 or ka == 8:                    # Text/CDATA/Comment
+        if _nd_data_eq(a, b, cast[Ptr[uint8]]("data"), 4) == 0:
+            return 0
+    ak2: int32 = _nd_kids(a)
+    bk2: int32 = _nd_kids(b)
+    al: int32 = 0
+    bl: int32 = 0
+    if ak2 != 0:
+        al = js_array_len(ak2)
+    if bk2 != 0:
+        bl = js_array_len(bk2)
+    if al != bl:
+        return 0
+    k: int32 = 0
+    while k < al:
+        if _nd_is_equal(js_array_get(ak2, k), js_array_get(bk2, k), depth + 1) == 0:
+            return 0
+        k = k + 1
+    return 1
+
+
+# Is `anc` an inclusive ancestor of `n`?
+def _nd_is_ancestor(anc: int32, n: int32) -> int32:
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256 and js_type_of(cur) == TAG_OBJ:
+        if cur == anc:
+            return 1
+        cur = _nd_parent(cur)
+        d = d + 1
+    return 0
+
+
+def _nd_root(n: int32) -> int32:
+    cur: int32 = n
+    d: int32 = 0
+    while d < 256:
+        p: int32 = _nd_parent(cur)
+        if js_type_of(p) != TAG_OBJ:
+            return cur
+        cur = p
+        d = d + 1
+    return cur
+
+
+# Index of `child` inside `parent`'s child list, or -1.
+def _nd_child_index(parent: int32, child: int32) -> int32:
+    ks: int32 = _nd_kids(parent)
+    if ks == 0:
+        return -1
+    i: int32 = 0
+    n: int32 = js_array_len(ks)
+    while i < n:
+        if js_array_get(ks, i) == child:
+            return i
+        i = i + 1
+    return -1
+
+
+# node.compareDocumentPosition(other). Chromium-measured values above.
+def _nd_compare_pos(a: int32, b: int32) -> int32:
+    if a == b:
+        return 0
+    if js_type_of(b) != TAG_OBJ:
+        return 0
+    if _nd_root(a) != _nd_root(b):
+        # DISCONNECTED | IMPLEMENTATION_SPECIFIC | a consistent direction. The
+        # direction must be STABLE and OPPOSITE for the reversed call (WPT
+        # asserts exactly that), so it is derived from the handle order.
+        if a < b:
+            return 37                                      # 1|4|32
+        return 35                                          # 1|2|32
+    if _nd_is_ancestor(a, b) != 0:
+        return 20                                          # CONTAINED_BY|FOLLOWING
+    if _nd_is_ancestor(b, a) != 0:
+        return 10                                          # CONTAINS|PRECEDING
+    # Neither contains the other: walk both ancestor chains to their first
+    # divergence and compare sibling index there.
+    ca: int32 = a
+    da: int32 = 0
+    while da < 256:
+        pa: int32 = _nd_parent(ca)
+        if js_type_of(pa) != TAG_OBJ:
+            break
+        cb: int32 = b
+        db: int32 = 0
+        while db < 256:
+            pb: int32 = _nd_parent(cb)
+            if js_type_of(pb) != TAG_OBJ:
+                break
+            if pa == pb:
+                ia: int32 = _nd_child_index(pa, ca)
+                ib: int32 = _nd_child_index(pa, cb)
+                if ia >= 0 and ib >= 0:
+                    if ia < ib:
+                        return 4                           # FOLLOWING
+                    return 2                               # PRECEDING
+                break
+            cb = pb
+            db = db + 1
+        ca = pa
+        da = da + 1
+    if a < b:
+        return 4
+    return 2
+
+
+ndg_cat: Array[16384, uint8]         # normalize() text-merge scratch
+
+
+# Concatenate two JS strings through a BSS scratch buffer (no stack buffers —
+# the native user stack is one 4 KiB page).
+def _nd_concat(a: int32, b: int32) -> int32:
+    w: int32 = 0
+    if js_type_of(a) == TAG_STR:
+        ap: Ptr[uint8] = js_str_bytes(a)
+        an: int32 = js_str_bytelen(a)
+        i: int32 = 0
+        while i < an and w < 16383:
+            ndg_cat[w] = ap[i]
+            w = w + 1
+            i = i + 1
+    if js_type_of(b) == TAG_STR:
+        bp: Ptr[uint8] = js_str_bytes(b)
+        bn: int32 = js_str_bytelen(b)
+        j: int32 = 0
+        while j < bn and w < 16383:
+            ndg_cat[w] = bp[j]
+            w = w + 1
+            j = j + 1
+    return js_new_string(&ndg_cat[0], cast[uint64](w))
+
+
+# node.normalize(): drop empty Text children and merge adjacent ones, then
+# recurse. Operates on the live JS child list, so it serves created subtrees
+# (which is what every WPT normalize test builds).
+def _nd_normalize(n: int32, depth: int32):
+    if depth > 64 or js_type_of(n) != TAG_OBJ:
+        return
+    ks: int32 = _nd_kids(n)
+    if ks == 0:
+        return
+    ln: int32 = js_array_len(ks)
+    nw: int32 = js_new_array_v()
+    prev: int32 = 0
+    i: int32 = 0
+    while i < ln:
+        c: int32 = js_array_get(ks, i)
+        if _nd_type(c) == 3:
+            dv: int32 = js_get_prop(c, cast[Ptr[uint8]]("data"), 4)
+            if _nd_str_empty(dv) != 0:
+                i = i + 1
+                continue
+            if prev != 0:
+                pv: int32 = js_get_prop(prev, cast[Ptr[uint8]]("data"), 4)
+                merged: int32 = _nd_concat(pv, dv)
+                js_set_prop(prev, cast[Ptr[uint8]]("data"), 4, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("nodeValue"), 9, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("textContent"), 11, merged)
+                js_set_prop(prev, cast[Ptr[uint8]]("length"), 6, \
+                            js_number(cast[float64](js_str_bytelen(merged))))
+                js_set_prop(c, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+                i = i + 1
+                continue
+            prev = c
+        else:
+            prev = 0
+            _nd_normalize(c, depth + 1)
+        js_array_push(nw, c)
+        i = i + 1
+    js_set_own(n, cast[Ptr[uint8]]("childNodes"), 10, nw)
+
+
+def _node_generic_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_HASKIDS:
+        ks: int32 = _nd_kids(thisv)
+        if ks == 0:
+            return js_bool(0)
+        if js_array_len(ks) > 0:
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_ISSAME:
+        if js_arg_count() < 1:
+            return js_bool(0)
+        if thisv == js_arg(0):
+            return js_bool(1)
+        return js_bool(0)
+    if rel == NID_GETROOTNODE:
+        return _nd_root(thisv)
+    if rel == NID_NORMALIZE:
+        _nd_normalize(thisv, 0)
+        return js_undefined()
+    if rel == NID_ISEQUAL:
+        if js_arg_count() < 1:
+            return js_bool(0)
+        return js_bool(_nd_is_equal(thisv, js_arg(0), 0))
+    if rel == NID_CMPDOCPOS:
+        if js_arg_count() < 1:
+            return js_number(0.0)
+        return js_number(cast[float64](_nd_compare_pos(thisv, js_arg(0))))
+    if rel == NID_LOOKUPNSURI:
+        isn: int32 = _nd_read_arg0()
+        return _nd_lookup_ns(thisv, isn, 0)
+    if rel == NID_LOOKUPPREFIX:
+        if _nd_read_arg0() != 0:
+            return js_null()
+        return _nd_lookup_prefix(thisv, 0)
+    # NID_ISDEFAULTNS: isDefaultNamespace(ns) is lookupNamespaceURI(null) == ns,
+    # with "" folded to null on both sides.
+    wantnull: int32 = _nd_read_arg0()
+    got: int32 = _nd_lookup_ns(thisv, 1, 0)
+    if wantnull != 0:
+        if _nd_str_empty(got) != 0:
+            return js_bool(1)
+        return js_bool(0)
+    if _nd_str_eq(got, &ndg_pfx[0], ndg_pfxn) != 0:
+        return js_bool(1)
+    return js_bool(0)
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
+    if rel >= NID_HASKIDS and rel <= NID_ISDEFAULTNS:
+        return _node_generic_dispatch(rel)
     if _nid_mutates(rel) != 0 and _mutation_touches_source() != 0:
         g_dom_mutated = 1
         g_dom_gen = g_dom_gen + 1
@@ -5600,6 +6120,11 @@ def _build_dom_interfaces():
     nodector: int32 = js_global_get(cast[Ptr[uint8]]("Node"), 4)
     _node_constants(nodector)
     _node_constants(g_proto_node)
+    # EventTarget + Node methods live HERE, so Text / Comment / Document /
+    # DocumentFragment / DocumentType / Attr inherit appendChild / cloneNode /
+    # normalize / isEqualNode / lookupNamespaceURI instead of reporting them
+    # `undefined` (94 WPT subtests were failing on the missing-method TypeError).
+    _attach_node_natives(g_proto_node)
     g_proto_elem = _dom_interface(cast[Ptr[uint8]]("Element"), 7, g_proto_node)
     # HTMLElement inherits Element; elements are branded with the HTMLElement
     # prototype so `el instanceof HTMLElement`, `instanceof Element` and

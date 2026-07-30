@@ -1204,6 +1204,62 @@ def _attach_validity(o: int32):
     js_set_prop(o, cast[Ptr[uint8]]("willValidate"), 12, js_bool(1))
 
 
+# The EventTarget + Node half of the surface: methods every node type carries,
+# not just elements. These used to live only on HTMLElement.prototype, which is
+# why `text.appendChild`, `doc.cloneNode`, `comment.insertBefore` and friends
+# were `undefined` — MEASURED as 94 WPT subtests failing with
+# "assert_throws_dom: ... threw object TypeError: appendChild is not a function":
+# the tests were asking whether a CharacterData node REJECTS a child, and got a
+# missing-method TypeError instead of the HierarchyRequestError they wanted.
+#
+# Attached to Node.prototype so Text / Comment / Document / DocumentFragment /
+# DocumentType / Attr all inherit them, exactly as in a browser (Chromium:
+# `Object.getOwnPropertyNames(Node.prototype)` lists appendChild / cloneNode /
+# contains / normalize / isEqualNode / compareDocumentPosition, and
+# `text.appendChild === document.appendChild` is true).
+#
+# HTMLElement.prototype keeps its own copies (_attach_el_natives still installs
+# them) so nothing about element dispatch changes; the duplicate costs one
+# function object per PROTOTYPE, not per element.
+def _attach_node_natives(o: int32):
+    js_set_prop(o, cast[Ptr[uint8]]("addEventListener"), 16, \
+                js_new_native_fn(js_hbase + NID_ADDEVT))
+    js_set_prop(o, cast[Ptr[uint8]]("removeEventListener"), 19, \
+                js_new_native_fn(js_hbase + NID_REMEVT))
+    js_set_prop(o, cast[Ptr[uint8]]("dispatchEvent"), 13, \
+                js_new_native_fn(js_hbase + NID_DISPATCH))
+    js_set_prop(o, cast[Ptr[uint8]]("appendChild"), 11, \
+                js_new_native_fn(js_hbase + NID_APPEND))
+    js_set_prop(o, cast[Ptr[uint8]]("insertBefore"), 12, \
+                js_new_native_fn(js_hbase + NID_INSBEF))
+    js_set_prop(o, cast[Ptr[uint8]]("removeChild"), 11, \
+                js_new_native_fn(js_hbase + NID_REMCHILD))
+    js_set_prop(o, cast[Ptr[uint8]]("replaceChild"), 12, \
+                js_new_native_fn(js_hbase + NID_REPLCHILD))
+    js_set_prop(o, cast[Ptr[uint8]]("cloneNode"), 9, \
+                js_new_native_fn(js_hbase + NID_CLONE))
+    js_set_prop(o, cast[Ptr[uint8]]("contains"), 8, \
+                js_new_native_fn(js_hbase + NID_CONTAINS))
+    js_set_prop(o, cast[Ptr[uint8]]("hasChildNodes"), 13, \
+                js_new_native_fn(js_hbase + NID_HASKIDS))
+    js_set_prop(o, cast[Ptr[uint8]]("normalize"), 9, \
+                js_new_native_fn(js_hbase + NID_NORMALIZE))
+    js_set_prop(o, cast[Ptr[uint8]]("isEqualNode"), 11, \
+                js_new_native_fn(js_hbase + NID_ISEQUAL))
+    js_set_prop(o, cast[Ptr[uint8]]("isSameNode"), 10, \
+                js_new_native_fn(js_hbase + NID_ISSAME))
+    js_set_prop(o, cast[Ptr[uint8]]("compareDocumentPosition"), 23, \
+                js_new_native_fn(js_hbase + NID_CMPDOCPOS))
+    js_set_prop(o, cast[Ptr[uint8]]("getRootNode"), 11, \
+                js_new_native_fn(js_hbase + NID_GETROOTNODE))
+    js_set_prop(o, cast[Ptr[uint8]]("lookupNamespaceURI"), 18, \
+                js_new_native_fn(js_hbase + NID_LOOKUPNSURI))
+    js_set_prop(o, cast[Ptr[uint8]]("lookupPrefix"), 12, \
+                js_new_native_fn(js_hbase + NID_LOOKUPPREFIX))
+    js_set_prop(o, cast[Ptr[uint8]]("isDefaultNamespace"), 18, \
+                js_new_native_fn(js_hbase + NID_ISDEFAULTNS))
+
+
 # The stateless half: every element method whose behaviour depends only on the
 # receiver (`this`), so ONE function object can serve every element.
 def _attach_el_natives(o: int32):
