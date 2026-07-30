@@ -212,11 +212,19 @@ if ! grep -aq '\[sysirq\] ack armed=1' "$LOG"; then
         "the kernel never acknowledged 'sysirq 1' -- the instrument was never armed, so nothing was measured"
 fi
 echo "$TAG instrument armed; running the exec/ELF-load storm."
-printf '%s\n' "/bin/find /bin | /bin/xargs -n 1 /bin/true ; echo STORM_DONE" >&3
+# Bounded with head -40: the full /bin walk did not finish in 240 s on a KVM
+# guest carrying four 100%-CPU hogs, and an unfinished storm means the window
+# never closes. 40 execve + ELF load + virtio block reads is plenty of the
+# shape we are measuring.
+printf '%s\n' "/bin/find /bin | /bin/head -40 | /bin/xargs -n 1 /bin/true ; echo STORM_DONE" >&3
 storm_ok=0
-d=$(( SECONDS + 240 ))
+d=$(( SECONDS + 420 ))
 while [ "$SECONDS" -lt "$d" ]; do
-    grep -aq "STORM_DONE" "$LOG" && { storm_ok=1; break; }
+    # TWO occurrences, not one. hamsh echoes typed input character by
+    # character, so the command line itself puts the marker in the log before
+    # anything has run — the first version of this loop matched its own echo
+    # and declared the storm complete about 0.2 s after starting it.
+    [ "$(grep -ac 'STORM_DONE' "$LOG")" -ge 2 ] && { storm_ok=1; break; }
     kill -0 "$QEMU_PID" 2>/dev/null || break
     sleep 2
 done
