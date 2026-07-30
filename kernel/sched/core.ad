@@ -1871,6 +1871,20 @@ def sched_pick_target_cpu(slot: uint64) -> uint64:
 
 
 def sched_make_ready_on(slot: uint64, target_cpu: uint64):
+    # Generic entry: enqueue without a wake refund (new-task publish, SIGCONT).
+    _sched_make_ready_on_f(slot, target_cpu, 0)
+
+
+def sched_make_ready_on_woken(slot: uint64, target_cpu: uint64):
+    # Wake-queue entry: the task is coming off a wait queue, so any tick
+    # over-charge it banked while it was a sub-tick incumbent is refunded as
+    # part of the enqueue (see _sched_wake_refund). Only this entry point does
+    # so: a fork/create publish is placed by sched_fork_vruntime and must not be
+    # moved, and a SIGCONT resume is not a latency path.
+    _sched_make_ready_on_f(slot, target_cpu, 1)
+
+
+def _sched_make_ready_on_f(slot: uint64, target_cpu: uint64, from_sleep: uint64):
     # Per-CPU rq (#6): place `slot` on CPU `target_cpu`'s runqueue and make
     # it STATE_READY, holding ONLY that CPU's rq lock. Sends a DIRECTED
     # reschedule IPI to target_cpu so an idle owner falls out of HLT and
@@ -1891,6 +1905,16 @@ def sched_make_ready_on(slot: uint64, target_cpu: uint64):
     # (the same lock that guards tc's READY membership). _pick_next on tc
     # walks this list.
     _rq_list_insert(slot, tc)
+    # Refund the tick over-charge BEFORE the lock is dropped and before the
+    # preempt decision below reads this vruntime: the refund is part of the
+    # placement, not a later correction, so _wakeup_maybe_kick and the very
+    # next _pick_next both see the placed value.
+    if from_sleep != 0:
+        # Sleeper clamp first (pull a long-asleep task UP to the floor band),
+        # then refund the tick over-charge it banked (pull it DOWN, but never
+        # below the runqueue minimum). Both are placement, both under the lock.
+        _sched_wake_place(slot)
+        _sched_wake_refund(slot, tc)
     _rq_unlock_cpu(tc)
     # Wakeup preemption (check_preempt_curr): decide whether tc's incumbent
     # should be thrown off for this task, and if so raise tc's need_resched.
@@ -2289,6 +2313,262 @@ def sched_vruntime_floor() -> uint64:
     if m > g_sched_vruntime_floor:
         g_sched_vruntime_floor = m
     return g_sched_vruntime_floor
+
+
+# ---------------------------------------------------------------------------
+# TICK OVER-CHARGE, MEASURED AND REFUNDED (the wake->dispatch tail).
+#
+# THE DEFECT. preempt_tick charges the incumbent a WHOLE tick of vruntime --
+# NICE0_WEIGHT * VRUNTIME_SCALE / weight = 256 units at nice 0, i.e. 10 ms of
+# credit -- regardless of how long it actually held the cpu. Every task on a
+# live desktop is a sub-tick poller: it wakes, does a few hundred microseconds
+# of work, and blocks. Whichever one happens to be on-cpu when the 100 Hz timer
+# fires is billed 10 ms for 0.2 ms of work.
+#
+# WHY THAT COSTS TENS OF MILLISECONDS, not microseconds. The runqueue's virtual
+# clock advances in 256-unit JUMPS, one task per tick, because only the
+# incumbent is ever charged. So a task carrying ANY lead waits until every
+# other runnable task has been charged a tick of its own: the wait is
+# (runqueue depth) x (one tick). That is exactly what the wklat outlier ring
+# measured on two independent KVM boots of the live DE:
+#
+#     arm     runqueue depth   wake->dispatch   ticks waited
+#     idle    11-13            82-98 ms         8-10
+#     loaded  15-17            113-132 ms       12-13
+#
+# with vwake == vdisp on every sample (the waiter never ran during the wait) and
+# its vruntime ~250 units -- one nice-0 tick charge -- above EVERY task
+# dispatched during it.
+#
+# WHAT WAS TRIED AND DISPROVED (8cdb6a81, reverted in fcad8146). Replacing the
+# whole-tick charge with Linux's update_curr -- charge real elapsed runtime --
+# shrank the lead from ~250 to ~33 units and the tail DID NOT GO AWAY; the idle
+# arm got clearly worse. The reason is the second half of the defect above: with
+# real-runtime charging the virtual clock advances by ~40 us of work per task
+# per round instead of 256 units per tick, so the residual 33-unit lead took
+# even LONGER in wall-clock to repay. Charging accurately is not sufficient; the
+# clock has to keep advancing fast for a debt to be repaid promptly.
+#
+# THE FIX KEEPS BOTH. Charge the whole tick exactly as before -- the virtual
+# clock keeps its fast 256-per-tick advance -- but MEASURE how much of that
+# charge was fiction, and refund the fiction the next time the task is woken:
+#
+#   * at dispatch (sched_note_dispatch) stamp g_exec_start_ns[slot];
+#   * at the tick, after the full charge, ran = now - exec_start (clamped to one
+#     tick) and over = charge * (TICK_NS - ran) / TICK_NS accumulates into
+#     g_vover[slot] -- the credit this task was demonstrably billed for time it
+#     did not use;
+#   * on a WAKE (and only on a wake -- see _sched_wake_refund's caller) refund as
+#     much of g_vover as it takes to bring the task back to the minimum vruntime
+#     on its runqueue, and no more.
+#
+# This cannot be gamed and it cannot starve anyone: a task can only ever get
+# back credit it was over-billed, the refund never places it BELOW the runqueue
+# minimum (so it cannot jump the queue or undercut an incumbent), and a
+# genuinely cpu-bound task -- one that really does hold the cpu for the whole
+# tick it is charged for -- accumulates no over-charge at all and is therefore
+# unaffected. Realtime tasks do not use vruntime and are excluded.
+TICK_NS: uint64 = 10000000
+g_exec_start_ns: Array[512, uint64]
+g_vover:         Array[512, uint64]
+# Cap the accumulator so a task parked as the incumbent across a long idle
+# stretch cannot bank an unbounded refund. Eight nice-0 tick charges is far more
+# than the one-tick over-charge this exists to undo.
+VOVER_CAP: uint64 = 2048
+# Diagnostics (reported by wklat verb 6): how often a refund fired and how much
+# vruntime it returned in total.
+g_vover_refunds: uint64 = 0
+g_vover_units:   uint64 = 0
+# How many wakes were re-placed by the sleeper clamp (_sched_wake_place).
+g_wake_places:   uint64 = 0
+
+
+def _sched_note_overcharge(slot: uint64, charge: uint64):
+    # Called from preempt_tick immediately after `slot` was charged `charge`
+    # units for the tick. Record the part of that charge the task did not earn.
+    # Also re-stamps exec_start so the NEXT tick measures only the new interval.
+    if slot >= NTASKS:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    st:  uint64 = g_exec_start_ns[slot]
+    g_exec_start_ns[slot] = now
+    if st == 0 or now <= st:
+        return
+    ran: uint64 = now - st
+    if ran >= TICK_NS:
+        return                       # earned the whole charge; nothing to refund
+    over: uint64 = (charge * (TICK_NS - ran)) / TICK_NS
+    if over == 0:
+        return
+    v: uint64 = g_vover[slot] + over
+    if v > VOVER_CAP:
+        v = VOVER_CAP
+    g_vover[slot] = v
+
+
+def _sched_charge_elapsed(slot: uint64):
+    # Charge `slot` for the sub-tick time it has held the cpu since its last
+    # charge, and re-stamp its clock. Called when it gives the cpu UP.
+    #
+    # WHY THIS IS NEEDED ON TOP OF THE TICK CHARGE. The tick only ever bills the
+    # task that happens to be on-cpu at the 100 Hz boundary. A task that always
+    # gives the cpu back before the timer fires is billed NOTHING, EVER. The D3
+    # banner above names that defect but fixes only fork PLACEMENT, and
+    # _sched_wake_place only reaches tasks that come back through a WAIT QUEUE.
+    # A yield-loop task (sys_yield / yield_to_others — hamterm.ad:501 documents
+    # one that "stayed permanently STATE_READY") never sleeps and never ticks,
+    # so it stays pinned at whatever vruntime it was created with FOREVER. That
+    # is what left a runnable task at 44,168 while the field ran at 103,869
+    # after the wake clamp landed: the clamp fired only 74 times in 13,869
+    # wakes because the low stratum was not arriving through the wake path at
+    # all.
+    #
+    # This does NOT double-charge a task that survived a tick: exec_start is
+    # re-stamped by _sched_note_overcharge at every tick charge, so the delta
+    # measured here is only the time since that charge.
+    if slot >= NTASKS:
+        return
+    if sched_is_realtime(slot) != 0:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    st:  uint64 = g_exec_start_ns[slot]
+    g_exec_start_ns[slot] = now
+    if st == 0 or now <= st:
+        return
+    d: uint64 = now - st
+    # exec_start is re-stamped on every dispatch and every tick charge, so a
+    # delta beyond one tick can only be a missed re-stamp; clamp rather than
+    # charge a fiction.
+    if d > TICK_NS:
+        d = TICK_NS
+    w: uint64 = task_table[slot].sched_weight
+    if w == 0:
+        w = NICE0_WEIGHT
+    per_tick: uint64 = ((NICE0_WEIGHT * VRUNTIME_SCALE) / w) * \
+        nscap_cpu_factor_current()
+    task_table[slot].vruntime = task_table[slot].vruntime + \
+        ((d * per_tick) / TICK_NS)
+
+
+def sched_exec_start_stamp(slot: uint64):
+    # Start `slot`'s on-cpu clock. Called from sched_note_dispatch.
+    if slot >= NTASKS:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    g_exec_start_ns[slot] = clocksource_read_ns()
+
+
+def _sched_wake_place(slot: uint64):
+    # place_entity(cfs_rq, se, initial=0) — the sleeper clamp this scheduler
+    # never had, and the reason a live desktop develops a PERMANENT vruntime
+    # stratification instead of a bounded band.
+    #
+    # MEASURED (build/m2p, both arms, two boots): the runnable set splits into
+    # two strata that never converge. In the idle arm the minimum vruntime on
+    # the runqueue was 30,980 while the tasks being dispatched — and sshd, the
+    # waiter — sat at 155,394; in the loaded arm, 51,646 against 393,133. That
+    # is a spread of 124,000-341,000 units, i.e. 480-1,330 whole nice-0 tick
+    # charges, ~5-13 SECONDS of virtual time, and it is stable for the whole
+    # run.
+    #
+    # It forms because vruntime is charged ONLY at the tick: a task that never
+    # survives a whole tick (every DE poller: wake, ~200 us of work, block)
+    # accrues NOTHING, EVER, and stays pinned wherever it was created, while a
+    # task that is on-cpu when the timer fires accrues 256. The D3 banner above
+    # names this same defect but fixes only FORK placement; nothing ever
+    # re-places a task that has been ASLEEP, so the low stratum is permanent.
+    #
+    # A task in the upper stratum can then only be picked once every runnable
+    # member of the lower one has drained — which is precisely the measured
+    # tail: sshd, woken ~100x/s by tcp_accept's one-tick poll, waited 70-130 ms
+    # with 25-44 dispatches to other tasks inside the wait.
+    #
+    # The clamp is Linux's, including its direction: a waking task is pulled
+    # only UP (toward the monotonic floor), never down. So it can only ever
+    # LOSE unearned advantage, which makes it impossible for a wake-heavy task
+    # to gain cpu share by sleeping — the standard objection to sleeper credit
+    # does not apply. thresh is one nice-scaled quantum, the SAME quantity
+    # sched_fork_vruntime places a fresh task behind the floor, so a task
+    # returning from sleep lands exactly one slice AHEAD of where a fork lands
+    # BEHIND: a bounded, symmetric band around the floor.
+    if slot >= NTASKS:
+        return
+    if sched_is_realtime(slot) != 0:
+        return
+    w: uint64 = task_table[slot].sched_weight
+    if w == 0:
+        w = NICE0_WEIGHT
+    thresh: uint64 = ((NICE0_WEIGHT * VRUNTIME_SCALE) / w) * SCHED_QUANTUM_TICKS
+    fl: uint64 = sched_vruntime_floor()
+    if fl <= thresh:
+        return
+    lo: uint64 = fl - thresh
+    if task_table[slot].vruntime < lo:
+        task_table[slot].vruntime = lo
+        g_wake_places = g_wake_places + 1
+
+
+def _sched_wake_refund(slot: uint64, cpu: uint64):
+    # Refund a woken task the tick charges it was demonstrably over-billed,
+    # but never past the minimum vruntime on cpu's runqueue.
+    #
+    # CALLER MUST hold rq_locks[cpu] and `slot` must already be linked on cpu's
+    # run-list: the minimum is taken over exactly the set _pick_next walks
+    # (rq_head[cpu]) plus the incumbent, which is off the run-list while it
+    # runs. The walk is bounded at NTASKS steps so a torn link degrades to a
+    # skipped refund rather than a hang.
+    if slot >= NTASKS or cpu >= NR_RQ:
+        return
+    if g_vover[slot] == 0:
+        return
+    if sched_is_realtime(slot) != 0:
+        return
+    v: uint64 = task_table[slot].vruntime
+    minv:  uint64 = 0
+    have:  uint64 = 0
+    steps: uint64 = 0
+    r: uint64 = rq_head[cpu]
+    while r != RQL_NIL and steps < NTASKS:
+        steps = steps + 1
+        if r != slot:
+            rv: uint64 = task_table[r].vruntime
+            if have == 0 or rv < minv:
+                minv = rv
+                have = 1
+        r = task_table[r].rq_next
+    if g_rq_current_init != 0:
+        cu: uint64 = g_rq_current[cpu]
+        if cu < NTASKS and cu != slot:
+            if task_table[cu].state == STATE_RUNNING:
+                cv: uint64 = task_table[cu].vruntime
+                if have == 0 or cv < minv:
+                    minv = cv
+                    have = 1
+    if have == 0:
+        return
+    if v <= minv:
+        return                       # already at or below the minimum
+    lead: uint64 = v - minv
+    refund: uint64 = g_vover[slot]
+    if refund > lead:
+        refund = lead
+    task_table[slot].vruntime = v - refund
+    g_vover[slot] = g_vover[slot] - refund
+    g_vover_refunds = g_vover_refunds + 1
+    g_vover_units   = g_vover_units + refund
+
+
+def sched_vover_report():
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk2("[wklat] vover refunds=%d units=%d\n", g_vover_refunds,
+            g_vover_units)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[wklat] wake_places=%d\n", g_wake_places)
 
 
 def sched_fork_vruntime(slot: uint64) -> uint64:
@@ -2954,6 +3234,28 @@ wkp_curvrun: Array[4, uint64]
 wkp_nrdy:    Array[4, uint64]
 wkp_minv:    Array[4, uint64]
 wkp_ismin:   Array[4, uint64]
+# THE MEMBERSHIP PREDICATE the scan above does NOT apply.
+#
+# wkp_minv/wkp_ismin are computed by a scan of the TASK TABLE filtered on
+# (state==READY && rq_cpu==cpu && on_cpu==0 && !throttled). _pick_next does
+# NOT use that filter: it walks rq_head[cpu] threaded through rq_next, and a
+# node's membership of that list is recorded in rq_on_list, NOT in
+# (state, rq_cpu). So a slot can satisfy every predicate the scan applies and
+# still be invisible to the picker, because it is not ON the list.
+#
+# That is exactly the shape of the standing anomaly ("a READY task ~15,000
+# vruntime units below the dispatched band that _pick_next never selects").
+# These fields close the gap: lminv/lnrdy are the SAME minimum and depth
+# computed by walking the picker's actual list, and ghost*/ describe the
+# lowest-vruntime slot that is READY+owned-by-cpu but NOT linked. If
+# lminv != minv the two views have diverged and ghostpid names the culprit.
+wkp_lminv:   Array[4, uint64]
+wkp_lnrdy:   Array[4, uint64]
+wkp_ghostn:  Array[4, uint64]
+wkp_ghostv:  Array[4, uint64]
+wkp_ghostp:  Array[4, uint64]
+wkp_ghostnm: Array[4, uint64]
+wkp_ghostst: Array[4, uint64]
 
 
 def _wklat_probe_clear():
@@ -2972,6 +3274,13 @@ def _wklat_probe_clear():
         wkp_nrdy[i]    = 0
         wkp_minv[i]    = 0
         wkp_ismin[i]   = 0
+        wkp_lminv[i]   = 0
+        wkp_lnrdy[i]   = 0
+        wkp_ghostn[i]  = 0
+        wkp_ghostv[i]  = 0
+        wkp_ghostp[i]  = 0
+        wkp_ghostnm[i] = 0
+        wkp_ghostst[i] = 0
         i = i + 1
 
 
@@ -3036,6 +3345,53 @@ def wklat_probe_stalled():
         wkp_ismin[k] = 1
     else:
         wkp_ismin[k] = 0
+    # The SAME quantities, recomputed the way _pick_next actually computes
+    # them: by walking rq_head[cpu]. The walk is BOUNDED at NTASKS steps so a
+    # torn rq_next (we hold no rq lock here — the tick calls us) costs a wrong
+    # diagnostic rather than a hang.
+    lminv: uint64 = 0
+    lhave: uint64 = 0
+    lnr:   uint64 = 0
+    steps: uint64 = 0
+    lr: uint64 = rq_head[cpu]
+    while lr != RQL_NIL and steps < NTASKS:
+        steps = steps + 1
+        if task_table[lr].on_cpu == 0 and cgroup_cpu_should_throttle(lr) == 0:
+            lnr = lnr + 1
+            lv: uint64 = task_table[lr].vruntime
+            if lhave == 0 or lv < lminv:
+                lminv = lv
+                lhave = 1
+        lr = task_table[lr].rq_next
+    wkp_lminv[k] = lminv
+    wkp_lnrdy[k] = lnr
+    # GHOSTS: slots the table scan counts as runnable on this cpu but that are
+    # NOT on the cpu's run-list (rq_on_list == 0). These are invisible to
+    # _pick_next yet fully visible to sched_min_vruntime() — which is what
+    # pins the monotonic vruntime floor.
+    gn:  uint64 = 0
+    gv:  uint64 = 0
+    gs:  uint64 = NTASKS
+    t2: uint64 = 0
+    while t2 < NTASKS:
+        if task_table[t2].state == STATE_READY and task_table[t2].rq_cpu == cpu:
+            if task_table[t2].rq_on_list == 0:
+                gn = gn + 1
+                if gs >= NTASKS or task_table[t2].vruntime < gv:
+                    gv = task_table[t2].vruntime
+                    gs = t2
+        t2 = t2 + 1
+    wkp_ghostn[k] = gn
+    if gs < NTASKS:
+        wkp_ghostv[k]  = gv
+        wkp_ghostp[k]  = task_table[gs].pid
+        wkp_ghostnm[k] = task_table[gs].name0
+        wkp_ghostst[k] = gs
+    else:
+        wkp_ghostv[k]  = 0
+        wkp_ghostp[k]  = RQ_CUR_NONE
+        wkp_ghostnm[k] = 0
+        wkp_ghostst[k] = RQ_CUR_NONE
 
 
 def wklat_probe_report():
@@ -3057,6 +3413,17 @@ def wklat_probe_report():
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
                 wkp_rqcpu[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d lnrdy=%d lminv=%d\n", i, wkp_lnrdy[i],
+                wkp_lminv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d ghostn=%d ghostv=%d\n", i, wkp_ghostn[i],
+                wkp_ghostv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d ghostpid=%d ghostslot=%d\n", i, wkp_ghostp[i],
+                wkp_ghostst[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] s%d ghostnm=%x\n", i, wkp_ghostnm[i])
         i = i + 1
 
 
@@ -3204,6 +3571,7 @@ def wklat_ctl(verb: int64) -> int32:
     if verb == 6:
         wklat_out_report()
         wklat_probe_report()
+        sched_vover_report()
         return 1
     if verb == 5:
         if _wklat_probe_start() == 0:
@@ -4186,6 +4554,9 @@ def sched_note_dispatch(slot: uint64):
         g_rq_current[cid] = slot
         # This dispatch satisfies whatever wakeup asked for a reschedule.
         g_need_resched[cid] = 0
+    # Start this task's on-cpu clock so the next tick charge can tell how much
+    # of the whole-tick bill it actually earned.
+    sched_exec_start_stamp(slot)
     _wklat_account(slot, prev)
 
 
@@ -6044,6 +6415,11 @@ def schedule():
         return  # only one ready task
 
     prev: uint64 = current_idx_pcpu
+    # prev is giving the cpu up: bill it for the sub-tick slice it actually ran.
+    # Without this a task that always yields or blocks before the 100 Hz timer
+    # fires accrues NOTHING and stays pinned at the runqueue minimum for the
+    # life of the boot (see _sched_charge_elapsed).
+    _sched_charge_elapsed(prev)
     # getrusage(2): snapshot prev's runnable state BEFORE the flip below
     # clears it. Linux's rule: prev still RUNNING here => preempted while
     # runnable => INVOLUNTARY; prev already non-RUNNING => it blocked /
@@ -6438,8 +6814,14 @@ def preempt_tick(from_user: uint64) -> uint64:
     # CEILING on top of it. 25% cap → 4x accrual → ~1/4 the CPU of an
     # uncapped peer at the same nice.
     cap_factor: uint64 = nscap_cpu_factor_current()
-    task_table[cur].vruntime = task_table[cur].vruntime + \
-        (((NICE0_WEIGHT * VRUNTIME_SCALE) / cw) * cap_factor)
+    tick_charge: uint64 = ((NICE0_WEIGHT * VRUNTIME_SCALE) / cw) * cap_factor
+    task_table[cur].vruntime = task_table[cur].vruntime + tick_charge
+    # The charge above is a WHOLE tick no matter how long `cur` actually held
+    # the cpu. Record the part of it that is fiction so the next wake can refund
+    # it; without this a sub-tick poller billed 10 ms for 0.2 ms of work waits
+    # (runqueue depth) ticks to be picked again. See the banner on
+    # _sched_note_overcharge.
+    _sched_note_overcharge(cur, tick_charge)
     # QUANTUM RANGE INVARIANT (launch-queue / CPU-bound-starvation fix).
     # sched_quantum_for() provably arms quantum_left into [1, SCHED_QUANTUM_MAX]
     # on EVERY dispatch, so a running task's slice can never legitimately exceed
@@ -10822,7 +11204,7 @@ def _wq_place_woken(slot: uint64):
     # is supposed to consume it and leave a stale stamp attributed to the NEXT
     # wake. Stamping first can only ever over-report the interval slightly.
     _wklat_stamp(slot)
-    sched_make_ready_on(slot, tc)
+    sched_make_ready_on_woken(slot, tc)
 
 
 def wq_wake_one(wq: Ptr[WaitQueue]):
