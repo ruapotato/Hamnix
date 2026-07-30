@@ -4512,6 +4512,28 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_llvm_lane_diff.sh
 # ~2.5 min, one QEMU (aarch64). INCONCLUSIVE (125), never a soft green, when the
 # cross toolchain is absent or the boot was too starved to reach the A10 rung.
 bash scripts/ci_run_gate.sh scripts/test_arm64_a10_userland.sh
+# test_arm64_a11_archive: A11 -- several compiled EL0 images in ONE embedded
+# archive, loaded BY NAME, plus a real read(2) on the PL011. Each of those three
+# claims is trivially fakeable and is asserted where it is not:
+#  * BY NAME -- a loader that ignores the name and copies member 0 satisfies every
+#    assertion you can make about ONE program, so the members behave DIFFERENTLY,
+#    head.S asks for "sum" first though "a10" is member 0, and a name that is NOT
+#    in the archive must MISS. Without that last one every by-name assertion is
+#    vacuous.
+#  * read(2) -- a stub returning a plausible count passes a count check, so the
+#    program's checksum is position-weighted over the bytes actually received and
+#    the gate pipes a line it randomises PER RUN. A canned answer cannot track it,
+#    and a FIFO read backwards moves the weighting.
+#  * COMPUTED THE RIGHT THING -- no in-kernel constant is trusted. Both programs'
+#    oracles are RECOMPUTED every run by compiling the SAME .ad for x86-64 with
+#    the same host_ac and running them natively, feeding the echo one the SAME
+#    random line; the aarch64 EL0 runs must match stdout and exit status exactly.
+# The archive is also parsed INDEPENDENTLY of the kernel (a gate that trusts the
+# kernel's parse of a blob the kernel produced checks nothing), and A8/A9/A10 are
+# asserted as regression guards with 0 exceptions in the diagnostic vector.
+# ~2.5 min, one QEMU. INCONCLUSIVE (125), never a soft green, when the cross
+# toolchain is absent or the boot was too starved to reach the A11 rung.
+bash scripts/ci_run_gate.sh scripts/test_arm64_a11_archive.sh
 # test_arm64_phase49: the WHOLE standalone (non-LLVM) aarch64 lane, in ONE boot.
 # USER ruling 2026-07-30: ARM64 ships on the LLVM path only, and the hand-written
 # AArch64 seed backend (compiler/codegen_arm64.py, 1677 lines) is NOT being
