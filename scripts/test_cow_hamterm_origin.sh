@@ -281,8 +281,17 @@ log = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').replace('\r', ''
 ncyc = int(sys.argv[2])
 
 # --- COW origin: per-arm born/died, one block per `track origin` dump ---
+#
+# ONLY the per-cycle dumps. `track census` ENDS by calling cow_origin_dump
+# itself, so the raw log carries an extra origin block that no terminal
+# open/close preceded. Counting it produced an all-zero-births final delta and
+# the gate's own positive control correctly called that inconclusive — but the
+# right fix is to stop attributing a census's dump to a workload cycle. The
+# per-cycle dumps are exactly the ones before the first `track org N`.
+cut = log.find('[orgl]')
+cycle_log = log[:cut] if cut >= 0 else log
 blocks, cur = [], {}
-for line in log.splitlines():
+for line in cycle_log.splitlines():
     m = re.search(r'\[origin\] org=(\d+) born=(\d+) died=(\d+)', line)
     if m:
         cur[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
@@ -361,6 +370,19 @@ for a in sorted(nets):
                    'adjudicate it — inconclusive, not green' % (a, last, a))
         continue
     dead, unrec, tot = own[a]
+    # A VACUOUS GREEN IS THE FAILURE MODE THIS WHOLE CAMPAIGN GUARDS AGAINST.
+    # `owner-dead = 0` over a population whose owner was NEVER RECORDED means
+    # "nobody wrote an owner down", not "no owner is dead" — and reporting
+    # that as "every survivor is still mapped by its live owner" would be a
+    # false exoneration on exactly the kind of span pass 14 found the main
+    # leak in. An arm with a positive net and no recorded owner is
+    # INCONCLUSIVE, and inconclusive is not green.
+    if tot > 0 and unrec == tot:
+        bad.append('arm %d: UNADJUDICATED — last net %+d over %d survivors, '
+                   'NONE of which has a recorded owner. owner-dead=0 here is '
+                   'vacuous; the allocating site needs a pa_set_owner()'
+                   % (a, last, tot))
+        continue
     if a not in stray:
         bad.append('arm %d: last net %+d and the dump carries no owner-stray '
                    'tally — a stale kernel, so this is inconclusive, not green'
@@ -387,6 +409,47 @@ neg = 'negative control OK' in log
 print('positive control (track plant)  : %s' % ('OK' if pos else 'MISSING'))
 print('negative control (track mplant) : %s' % ('OK' if neg else 'MISSING'))
 print('orphan counts reported          : %s' % (', '.join(orph) if orph else 'none parsed'))
+# NAME the sites, and say whether each one GREW over the cycles. An orphan at
+# a site whose live count never moved across an identical repeated workload is
+# a fixed residue; one at a site that grows per cycle is the leak itself. The
+# count alone cannot tell them apart, and every earlier pass that reported a
+# bare orphan number had to re-derive this by hand.
+persite = {}
+for m in re.finditer(r'\[census\] site (\d+): (\d+) orphans, live (\d+)', log):
+    persite[int(m.group(1))] = [int(m.group(2)), int(m.group(3))]
+# DISCOUNT THE PLANT FROM ITS OWN SITE. `track plant` allocates at a
+# user-mapped site, so the positive control lands in a real site's tally and
+# would otherwise be re-reported as a leak in whichever site it happened to
+# use. It is identified by its tag, not by its site: page_alloc_census_plant
+# stamps 0xc0ffee00 and nothing else does.
+planted_site = None
+for m in re.finditer(r'\[census\] site (\d+) orphan\[\d+\] tag_va=0x0*c0ffee00', log):
+    planted_site = int(m.group(1))
+if planted_site is not None and planted_site in persite:
+    persite[planted_site][0] -= 1
+pgdumps = []
+pgcur = None
+for ln in log.splitlines():
+    if re.search(r'\[trk\] mode=(\d+) frames=(\d+)', ln):
+        if pgcur is not None:
+            pgdumps.append(pgcur)
+        pgcur = {}
+        continue
+    if pgcur is None:
+        continue
+    m = re.search(r'\[trk\] site=(\d+) live=(\d+) allocs=(\d+)', ln)
+    if m:
+        pgcur[int(m.group(1))] = int(m.group(2))
+if pgcur is not None:
+    pgdumps.append(pgcur)
+for s in sorted(persite):
+    n_orph, n_live = persite[s]
+    if len(pgdumps) >= 2:
+        grew = pgdumps[-1].get(s, 0) - pgdumps[0].get(s, 0)
+        gtxt = 'live %+d over %d cycles' % (grew, len(pgdumps))
+    else:
+        gtxt = 'growth unknown (too few page dumps)'
+    print('site %-3d %d orphan(s), live %d, %s' % (s, n_orph, n_live, gtxt))
 if not pos or not neg:
     bad.append('census controls incomplete (positive=%s negative=%s) — an '
                'orphan count without both controls is not a measurement'
@@ -395,8 +458,12 @@ elif orph:
     n = int(orph[-1])
     # 1 == the deliberately planted positive control and nothing else.
     if n > 1:
-        bad.append('census reports %d orphaned frames (1 == the planted '
-                   'positive control alone)' % n)
+        resid = ', '.join('site %d x%d' % (s, persite[s][0])
+                          for s in sorted(persite) if persite[s][0] > 0)
+        bad.append('census reports %d orphaned frames; 1 is the planted '
+                   'positive control (site %s), so %d frame(s) are genuinely '
+                   'unreachable — %s'
+                   % (n, planted_site, n - 1, resid or 'site unreported'))
     else:
         notes.append('census: %d orphan (the planted positive control), both '
                      'controls green in the same sweep' % n)
