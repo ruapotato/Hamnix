@@ -4295,3 +4295,22 @@ bash scripts/ci_run_gate.sh scripts/test_pointer_latency_under_load.sh
 # rise and come back down. INCONCLUSIVE (125) if the scene is unreadable.
 # ~6 min, one QEMU.
 bash scripts/test_memhog.sh
+
+# test_installed_pkg_repo: the INSTALLED root must ship a working package
+# REPOSITORY, not just packages. The user reported the package manager
+# "offers no extra packages (the audiobook player)": the live medium carries
+# the whole native repo in RAM at /iso-packages, but user/install.ad installed
+# hamnix-base FROM it and walked away, so the installed root had no repo, no
+# /etc/hpm/repo and no cached index — hpm fell back to https://255.one/ and
+# listed nothing offline, while the repo-ONLY apps (hamaudiobook, hampaint,
+# hamclock, hammark, hamangrybirds) are excluded from the hamnix-base closure
+# by design. Host-side, no QEMU (~3 min): stages an install medium, then
+# asserts /etc/install/packages.manifest exists, that every source path it
+# names resolves on the medium, that it mirrors the audiobook tarball + the
+# channel index to var/lib/hpm/repo/, that it writes the target's
+# /etc/hpm/repo pointing there, that linux-debian-12 is NOT duplicated, and
+# that the SHIPPED install.elf/hpm.elf actually consume both. MUTATE=<label>
+# blinds one assertion at a time. 125 INCONCLUSIVE if a build input is
+# missing. The same capability is driven on a REAL installed disk by
+# test_installed_system_parity.sh's `pkgrepo` assertions.
+bash scripts/test_installed_pkg_repo.sh
