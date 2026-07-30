@@ -367,7 +367,7 @@ grep_c 'NAME|SYNOPSIS|hamsh —' man \
     && ok "man pages installed (man hamsh returned a page)" \
     || miss "man pages missing on the installed system"
 
-grep_c 'refreshed index from file:///var/lib/hpm/repo/' pkgrepo \
+grep_c 'refreshed index from file:///usr/share/hpm/repo/' pkgrepo \
     && ok "KEYSTONE: bare 'hpm refresh' found the on-disk repo mirror (no network)" \
     || miss "KEYSTONE: 'hpm refresh' found no repository on the installed system — the package manager has nothing to offer"
 grep_c '^hamnix-hamaudiobook' pkgrepo \

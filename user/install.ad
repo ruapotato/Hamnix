@@ -787,8 +787,15 @@ def install_distro_tree(p2: Ptr[uint8]) -> int32:
 # --- the package repo on the installed disk --------------------------
 #
 # Lay the install medium's in-RAM native package mirror (/iso-packages)
-# down under `var/lib/hpm/repo/` on the target, and write the target's
-# `/etc/hpm/repo` so a bare `hpm refresh` there points at it.
+# down under `usr/share/hpm/repo/` on the target, and write the target's
+# `/etc/hpm/repo` so a bare `hpm refresh` there points at it. NOT under
+# /var: `/var` is a shadow tmpfs whose boot skeleton pre-creates
+# /var/lib/hpm (fs/tmpfs.ad), and a pre-created tmpfs directory shadows
+# the ext4 one — the first version of this step put the mirror there, the
+# files landed on disk (confirmed with debugfs) and hpm still reported
+# "cannot open /var/lib/hpm/repo/main/index.json". See
+# scripts/build_initramfs.py::_stage_installed_pkg_repo for that and the
+# other two measured limits (ext4 directory size, manifest size).
 #
 # WHY: the installed system used to ship NO repo at all. This step ran
 # `hpm --repo=file:///iso-packages install hamnix-base` onto the target
@@ -810,7 +817,7 @@ def install_distro_tree(p2: Ptr[uint8]) -> int32:
 # exactly as it was before this step existed.
 def install_package_repo(p2: Ptr[uint8]) -> int32:
     write_str(1, "[install] (6/7) mirror package repo (/iso-packages) -> "
-                 "var/lib/hpm/repo/ on ")
+                 "usr/share/hpm/repo/ on ")
     write_str(1, p2)
     write_str(1, "\n")
     if _path_readable(

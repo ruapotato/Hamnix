@@ -33,7 +33,7 @@
 #      medium — a row pointing at a path the cpio does not carry would
 #      silently install nothing (install_rootfs_from_manifest skips missing
 #      sources by design).
-#   3. The manifest lands the repo at var/lib/hpm/repo/ AND carries the
+#   3. The manifest lands the repo at usr/share/hpm/repo/ AND carries the
 #      audiobook player's tarball + the channel index.
 #   4. It writes the target's /etc/hpm/repo, whose body is the file:// URL
 #      of that mirror.
@@ -59,7 +59,8 @@ miss() { say "MISS: $*"; fails=$((fails + 1)); }
 
 # MUTATE=<label>[,<label>...] blinds the named assertion(s) so this gate can
 # be mutation-tested without editing it. Labels:
-#   manifest | sources | audiobook | repocfg | nodebian | installer | hpm
+#   manifest | sources | audiobook | repocfg | dircap | mansize | nodebian |
+#   installer | hpm
 mutated=",${MUTATE:-},"
 blinded() {
     [ -n "$1" ] && [ "${mutated#*,${1},}" != "$mutated" ]
@@ -167,13 +168,13 @@ fi
 
 # The mirror target + the audiobook player + the channel index.
 if blinded audiobook \
-   || ! grep -Eq '^var/lib/hpm/repo/main/packages/hamnix-hamaudiobook-[^ ]*\.tar\.gz[ \t]' "$MAN"; then
-    miss "no row mirrors hamnix-hamaudiobook's tarball to var/lib/hpm/repo/ —"
+   || ! grep -Eq '^usr/share/hpm/repo/main/packages/hamnix-hamaudiobook-[^ ]*\.tar\.gz[ \t]' "$MAN"; then
+    miss "no row mirrors hamnix-hamaudiobook's tarball to usr/share/hpm/repo/ —"
     miss "  the audiobook player stays uninstallable on the installed system"
 else
-    ok "the audiobook player's tarball is mirrored to var/lib/hpm/repo/"
+    ok "the audiobook player's tarball is mirrored to usr/share/hpm/repo/"
 fi
-if ! grep -Eq '^var/lib/hpm/repo/main/index\.json[ \t]' "$MAN"; then
+if ! grep -Eq '^usr/share/hpm/repo/main/index\.json[ \t]' "$MAN"; then
     miss "no row mirrors the main-channel index.json (hpm has nothing to list)"
 else
     ok "the main-channel index.json is mirrored"
@@ -184,11 +185,39 @@ CFGSRC=$(awk '$1 == "etc/hpm/repo" { print $2 }' "$MAN" | head -1)
 if blinded repocfg || [ -z "$CFGSRC" ]; then
     miss "the manifest writes no etc/hpm/repo on the target — hpm there would"
     miss "  still default to https://255.one/"
-elif ! grep -q '^file:///var/lib/hpm/repo/$' "$WORK/cpio/${CFGSRC#/}"; then
+elif ! grep -q '^file:///usr/share/hpm/repo/$' "$WORK/cpio/${CFGSRC#/}"; then
     miss "$CFGSRC does not name the on-disk mirror as hpm's default repo"
     say "    body: $(grep -v '^#' "$WORK/cpio/${CFGSRC#/}" | tr '\n' ' ')"
 else
-    ok "the target's /etc/hpm/repo points at file:///var/lib/hpm/repo/"
+    ok "the target's /etc/hpm/repo points at file:///usr/share/hpm/repo/"
+fi
+
+# THE TWO MEASURED CEILINGS. Both were found by running the first version of
+# this feature through a real install, and both fail SILENTLY at install time
+# (install_rootfs_from_manifest skips an unreadable/oversized source and
+# ext4_dir_insert's overflow is a kernel printk, not a tool exit code), so
+# they have to be caught here.
+#   * fs/ext4.ad::ext4_dir_insert cannot grow a directory past its first
+#     4 KiB block ("M16.63 does NOT grow the directory by allocating a new
+#     block"), which measured out at ~114 entries. Mirroring all 199
+#     packages lost the last 88 to `blob_save_at_path FAIL (dir_insert)`.
+#   * install_rootfs_from_manifest's MANIFEST_MAX is 65536 bytes.
+worst_dir=$(awk '$1 !~ /^#/ && NF == 2 { sub(/\/[^/]*$/, "", $1); print $1 }' "$MAN" \
+            | sort | uniq -c | sort -rn | head -1)
+worst_n=$(echo "$worst_dir" | awk '{print $1}')
+worst_p=$(echo "$worst_dir" | awk '{print $2}')
+if blinded dircap || [ "${worst_n:-0}" -gt 100 ]; then
+    miss "$worst_n files land in $worst_p/ — over the ~114-entry ext4"
+    miss "  single-block directory ceiling; the overflow would be dropped"
+else
+    ok "densest mirror directory is $worst_p/ with $worst_n files (ext4 ceiling ok)"
+fi
+man_bytes=$(wc -c < "$MAN")
+if blinded mansize || [ "$man_bytes" -gt 60000 ]; then
+    miss "the manifest is $man_bytes bytes — over install_rootfs_from_manifest's"
+    miss "  65536-byte MANIFEST_MAX"
+else
+    ok "manifest is $man_bytes bytes (under the 65536-byte MANIFEST_MAX)"
 fi
 
 # Deliberate exclusion: the Debian payload is installed as files by
@@ -210,11 +239,11 @@ else
     ok "the shipped installer consumes /etc/install/packages.manifest"
 fi
 if blinded hpm \
-   || ! grep -aq 'file:///var/lib/hpm/repo/' build/user/hpm.elf; then
+   || ! grep -aq 'file:///usr/share/hpm/repo/' build/user/hpm.elf; then
     miss "build/user/hpm.elf has no on-disk-mirror fallback in its"
     miss "  default-repo precedence"
 else
-    ok "the shipped hpm falls back to the on-disk mirror at /var/lib/hpm/repo/"
+    ok "the shipped hpm falls back to the on-disk mirror at /usr/share/hpm/repo/"
 fi
 
 if [ "$fails" -ne 0 ]; then

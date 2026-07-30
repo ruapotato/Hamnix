@@ -390,8 +390,8 @@ laid down file-by-file from a build-time manifest
 tree uses):
 
 ```
-/var/lib/hpm/repo/main/index.json + packages/*.tar.gz    the mirror
-/etc/hpm/repo -> file:///var/lib/hpm/repo/               hpm's default
+/usr/share/hpm/repo/main/index.json + packages/*.tar.gz    the mirror
+/etc/hpm/repo -> file:///usr/share/hpm/repo/               hpm's default
 ```
 
 `linux-debian-12` is deliberately excluded — `install_distro_tree`
@@ -404,7 +404,7 @@ from the `hamnix-base` closure by design, so without a repo on the
 installed root `hpm search` and the Software app had nothing to offer.
 
 `hpm`'s repo-base precedence is therefore: `/etc/hpm/repo` →
-on-image `/iso-packages/` → on-disk `/var/lib/hpm/repo/` →
+on-image `/iso-packages/` → on-disk `/usr/share/hpm/repo/` →
 `https://255.one/`. Point `/etc/hpm/repo` at the network repo (or
 delete it) to track upstream instead; `hpm update` then pulls newer
 versions from there. A trimmed install (embedded / headless) can name
