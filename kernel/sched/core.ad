@@ -2923,6 +2923,13 @@ g_wake_stall: Array[512, uint64]   # wklat_stall_n at wake (machine-stall contro
 # switches inside the "wait" — which is precisely the signature four passes
 # have been chasing. `inpl` is one load on the wake path and it settles it.
 g_wake_inpl:  Array[512, uint64]   # 1 = waitee was still the incumbent at wake
+# The MONOTONIC RATCHET as it stood when this wake was PLACED. _sched_wake_place
+# clamps a waking task UP toward g_sched_vruntime_floor, and that ratchet only
+# ever rises: it records the minimum vruntime seen at some past instant, not the
+# minimum now. If the low end of the runqueue is below it, the clamp places the
+# sleeper ABOVE every task down there — manufacturing the lead the sleeper then
+# has to wait out. One load on the wake path; it makes that visible per outlier.
+g_wake_floor: Array[512, uint64]
 wklat_inpl_n: uint64 = 0           # in-place wakes seen this window
 # _pick_next's ONLY input for a SCHED_OTHER task is vruntime, so once the
 # machine-stall, non-preemptible-section and sleep-window explanations are
@@ -3003,6 +3010,7 @@ wko_vprev: Array[8, uint64]        # vruntime of whoever ran immediately before
 wko_floor: Array[8, uint64]        # sched_vruntime_floor() at dispatch
 wko_nrdy:  Array[8, uint64]        # READY tasks homed on this cpu at dispatch
 wko_inpl:  Array[8, uint64]        # 1 = waitee never left the cpu (in-place wake)
+wko_wfloor: Array[8, uint64]       # the ratchet floor when the wake was placed
 
 
 def _wklat_out_clear():
@@ -3030,6 +3038,7 @@ def _wklat_out_clear():
         wko_floor[i] = 0
         wko_nrdy[i]  = 0
         wko_inpl[i]  = 0
+        wko_wfloor[i] = 0
         i = i + 1
 
 
@@ -3060,6 +3069,7 @@ def wklat_reset():
         g_wake_stall[i]    = 0
         g_wake_vrun[i]     = 0
         g_wake_inpl[i]     = 0
+        g_wake_floor[i]    = 0
         i = i + 1
     _wklat_out_clear()
     _wklat_probe_clear()
@@ -3110,6 +3120,7 @@ def _wklat_stamp(slot: uint64):
             if oc < NR_RQ and g_rq_current[oc] == slot:
                 ip = 1
     g_wake_inpl[slot] = ip
+    g_wake_floor[slot] = g_sched_vruntime_floor
     if ip != 0:
         wklat_inpl_n = wklat_inpl_n + 1
 
@@ -3218,6 +3229,7 @@ def _wklat_out_capture(slot: uint64, prev: uint64, d: uint64):
     wko_rqcpu[i] = task_table[slot].rq_cpu
     wko_stalld[i] = wklat_stall_n - g_wake_stall[slot]
     wko_inpl[i]   = g_wake_inpl[slot]
+    wko_wfloor[i] = g_wake_floor[slot]
     wko_vwake[i] = g_wake_vrun[slot]
     wko_vdisp[i] = task_table[slot].vruntime
     if prev < NTASKS:
@@ -3278,6 +3290,8 @@ def wklat_out_report():
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] o%d nrdy=%d inpl=%d\n", i, wko_nrdy[i],
                 wko_inpl[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] o%d wfloor=%d\n", i, wko_wfloor[i])
         i = i + 1
 
 
@@ -3334,6 +3348,19 @@ wkp_ghostv:  Array[4, uint64]
 wkp_ghostp:  Array[4, uint64]
 wkp_ghostnm: Array[4, uint64]
 wkp_ghostst: Array[4, uint64]
+# WHO IS AT THE MINIMUM, and how many tasks the waiter is queued behind.
+#
+# The first run of this probe on a live DE answered "ismin=0, minv 42,094 units
+# below the waiter" — _pick_next was right to pass sshd over, and the question
+# stopped being "why was it skipped" and became "who is DOWN THERE, and how did
+# the waiter get so far above them". A bare minimum cannot answer either. These
+# name the holder of the minimum and count the READY tasks the waiter has to
+# wait out, which is the wait expressed in the only unit that predicts it.
+wkp_minpid:  Array[4, uint64]
+wkp_minnm:   Array[4, uint64]
+wkp_minst:   Array[4, uint64]
+wkp_nbelow:  Array[4, uint64]
+wkp_floor:   Array[4, uint64]
 
 
 def _wklat_probe_clear():
@@ -3359,6 +3386,11 @@ def _wklat_probe_clear():
         wkp_ghostp[i]  = 0
         wkp_ghostnm[i] = 0
         wkp_ghostst[i] = 0
+        wkp_minpid[i]  = 0
+        wkp_minnm[i]   = 0
+        wkp_minst[i]   = 0
+        wkp_nbelow[i]  = 0
+        wkp_floor[i]   = 0
         i = i + 1
 
 
@@ -3407,6 +3439,9 @@ def wklat_probe_stalled():
     nr:   uint64 = 0
     minv: uint64 = 0
     have: uint64 = 0
+    mins: uint64 = NTASKS
+    nbel: uint64 = 0
+    vvic: uint64 = task_table[victim].vruntime
     t: uint64 = 0
     while t < NTASKS:
         if task_table[t].state == STATE_READY and task_table[t].rq_cpu == cpu:
@@ -3415,8 +3450,21 @@ def wklat_probe_stalled():
                 v: uint64 = task_table[t].vruntime
                 if have == 0 or v < minv:
                     minv = v
+                    mins = t
                     have = 1
+                if v < vvic:
+                    nbel = nbel + 1
         t = t + 1
+    wkp_nbelow[k] = nbel
+    wkp_floor[k]  = g_sched_vruntime_floor
+    if mins < NTASKS:
+        wkp_minpid[k] = task_table[mins].pid
+        wkp_minnm[k]  = task_table[mins].name0
+        wkp_minst[k]  = task_table[mins].state
+    else:
+        wkp_minpid[k] = RQ_CUR_NONE
+        wkp_minnm[k]  = 0
+        wkp_minst[k]  = 0
     wkp_nrdy[k] = nr
     wkp_minv[k] = minv
     if have != 0 and task_table[victim].vruntime <= minv:
@@ -3488,6 +3536,14 @@ def wklat_probe_report():
                 wkp_curvrun[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d nrdy=%d minv=%d\n", i, wkp_nrdy[i], wkp_minv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d minpid=%d minnm=%x\n", i, wkp_minpid[i],
+                wkp_minnm[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d minst=%d nbelow=%d\n", i, wkp_minst[i],
+                wkp_nbelow[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[wklat] s%d gfloor=%d\n", i, wkp_floor[i])
         printk_set_level(PRINTK_LEVEL_EMERG)
         printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
                 wkp_rqcpu[i])

@@ -481,6 +481,57 @@ for i, run in enumerate(runs):
         print('              in-place-wake=%s | ready-queue=%s | vwake=%s vdisp=%s floor=%s | guest-stalls=%s'
               % (g('inpl'), g('nrdy'), g('vwake'), g('vdisp'), g('floor'),
                  g('stalld')))
+        # lead = how far ABOVE the ratchet floor this task was placed when it
+        # was woken. _sched_wake_place only ever pulls a sleeper UP toward that
+        # ratchet, so a positive lead here is a lead the scheduler GAVE it.
+        try:
+            lead = int(g('vwake')) - int(g('wfloor'))
+        except Exception:
+            lead = '?'
+        print('              ratchet-floor@wake=%s -> lead=%s units (%s whole nice-0 tick charges)'
+              % (g('wfloor'), lead,
+                 (lead // 256) if isinstance(lead, int) else '?'))
+PYEOF
+
+# The stalled-wake snapshots: who was AT the runqueue minimum while the waiter
+# sat there, and how many READY tasks it was queued behind. `ismin=0` with a
+# named holder of the minimum is the difference between "the picker is broken"
+# and "the placement gave this task a lead it then had to wait out".
+python3 - "$OUT_DIR/wklat.txt" <<'PYEOF' | tee "$OUT_DIR/wklat_stalls.txt"
+import re, sys
+def nm(h):
+    try: v = int(h, 16)
+    except Exception: return '?'
+    b = v.to_bytes(8, 'big').rstrip(b'\x00')
+    return ''.join(chr(c) if 32 <= c < 127 else '.' for c in b) or '-'
+runs, cur = [], None
+for line in open(sys.argv[1], errors='replace'):
+    m = re.search(r'\[wklat\] stalled_snapshots=(\d+)', line)
+    if m:
+        cur = {'n': int(m.group(1)), 'rec': {}}
+        runs.append(cur)
+        continue
+    if cur is None: continue
+    m = re.search(r'\[wklat\] s(\d+) (.*)', line)
+    if not m: continue
+    r = cur['rec'].setdefault(int(m.group(1)), {})
+    for k, v in re.findall(r'(\w+)=(\w+)', m.group(2)):
+        r[k] = v
+for i, run in enumerate(runs):
+    print('--- wklat stalled-wake snapshots, report %d (n=%d) ---' % (i + 1, run['n']))
+    for idx in sorted(run['rec']):
+        r = run['rec'][idx]
+        g = lambda k: r.get(k, '?')
+        try:
+            lead = int(g('vrun')) - int(g('minv'))
+        except Exception:
+            lead = '?'
+        print('    waiter pid=%-5s stalled %sus | vrun=%s  ismin=%s  ready=%s  behind=%s tasks'
+              % (g('pid'), g('age_us'), g('vrun'), g('ismin'), g('nrdy'), g('nbelow')))
+        print('        runqueue MINIMUM %s held by pid=%-5s %-8s state=%s | lead=%s units | ratchet floor=%s'
+              % (g('minv'), g('minpid'), nm(g('minnm')), g('minst'), lead, g('gfloor')))
+        print('        picker-list view: lnrdy=%s lminv=%s ghosts=%s | on-cpu now pid=%s vrun=%s'
+              % (g('lnrdy'), g('lminv'), g('ghostn'), g('curpid'), g('curvrun')))
 PYEOF
 echo "$TAG --- end ---"
 
