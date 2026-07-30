@@ -66,6 +66,7 @@ from mm.vma import (
 from kernel.sched.core import (
     tasks_spawned_total, tasks_reaped_total, tasks_live_count,
     mm_orphan_census, mm_census_plant_mapped, mm_census_unplant_mapped,
+    mm_origin_live_dump,
 )
 
 
@@ -427,6 +428,25 @@ def _mi_wmatch(buf: Ptr[uint8], count: uint64, want: Ptr[uint8]) -> int32:
     return 0
 
 
+def _mi_tail_num(buf: Ptr[uint8], count: uint64, skip: uint64) -> uint64:
+    # Decimal argument after a verb: skip the verb's `skip` bytes and any
+    # blanks, then read digits. Returns 0 when there is no number, which is
+    # also a legal argument value (origin bucket 0) — a ctl knob does not
+    # need to distinguish "absent" from "zero", and bucket 0 is the untagged
+    # bucket whose live set is empty by construction anyway.
+    i: uint64 = skip
+    while i < count and cast[uint64](buf[i]) == 32:
+        i = i + 1
+    v: uint64 = 0
+    while i < count:
+        c: uint64 = cast[uint64](buf[i])
+        if c < 48 or c > 57:
+            return v
+        v = v * 10 + (c - 48)
+        i = i + 1
+    return v
+
+
 def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
     # /dev/meminfo is a CTL FILE for the page allocator's allocation
     # tracker (mm/page_alloc.ad) and otherwise read-only.
@@ -447,6 +467,7 @@ def devmeminfo_write(buf: Ptr[uint8], count: uint64) -> int64:
     #   echo track ledger> /proc/meminfo   per-CALL-SITE COW reference balance
     #   echo track origin> /proc/meminfo   per-FRAME-ORIGIN balance + born/died
     #   echo track net   > /proc/meminfo   ONE line: added/dropped/live frames
+    #   echo track org N > /proc/meminfo   DESCRIBE origin N's live frames
     #
     # A completed line that is not a `track` verb still returns -1, so
     # every pre-existing "meminfo is read-only" expectation holds.
@@ -536,6 +557,23 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
     # O(page tables + frames), hence a ctl verb and NEVER a meminfo field.
     if _mi_wmatch(line, n, "track census") != 0:
         mm_orphan_census()
+        return cast[int64](count)
+    # NAME the live frames of ONE origin arm (leak pass 15):
+    #
+    #   echo track org 5 > /proc/meminfo
+    #
+    # `track origin` counts the survivors per arm; this one describes them —
+    # owner slot, liveness, pid, comm, refcount, recorded VA, and whether the
+    # owner still maps that VA to this frame. The verb exists because a
+    # CONSTANT residue (arm 5 has read exactly +10 on three independent runs)
+    # cannot be told from a stalled leak by a count alone, and "probably the
+    # long-lived system tasks" has been an argument rather than a measurement
+    # since pass 13.
+    #
+    # O(frames) PER SURVIVOR — the same cost class as `track census`, and for
+    # the same reason it is a ctl verb and never a meminfo field.
+    if _mi_wmatch(line, n, "track org") != 0:
+        mm_origin_live_dump(_mi_tail_num(line, n, 9))
         return cast[int64](count)
     # POSITIVE CONTROL for the census. `track plant` allocates one order-0
     # frame at a user-mapped site and maps it NOWHERE; a census run while it

@@ -35,11 +35,13 @@ from mm.page_alloc import (
     page_alloc_census_mplant_alloc, page_alloc_census_mplant_arm,
     page_alloc_census_mplant_clear, page_alloc_census_mplanted,
     page_alloc_census_mplant_va, page_alloc_census_mplant_slot,
+    page_alloc_frame_site, page_alloc_frame_owner, page_alloc_frame_tag,
 )
 from mm.slab import kfree
 from mm.cow import (
     cow_boot_cr3, cow_refcount, cow_refs_added, cow_refs_dropped,
     cow_ledger_dump, cow_origin_of, cow_origin_dump,
+    cow_origin_next_live, cow_ledger_on,
 )
 from arch.x86.mm.pgtable import page_offset_va, page_offset_pa, pgtable_page_offset_ready
 # SMAP v3c: signal delivery writes the rt_sigframe directly onto the
@@ -8400,6 +8402,95 @@ def mm_census_unplant_mapped():
     page_alloc_census_mplant_clear()
     printk_set_level(PRINTK_LEVEL_EMERG)
     printk0("[census] mapped control unmapped and returned\n")
+
+
+def mm_origin_live_dump(org: uint64) -> uint64:
+    # NAME THE SURVIVORS of one origin arm (leak pass 15).
+    #
+    # cow_origin_dump reports `born - died` per arm, which is the right
+    # quantity to VALIDATE a fix against but says nothing about WHICH frames
+    # remain. Two arms have needed exactly that and could not get it:
+    #
+    #   arm 5 (cow_resolve_pte's fresh copy) has read a CONSTANT +10 across
+    #   three independent runs on two different builds. A residue that never
+    #   grows is a fixed resident set, not a slope — but "probably the
+    #   long-lived system tasks" is an argument, not a measurement, and it has
+    #   been re-litigated every pass since 13. Ten owners settle it.
+    #
+    # For each survivor: the recorded owner slot (pa_set_owner at allocation),
+    # whether that owner is still LIVE, its pid and comm, the refcount, the
+    # recorded tag VA, and — the discriminator — whether the owner still MAPS
+    # that VA to this very frame. An owner that is alive and still maps the
+    # frame is a resident page of a running process and no teardown fix can or
+    # should reach it; a DEAD owner is a missed free.
+    #
+    # O(frames) per survivor, so this is a ctl verb and nothing else calls it.
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    if cow_ledger_on() == 0:
+        printk0("[orgl] DISARMED — write `track full` first.\n")
+        return 0
+    if page_alloc_track_mode() < 2:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk0("[orgl] NOTE: owner/tag need `track full` (mode 2);"
+                " they will read 0.\n")
+    n: uint64 = 0
+    nlive: uint64 = 0
+    ndead: uint64 = 0
+    nunrec: uint64 = 0
+    pfn: uint64 = cow_origin_next_live(org, 1)
+    while pfn != 0:
+        phys: uint64 = pfn << 12
+        ow: uint64 = page_alloc_frame_owner(phys)
+        va: uint64 = page_alloc_frame_tag(phys)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[orgl] org=%d live[%d] phys=%p\n", org, n, phys)
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[orgl] live[%d] va=%p site=%d\n",
+                n, va, page_alloc_frame_site(phys))
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk2("[orgl] live[%d] cow_refcount=%d\n", n, cow_refcount(phys))
+        if ow == 0:
+            nunrec = nunrec + 1
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk1("[orgl] live[%d] owner: NOT RECORDED\n", n)
+        else:
+            os: uint64 = ow - 1
+            olive: uint64 = 0
+            opid: uint64 = 0
+            if os < NTASKS and task_table[os].state != STATE_FREE:
+                olive = 1
+                opid = task_table[os].pid
+            if olive != 0:
+                nlive = nlive + 1
+            else:
+                ndead = ndead + 1
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk3("[orgl] live[%d] owner slot=%d live=%d\n", n, os, olive)
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk2("[orgl] live[%d] owner pid=%d\n", n, opid)
+            if olive != 0:
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk2("[orgl] live[%d] owner comm=%s\n",
+                        n, cast[uint64](&task_table[os].comm[0]))
+                # THE DISCRIMINATOR. If the owner still maps the recorded VA
+                # to THIS frame, the page is resident in a running process
+                # and is not leaked by any definition a teardown could fix.
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk2("[orgl] live[%d] owner maps here phys=%p\n",
+                        n, vma_pte_phys_at(os, va))
+        n = n + 1
+        if n >= 64:
+            printk_set_level(PRINTK_LEVEL_EMERG)
+            printk0("[orgl] ... capped at 64\n")
+            pfn = 0
+        else:
+            pfn = cow_origin_next_live(org, pfn + 1)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[orgl] org=%d TOTAL=%d owner-live=%d\n", org, n, nlive)
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk3("[orgl] org=%d owner-dead=%d owner-unrecorded=%d\n",
+            org, ndead, nunrec)
+    return n
 
 
 def mm_orphan_census() -> uint64:

@@ -1072,6 +1072,31 @@ def page_alloc_frame_site(phys: uint64) -> uint64:
     return cast[uint64](cast[Ptr[uint8]](_pa_trk_site + p)[0])
 
 
+def page_alloc_frame_owner(phys: uint64) -> uint64:
+    # Task slot + 1 as recorded by pa_set_owner at allocation time; 0 when the
+    # site records no owner, or `track full` was not armed. Same field
+    # page_alloc_orphan_owner reports, addressed by frame instead of by orphan
+    # index — the origin-live dump (leak pass 15) walks the ORIGIN table, not
+    # the reachability bitmap, so it cannot go through the orphan arrays.
+    if _pa_trk_meta == 0:
+        return 0
+    p: uint64 = phys >> 12
+    if p >= _pa_trk_frames:
+        return 0
+    return cast[uint64](cast[Ptr[uint32]](_pa_trk_meta + (p << 2))[0]) >> 4
+
+
+def page_alloc_frame_tag(phys: uint64) -> uint64:
+    # The recorded caller tag (the faulting VA at every site that sets one),
+    # or 0 outside `track full`.
+    if _pa_trk_tag == 0:
+        return 0
+    p: uint64 = phys >> 12
+    if p >= _pa_trk_frames:
+        return 0
+    return cast[Ptr[uint64]](_pa_trk_tag + (p << 3))[0]
+
+
 def page_alloc_census_report(total: uint64):
     # EMERG report — INFO is suppressed once the shell prompt is up
     # (console_set_interactive), and printk_set_level arms exactly ONE
