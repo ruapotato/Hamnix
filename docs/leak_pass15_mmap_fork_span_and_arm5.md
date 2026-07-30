@@ -187,16 +187,29 @@ is byte-identical armed or disarmed.
 
 ## 5b. Gates — what was run, and what was NOT
 
-Run, twice, on two separately-built images:
+Run **three times, on three separately-built images**, producing identical
+counts every time (16/16, 33/32, 50/48 on arm 23; 46/0 on arm 24;
+`owner-dead = 0` on arms 5, 23 and 24 in all three). The third run exercised
+the adjudicating verdict path end to end and the gate is **green**:
 
 ```
-[cow_vma_origin] u_mmap_fork PASS x3 (COW semantics intact)
-[cow_vma_origin] arm=19  run2 net=0  | run3 net=0
+[cow_vma_origin] OK: u_mmap_fork PASS x3 (COW semantics intact)
+[cow_vma_origin] arm=1   run2 born=3  died=3  net=0 | run3 born=3  died=3  net=0
+[cow_vma_origin] arm=5   run2 born=26 died=26 net=0 | run3 born=26 died=26 net=0
+[cow_vma_origin] arm=19  run2 net=0                 | run3 net=0
 [cow_vma_origin] arm=21  run2 born=64 died=64 net=0 | run3 born=64 died=64 net=0
 [cow_vma_origin] arm=23  run2 born=17 died=16 net=1 | run3 born=17 died=16 net=1
-[cow_vma_origin] arm=24  run2 net=0  | run3 net=0
-[orgl] org=23 owner-dead=0   [orgl] org=24 owner-dead=0   [orgl] org=5 owner-dead=0
+[cow_vma_origin] arm=24  run2 net=0                 | run3 net=0
+[cow_vma_origin] control OK: arm 23 run3 born=17
+[cow_vma_origin] RESIDENCY (not a leak): arm=23 run3 net=1; owner-dead=0,
+                 every survivor still mapped by its live owner (owner-unrecorded=0)
+[cow_vma_origin] closed: arm=24 run3 born=0 died=0 net=0
+[cow_vma_origin] PASS -- the mmap-VMA fork share strands no frame per run
 ```
+
+The PASS banner deliberately does not say "closes born == died", because that
+is not what was asserted; a banner that overstates its own gate is how a green
+run stops meaning anything.
 
 **NOT run in this pass, and stated rather than implied:**
 `scripts/test_native_vs_seed_kobjdiff.sh`, `test_cow_fork`, `test_mmap_fork`
@@ -204,10 +217,7 @@ as a standalone, `scripts/test_de_visual_gate.sh`, and a DE soak. The kernel
 change is instrumentation confined to gated paths plus two disarmed-returning
 accessors, and `u_mmap_fork` itself passed three times per boot inside the new
 gate — but that is an argument, not those gates, and the difference is exactly
-the one `feedback_host_gate_green_not_device_working` is about. The verdict
-line the adjudicating gate prints for a non-zero net (`RESIDENCY` vs `LEAK`)
-was added after the two measured boots and has not itself been executed
-end-to-end; the numbers above were read from the serial log directly.
+the one `feedback_host_gate_green_not_device_working` is about.
 
 ---
 

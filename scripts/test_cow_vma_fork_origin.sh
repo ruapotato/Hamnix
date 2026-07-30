@@ -267,4 +267,8 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "[cow_vma_origin] PASS -- the mmap-VMA fork share closes born == died"
+# Deliberately NOT "closes born == died" — that is not what was asserted, and
+# a banner that overstates its own gate is how a green run stops meaning
+# anything. What passed: each arm's per-run net is either zero, or every
+# survivor behind it is still mapped by a live owner.
+echo "[cow_vma_origin] PASS -- the mmap-VMA fork share strands no frame per run"
