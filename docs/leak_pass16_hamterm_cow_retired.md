@@ -33,10 +33,10 @@ established: `cow_share_page` takes a frame `0 -> 2` and the child's death
 returns it to 1, not 0, so an absolute balance is a permanent false red while
 the parent lives.
 
-Two runs, on two separately-built images: **4 cycles** (image age 344 s) and,
-after the fixes below, **6 cycles** (image age 0 s). Six cycles give five
-inter-cycle deltas, so "constant positive net" versus "settles to zero" is a
-shape rather than a pair of numbers.
+**Three runs, on three separately-built images**: 4 cycles (image age 344 s),
+then 6 cycles twice (image ages 0 s and 0 s) after each of the two instrument
+fixes below. Six cycles give five inter-cycle deltas, so "constant positive
+net" versus "settles to zero" is a shape rather than a pair of numbers.
 
 ---
 
@@ -44,15 +44,15 @@ shape rather than a pair of numbers.
 
 `track org` over every arm, after six terminal open/closes (run 2):
 
-| arm | span | TOTAL live | owner-dead | owner-stray |
-|----:|------|-----------:|-----------:|------------:|
-| 1  | W^X RO verbatim share | 101 | **0** | **0** |
-| 2  | residual (unnamed caller) | 0 | 0 | 0 |
-| 5  | `cow_resolve_pte` private copy | 10 | **0** | **0** |
-| 19 | ELF image span | 21 | **0** | **0** |
-| 21 | user stack span | 64 | **0** | **0** |
-| 23 | owner mmap VMA fork share | 21 | **0** | **0** |
-| 24 | demand-resident fork share | 64 | **0** | **0** |
+| arm | span | TOTAL live | owner-dead | owner-stray | owner-untagged |
+|----:|------|-----------:|-----------:|------------:|---------------:|
+| 1  | W^X RO verbatim share | 101 | **0** | **0** | 0 |
+| 2  | residual (unnamed caller) | 0 | 0 | 0 | 0 |
+| 5  | `cow_resolve_pte` private copy | 12 | **0** | **0** | 0 |
+| 19 | ELF image span | 20 | **0** | **0** | 0 |
+| 21 | user stack span | 63 | **0** | **0** | 63 |
+| 23 | owner mmap VMA fork share | 21 | **0** | **0** | 0 |
+| 24 | demand-resident fork share | 64 | **0** | **0** | 0 |
 
 Per-cycle nets over the six-cycle run, for the two arms pass 15 named:
 
@@ -62,9 +62,20 @@ arm    d2      d3      d4      d5      d6
 24     -3      +0      +0      +3      -3     -> closed
 ```
 
-Arm 23 is the only arm with a persistent positive net, and it is the same
-`hamsh`-arena-growth residency pass 15 named and adjudicated: `owner-dead = 0`,
-`owner-stray = 0` over all 21 survivors.
+Arm 23 is **the only arm with a persistent positive net**, and it reproduced
+identically on both six-cycle runs (`+2 +2 +3 +2 +3`). It adjudicates as
+residency — `owner-dead = 0`, `owner-stray = 0` over all 21 survivors, 15 of
+which have a recorded owner — and it is the same shape pass 15 named on
+`u_mmap_fork`: the long-lived parent shell's own resident set entering the
+refcount table at the next fork, not a teardown that missed a frame.
+
+**That is where the residual slope lives.** ~2.4 frames per terminal cycle, on
+an arm whose every survivor is mapped by a live owner. Pass 14's residual
+`PagesInUse` read +2.02 pg/cycle. The units are not the same (a soak cycle is
+not one terminal open/close) so this is a correspondence and not a proof — but
+it is the only per-cycle growth left anywhere in this measurement, and it is
+memory a **userland process is holding**, which no kernel teardown can or
+should reclaim. The next pass belongs in `hamsh`, not in `mm/`.
 
 **`owner-dead = 0` and `owner-stray = 0` on every arm.** Not one survivor of
 any COW share path has a dead owner, and not one has a live owner that no
@@ -96,8 +107,8 @@ same way, over every survivor.
 "nobody wrote an owner down", not "no owner is dead". Three arms were in
 exactly that state:
 
-| arm | survivors | with a recorded owner |
-|----:|----------:|----------------------:|
+| arm | survivors | with a recorded owner (run 1) |
+|----:|----------:|------------------------------:|
 | 1  | 101 | **0** |
 | 19 | 20  | **0** |
 | 21 | 63  | **0** |
@@ -119,6 +130,15 @@ Two fixes, one landed and one named:
   compare and a return while the tracker is disarmed. This matters more than
   the other two: arm 21 is the span pass 14 found the campaign's **main leak**
   in, and it was the one arm whose green was unverifiable.
+  Landing it immediately produced the SECOND trap, which is why it is worth
+  writing down: with an owner but still no tag, all 64 arm-21 survivors
+  reported `owner-stray` — the discriminator was comparing the owner's mapping
+  against VA 0. The run only passed because arm 21's net was negative and the
+  discriminator was never consulted; on a positive net it would have reported
+  a leak that is not there. A frame with an owner but no recorded VA now
+  counts as `owner-untagged`, its own number, reported and never swept. Run 3
+  reads arm 21 as `owner-unrecorded=0, stray=0, untagged=63` — which is
+  exactly the truth: its owners are known and its VAs are not.
 * **Arms 1 and 19 are backed by `region_alloc`, not `alloc_pages`,** which
   stamps no per-frame site or owner at all. That is the same reason the census
   reports them under site 0 and its own scope line says
@@ -194,13 +214,14 @@ Run 1 (4 cycles):
 [census] site 20: 1 orphans, live 64
 ```
 
-**Run 2 (6 cycles) reported `orphaned frames: 1` — the plant and nothing
-else**, with site 20 again at live 64 and `+0` across all six cycles. So the
-site-20 orphan is not reproducible run-to-run and is not per-cycle in either
-run. It is a single transient frame, not a slope, and the strongest statement
-the data supports is the one the second run makes: **under six identical
-terminal open/closes, the whole machine holds exactly one unreachable frame
-and it is the one deliberately planted there.**
+Across the three runs the census read **2, 1, 2** orphans — i.e. the plant
+plus *at most one* frame, always at site 20, with site 20's live count pinned
+at 64 (one order-6 run) and `+0` on every cycle of every run. Run 2 saw the
+plant and nothing else at all.
+
+So the site-20 frame is **intermittent, never more than one, and never
+growing**. It is not a slope and it is not on the terminal path; a per-cycle
+leak would have produced one per cycle in all three runs.
 
 One of the two is the deliberately planted positive control, identified by its
 `0xc0ffee00` tag rather than by its site (the plant allocates at a real
