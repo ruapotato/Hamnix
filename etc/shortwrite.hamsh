@@ -22,18 +22,26 @@
 
 echo '[shortwrite] begin'
 
-# Format the whole scratch disk as one ext4 filesystem.
-echo '[shortwrite] mkfs_ext4 /dev/blk/vdb'
-mkfs_ext4 /dev/blk/vdb
+# Format the whole scratch disk as one ext4 filesystem. The gate attaches
+# exactly one virtio disk, so the target is vda.
+echo '[shortwrite] mkfs_ext4 /dev/blk/vda'
+mkfs_ext4 /dev/blk/vda
 
 # Row 1 installs `swblocker` as a regular FILE; row 2 then tries to
 # install `swblocker/victim` underneath it.
 echo '[shortwrite] run install_rootfs_from_manifest'
+# try/except reacts to the LAST command in the block, so the tool must be
+# the block's ONLY statement — an `echo` inside would mask its status.
+sw_failed = 0
 try {
-    install_rootfs_from_manifest /dev/blk/vdb /etc/shortwrite/sw.manifest
-    echo '[shortwrite] tool-exit: ZERO'
+    install_rootfs_from_manifest /dev/blk/vda /etc/shortwrite/sw.manifest
 } except {
+    sw_failed = 1
+}
+if $sw_failed > 0 {
     echo '[shortwrite] tool-exit: NONZERO'
+} else {
+    echo '[shortwrite] tool-exit: ZERO'
 }
 
 echo '[shortwrite] end'

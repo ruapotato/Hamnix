@@ -2342,21 +2342,27 @@ if os.environ.get("ENABLE_EXT4_DIRGROW_TEST") == "1":
 #          ext4_install_file_to_slot returns -1, which devblk reports as
 #          -EIO.
 #
-# SW_SRC_BYTES is >= install_rootfs_from_manifest's MAX_BODY (4 MiB), which
-# is what forces the multi-chunk write: the ctl frame is header + 4 MiB,
-# i.e. strictly larger than arch/x86/kernel/syscall.ad's UA_WR_BOUNCE_SZ
-# heap bounce, so _sysarm_write must loop. Chunk 1 stages the body and is
-# reported as fully consumed; the -EIO only appears on the FINAL chunk,
-# with wr_total already at 4 MiB. That is precisely the condition under
-# which write(2) used to discard the errno and return the positive count,
-# turning total data loss into "install: swblocker/victim (4194304 bytes)"
-# and exit 0. A single-chunk write would NOT reproduce it — the old code
-# propagated a first-chunk errno correctly.
+# The MULTI-CHUNK shape is what matters, and it is arranged by the
+# /etc/write-smallbounce-test marker planted alongside: it makes
+# _sysarm_write skip its heap bounce and deliver every write(2) in 4 KiB
+# chunks — the production shape whenever the 4 MiB kmalloc fails.
+#
+# SW_SRC_BYTES is then only required to exceed one 4 KiB chunk, so it is
+# kept SMALL (256 KiB). That is deliberate: at 4 MiB the sink's own
+# staging kmalloc fails first (-ENOMEM on chunk 1, which even the unfixed
+# code propagated correctly) and the run proves nothing — measured, not
+# assumed. At 256 KiB the ctl frame spans 64 chunks, chunk 1..63 stage the
+# body and report themselves fully consumed, and the -EIO only appears on
+# chunk 64, with wr_total already at 258048. That is precisely the
+# condition under which write(2) used to discard the errno and return the
+# positive count, turning total data loss into "install: swblocker/victim
+# (262144 bytes)" and exit 0.
 if os.environ.get("ENABLE_SHORTWRITE_TEST") == "1":
-    SW_SRC_BYTES = 4 * 1024 * 1024                  # == MAX_BODY
+    SW_SRC_BYTES = 256 * 1024
+    FILES.append(("/etc/write-smallbounce-test", b"1\n"))
     FILES.append(("/etc/shortwrite/blocker.bin", b"sw-blocker\n"))
     FILES.append(("/etc/shortwrite/victim.bin",
-                  (b"HAMNIX-SHORTWRITE-VICTIM-PAYLOAD" * 131072)[:SW_SRC_BYTES]))
+                  (b"HAMNIX-SHORTWRITE-VICTIM-PAYLOAD" * 8192)[:SW_SRC_BYTES]))
     FILES.append(("/etc/shortwrite/sw.manifest",
                   b"# #464 short-write fixture (see build_initramfs.py)\n"
                   b"swblocker /etc/shortwrite/blocker.bin\n"

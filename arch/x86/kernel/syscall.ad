@@ -4281,6 +4281,29 @@ def _sysarm_read_nb(a0: uint64, a1: uint64, a2: uint64) -> uint64:
     return cast[uint64](n)
 
 
+# #464: force the SMALL (4 KiB stack) write bounce, disabling the heap
+# bounce below. Set once at boot when /etc/write-smallbounce-test is in
+# the cpio (init/main.ad) — default boots leave it 0 and are byte-
+# identical to before.
+#
+# WHY THIS IS NOT A TEST-ONLY HACK. The 4 KiB fallback is a REAL,
+# reachable production path: _sysarm_write only gets a big bounce if
+# kmalloc(min(count, 4 MiB)) succeeds, and a 4 MiB buddy allocation
+# routinely fails on a busy kernel. When it fails, a single write(2) is
+# delivered to the sink as ceil(count/4096) chunks — which is the ONLY
+# shape under which an errno can arrive after earlier chunks have already
+# been accounted, i.e. the shape #464 is about. Nothing else exercised
+# it, so nothing else could show that a mid-write -EIO used to be
+# swallowed. scripts/test_install_short_write.sh arms this to reproduce
+# the loss with a body small enough that the sink's own staging
+# allocation still succeeds.
+ua_wr_force_small_bounce: int32 = 0
+
+
+def ua_write_force_small_bounce(on: int32):
+    ua_wr_force_small_bounce = on
+
+
 def _write_err_reports_progress(e: int64) -> int32:
     # #464: which write(2) errnos may be SWALLOWED in favour of a
     # positive short count when an internal chunk of ONE write(2) fails
@@ -4349,7 +4372,7 @@ def _sysarm_write(a0: uint64, a1: uint64, a2: uint64) -> uint64:
     wr_big_addr: uint64 = 0
     wr_buf: Ptr[uint8] = cast[Ptr[uint8]](&wr_bounce[0])
     wr_cap: uint64 = UA_BOUNCE_SZ
-    if a2 > UA_BOUNCE_SZ:
+    if a2 > UA_BOUNCE_SZ and ua_wr_force_small_bounce == 0:
         # Size the heap bounce to fit (capped at UA_WR_BOUNCE_SZ ==
         # kmalloc MAX_ORDER ceiling). This keeps small-ish writes cheap
         # (one ~64 KiB alloc rather than always 4 MiB) while letting a

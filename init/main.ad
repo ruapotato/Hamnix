@@ -689,6 +689,9 @@ from fs.ext4 import ext4_verity_selftest
 # (gated boot:37.fscrypt on /etc/ext4-fscrypt-test). Single additive import —
 # see start_kernel gate.
 from fs.ext4 import ext4_fscrypt_selftest
+# #464 write(2) small-bounce arming (gated boot:37.smallbounce on
+# /etc/write-smallbounce-test). Single additive import — see start_kernel gate.
+from arch.x86.kernel.syscall import ua_write_force_small_bounce
 from sys.src.port9.port.dev import is_reserved_word
 
 # F10-5 (#457): selftest / smoke / exercise bodies moved out of init/main.ad
@@ -2244,6 +2247,32 @@ def block_smoke_test():
             dgrow_idx = dgrow_cnt
         else:
             dgrow_idx = dgrow_idx + 1
+    # [boot:37.smallbounce] #464 write(2) SMALL-BOUNCE arming. Gated on
+    # /etc/write-smallbounce-test (planted exclusively by
+    # scripts/test_install_short_write.sh). Disables _sysarm_write's heap
+    # bounce so every write(2) is delivered to the sink in 4 KiB chunks —
+    # the production shape whenever the 4 MiB kmalloc fails, and the only
+    # shape under which a sink errno can arrive AFTER earlier chunks were
+    # already accounted. Default boots omit the marker and are unchanged.
+    sbnc_target: Ptr[uint8] = "/etc/write-smallbounce-test"
+    sbnc_idx: uint64 = 0
+    sbnc_cnt: uint64 = initramfs_entry_count()
+    while sbnc_idx < sbnc_cnt:
+        sbnc_nm: Ptr[char] = initramfs_entry_name(sbnc_idx)
+        sbnc_ok: int32 = 1
+        sbnc_j: uint64 = 0
+        while sbnc_j < 28:                     # 27 chars + NUL
+            if cast[uint8](sbnc_nm[sbnc_j]) != sbnc_target[sbnc_j]:
+                sbnc_ok = 0
+                sbnc_j = 28
+            else:
+                sbnc_j = sbnc_j + 1
+        if sbnc_ok == 1:
+            ua_write_force_small_bounce(1)
+            printk0("[write-smallbounce] armed: write(2) chunks at 4 KiB\n")
+            sbnc_idx = sbnc_cnt
+        else:
+            sbnc_idx = sbnc_idx + 1
     # Extent-free / no-leak self-test arming. Gated on /etc/ext4extfree-test
     # (planted exclusively by scripts/test_ext4_extent_free.sh).
     # ext4_extentfree_selftest() records the free-block bitmap count, writes

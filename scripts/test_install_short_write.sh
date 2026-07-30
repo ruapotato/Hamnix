@@ -36,17 +36,24 @@
 # two-row manifest:
 #
 #     swblocker         <- 11 bytes        installs OK, as a regular FILE
-#     swblocker/victim  <- 4 MiB           MUST fail: its parent is a file
+#     swblocker/victim  <- 256 KiB         MUST fail: its parent is a file
 #
 # Row 2 fails inside ext4 ("[ext4_mkdir_p] component is not a dir" ->
-# ext4_install_file_to_slot -1 -> devblk -EIO). The 4 MiB body is what
-# makes it the HINGE reproducer rather than a plain error test: the ctl
-# frame is header + 4 MiB, strictly larger than the 4 MiB write bounce,
-# so write(2) must loop. Chunk 1 only STAGES the body in kernel memory
-# (devblk prints "install_file: streaming") and reports itself fully
-# consumed; the -EIO surfaces on the FINAL chunk, with 4 MiB already
+# ext4_install_file_to_slot -1 -> devblk -EIO). What makes this the HINGE
+# reproducer rather than a plain error test is that the write(2) carrying
+# it is MULTI-CHUNK. The fixture also plants /etc/write-smallbounce-test,
+# which makes _sysarm_write skip its heap bounce and chunk at 4 KiB — the
+# production shape whenever the 4 MiB kmalloc fails. The 256 KiB frame
+# then spans 64 chunks: chunks 1..63 only STAGE the body in kernel memory
+# (devblk prints "install_file: streaming") and report themselves fully
+# consumed, and the -EIO surfaces on the LAST chunk with ~252 KiB already
 # accumulated. A single-chunk write does not reproduce anything — the old
 # code propagated a first-chunk errno correctly.
+#
+# Sizing is measured, not assumed: a 4 MiB body (MAX_BODY) makes devblk's
+# own staging kmalloc fail FIRST, so the install dies on chunk 1 with
+# -ENOMEM and the run proves nothing. The gate detects that case and says
+# INCONCLUSIVE rather than passing.
 #
 # Assertions, all observed on the guest serial log:
 #   1. streaming  the kernel really took the multi-chunk staging path
@@ -147,25 +154,32 @@ echo "[$TAG] --- end ---"
 verdict_boot_gate "$TAG" "$LOG" "$rc" '\[shortwrite\]'
 
 # --- preconditions: the repro condition must actually have been met ---
-if ! grep -a -F -q "[shortwrite] mkfs_ext4 /dev/blk/vdb" "$LOG"; then
+if ! grep -a -F -q "[shortwrite] mkfs_ext4 /dev/blk/vda" "$LOG"; then
     verdict_inconclusive "$TAG" \
         "the driver script never reached mkfs_ext4 — no target filesystem," \
         "so nothing about short writes was observed"
 fi
 if grep -a -F -q "install_file: staging alloc failed" "$LOG"; then
     verdict_inconclusive "$TAG" \
-        "devblk could not kmalloc the 4 MiB staging buffer, so the install" \
+        "devblk could not kmalloc the staging buffer, so the install" \
         "failed on the FIRST chunk (-ENOMEM). The old code propagated a" \
         "first-chunk errno correctly, so this boot cannot distinguish fixed" \
         "from broken. Re-run on a quieter host or with more guest RAM."
 fi
+if ! grep -a -F -q "[write-smallbounce] armed" "$LOG"; then
+    verdict_inconclusive "$TAG" \
+        "the /etc/write-smallbounce-test marker never armed, so write(2)" \
+        "used its heap bounce and delivered the ctl frame in ONE chunk." \
+        "A single-chunk write cannot reproduce #464 — the unfixed code" \
+        "propagated a first-chunk errno correctly."
+fi
 if ! blinded streaming; then
-    if ! grep -a -F -q "[devblk] install_file: streaming size=4194304" "$LOG"
+    if ! grep -a -F -q "[devblk] install_file: streaming size=262144" "$LOG"
     then
         verdict_inconclusive "$TAG" \
             "the kernel never took the multi-chunk STREAMING path for the" \
-            "4 MiB victim body (no '[devblk] install_file: streaming" \
-            "size=4194304'). Without >=2 chunks the errno lands on the" \
+            "256 KiB victim body (no '[devblk] install_file: streaming" \
+            "size=262144'). Without >=2 chunks the errno lands on the" \
             "first chunk, which even the unfixed code propagated — this" \
             "boot proves nothing."
     fi
