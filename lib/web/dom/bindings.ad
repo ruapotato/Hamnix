@@ -336,6 +336,60 @@ cre_gone:    Array[8192, int32]      # 1 = detached (skip when emitting)
 cre_n:       int32 = 0
 dom_warn_cre: int32 = 0              # 1 = the CRE_MAX ceiling note has been emitted
 
+# ---- SOURCE TEXT NODES (2026-07-30) ----------------------------------------
+# childNodes on a parsed element used to contain ELEMENTS ONLY: the tx tree
+# indexes elements, so the text sitting between them was not a node at all.
+# `title.firstChild.data` — testharness.js's own get_title() — returned null,
+# `div.childNodes.length` was the ELEMENT count, and every traversal API
+# (Range, TreeWalker, NodeIterator) was walking a tree missing most of its
+# nodes.
+#
+# THE DESIGN, and what it rejects.
+#
+#   REJECTED — first-class slots in the tx tree (tx_kind[], text entries
+#   emitted by _dom_build_tree_index). tx is not a DOM, it is the SELECTOR
+#   index: _tx_prev_sibling / _tx_child_index / _tx_of_type_index /
+#   _match_chain are all O(tx_n) LINEAR scans run per candidate element. Text
+#   nodes outnumber elements roughly 1:1 on real markup and far more on
+#   whitespace-formatted markup, so this doubles-to-quintuples tx_n and makes
+#   selector matching quadratically slower on exactly the path that produces
+#   the render. It also needs a `kind == 1` filter added to ~15 call sites, and
+#   MISSING ONE silently breaks :nth-child on every page. Storage is the
+#   smaller objection: 8 int32 arrays would have to grow past TX_MAX = 16384.
+#
+#   REJECTED — a full node array built at parse time. Same ceiling problem,
+#   and it pays for every page whether or not a script ever asks. WPT pages
+#   carry 210 KB of innerHTML; most of them never touch childNodes.
+#
+#   CHOSEN — derive text nodes LAZILY from the source, memoized by source
+#   offset. The information is already there and needs no storage: an
+#   element's child ELEMENTS partition its content span, and every gap between
+#   them IS a text node. _node_children_of_tx walks that partition when
+#   childNodes is actually asked for (it is already a lazy accessor,
+#   NID_NODES_ACC). tx is untouched, so the selector engine and the render are
+#   unchanged BY CONSTRUCTION rather than by inspection.
+#
+#   IDENTITY is the one thing laziness costs, and stx_start is the answer:
+#   a source text node is uniquely named by the offset it starts at, so
+#   `el.childNodes[0] === el.childNodes[0]` holds across independent walks the
+#   same way _dom_lookup_anchor makes it hold for elements.
+#
+# These are deliberately NOT cre_ nodes. The created-node pool is what the
+# innerHTML serialiser and the cx_ selector overlay walk; putting source text
+# in it would make the emitter double-print text that is already in the source.
+# _find_cre_by_obj returns -1 for an stx object, so both stay blind to them.
+#
+# NOT COVERED: comment nodes. _strip_comments physically deletes comments from
+# the buffer before the parser sees it, so there is nothing left to derive them
+# from. Recovering them needs a side table recorded during the strip; that is a
+# separate change and is called out in the report rather than half-done here.
+STX_MAX:    int32 = 8192
+stx_start:  Array[8192, int32]       # source offset the text run starts at (the key)
+stx_end:    Array[8192, int32]       # source offset just past it
+stx_obj:    Array[8192, int32]       # the JS Text object
+stx_n:      int32 = 0
+dom_warn_stx: int32 = 0
+
 # created-node -> created-node child edges (nesting): a script can build a
 # whole subtree (table > tr > td) before mounting its root. Ordered by
 # insertion; cc_removed marks an unlinked edge.
@@ -1232,6 +1286,23 @@ NID_TW_PREVNODE:      int32 = 233     # walker.previousNode()
 NID_NI_NEXTNODE:      int32 = 234     # iterator.nextNode()
 NID_NI_PREVNODE:      int32 = 235     # iterator.previousNode()
 NID_NI_DETACH:        int32 = 236     # iterator.detach() (no-op per modern spec)
+# --- LAZY node-level traversal (2026-07-30) ----------------------------------
+# firstChild / lastChild / previousSibling / nextSibling are NODE-level: with
+# source text nodes in the tree they no longer equal their *Element* twins, and
+# answering them means materialising the parent's child-NODE list. That list
+# costs a JS object and a string per text run, so it must be built for the
+# elements a script actually traverses from and no others — the same accessor
+# shape NID_KIDS_ACC already uses, and for the same measured reason: wiring it
+# eagerly at registration exhausted the string pool outright on
+# tests/fixtures/hambrowse_ceilings.html (9000 flat <i> under <body>).
+NID_FCH_ACC:      int32 = 237        # get el.firstChild
+NID_FCH_ACC_SET:  int32 = 238        # set el.firstChild
+NID_LCH_ACC:      int32 = 239        # get el.lastChild
+NID_LCH_ACC_SET:  int32 = 240        # set el.lastChild
+NID_PSIB_ACC:     int32 = 241        # get el.previousSibling
+NID_PSIB_ACC_SET: int32 = 242        # set el.previousSibling
+NID_NSIB_ACC:     int32 = 243        # get el.nextSibling
+NID_NSIB_ACC_SET: int32 = 244        # set el.nextSibling
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
@@ -1367,6 +1438,8 @@ def _dom_reset():
     ap_n = 0
     cre_n = 0
     cc_n = 0
+    stx_n = 0
+    dom_warn_stx = 0
     rw_len = 0
     g_ser_mode = 0
     g_dom_mutated = 0

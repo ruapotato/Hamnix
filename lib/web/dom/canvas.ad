@@ -10,7 +10,7 @@ from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
-from lib.htmlengine import _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_ni_natives, _attach_range_natives, _attach_tw_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
+from lib.htmlengine import _dom_node_kids, _dom_nodes_push, _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_ni_natives, _attach_range_natives, _attach_tw_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
 # ====================================================================
 # <canvas> 2D context — the JS-facing side. Style state (fillStyle/strokeStyle/
@@ -2356,6 +2356,7 @@ def _append_child_v(parentv: int32, childv: int32):
             if js_is_array(pch) != 0:
                 js_array_push(pch, childv)
                 _wire_sibling_links(pch, dom_obj[par])
+            _dom_nodes_push(dom_obj[par], childv)
             js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par])
             js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par])
         else:
@@ -2369,6 +2370,7 @@ def _append_child_v(parentv: int32, childv: int32):
                 if js_is_array(ccpch) != 0:
                     js_array_push(ccpch, childv)
                     _wire_sibling_links(ccpch, parentv)
+                _dom_nodes_push(parentv, childv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
@@ -2688,9 +2690,52 @@ def _lazy_el_accessor(rel: int32) -> int32:
             if js_has_own(thisv, cast[Ptr[uint8]]("children"), 8) == 0:
                 return js_undefined()
             return js_get_prop(thisv, cast[Ptr[uint8]]("children"), 8)
-        if js_has_own(thisv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+        kn: int32 = _dom_node_kids(idx)
+        if js_type_of(kn) != TAG_OBJ:
             return js_undefined()
-        return js_get_prop(thisv, cast[Ptr[uint8]]("childNodes"), 10)
+        return kn
+    # NODE-level traversal, off the same lazy child-NODE list. firstChild is a
+    # Text where the markup puts text first, which is what a browser reports and
+    # what testharness.js's get_title() reads (title.firstChild.data).
+    if rel == NID_FCH_ACC or rel == NID_LCH_ACC:
+        if idx < 0 or tx_built == 0:
+            return js_undefined()
+        _dom_wire_tree(idx)
+        kids: int32 = _dom_node_kids(idx)
+        if js_type_of(kids) != TAG_OBJ:
+            return js_undefined()
+        kl: int32 = js_array_len(kids)
+        if kl == 0:
+            return js_null()
+        if rel == NID_FCH_ACC:
+            return js_array_get(kids, 0)
+        return js_array_get(kids, kl - 1)
+    if rel == NID_PSIB_ACC or rel == NID_NSIB_ACC:
+        if idx < 0 or tx_built == 0:
+            return js_undefined()
+        _dom_wire_tree(idx)
+        pv: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("parentNode"), 10)
+        if js_type_of(pv) != TAG_OBJ:
+            return js_null()
+        pidx: int32 = _find_el_by_obj(pv)
+        if pidx < 0:
+            return js_null()
+        sib: int32 = _dom_node_kids(pidx)
+        if js_type_of(sib) != TAG_OBJ:
+            return js_null()
+        sn: int32 = js_array_len(sib)
+        m: int32 = 0
+        while m < sn:
+            if js_array_get(sib, m) == thisv:
+                if rel == NID_PSIB_ACC:
+                    if m > 0:
+                        return js_array_get(sib, m - 1)
+                    return js_null()
+                if m + 1 < sn:
+                    return js_array_get(sib, m + 1)
+                return js_null()
+            m = m + 1
+        return js_null()
     if rel == NID_DS_ACC:
         if idx < 0:
             return js_undefined()
@@ -2710,6 +2755,18 @@ def _lazy_el_accessor(rel: int32) -> int32:
         return js_undefined()
     if rel == NID_NODES_ACC_SET:
         js_set_own(thisv, cast[Ptr[uint8]]("childNodes"), 10, wv)
+        return js_undefined()
+    if rel == NID_FCH_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("firstChild"), 10, wv)
+        return js_undefined()
+    if rel == NID_LCH_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("lastChild"), 9, wv)
+        return js_undefined()
+    if rel == NID_PSIB_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("previousSibling"), 15, wv)
+        return js_undefined()
+    if rel == NID_NSIB_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("nextSibling"), 11, wv)
         return js_undefined()
     if rel == NID_STYLE_ACC_SET:
         js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, wv)
@@ -4449,6 +4506,8 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel >= NID_STYLE_ACC and rel <= NID_DS_ACC_SET:
         return _lazy_el_accessor(rel)
     if rel >= NID_KIDS_ACC and rel <= NID_NODES_ACC_SET:
+        return _lazy_el_accessor(rel)
+    if rel >= NID_FCH_ACC and rel <= NID_NSIB_ACC_SET:
         return _lazy_el_accessor(rel)
     if rel >= NID_F_GETCTX and rel <= NID_F_SUBMIT_S:
         return _feat_accessor(rel)
@@ -7336,6 +7395,19 @@ def _build_dom_interfaces():
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("childNodes"), 10, \
                        js_new_native_fn(js_hbase + NID_NODES_ACC), \
                        js_new_native_fn(js_hbase + NID_NODES_ACC_SET))
+    # NODE-level traversal, off the same lazy child-NODE list.
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("firstChild"), 10, \
+                       js_new_native_fn(js_hbase + NID_FCH_ACC), \
+                       js_new_native_fn(js_hbase + NID_FCH_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("lastChild"), 9, \
+                       js_new_native_fn(js_hbase + NID_LCH_ACC), \
+                       js_new_native_fn(js_hbase + NID_LCH_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("previousSibling"), 15, \
+                       js_new_native_fn(js_hbase + NID_PSIB_ACC), \
+                       js_new_native_fn(js_hbase + NID_PSIB_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("nextSibling"), 11, \
+                       js_new_native_fn(js_hbase + NID_NSIB_ACC), \
+                       js_new_native_fn(js_hbase + NID_NSIB_ACC_SET))
     # attributes / localName / prefix: derived on demand from the start tag +
     # override store, so no per-element cost until something asks.
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("attributes"), 10, \

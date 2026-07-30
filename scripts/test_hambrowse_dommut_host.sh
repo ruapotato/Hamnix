@@ -7,7 +7,8 @@
 #   - node identity: nodeType (element 1 / text 3 / document 9), nodeName
 #     (uppercase tag / #text / #document), nodeValue (text-node data, null on
 #     elements) — frameworks branch on `node.nodeType === 1`.
-#   - lastChild / previousSibling traversal aliases (element-only approximation).
+#   - last/previousElement traversal, plus the NODE-level lastChild /
+#     previousSibling (Text nodes between the elements, as in a browser).
 #   - :nth-child(An+B) incl. even / odd / n+B / -n+B (the parser previously took
 #     only a bare integer, and '+' inside the parens split as a combinator).
 #   - insertBefore / replaceChild / removeChild keeping the LIVE JS
@@ -67,7 +68,12 @@ assert_grep '^JSLOG text 3 #text hello$'    "createTextNode -> nodeType 3, nodeN
 assert_grep '^JSLOG nval null$'             "element nodeValue is null"
 
 # ---- traversal aliases ---------------------------------------------------
-assert_grep '^JSLOG alias Epsilon Delta$'   "lastChild + lastElementChild.previousSibling"
+assert_grep '^JSLOG alias Epsilon Delta$'   "lastElementChild + previousElementSibling"
+# NODE-level traversal: with source text nodes in the tree, lastChild and
+# previousSibling are the newlines between the <li>s, not the <li>s. Chromium
+# --headless --dump-dom on the same list shape reports exactly this (see the
+# fixture comment); the old expectation here was the element-only approximation.
+assert_grep '^JSLOG nodealias 11 3 3 "[\\]n  "$' "childNodes/firstChild/lastChild are node-level"
 
 # ---- :nth-child(An+B) / even / odd ---------------------------------------
 assert_grep '^JSLOG odd 3 even 2$'          ":nth-child(odd)=3, :nth-child(even)=2"
