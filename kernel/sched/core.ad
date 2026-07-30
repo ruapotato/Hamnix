@@ -24,7 +24,7 @@
 from mm.memblock import memblock_alloc, memblock_region_top
 from mm.page_alloc import (
     alloc_page, alloc_pages, free_page, free_pages,
-    region_free, region_free_cow_safe, pa_set_site,
+    region_free, region_free_cow_safe, ustack_free_cow_safe, pa_set_site,
     PA_SITE_KSTACK, PA_SITE_USTACK, PA_SITE_PML4, PA_SITE_SELFTEST,
     page_alloc_census_begin, page_alloc_census_mark,
     page_alloc_census_sweep, page_alloc_census_report,
@@ -8446,9 +8446,18 @@ def task_reap(slot: int32):
     #    so it never double-frees the parent's live stack. A native
     #    create_user_thread that allocated its own 4 KiB page records it
     #    in ustack_base; free that too (threads don't COW-share it).
+    #    COW-SAFE since leak pass 14. The raw free_pages here was the last
+    #    owner-span reclaim that never consulted the per-PFN refcount table:
+    #    vm_cow_share_all COW-shares the stack into every fork child exactly
+    #    as it shares the image, but only the image had a draining reclaim
+    #    (region_free_cow_safe). Measured over one soak with the per-frame
+    #    origin tag: image span born=342 died=342, stack span born=964
+    #    died=109. The run was pooled with stale non-zero counts, poisoning
+    #    the next COW share of the recycled PFN.
     if task_table[su].ustack_phys != 0:
-        free_pages(task_table[su].ustack_phys,
-                   _order_for_bytes(task_table[su].ustack_phys_sz))
+        ustack_free_cow_safe(task_table[su].ustack_phys,
+                             task_table[su].ustack_phys_sz,
+                             _order_for_bytes(task_table[su].ustack_phys_sz))
         task_table[su].ustack_phys    = 0
         task_table[su].ustack_phys_sz = 0
     elif task_table[su].ustack_base != 0:
@@ -12527,8 +12536,13 @@ def task_free_owner_regions(slot: uint64):
         # it). The decoupled stack is never identity-mapped, so there is no
         # US=1-low-identity alias to restore/clear at all — the whole reason
         # for the old vma_restore_kernel_identity_range call is gone.
-        free_pages(task_table[slot].ustack_phys,
-                   _order_for_bytes(task_table[slot].ustack_phys_sz))
+        # COW-SAFE since leak pass 14, for the same reason as task_reap's arm
+        # and the region_free_cow_safe calls just above: the OUTGOING stack may
+        # have been COW-shared into a fork child by vm_cow_share_all, and a raw
+        # free_pages pools it with stale per-PFN counts.
+        ustack_free_cow_safe(task_table[slot].ustack_phys,
+                             task_table[slot].ustack_phys_sz,
+                             _order_for_bytes(task_table[slot].ustack_phys_sz))
         task_table[slot].ustack_phys    = 0
         task_table[slot].ustack_phys_sz = 0
 

@@ -223,6 +223,12 @@ COW_ARM_SHARE_COW_IMG:  uint64 = 19
 COW_ARM_SHARE_COW_BRK:  uint64 = 20
 COW_ARM_SHARE_COW_USTK: uint64 = 21
 
+# The drop side of arm 21: ustack_free_cow_safe, the owner's COW-draining
+# reclaim of its user-stack run. Arms 19 and 21 are shared by the SAME call
+# (vm_cow_share_all) and differ only in which owner-side reclaim drains them —
+# region_free_cow_safe for the image, and until pass 14 NOTHING for the stack.
+COW_ARM_DROP_USTACK:    uint64 = 22
+
 _cow_ledger_on: uint64 = 0
 _cow_arm:       uint64 = 0
 _cow_arm_add:   Array[24, uint64]

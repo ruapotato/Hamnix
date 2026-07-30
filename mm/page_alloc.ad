@@ -35,7 +35,7 @@
 from mm.memblock import memblock_alloc, memblock_region_top, memblock_can_alloc
 from mm.cow import (
     cow_boot_cr3, cow_refcount, cow_drop_page,
-    cow_set_arm, COW_ARM_DROP_REGION,
+    cow_set_arm, COW_ARM_DROP_REGION, COW_ARM_DROP_USTACK,
 )
 from kernel.printk.printk import printk1, printk2, printk3, printk_set_level
 from drivers.tty.serial.early_8250 import PRINTK_LEVEL_EMERG
@@ -2156,6 +2156,97 @@ def region_free_cow_safe(addr: uint64, size: uint64):
     # A later region_alloc / region_free_cow_safe sweep pools it once the
     # last holder exits. Drain what we can now, cheaply.
     region_quarantine_sweep()
+
+
+# Frames whose COW reference this reclaim dropped, and runs it declined to
+# free because a live relative still mapped one. Both are pure counters; a
+# `track`-gated printk below is the only output, so /proc/meminfo is untouched.
+_ustack_cow_drained: uint64 = 0
+_ustack_runs_held:   uint64 = 0
+
+
+def ustack_free_cow_safe(base: uint64, size: uint64, order: uint64):
+    # COW-SAFE user-stack reclaim (leak pass 14). THE MEASURED BUG.
+    #
+    # vm_cow_share_all COW-shares three owner spans into every fork child:
+    # the ELF image, the brk heap and the user stack. Two of the three have a
+    # COW-draining owner-side reclaim — region_free_cow_safe for the image and
+    # PT_INTERP, vma_free_reserved_range for brk — and each drops the owner's
+    # per-PFN reference before returning the storage. The USER STACK had none:
+    # task_reap and task_free_owner_regions both returned the run with a RAW
+    # free_pages(ustack_phys), a path that never consults the refcount table.
+    # region_free_cow_safe's own comment already asserts it "matches the
+    # brk/stack COW-safe reclaim"; for the stack that was not true.
+    #
+    # HOW IT WAS MEASURED, not argued. The per-PFN origin tag (mm/cow.ad)
+    # records the arm that took each frame's FIRST reference, so every drop
+    # reports its true origin with no inference. Splitting vm_cow_share_all by
+    # span, over a 12-minute desktop soak:
+    #
+    #   org=19  image span   born=342  died=342   <- region_free_cow_safe
+    #   org=21  ustack span  born=964  died=109   <- raw free_pages
+    #
+    # The image span closes EXACTLY. The stack span drops 11% of what it
+    # creates. Same call, same fork, same soak; the only difference is which
+    # owner-side reclaim drains it. 855 of the 936 tagged live frames in that
+    # run are org=21.
+    #
+    # WHY A STALE COUNT COSTS PAGES, not just tidiness. free_pages returns the
+    # run to the buddy allocator with its refcount-table entries still
+    # non-zero. The next allocation of that PFN inherits the poison, so the
+    # next cow_share_page sees cur != 0 and bumps N -> N+1 instead of 0 -> 2;
+    # the matching cow_drop_page then stops one short of 0 and the frame is
+    # never freed by its last holder. That is exactly the population the
+    # orphan census reports — refcount 1, zero mappers, owner alive — and 58
+    # of 64 sampled orphans carry origin arm 2 (the general COW share) while
+    # arm 1 contributes none. This is the same poison class region_free_cow_safe
+    # was written for; the stack was the remaining raw-free hole.
+    #
+    # THE RULE, mirroring region_free_cow_safe exactly:
+    #   refcount 0  -> untracked, never forked: no-op, run frees as before
+    #                  (the overwhelmingly common case).
+    #   refcount 1  -> owner-only, the child already exec'd or reaped:
+    #                  drop 1 -> 0 clears the stale count and the run frees.
+    #   refcount >1 -> a LIVE relative still COW-maps this frame: drop 2 -> 1
+    #                  so that relative's own teardown is not stranded, and do
+    #                  NOT free the run. Returning it would hand the buddy
+    #                  allocator a frame a live task still maps — the dfd59371
+    #                  use-after-free, which the raw free_pages could already
+    #                  commit today. Holding the run is a bounded page leak and
+    #                  never a UAF; correctness over reuse, same trade the
+    #                  region path makes.
+    if base == 0 or size == 0:
+        return
+    rsize: uint64 = (size + 4095) & ~cast[uint64](4095)
+    off: uint64 = 0
+    while off < rsize:
+        frame: uint64 = base + off
+        if cow_refcount(frame) > 0:
+            cow_set_arm(COW_ARM_DROP_USTACK)
+            # ignore-result
+            cow_drop_page(frame)
+            _ustack_cow_drained = _ustack_cow_drained + 1
+        off = off + 4096
+    # Second pass: anything still held means a live relative maps it.
+    off = 0
+    while off < rsize:
+        if cow_refcount(base + off) > 0:
+            _ustack_runs_held = _ustack_runs_held + 1
+            if page_alloc_track_mode() != 0:
+                printk_set_level(PRINTK_LEVEL_EMERG)
+                printk2("[ustack] held run %p: frame %p still COW-mapped\n",
+                        base, base + off)
+            return
+        off = off + 4096
+    free_pages(base, cast[int32](order))
+
+
+def ustack_cow_drained_total() -> uint64:
+    return _ustack_cow_drained
+
+
+def ustack_runs_held_total() -> uint64:
+    return _ustack_runs_held
 
 
 # --- bring-up + stats ----------------------------------------------
