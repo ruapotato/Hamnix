@@ -2959,9 +2959,25 @@ def _block_box_close():
         # `max-height` ceiling, then the `min-height` floor (min wins over max).
         if newbot > srow:
             if ehc >= 0 and n_hpins < HPIN_MAX:
+                # BORDER-BOX vertical growth: `height` (tgtpx) is the CONTENT box
+                # (box-sizing:content-box, or already reduced to content by the
+                # border-box cascade). The box's vertical padding is BAKED into its
+                # first/last content rows (bbox_padv, htmlpage 1c/1d), so the pin's
+                # pixel target must include it — otherwise 1e drives the span back
+                # down to the content height and EATS the baked padding, leaving a
+                # `height:H; padding:P` box painted H px tall instead of H+2P (the
+                # horizontal axis already grows the fill outward by padding). Add it
+                # for exactly the box kinds that bake: plain borderless (bord==0 &&
+                # bordps==0) and uniform-bordered (bord!=0); NOT per-side-only boxes
+                # (which fold padding into the external gap) and NOT flex items
+                # (which inset their own padding in the grid). Border thickness is
+                # drawn as an inset frame, so it is not added here.
+                vpad_add: int32 = 0
+                if pady > 0 and was_flexitem == 0 and (bord != 0 or bordps == 0):
+                    vpad_add = pady
                 hpin_r0[n_hpins]   = srow
                 hpin_r1[n_hpins]   = newbot
-                hpin_px[n_hpins]   = tgtpx
+                hpin_px[n_hpins]   = tgtpx + vpad_add
                 hpin_kind[n_hpins] = 0
                 n_hpins = n_hpins + 1
             else:
