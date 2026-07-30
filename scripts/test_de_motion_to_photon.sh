@@ -315,8 +315,21 @@ done
     "shell never echoed the readiness marker -- serial injection dropped, nothing measured"
 echo "$TAG shell ready."
 
+# WKLAT_RESUME=0 restores the PRE-FIX wake accounting: a wake stamped on a
+# task that never left the cpu (the wq poll loop's hlt) is left armed and
+# closed against that task's next, unrelated dispatch. That is the arm that
+# reproduces the >60 ms wake->dispatch tail; the outlier ring's inpl=1 field
+# names it. Default 1 = the shipped behaviour.
+WKLAT_RESUME="${WKLAT_RESUME:-1}"
+
 arm_instruments() {  # arm_instruments <arm-name>
     printf 'echo "m2p 1" > /dev/wsys/ctl\n' >&3
+    sleep 2
+    if [ "$WKLAT_RESUME" = "0" ]; then
+        printf 'echo "wklat 7" > /dev/wsys/ctl\n' >&3
+    else
+        printf 'echo "wklat 8" > /dev/wsys/ctl\n' >&3
+    fi
     sleep 2
     printf 'echo "ptrlat 0" > /dev/wsys/ctl\n' >&3
     sleep 2
@@ -461,6 +474,13 @@ for i, run in enumerate(runs):
         print('              dispatched after pid=%-5s %-8s | dispatches=%s ticks=%s kicks=%s | on_cpu@wake=%s cpu %s->%s rq=%s'
               % (g('prev'), nm(g('pnm')), g('dispd'), g('jifd'), g('kickd'),
                  g('oncpu'), g('scpu'), g('dcpu'), g('rqcpu')))
+        # inpl=1 means the waitee was STILL the incumbent when the wake was
+        # raised: it was sitting in the wq poll loop's hlt and never left the
+        # cpu, so no dispatch was ever owed to it and this interval is not a
+        # wake->dispatch latency at all.
+        print('              in-place-wake=%s | ready-queue=%s | vwake=%s vdisp=%s floor=%s | guest-stalls=%s'
+              % (g('inpl'), g('nrdy'), g('vwake'), g('vdisp'), g('floor'),
+                 g('stalld')))
 PYEOF
 echo "$TAG --- end ---"
 
