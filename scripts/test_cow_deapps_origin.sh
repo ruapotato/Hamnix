@@ -281,6 +281,11 @@ send "echo track mplant > /proc/meminfo"  CA_MPLANT  40 || say_fail "track mplan
 send "echo track census > /proc/meminfo"  CA_CENSUS 240 || say_fail "track census timed out"
 send "echo track unplant > /proc/meminfo" CA_UNPLANT 40 || true
 send "echo track unmplant > /proc/meminfo" CA_UNMPL  40 || true
+# The kernel heap over the WHOLE run, from the same boot. Reported, not
+# asserted: a per-site kmtrack threshold invented here would be a number with
+# no measurement behind it. What it is FOR is the "then where?" question if a
+# page site grows.
+send "echo kmtrack dump > /proc/meminfo" CA_KMDUMP 60 || true
 
 kill "$QEMU_PID" 2>/dev/null
 ( sleep 5; kill -9 "$QEMU_PID" 2>/dev/null ) & WD=$!
@@ -293,6 +298,22 @@ echo "$TAG --- census ---"
 grep -aE "\[census\]" "$LOG" | tail -40 || true
 echo "$TAG --- run predicate ---"
 grep -aF "[cens3]" "$LOG" || true
+echo "$TAG --- kernel heap (reported, not asserted) ---"
+grep -aF "[kmtrack]" "$LOG" | tail -40 || true
+# BUILD IDENTITY, in band. An image age in seconds proves the FILE is new; it
+# does not prove the CODE is in it. `[cens3]` lines exist only in a kernel
+# carrying the pass-18 run predicate, and one is GUARANTEED here: the census
+# runs with a planted control outstanding, so at least one user-mapped site
+# always has an orphan to run-check. Absence is a stale kernel, and the
+# summary treats it as inconclusive rather than clean.
+echo "$TAG --- build identity ---"
+if grep -aqF "[cens3]" "$LOG"; then
+    echo "$TAG   kernel carries the pass-18 run predicate ([cens3] present)"
+else
+    echo "$TAG   NO [cens3] output — this kernel predates the pass-18 run"
+    echo "$TAG   predicate, or the census never ran. Nothing about site 20 is"
+    echo "$TAG   settled by this run."
+fi
 echo "$TAG --- end ---"
 
 if grep -aF -q "[origin] DISARMED" "$LOG" || grep -aF -q "[origin] NO TABLE" "$LOG"; then
