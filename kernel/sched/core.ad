@@ -8907,6 +8907,15 @@ def mm_origin_live_dump(org: uint64) -> uint64:
     ndead: uint64 = 0
     nunrec: uint64 = 0
     nstray: uint64 = 0
+    # A frame with a recorded OWNER but NO recorded VA cannot be checked
+    # against a VA, and counting it as "stray" is a FALSE RED, not a
+    # conservative one. Leak pass 16 walked into this the moment it gave the
+    # execve stack prefix a pa_set_owner: 64 survivors, every one owned by a
+    # live task, every one reported stray — because that site stamps no tag,
+    # so the discriminator was comparing against VA 0. Run allocations stamp
+    # at most one VA for the whole run anyway, so this is structural, not an
+    # oversight at one call site. Report it as its own number.
+    nuntagged: uint64 = 0
     detail: uint64 = 1
     pfn: uint64 = cow_origin_next_live(org, 1)
     while pfn != 0:
@@ -8946,9 +8955,13 @@ def mm_origin_live_dump(org: uint64) -> uint64:
                 # THE DISCRIMINATOR. If the owner still maps the recorded VA
                 # to THIS frame, the page is resident in a running process
                 # and is not leaked by any definition a teardown could fix.
-                mp: uint64 = vma_pte_phys_at(os, va)
-                if mp != phys:
-                    nstray = nstray + 1
+                mp: uint64 = 0
+                if va == 0:
+                    nuntagged = nuntagged + 1
+                else:
+                    mp = vma_pte_phys_at(os, va)
+                    if mp != phys:
+                        nstray = nstray + 1
                 if detail != 0:
                     printk_set_level(PRINTK_LEVEL_EMERG)
                     printk2("[orgl] live[%d] owner comm=%s\n",
@@ -8968,7 +8981,8 @@ def mm_origin_live_dump(org: uint64) -> uint64:
     printk3("[orgl] org=%d owner-dead=%d owner-unrecorded=%d\n",
             org, ndead, nunrec)
     printk_set_level(PRINTK_LEVEL_EMERG)
-    printk2("[orgl] org=%d owner-stray=%d\n", org, nstray)
+    printk3("[orgl] org=%d owner-stray=%d owner-untagged=%d\n",
+            org, nstray, nuntagged)
     return n
 
 

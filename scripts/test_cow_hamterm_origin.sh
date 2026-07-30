@@ -324,6 +324,10 @@ own = {}          # arm -> [dead, unrecorded, total]
 # silently mean "stray among the first 64" — fine for pass 15's population of
 # two, a false exoneration for a workload that strands hundreds.
 stray = {}
+# Survivors with an owner but NO recorded VA: the VA half of the
+# discriminator cannot speak for them, and pretending otherwise is a false
+# red. Reported, never swept.
+untagged = {}
 for ln in log.splitlines():
     m = re.search(r'\[orgl\] org=(\d+) owner-dead=(\d+) owner-unrecorded=(\d+)', ln)
     if m:
@@ -331,9 +335,10 @@ for ln in log.splitlines():
         own.setdefault(a, [0, 0, 0])
         own[a][0], own[a][1] = int(m.group(2)), int(m.group(3))
         continue
-    m = re.search(r'\[orgl\] org=(\d+) owner-stray=(\d+)', ln)
+    m = re.search(r'\[orgl\] org=(\d+) owner-stray=(\d+)(?: owner-untagged=(\d+))?', ln)
     if m:
         stray[int(m.group(1))] = int(m.group(2))
+        untagged[int(m.group(1))] = int(m.group(3) or 0)
         continue
     m = re.search(r'\[orgl\] org=(\d+) TOTAL=(\d+)', ln)
     if m:
@@ -346,8 +351,8 @@ print()
 print('=== owner discriminator (track org N) ===')
 for a in sorted(own):
     d, u, t = own[a]
-    print('arm %-3d TOTAL=%-5d owner-dead=%-4d owner-unrecorded=%-4d stray=%d'
-          % (a, t, d, u, stray.get(a, 0)))
+    print('arm %-3d TOTAL=%-5d owner-dead=%-4d owner-unrecorded=%-4d stray=%-4d '
+          'untagged=%d' % (a, t, d, u, stray.get(a, 0), untagged.get(a, 0)))
 
 # --- verdict, on the LAST inter-cycle delta ---
 bad, notes = [], []
@@ -389,9 +394,10 @@ for a in sorted(nets):
                    % (a, last))
         continue
     if dead == 0 and stray[a] == 0:
-        notes.append('arm %d: RESIDENCY, last net %+d, owner-dead=0, every '
-                     'survivor still mapped by its live owner '
-                     '(owner-unrecorded=%d of %d)' % (a, last, unrec, tot))
+        notes.append('arm %d: RESIDENCY, last net %+d, owner-dead=0, no survivor '
+                     'has a live owner that stopped mapping it '
+                     '(owner-unrecorded=%d, owner-untagged=%d, of %d)'
+                     % (a, last, unrec, untagged.get(a, 0), tot))
     else:
         bad.append('arm %d: LEAK — last net %+d, owner-dead=%d, survivors no '
                    'longer mapped by their owner=%d'
