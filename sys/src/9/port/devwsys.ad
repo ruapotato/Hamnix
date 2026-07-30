@@ -3096,17 +3096,77 @@ wsys_last_alloc_wid: int32 = -1
 WSYS_PENDING_MAX: uint64 = 32
 wsys_pending_pid: Array[32, uint64]               # 0 = empty entry
 wsys_pending_wid: Array[32, int32]
+# The allocating task's SLOT, recorded alongside the pid. See
+# _wsys_pending_take for why a pid alone is not an identity.
+wsys_pending_slot: Array[32, int32]
+# LIFETIME CAP -> SIMULTANEOUSLY-PENDING CEILING (leak pass 18).
+#
+# An entry was only ever removed by the OWNING pid's readback. A process that
+# allocated a window and died before reading it back (a crash, a close box
+# during startup, a `kill` mid-launch — all of which the DE soak does dozens
+# of times an hour) left its entry behind FOREVER. Thirty-two of those and the
+# table is permanently full, at which point every concurrent launch silently
+# falls back to the single global `wsys_last_alloc_wid` — i.e. back to the
+# exact cross-delivery bug this table was added to fix ("taskbar shows only
+# ONE of N open windows"), with nothing anywhere reporting that it happened.
+#
+# That is the silent-cap shape the zero-leak directive calls out: it does not
+# leak memory, it silently stops working, and the failure surfaces days later
+# as a UI bug with no diagnostic. Three changes:
+#   1. a full table PRUNES entries whose pid is no longer a live task, so 32
+#      is a ceiling on SIMULTANEOUSLY-PENDING allocations, not on lifetime
+#      ones (the same fix shape as timer_* / pr_* / mse_*);
+#   2. overflow is COUNTED and latches one loud CEILING note instead of
+#      degrading in silence;
+#   3. occupancy carries a high-water mark, because a ceiling you cannot
+#      watch approaching is a silent cap with extra steps.
+wsys_pending_evicted:  uint64 = 0     # stale entries reclaimed from dead pids
+wsys_pending_overflow: uint64 = 0     # puts that still found no slot
+wsys_pending_stale:    uint64 = 0     # takes refused on a pid/slot mismatch
+wsys_pending_hi:       uint64 = 0     # high-water occupancy
+_wsys_pending_noted:   uint64 = 0     # CEILING note latch
+
+
+def _wsys_pending_occupancy() -> uint64:
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < WSYS_PENDING_MAX:
+        if wsys_pending_pid[i] != 0:
+            n = n + 1
+        i = i + 1
+    if n > wsys_pending_hi:
+        wsys_pending_hi = n
+    return n
+
+
+def _wsys_pending_prune() -> uint64:
+    # Drop every entry whose pid is no longer a live task. O(32) task lookups,
+    # and it runs ONLY when the table is full — never on the fast path.
+    n: uint64 = 0
+    i: uint64 = 0
+    while i < WSYS_PENDING_MAX:
+        if wsys_pending_pid[i] != 0 \
+                and task_lookup_by_pid(wsys_pending_pid[i]) < 0:
+            wsys_pending_pid[i] = 0
+            wsys_pending_wid[i] = 0
+            wsys_pending_slot[i] = -1
+            n = n + 1
+        i = i + 1
+    wsys_pending_evicted = wsys_pending_evicted + n
+    return n
 
 
 def _wsys_pending_put(pid: uint64, wid: int32):
     # Record (pid -> wid). Replace an existing entry for the same pid (a
     # process that allocs again before reading the first — e.g. the panel's
     # per-panel loop reads between allocs, but be defensive), else take a
-    # free slot. On a full table the caller falls back to the global.
+    # free slot.
+    sl: int32 = task_lookup_by_pid(pid)
     i: uint64 = 0
     while i < WSYS_PENDING_MAX:
         if wsys_pending_pid[i] == pid:
             wsys_pending_wid[i] = wid
+            wsys_pending_slot[i] = sl
             return
         i = i + 1
     i = 0
@@ -3114,21 +3174,73 @@ def _wsys_pending_put(pid: uint64, wid: int32):
         if wsys_pending_pid[i] == 0:
             wsys_pending_pid[i] = pid
             wsys_pending_wid[i] = wid
+            wsys_pending_slot[i] = sl
+            _wsys_pending_occupancy()
             return
         i = i + 1
+    # FULL. Reclaim the dead before giving up — a table full of tombstones is
+    # not a busy machine, it is an unreclaimed one.
+    if _wsys_pending_prune() != 0:
+        i = 0
+        while i < WSYS_PENDING_MAX:
+            if wsys_pending_pid[i] == 0:
+                wsys_pending_pid[i] = pid
+                wsys_pending_wid[i] = wid
+                wsys_pending_slot[i] = sl
+                return
+            i = i + 1
+    wsys_pending_overflow = wsys_pending_overflow + 1
+    if _wsys_pending_noted == 0:
+        _wsys_pending_noted = 1
+        printk1("[devwsys] CEILING per-pid wid table full (WSYS_PENDING_MAX=%d)"
+                " with every entry LIVE — this alloc falls back to the single"
+                " global result slot and MAY cross-deliver a wid.\n",
+                WSYS_PENDING_MAX)
 
 
 def _wsys_pending_take(pid: uint64) -> int32:
     # Pop and return the wid stashed for `pid`, or -1 if none.
+    #
+    # WHY THE SLOT IS CHECKED TOO. A pid is not an identity over a long
+    # uptime: it is reused. A tombstone left by a task that died before its
+    # readback would otherwise be served to a LATER, unrelated task that
+    # happened to inherit the same pid number — which is worse than the cap,
+    # because that task then drives somebody else's window and nothing
+    # anywhere says so. The allocating task's SLOT is recorded at put time, so
+    # a pid match with a slot mismatch is a tombstone: it is cleared, counted,
+    # and reported as "no entry" rather than delivered.
     i: uint64 = 0
     while i < WSYS_PENDING_MAX:
         if wsys_pending_pid[i] == pid:
+            if wsys_pending_slot[i] != task_lookup_by_pid(pid):
+                wsys_pending_pid[i] = 0
+                wsys_pending_wid[i] = 0
+                wsys_pending_slot[i] = -1
+                wsys_pending_stale = wsys_pending_stale + 1
+                return -1
             v: int32 = wsys_pending_wid[i]
             wsys_pending_pid[i] = 0
             wsys_pending_wid[i] = 0
+            wsys_pending_slot[i] = -1
             return v
         i = i + 1
     return -1
+
+
+def wsys_pending_stat(k: uint64) -> uint64:
+    # Readable pressure counters (0 = occupancy, 1 = high-water, 2 = evicted,
+    # 3 = overflow, 4 = stale-refused, 5 = capacity).
+    if k == 0:
+        return _wsys_pending_occupancy()
+    if k == 1:
+        return wsys_pending_hi
+    if k == 2:
+        return wsys_pending_evicted
+    if k == 3:
+        return wsys_pending_overflow
+    if k == 4:
+        return wsys_pending_stale
+    return WSYS_PENDING_MAX
 
 
 # DE image-wallpaper state: the `wallpaper <path>` verb on /dev/wsys/ctl
@@ -14764,7 +14876,59 @@ def wsys_multitask_taskbar_selftest() -> int32:
         printk0("[MULTITASK_BAR] FAIL pending entry not consumed on take\n")
         return 0
 
+    # --- Part C: the table is a SIMULTANEOUSLY-PENDING ceiling, not a
+    # lifetime one (leak pass 18). Fill it with entries whose pids are not
+    # live tasks — exactly what an app that dies between `newwindow` and its
+    # readback leaves behind — and require that one more put still lands. The
+    # OLD code silently dropped it and fell back to the single global result
+    # slot, i.e. back to the cross-delivery bug Part B exists to prevent, with
+    # nothing reporting it.
+    ci: uint64 = 0
+    while ci < WSYS_PENDING_MAX:
+        wsys_pending_pid[ci] = 990400 + ci        # no such task
+        wsys_pending_wid[ci] = 7
+        wsys_pending_slot[ci] = -1
+        ci = ci + 1
+    ovf0: uint64 = wsys_pending_overflow
+    _wsys_pending_put(990999, 44)
+    if wsys_pending_overflow != ovf0:
+        printk0("[MULTITASK_BAR] FAIL a table full of DEAD pids refused a"
+                " live put — the cap is still a lifetime one\n")
+        return 0
+    if _wsys_pending_take(990999) != 44:
+        printk0("[MULTITASK_BAR] FAIL put after prune did not read back\n")
+        return 0
+
+    # --- Part D: a tombstone whose pid was REUSED is refused, not delivered.
+    # Over a long uptime pids recycle; serving a dead task's wid to a live
+    # task that inherited its number is worse than the cap, because that task
+    # then drives somebody else's window and nothing says so.
+    di: uint64 = 0
+    while di < WSYS_PENDING_MAX:
+        wsys_pending_pid[di] = 0
+        wsys_pending_wid[di] = 0
+        wsys_pending_slot[di] = -1
+        di = di + 1
+    _wsys_pending_put(live_pid, 55)
+    dj: uint64 = 0
+    while dj < WSYS_PENDING_MAX:
+        if wsys_pending_pid[dj] == live_pid:
+            wsys_pending_slot[dj] = 30000       # a slot this task cannot own
+        dj = dj + 1
+    st0: uint64 = wsys_pending_stale
+    if _wsys_pending_take(live_pid) != -1:
+        printk0("[MULTITASK_BAR] FAIL a pid-reuse tombstone was DELIVERED\n")
+        return 0
+    if wsys_pending_stale <= st0:
+        printk0("[MULTITASK_BAR] FAIL the stale refusal was not counted\n")
+        return 0
+
     printk0("[MULTITASK_BAR] PASS N concurrent windows each enumerate + read back their own wid\n")
+    printk1("[MULTITASK_BAR] pending table: cap=%d", WSYS_PENDING_MAX)
+    printk1(" hi=%d", wsys_pending_hi)
+    printk1(" evicted=%d", wsys_pending_evicted)
+    printk1(" stale-refused=%d", wsys_pending_stale)
+    printk1(" overflow=%d\n", wsys_pending_overflow)
     return 1
 
 
