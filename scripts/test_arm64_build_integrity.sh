@@ -99,6 +99,12 @@ done
 # host_ac.elf carries the LLVM backend; ssa*.ad is concatenated into it, so a
 # stale copy measures the wrong compiler. Rebuild rather than trust one.
 echo "[$TAG] 0) ensuring host_ac.elf (ssa*.ad is concatenated in; a stale one lies)"
+# $WORK and its parent must exist BEFORE the redirect below: on a fresh
+# checkout (i.e. CI) neither does, the redirect fails, the bootstrap is
+# reported as having failed, and the gate exits 125 without ever reaching
+# a single ARM64 assertion. A gate that never asserts on a clean tree is
+# the exact hole this file was written to close.
+mkdir -p "$WORK"
 rm -f build/cutover/host_ac.elf
 if ! ( . scripts/_adder_cc.sh && adder_cc_bootstrap ) >"$WORK/../ac_boot.log" 2>&1; then
     verdict_inconclusive "$TAG" "host_ac bootstrap failed; the ARM64 assertion was never reached (see $WORK/../ac_boot.log)"
