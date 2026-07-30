@@ -50,13 +50,19 @@ ensure_ubin_or_skip test_cow_vma_fork_origin u_mmap_fork mmap_fork
 ELF=build/hamnix-kernel.elf
 HAMSH_ELF=build/user/hamsh.elf
 
-# HAMNIX_CVO_SKIP_BUILD=1 reuses the already-built image. Only for iterating
+# HAMNIX_CVO_SKIP_BUILD=1 reuses the previous run's image. Only for iterating
 # on the harness during a hunt — the kernel edit under test MUST be in the
-# image, and pass 13 lost a whole measurement to a stale one. The unset
-# default always rebuilds.
-if [ "${HAMNIX_CVO_SKIP_BUILD:-0}" = "1" ] && [ -f "$ELF" ]; then
+# image, and pass 13 lost a whole measurement to a stale one, so the age is
+# printed every time. The unset default always rebuilds.
+#
+# The cached copy is NOT optional: the boot shim consumes `$ELF` (it wraps it
+# in a GRUB ISO) and the file is gone by the time the run ends, so a naive
+# `[ -f "$ELF" ]` reuse never fires and silently rebuilds for 90 minutes.
+KEEP="$ELF.cvo-keep"
+if [ "${HAMNIX_CVO_SKIP_BUILD:-0}" = "1" ] && [ -f "$KEEP" ]; then
+    cp -f "$KEEP" "$ELF"
     echo "[cow_vma_origin] (1-3/4) SKIPPED (HAMNIX_CVO_SKIP_BUILD=1)"
-    echo "[cow_vma_origin] image age: $(( $(date +%s) - $(stat -c %Y "$ELF") ))s"
+    echo "[cow_vma_origin] image age: $(( $(date +%s) - $(stat -c %Y "$KEEP") ))s"
     trap 'rm -f "$LOG"' EXIT
 else
     echo "[cow_vma_origin] (1/4) Build userland"
@@ -71,6 +77,7 @@ else
         --target=x86_64-bare-metal \
         init/main.ad \
         -o "$ELF"
+    cp -f "$ELF" "$KEEP"
 fi
 
 echo "[cow_vma_origin] (4/4) Boot + counted run"
