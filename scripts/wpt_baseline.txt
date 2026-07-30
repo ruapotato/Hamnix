@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 2882
+#!PASS_FLOOR 3001
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope ( is not valid
@@ -117,12 +117,6 @@ css/css-cascade/layer-basic.html	E2 Statement syntax
 css/css-cascade/layer-basic.html	E3 Statement syntax
 css/css-cascade/layer-basic.html	E4 Statement syntax
 css/css-cascade/layer-basic.html	E5 Statement syntax
-css/css-cascade/layer-cssom-order-reverse-at-property.html	Delete layer invalidates @property
-css/css-cascade/layer-cssom-order-reverse-at-property.html	Insert layer invalidates @property
-css/css-cascade/layer-cssom-order-reverse.html	Delete layer invalidates @font-face
-css/css-cascade/layer-cssom-order-reverse.html	Delete layer invalidates style
-css/css-cascade/layer-cssom-order-reverse.html	Insert layer invalidates @font-face
-css/css-cascade/layer-cssom-order-reverse.html	Insert layer invalidates style
 css/css-cascade/layer-font-face-override.html	@font-face override between layers
 css/css-cascade/layer-font-face-override.html	@font-face override update with appended sheet 1
 css/css-cascade/layer-font-face-override.html	@font-face override update with appended sheet 2
@@ -166,20 +160,16 @@ css/css-cascade/parsing/layer-import-parsing.html	@import url(nonexist.css) laye
 css/css-cascade/parsing/layer-import-parsing.html	@import url(nonexist.css) layer; should be a valid layered import rule
 css/css-cascade/parsing/layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/parsing/supports-import-parsing.html	@import "nonexist.css" supports(display:block); should be a valid supports() import rule
-css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer supports(); should be an invalid import rule due to an invalid supports() declaration
-css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer supports(foo: bar); should be an invalid import rule due to an invalid supports() declaration
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer(A) supports((display: flex) or (foo: bar)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer(A.B) supports((display: flex) and (foo: bar)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports((display: flex) and (display: block)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports((display: flex) or (display: block)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports((display: flex) or (foo: bar)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports((display:flex)); should be a valid supports() import rule
-css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(); should be an invalid import rule due to an invalid supports() declaration
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(display: block !important); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(display:block); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(font-format(opentype)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(font-tech(color-colrv1)); should be a valid supports() import rule
-css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(foo: bar); should be an invalid import rule due to an invalid supports() declaration
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(not (display: flex)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(selector(a)); should be a valid supports() import rule
 css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(selector(p + a)); should be a valid supports() import rule
@@ -259,7 +249,8 @@ css/css-cascade/scope-evaluation.html	Single scope with limit
 css/css-cascade/scope-evaluation.html	Single scope, :scope pseudo in main selector
 css/css-cascade/scope-evaluation.html	Single scope, :scope pseudo in to-selector
 css/css-cascade/scope-evaluation.html	The scoping limit is not in scope
-css/css-cascade/scope-implicit-external.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-implicit-external.html	@scope with external stylesheet through @import
+css/css-cascade/scope-implicit-external.html	@scope with external stylesheet through link element
 css/css-cascade/scope-implicit.html	:scope can style implicit root
 css/css-cascade/scope-implicit.html	@scope with effectively empty :is() must not match anything
 css/css-cascade/scope-implicit.html	@scope without prelude implicitly scopes to parent of owner node
@@ -358,10 +349,12 @@ css/css-cascade/scope-specificity.html	@scope (#main) { & .b {  } } and :where(#
 css/css-cascade/scope-specificity.html	@scope (#main) { .b {  } } and .b
 css/css-cascade/scope-specificity.html	@scope (#main) { :scope .b {  } } and .a .b
 css/css-cascade/scope-specificity.html	@scope (#main) { :scope .b {  } } and :scope .b
+css/css-cascade/scope-specificity.html	@scope (#main) { > .a {  } } and :where(#main) > .a
 css/css-cascade/scope-specificity.html	@scope (#main) { @scope (.a) { .b {  } } } and .b
 css/css-cascade/scope-specificity.html	@scope (#main) { div .b {  } } and div .b
 css/css-cascade/scope-specificity.html	@scope (#main) { div.b {  } } and div.b
 css/css-cascade/scope-specificity.html	@scope (#main, .foo, .bar) { #a {  } } and #a
+css/css-cascade/scope-specificity.html	@scope { & .b {  } } and :where(:scope) .b
 css/css-cascade/scope-starting-style.html	Style rules within @starting-style are scoped
 css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling enters scope
 css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling enters scope with :has
@@ -415,13 +408,7 @@ dom/collections/HTMLCollection-delete.html	Loose id
 dom/collections/HTMLCollection-delete.html	Loose name
 dom/collections/HTMLCollection-delete.html	Strict id
 dom/collections/HTMLCollection-delete.html	Strict name
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByClassName
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByTagName
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByTagNameNS
 dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.children
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByClassName
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByTagName
-dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByTagNameNS
 dom/collections/HTMLCollection-iterator.html	HTMLCollection does not have iterable's forEach method.
 dom/collections/HTMLCollection-iterator.html	HTMLCollection has Symbol.iterator.
 dom/collections/HTMLCollection-own-props.html	Setting array index while indexed property doesn't exist (loose)
@@ -432,10 +419,8 @@ dom/collections/HTMLCollection-own-props.html	Setting non-array index while name
 dom/collections/HTMLCollection-own-props.html	Setting non-array index while named property doesn't exist (strict)
 dom/collections/HTMLCollection-own-props.html	Setting non-array index while named property exists (loose)
 dom/collections/HTMLCollection-own-props.html	Setting non-array index while named property exists (strict)
-dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like integers around 2^31
 dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like integers around 2^32
 dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like negative integers
-dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like small nonnegative integers
 dom/collections/HTMLCollection-supported-property-indices.html	Trying to delete an indexed property name should never work
 dom/collections/HTMLCollection-supported-property-indices.html	Trying to set an expando that would shadow an already-existing indexed property
 dom/collections/HTMLCollection-supported-property-indices.html	Trying to set an expando with an indexed property name past the end of the list
@@ -622,10 +607,58 @@ dom/events/scrolling/scrollend-event-fired-after-instant-scroll-in-microtask.htm
 dom/events/scrolling/scrollend-fires-to-text-input.html	<FILE PRODUCED NO RESULTS>
 dom/events/scrolling/scrollend-with-snap-on-fractional-offset.html	snap to fractional offset fires scrollend exactly once.
 dom/events/shadow-relatedTarget.html	<FILE PRODUCED NO RESULTS>
-dom/events/webkit-animation-end-event.html	<FILE PRODUCED NO RESULTS>
-dom/events/webkit-animation-iteration-event.html	<FILE PRODUCED NO RESULTS>
-dom/events/webkit-animation-start-event.html	<FILE PRODUCED NO RESULTS>
-dom/events/webkit-transition-end-event.html	<FILE PRODUCED NO RESULTS>
+dom/events/webkit-animation-end-event.html	dispatchEvent of a webkitAnimationEnd event does not trigger an unprefixed event handler or listener
+dom/events/webkit-animation-end-event.html	dispatchEvent of a webkitAnimationEnd event does trigger a prefixed event handler or listener
+dom/events/webkit-animation-end-event.html	dispatchEvent of an animationend event does not trigger a prefixed event handler or listener
+dom/events/webkit-animation-end-event.html	event types for prefixed and unprefixed animationend event handlers should be named appropriately
+dom/events/webkit-animation-end-event.html	event types for prefixed and unprefixed animationend event listeners should be named appropriately
+dom/events/webkit-animation-end-event.html	onanimationend and onwebkitanimationend are not aliases
+dom/events/webkit-animation-end-event.html	onwebkitanimationend event handler should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-end-event.html	onwebkitanimationend event handler should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-end-event.html	onwebkitanimationend event handler should trigger for an animation
+dom/events/webkit-animation-end-event.html	webkitAnimationEnd event listener is case sensitive
+dom/events/webkit-animation-end-event.html	webkitAnimationEnd event listener should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-end-event.html	webkitAnimationEnd event listener should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-end-event.html	webkitAnimationEnd event listener should trigger for an animation
+dom/events/webkit-animation-iteration-event.html	dispatchEvent of a webkitAnimationIteration event does not trigger an unprefixed event handler or listener
+dom/events/webkit-animation-iteration-event.html	dispatchEvent of a webkitAnimationIteration event does trigger a prefixed event handler or listener
+dom/events/webkit-animation-iteration-event.html	dispatchEvent of an animationiteration event does not trigger a prefixed event handler or listener
+dom/events/webkit-animation-iteration-event.html	event types for prefixed and unprefixed animationiteration event handlers should be named appropriately
+dom/events/webkit-animation-iteration-event.html	event types for prefixed and unprefixed animationiteration event listeners should be named appropriately
+dom/events/webkit-animation-iteration-event.html	onanimationiteration and onwebkitanimationiteration are not aliases
+dom/events/webkit-animation-iteration-event.html	onwebkitanimationiteration event handler should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-iteration-event.html	onwebkitanimationiteration event handler should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-iteration-event.html	onwebkitanimationiteration event handler should trigger for an animation
+dom/events/webkit-animation-iteration-event.html	webkitAnimationIteration event listener is case sensitive
+dom/events/webkit-animation-iteration-event.html	webkitAnimationIteration event listener should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-iteration-event.html	webkitAnimationIteration event listener should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-iteration-event.html	webkitAnimationIteration event listener should trigger for an animation
+dom/events/webkit-animation-start-event.html	dispatchEvent of a webkitAnimationStart event does not trigger an unprefixed event handler or listener
+dom/events/webkit-animation-start-event.html	dispatchEvent of a webkitAnimationStart event does trigger a prefixed event handler or listener
+dom/events/webkit-animation-start-event.html	dispatchEvent of an animationstart event does not trigger a prefixed event handler or listener
+dom/events/webkit-animation-start-event.html	event types for prefixed and unprefixed animationstart event handlers should be named appropriately
+dom/events/webkit-animation-start-event.html	event types for prefixed and unprefixed animationstart event listeners should be named appropriately
+dom/events/webkit-animation-start-event.html	onanimationstart and onwebkitanimationstart are not aliases
+dom/events/webkit-animation-start-event.html	onwebkitanimationstart event handler should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-start-event.html	onwebkitanimationstart event handler should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-start-event.html	onwebkitanimationstart event handler should trigger for an animation
+dom/events/webkit-animation-start-event.html	webkitAnimationStart event listener is case sensitive
+dom/events/webkit-animation-start-event.html	webkitAnimationStart event listener should not trigger if an unprefixed event handler also exists
+dom/events/webkit-animation-start-event.html	webkitAnimationStart event listener should not trigger if an unprefixed listener also exists
+dom/events/webkit-animation-start-event.html	webkitAnimationStart event listener should trigger for an animation
+dom/events/webkit-transition-end-event.html	dispatchEvent of a webkitTransitionEnd event does not trigger an unprefixed event handler or listener
+dom/events/webkit-transition-end-event.html	dispatchEvent of a webkitTransitionEnd event does trigger a prefixed event handler or listener
+dom/events/webkit-transition-end-event.html	dispatchEvent of an transitionend event does not trigger a prefixed event handler or listener
+dom/events/webkit-transition-end-event.html	event types for prefixed and unprefixed transitionend event handlers should be named appropriately
+dom/events/webkit-transition-end-event.html	event types for prefixed and unprefixed transitionend event listeners should be named appropriately
+dom/events/webkit-transition-end-event.html	ontransitionend and onwebkittransitionend are not aliases
+dom/events/webkit-transition-end-event.html	onwebkittransitionend event handler should not trigger if an unprefixed event handler also exists
+dom/events/webkit-transition-end-event.html	onwebkittransitionend event handler should not trigger if an unprefixed listener also exists
+dom/events/webkit-transition-end-event.html	onwebkittransitionend event handler should trigger for an animation
+dom/events/webkit-transition-end-event.html	webkitTransitionEnd event listener is case sensitive
+dom/events/webkit-transition-end-event.html	webkitTransitionEnd event listener should not trigger if an unprefixed event handler also exists
+dom/events/webkit-transition-end-event.html	webkitTransitionEnd event listener should not trigger if an unprefixed listener also exists
+dom/events/webkit-transition-end-event.html	webkitTransitionEnd event listener should trigger for an animation
 dom/events/window-composed-path.html	window target has an empty path after dispatch
 dom/events/window-event-restored-after-throwing-onerror.html	window.event is restored after a throwing window.onerror handler
 dom/lists/DOMTokenList-Iterable.html	DOMTokenList has Symbol.iterator.
@@ -1764,7 +1797,6 @@ html/semantics/document-metadata/styling/LinkStyle.html	The LinkStyle interface'
 html/semantics/document-metadata/styling/LinkStyle.html	The LinkStyle interface's sheet attribute must return null if the corresponding element is not in a Document
 html/semantics/document-metadata/styling/LinkStyle.html	The LinkStyle interface's sheet attribute must return null; the disabled attribute must be false
 html/semantics/document-metadata/styling/LinkStyle.html	The media must be the same as the value of the element's media content attribute, or the empty string if it is omitted
-html/semantics/document-metadata/styling/LinkStyle.html	The title must be the same as the value of the element's title content attribute
 html/semantics/document-metadata/the-base-element/base-data.html	Dynamically inserted first <base> has a data: URL so fallback is used
 html/semantics/document-metadata/the-base-element/base-data.html	First <base> has a data: URL so fallback is used
 html/semantics/document-metadata/the-base-element/base-data.html	First <base> is removed so second is used
@@ -1829,7 +1861,6 @@ html/semantics/document-metadata/the-meta-element/pragma-directives/attr-meta-ht
 html/semantics/document-metadata/the-meta-element/pragma-directives/attr-meta-http-equiv-refresh/remove-from-document.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-meta-element/pragma-directives/http-equiv-enumerated-ascii-case-insensitive.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-meta-element/the-lang-attribute-012.html	The UA will not recognize a language declaration in the Content-Language meta element when more than one language is declared.
-html/semantics/document-metadata/the-style-element/non-parser-created-doc.html	CSS API should work on non-parser-created documents
 html/semantics/document-metadata/the-style-element/style-error-01.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/style-load-after-mutate.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/style_disabled.html	The style is not applied when it is disabled
@@ -1848,13 +1879,13 @@ html/semantics/document-metadata/the-style-element/style_type_html.html	With no 
 html/semantics/document-metadata/the-style-element/tentative/style-element-basic-import.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-allowed.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-blocked.html	style-src CSP can block Declarative CSS Modules.
-html/semantics/document-metadata/the-style-element/tentative/style-element-csp-both-blocked.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/tentative/style-element-csp-both-blocked.html	Both style-src and script-src CSP block Declarative CSS Modules.
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-nonce-allowed.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/tentative/style-element-csp-nonce-script-only.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/tentative/style-element-csp-nonce-style-only.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/tentative/style-element-csp-nonce-script-only.html	A nonce matching only script-src does not satisfy style-src CSP for style modules.
+html/semantics/document-metadata/the-style-element/tentative/style-element-csp-nonce-style-only.html	A nonce matching only style-src does not satisfy script-src CSP for style modules.
 html/semantics/document-metadata/the-style-element/tentative/style-element-csp-script-src-allowed.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/tentative/style-element-csp-script-src-blocked.html	<FILE PRODUCED NO RESULTS>
-html/semantics/document-metadata/the-style-element/tentative/style-element-csp-style-src-blocked-script-src-allowed.html	<FILE PRODUCED NO RESULTS>
+html/semantics/document-metadata/the-style-element/tentative/style-element-csp-script-src-blocked.html	script-src CSP can block Declarative CSS Modules.
+html/semantics/document-metadata/the-style-element/tentative/style-element-csp-style-src-blocked-script-src-allowed.html	style-src CSP blocks Declarative CSS Modules even when script-src allows inline.
 html/semantics/document-metadata/the-style-element/tentative/style-element-fixed.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-title-element/title.text-01.html	<FILE PRODUCED NO RESULTS>
 html/semantics/document-metadata/the-title-element/title.text-03.html	title.text and space normalization (markup)
@@ -2129,12 +2160,6 @@ html/semantics/selectors/pseudo-classes/valid-invalid.html	':valid' matches elem
 html/semantics/selectors/pseudo-classes/valid-invalid.html	':valid' matches fieldset elements that have no descendant elements that themselves are candidates for constraint validation but do not satisfy their constraints
 html/semantics/selectors/pseudo-classes/valid-invalid.html	':valid' matches form elements that are not the form owner of any elements that themselves are candidates for constraint validation but do not satisfy their constraints
 html/semantics/selectors/pseudo-classes/valid-invalid.html	':valid' matches new elements that satisfy their constraints
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is a tr with non td/th sibling, cellIndex should skip those non td/th siblings.
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is a tr, cellIndex should be the index.
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is not a HTML tr, cellIndex should be -1.
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is not a tr, cellIndex should be -1.
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells without a parent, cellIndex should be -1.
-html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	cellIndex should exist.
 html/semantics/tabular-data/processing-model-1/col-span-limits.html	col span of 1000 must work
 html/semantics/tabular-data/processing-model-1/col-span-limits.html	col span of 1001 must be treated as 1000
 html/semantics/tabular-data/processing-model-1/col-span-limits.html	colspan must be clamped to [1, 1000] when parsing attributes
@@ -2144,59 +2169,25 @@ html/semantics/tabular-data/processing-model-1/rowspan-0-quirks.html	clientHeigh
 html/semantics/tabular-data/processing-model-1/rowspan-0-quirks.html	rowSpan
 html/semantics/tabular-data/processing-model-1/rowspan-0.html	clientHeight
 html/semantics/tabular-data/processing-model-1/rowspan-0.html	rowSpan
-html/semantics/tabular-data/the-caption-element/caption_001.html	caption IDL attribute is null
-html/semantics/tabular-data/the-caption-element/caption_001.html	caption of the third table element should be null
 html/semantics/tabular-data/the-caption-element/caption_001.html	dynamically removing caption on a table
 html/semantics/tabular-data/the-caption-element/caption_001.html	first caption element child of the first table element
 html/semantics/tabular-data/the-caption-element/caption_001.html	setting caption on a table
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a foreign caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a non-caption to table.caption
-html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning null to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning the caption already in the table to table.caption
-html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table doesn't already have a caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table has a caption child but with other siblings before it
 html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table has a caption descendant
 html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table has two caption children
 html/semantics/tabular-data/the-table-element/caption-methods.html	Setting caption rethrows exception
 html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates a new caption and inserts it as the first node of the table element
 html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates new caption if existing caption is not in html namespace
-html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method returns the first caption element child of the table
 html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption will not copy table's prefix
-html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption will not create new caption if one exists
-html/semantics/tabular-data/the-table-element/caption-methods.html	deleteCaption method not remove caption that is not in html namespace
-html/semantics/tabular-data/the-table-element/caption-methods.html	deleteCaption method removes the first caption element child of the table element
 html/semantics/tabular-data/the-table-element/createTBody.html	A prefixed table creates tbody without prefix
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody and a tfoot child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody and a thead child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a tfoot child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a tfoot child node after a tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a thead child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a thead child node after a tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A tfoot and a tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	A thead and a tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	No child nodes
-html/semantics/tabular-data/the-table-element/createTBody.html	One HTML and one namespaced tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	One tbody child node
-html/semantics/tabular-data/the-table-element/createTBody.html	Two nested tbody child nodes
-html/semantics/tabular-data/the-table-element/createTBody.html	Two tbody child nodes
-html/semantics/tabular-data/the-table-element/createTBody.html	Two tbody child nodes and a div
 html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption()
 html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() delete only caption on table
-html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() does not delete captions in descendent tables
-html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() does not throw any exceptions when called on a table without a caption
-html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() handles captions from different namespaces
-html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() returns undefined
-html/semantics/tabular-data/the-table-element/insertRow-method-01.html	insertRow(): INDEX_SIZE_ERR
-html/semantics/tabular-data/the-table-element/insertRow-method-02.html	insertRow should insert a tr element
-html/semantics/tabular-data/the-table-element/insertRow-method-02.html	insertRow(): Empty table
-html/semantics/tabular-data/the-table-element/insertRow-method-02.html	table should start out empty
 html/semantics/tabular-data/the-table-element/insertRow-method-03.html	insertRow should insert a tr element before the second row
-html/semantics/tabular-data/the-table-element/insertRow-method-03.html	table should start out with two rows
-html/semantics/tabular-data/the-table-element/remove-row.html	check normal deleteRow
 html/semantics/tabular-data/the-table-element/remove-row.html	check normal deleteRow bis
-html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow function invalid argument
-html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow function invalid argument bis
 html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow(-1) with no rows
 html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow(0) with no rows
 html/semantics/tabular-data/the-table-element/tBodies.html	HTMLTableElement.tBodies
@@ -2205,74 +2196,16 @@ html/semantics/tabular-data/the-table-element/tFoot.html	tFoot tests 1
 html/semantics/tabular-data/the-table-element/tHead.html	tHead tests
 html/semantics/tabular-data/the-table-element/tHead.html	tHead tests 1
 html/semantics/tabular-data/the-table-element/tHead.html	tHead tests 2
-html/semantics/tabular-data/the-table-element/table-insertRow.html	insertRow should insert into a tbody, not into a tfoot, if table.rows is empty
-html/semantics/tabular-data/the-table-element/table-insertRow.html	insertRow should insert into a tbody, not into a thead, if table.rows is empty
 html/semantics/tabular-data/the-table-element/table-insertRow.html	insertRow should not copy prefixes
 html/semantics/tabular-data/the-table-element/table-rows.html	Children of table
 html/semantics/tabular-data/the-table-element/table-rows.html	Children of tbody
 html/semantics/tabular-data/the-table-element/table-rows.html	Children of tfoot
 html/semantics/tabular-data/the-table-element/table-rows.html	Children of thead
 html/semantics/tabular-data/the-table-element/table-rows.html	Complicated case
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-1)
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-1) with no rows
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-2)
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(0)
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(0) with no rows
-html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(rows.length)
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow()
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(-1)
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(-2)
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(0)
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(rows.length + 1)
-html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(rows.length)
-html/semantics/tabular-data/the-tbody-element/rows.html	'tbody' element, 'rows' attribute
-html/semantics/tabular-data/the-tfoot-element/rows.html	'tfoot' element, 'rows' attribute
-html/semantics/tabular-data/the-thead-element/rows.html	'thead' element, 'rows' attribute
 html/semantics/tabular-data/the-tr-element/cells.html	HTMLTableRowElement cells ignores nested tables and non-HTML elements
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-1)
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-1) with no cells
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-2)
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(0)
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(0) with no cells
-html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(cells.length)
 html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell will not copy table's prefix
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell()
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(-1)
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(-2)
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(0)
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(cells.length + 1)
-html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(cells.length)
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 1
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 10
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 11
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 2
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 3
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 4
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 5
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 6
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 7
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 8
-html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 9
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Other row in implicit tbody in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in explicit tbody in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in explicit tbody in nested table in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in implicit tbody in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in implicit tbody in nested table in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created div in table
 html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created nested table
 html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tbody in nested table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tbody in table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created td in tr in tbody in table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tfoot in nested table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tfoot in table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created thead in nested table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created thead in table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tr in tbody in table
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in tfoot in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in thead in HTML
-html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in thead in nested table in HTML
 html/semantics/text-level-semantics/the-a-element/a-download-click-404.html	<FILE PRODUCED NO RESULTS>
 html/semantics/text-level-semantics/the-a-element/a-download-click-redirect-to-javascript.html	<FILE PRODUCED NO RESULTS>
 html/semantics/text-level-semantics/the-a-element/a-download-click.html	<FILE PRODUCED NO RESULTS>
@@ -2438,6 +2371,12 @@ url/failure.html	Loading data…
 +css/css-cascade/layer-counter-style-override.html	@counter-style override update with appended sheet 1
 +css/css-cascade/layer-counter-style-override.html	@counter-style override update with appended sheet 2
 +css/css-cascade/layer-counter-style-override.html	@counter-style unlayered overrides layered
++css/css-cascade/layer-cssom-order-reverse-at-property.html	Delete layer invalidates @property
++css/css-cascade/layer-cssom-order-reverse-at-property.html	Insert layer invalidates @property
++css/css-cascade/layer-cssom-order-reverse.html	Delete layer invalidates @font-face
++css/css-cascade/layer-cssom-order-reverse.html	Delete layer invalidates style
++css/css-cascade/layer-cssom-order-reverse.html	Insert layer invalidates @font-face
++css/css-cascade/layer-cssom-order-reverse.html	Insert layer invalidates style
 +css/css-cascade/layer-keyframes-override.html	@keyframes override between layers
 +css/css-cascade/layer-keyframes-override.html	@keyframes override update with appended sheet 1
 +css/css-cascade/layer-keyframes-override.html	@keyframes override update with appended sheet 2
@@ -2451,6 +2390,10 @@ url/failure.html	Loading data…
 +css/css-cascade/layer-vs-inline-style.html	Important inline style > normal layered style
 +css/css-cascade/layer-vs-inline-style.html	Normal inline style < important layered style
 +css/css-cascade/layer-vs-inline-style.html	Normal inline style > normal layered style
++css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer supports(); should be an invalid import rule due to an invalid supports() declaration
++css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") layer supports(foo: bar); should be an invalid import rule due to an invalid supports() declaration
++css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(); should be an invalid import rule due to an invalid supports() declaration
++css/css-cascade/parsing/supports-import-parsing.html	@import url("nonexist.css") supports(foo: bar); should be an invalid import rule due to an invalid supports() declaration
 +css/css-cascade/revert-val-005.html	The revert keyword works with logical properties
 +css/css-cascade/revert-val-005.html	The revert keyword works with physical properties
 +css/css-cascade/revert-val-006.html	The revert keyword works with @keyframes
@@ -2464,10 +2407,18 @@ url/failure.html	Loading data…
 +dom/attributes-are-nodes.html	appendChild with an attribute as the child should fail
 +dom/attributes-are-nodes.html	insertBefore with an attribute as the child should fail
 +dom/attributes-are-nodes.html	replaceChild with an attribute as the child should fail
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByClassName
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByTagName
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Document.getElementsByTagNameNS
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByClassName
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByTagName
++dom/collections/HTMLCollection-empty-name.html	Empty string as a name for Element.getElementsByTagNameNS
 +dom/collections/HTMLCollection-iterator.html	HTMLCollection does not have iterable's entries method.
 +dom/collections/HTMLCollection-iterator.html	HTMLCollection does not have iterable's values method.
 +dom/collections/HTMLCollection-iterator.html	HTMLCollection has length method.
 +dom/collections/HTMLCollection-iterator.html	HTMLCollection is iterable via for-of loop.
++dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like integers around 2^31
++dom/collections/HTMLCollection-supported-property-indices.html	Handling of property names that look like small nonnegative integers
 +dom/collections/HTMLCollection-supported-property-names.html	Object.getOwnPropertyNames on HTMLCollection with non-HTML namespace
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, attribute set on dataset in JS
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, data attribute trailing hyphen
@@ -5144,9 +5095,11 @@ url/failure.html	Loading data…
 +dom/traversal/TreeWalker-traversal-skip.html	Testing previousSibling
 +dom/traversal/TreeWalker-walking-outside-a-tree.html	walking outside a tree
 +dom/window-extends-event-target.html	window.addEventListener respects custom `this`
++html/semantics/document-metadata/styling/LinkStyle.html	The title must be the same as the value of the element's title content attribute
 +html/semantics/document-metadata/the-base-element/base_href_invalid.html	base element with unparseable href should have .href getter return attr value
 +html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-normal-descendant-change.html	Normal initially dark
 +html/semantics/document-metadata/the-style-element/historical.html	style.scoped should not be supported
++html/semantics/document-metadata/the-style-element/non-parser-created-doc.html	CSS API should work on non-parser-created documents
 +html/semantics/document-metadata/the-style-element/style_non_matching_media.html	HTML Test: Non-matching media type should have stylesheet
 +html/semantics/document-metadata/the-style-element/style_type_html.html	With a charset parameter in the type attribute, the style should not apply
 +html/semantics/document-metadata/the-style-element/style_type_html.html	With a whitespace-surrounded type attribute, the style should not apply
@@ -5184,6 +5137,12 @@ url/failure.html	Loading data…
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	programmatically-validated form correctly styled
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	valid fieldset correctly styled on page-load
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	valid form correctly styled on page-load
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is a tr with non td/th sibling, cellIndex should skip those non td/th siblings.
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is a tr, cellIndex should be the index.
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is not a HTML tr, cellIndex should be -1.
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells whose parent is not a tr, cellIndex should be -1.
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	For cells without a parent, cellIndex should be -1.
++html/semantics/tabular-data/attributes-common-to-td-and-th-elements/cellIndex.html	cellIndex should exist.
 +html/semantics/tabular-data/historical.html	table.onsort should not be supported
 +html/semantics/tabular-data/historical.html	table.sortable should not be supported
 +html/semantics/tabular-data/historical.html	table.stopSorting should not be supported
@@ -5191,7 +5150,100 @@ url/failure.html	Loading data…
 +html/semantics/tabular-data/historical.html	th.sorted should not be supported
 +html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1000 must work
 +html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1001 must be treated as 1000
++html/semantics/tabular-data/the-caption-element/caption_001.html	caption IDL attribute is null
++html/semantics/tabular-data/the-caption-element/caption_001.html	caption of the third table element should be null
++html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning null to table.caption
++html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table doesn't already have a caption
++html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method returns the first caption element child of the table
++html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption will not create new caption if one exists
++html/semantics/tabular-data/the-table-element/caption-methods.html	deleteCaption method not remove caption that is not in html namespace
++html/semantics/tabular-data/the-table-element/caption-methods.html	deleteCaption method removes the first caption element child of the table element
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody and a tfoot child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody and a thead child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a tfoot child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a tfoot child node after a tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a thead child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tbody node inside a thead child node after a tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A tfoot and a tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	A thead and a tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	No child nodes
++html/semantics/tabular-data/the-table-element/createTBody.html	One HTML and one namespaced tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	One tbody child node
++html/semantics/tabular-data/the-table-element/createTBody.html	Two nested tbody child nodes
++html/semantics/tabular-data/the-table-element/createTBody.html	Two tbody child nodes
++html/semantics/tabular-data/the-table-element/createTBody.html	Two tbody child nodes and a div
++html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() does not delete captions in descendent tables
++html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() does not throw any exceptions when called on a table without a caption
++html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() handles captions from different namespaces
++html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption() returns undefined
++html/semantics/tabular-data/the-table-element/insertRow-method-01.html	insertRow(): INDEX_SIZE_ERR
++html/semantics/tabular-data/the-table-element/insertRow-method-02.html	insertRow should insert a tbody element
++html/semantics/tabular-data/the-table-element/insertRow-method-02.html	insertRow should insert a tr element
++html/semantics/tabular-data/the-table-element/insertRow-method-02.html	insertRow(): Empty table
++html/semantics/tabular-data/the-table-element/insertRow-method-02.html	table should start out empty
 +html/semantics/tabular-data/the-table-element/insertRow-method-03.html	insertRow(): non-empty table
++html/semantics/tabular-data/the-table-element/insertRow-method-03.html	table should start out with two rows
++html/semantics/tabular-data/the-table-element/remove-row.html	check normal deleteRow
++html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow function invalid argument
++html/semantics/tabular-data/the-table-element/remove-row.html	deleteRow function invalid argument bis
++html/semantics/tabular-data/the-table-element/table-insertRow.html	insertRow should insert into a tbody, not into a tfoot, if table.rows is empty
++html/semantics/tabular-data/the-table-element/table-insertRow.html	insertRow should insert into a tbody, not into a thead, if table.rows is empty
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-1)
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-1) with no rows
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(-2)
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(0)
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(0) with no rows
++html/semantics/tabular-data/the-tbody-element/deleteRow.html	HTMLTableSectionElement deleteRow(rows.length)
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow()
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(-1)
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(-2)
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(0)
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(rows.length + 1)
++html/semantics/tabular-data/the-tbody-element/insertRow.html	HTMLTableSectionElement insertRow(rows.length)
++html/semantics/tabular-data/the-tbody-element/rows.html	'tbody' element, 'rows' attribute
++html/semantics/tabular-data/the-tfoot-element/rows.html	'tfoot' element, 'rows' attribute
++html/semantics/tabular-data/the-thead-element/rows.html	'thead' element, 'rows' attribute
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-1)
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-1) with no cells
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(-2)
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(0)
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(0) with no cells
++html/semantics/tabular-data/the-tr-element/deleteCell.html	HTMLTableRowElement deleteCell(cells.length)
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell()
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(-1)
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(-2)
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(0)
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(cells.length + 1)
++html/semantics/tabular-data/the-tr-element/insertCell.html	HTMLTableRowElement insertCell(cells.length)
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 1
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 10
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 11
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 2
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 3
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 4
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 5
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 6
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 7
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 8
++html/semantics/tabular-data/the-tr-element/rowIndex.html	HTMLTableRowElement.rowIndex 9
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Other row in implicit tbody in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in explicit tbody in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in explicit tbody in nested table in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in implicit tbody in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in implicit tbody in nested table in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created div in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tbody in nested table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tbody in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created td in tr in tbody in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tfoot in nested table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tfoot in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created thead in nested table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created thead in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in script-created tr in tbody in table
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in tfoot in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in thead in HTML
++html/semantics/tabular-data/the-tr-element/sectionRowIndex.html	Row in thead in nested table in HTML
 +html/semantics/text-level-semantics/historical.html	a.media should not be supported
 +html/semantics/text-level-semantics/historical.html	area.media should not be supported
 +html/semantics/text-level-semantics/historical.html	time.datetime should not be supported

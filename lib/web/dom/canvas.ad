@@ -4721,6 +4721,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _lazy_el_accessor(rel)
     if rel >= NID_F_GETCTX and rel <= NID_F_SUBMIT_S:
         return _feat_accessor(rel)
+    if rel == NID_SHEET_ACC or rel == NID_SHEET_ACC_S:
+        return _sheet_accessor(rel)
     if rel >= NID_IMPL_HASFEAT and rel <= NID_IMPL_CREDOCT:
         return _impl_dispatch(rel)
     if rel >= NID_SETATTRNS and rel <= NID_GETBYTAGNS:
@@ -8051,6 +8053,354 @@ def _build_stylesheets(doc: int32):
     js_set_prop(doc, cast[Ptr[uint8]]("styleSheets"), 11, arr)
 
 
+# ---- HTMLStyleElement.sheet for SCRIPT-CREATED <style> elements -------------
+#
+# See NID_SHEET_ACC. The memo below is keyed on the element OBJECT and on the
+# element's CURRENT text, so re-reading `style.sheet` returns the SAME
+# CSSStyleSheet object (identity matters: `style.sheet === style.sheet` and
+# `document.styleSheets[0] === style.sheet` are both asserted by WPT), while
+# reassigning `style.textContent` re-parses — which is exactly what a browser
+# does when a <style>'s child text changes.
+SHC_MAX:      int32 = 512
+SHC_BUF_CAP:  int32 = 262144
+shc_obj:      Array[512, int32]      # the <style> element object
+shc_sheet:    Array[512, int32]      # its CSSStyleSheet JS object
+shc_off:      Array[512, int32]      # the text it was built from, in shc_buf
+shc_len:      Array[512, int32]
+shc_n:        int32 = 0
+shc_w:        int32 = 0
+shc_buf:      Array[262144, uint8]
+# Scratch for the element's current text. Separate from shc_buf because the
+# comparison runs BEFORE we know whether the text is being banked.
+shc_cur:      Array[65536, uint8]
+
+
+# Build (or rebuild) the CSSStyleSheet object for style text p[0..n).
+def _style_sheet_build(p: Ptr[uint8], n: int32) -> int32:
+    # A cascade-model id is nice-to-have (it is what insertRule/replaceSync
+    # mutate); when the 256-sheet model is full the CSSOM object is still built
+    # with sid -1 so `.cssRules` keeps working — a page that creates hundreds of
+    # transient <style> elements must not start returning null halfway through.
+    sid: int32 = _cssom_new_sheet(1, 0)
+    o: int32 = _new_sheet_obj(sid)
+    cr: int32 = js_get_prop(o, cast[Ptr[uint8]]("cssRules"), 8)
+    sc: int32 = _sheet_split_load(sid, cr, 0, p, n)
+    if sid >= 0:
+        cssom_sheet_srccount[sid] = sc
+    return o
+
+
+def _sheet_accessor(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_SHEET_ACC_S:
+        # A polyfill assigning over `sheet` gets an own data property, exactly
+        # as it would over an ordinary one.
+        wv: int32 = js_undefined()
+        if js_arg_count() > 0:
+            wv = js_arg(0)
+        js_set_own(thisv, cast[Ptr[uint8]]("sheet"), 5, wv)
+        return js_undefined()
+    if js_type_of(thisv) != TAG_OBJ:
+        return js_null()
+    tn: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tn) != TAG_STR:
+        return js_null()
+    if _bytes_eq(js_str_bytes(tn), js_str_bytelen(tn), \
+                 cast[Ptr[uint8]]("STYLE"), 5) == 0:
+        return js_null()                 # chromium: null on every other tag
+    # Current text of the element. A source-anchored <style> reads its raw
+    # body out of the parse-time slice; a created one walks its Text children.
+    cn: int32 = 0
+    sidx: int32 = _find_el_by_obj(thisv)
+    if sidx >= 0:
+        cs: int32 = dom_cstart[sidx]
+        ce: int32 = dom_cend[sidx]
+        while cs < ce and cn < 65536:
+            shc_cur[cn] = src_ptr[cast[uint64](cs)]
+            cn = cn + 1
+            cs = cs + 1
+    else:
+        tv: int32 = _node_text_content(thisv)
+        if js_type_of(tv) == TAG_STR:
+            tp: Ptr[uint8] = js_str_bytes(tv)
+            tl: int32 = js_str_bytelen(tv)
+            while cn < tl and cn < 65536:
+                shc_cur[cn] = tp[cn]
+                cn = cn + 1
+    k: int32 = 0
+    while k < shc_n:
+        if shc_obj[k] == thisv:
+            if _bytes_eq(&shc_buf[shc_off[k]], shc_len[k], &shc_cur[0], cn) != 0:
+                return shc_sheet[k]
+            # text changed: reparse, and re-bank it if the buffer allows
+            shc_sheet[k] = _style_sheet_build(&shc_cur[0], cn)
+            if shc_w + cn < SHC_BUF_CAP:
+                shc_off[k] = shc_w
+                shc_len[k] = cn
+                j: int32 = 0
+                while j < cn:
+                    shc_buf[shc_w + j] = shc_cur[j]
+                    j = j + 1
+                shc_w = shc_w + cn
+            else:
+                shc_len[k] = -1          # never compares equal: always reparse
+            return shc_sheet[k]
+        k = k + 1
+    sh: int32 = _style_sheet_build(&shc_cur[0], cn)
+    if shc_n < SHC_MAX and shc_w + cn < SHC_BUF_CAP:
+        slot: int32 = shc_n
+        shc_n = slot + 1
+        shc_obj[slot] = thisv
+        shc_sheet[slot] = sh
+        shc_off[slot] = shc_w
+        shc_len[slot] = cn
+        j2: int32 = 0
+        while j2 < cn:
+            shc_buf[shc_w + j2] = shc_cur[j2]
+            j2 = j2 + 1
+        shc_w = shc_w + cn
+    return sh
+
+
+
+# ============================================================================
+# THE HOST PRELUDE — one engine-authored script, run once per page, BEFORE the
+# page's first <script>.
+#
+# WHY A JS PRELUDE AND NOT MORE NATIVE IDS.
+#
+# The table interfaces (HTMLTableElement.rows / createTBody / insertRow,
+# HTMLTableRowElement.rowIndex / sectionRowIndex / cells, …) are pure DERIVED
+# TREE QUERIES: every one of them is a walk over children + an insertBefore.
+# Written as native ids they would each need the parsed-node path AND the
+# created-node path spelled out, which is the exact structural fault that has
+# now produced the same class of bug three rounds running (textContent,
+# cloneNode, and `<style>.sheet` this round): a node a SCRIPT made behaves
+# differently from a node the PARSER made because a second code path forgot it.
+#
+# Written in JS against the DOM the engine already exposes — .children,
+# .parentNode, .insertBefore, .remove, document.createElement — there is only
+# ONE path by construction. A created <table> and a parsed <table> answer
+# .rows through the same 6 lines, and they cannot drift, because there is
+# nothing to keep in sync. That is the argument for spending a JS turn here
+# rather than ~25 more native ids.
+#
+# COST AND NEUTRALITY.
+#   * It runs ONLY on pages that actually execute a script (installed lazily at
+#     the first runnable <script>), so the static-render corpus does not pay.
+#   * It installs prototype methods and accessors ONLY. No element gets a new
+#     own property, so the object pool is untouched — 25 methods total, not 25
+#     per element (see the AbortSignal regression in
+#     _attach_proto_methods' note for what per-instance costs).
+#   * It touches no layout input, which is why the 298-page byte comparison is
+#     unmoved by it.
+#
+# The source is assembled from literal chunks because an Adder string literal
+# is one line; _pre_nl() puts the statement separators back so ASI behaves as
+# it does in the .js this was authored as.
+HB_PRELUDE_CAP: int32 = 16384
+hb_pre_buf: Array[16384, uint8]
+hb_pre_w:   int32 = 0
+g_prelude_done: int32 = 0            # reset per page in _js_build_document
+
+
+def _pre_put(s: Ptr[uint8]):
+    n: int32 = _cstr_len(s)
+    i: int32 = 0
+    while i < n and hb_pre_w < HB_PRELUDE_CAP:
+        hb_pre_buf[hb_pre_w] = s[i]
+        hb_pre_w = hb_pre_w + 1
+        i = i + 1
+
+
+def _pre_nl():
+    if hb_pre_w < HB_PRELUDE_CAP:
+        hb_pre_buf[hb_pre_w] = 10
+        hb_pre_w = hb_pre_w + 1
+
+
+def _js_install_prelude():
+    if g_prelude_done != 0:
+        return
+    g_prelude_done = 1
+    hb_pre_w = 0
+    _pre_put(cast[Ptr[uint8]]("(function(){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var NS='http://www.w3.org/1999/xhtml';"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function is(e,t){return e&&e.nodeType===1&&e.localName===t&&e.namespaceURI===NS;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function ec(p,t){var r=[],c=p.children,i;for(i=0;i<c.length;i++){if(is(c[i],t))r.push(c[i]);}return r;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function first(p,t){var c=p.children,i;for(i=0;i<c.length;i++){if(is(c[i],t))return c[i];}return null;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function mk(t){return document.createElement(t);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function HC(a){Object.setPrototypeOf(a,HTMLCollection.prototype);return a;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function def(o,n,g,s){Object.defineProperty(o,n,{get:g,set:s,configurable:true,enumerable:true});}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function herr(m){throw new DOMException(m,'HierarchyRequestError');}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function ierr(){throw new DOMException('index out of bounds','IndexSizeError');}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var TA=HTMLTableElement.prototype,TS=HTMLTableSectionElement.prototype,TR=HTMLTableRowElement.prototype,TC=HTMLTableCellElement.prototype;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function secRows(s){return ec(s,'tr');}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function tblRows(t){var c=t.children,i,h=[],b=[],f=[];"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<c.length;i++){var e=c[i];"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(is(e,'thead'))h=h.concat(ec(e,'tr'));"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(is(e,'tfoot'))f=f.concat(ec(e,'tr'));"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(is(e,'tbody'))b=b.concat(ec(e,'tr'));"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(is(e,'tr'))b.push(e);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return h.concat(b).concat(f);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function firstBodyRef(t){var c=t.children,i;for(i=0;i<c.length;i++){if(!is(c[i],'caption')&&!is(c[i],'colgroup'))return c[i];}return null;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TA,'caption',function(){return first(this,'caption');},function(v){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined&&!is(v,'caption'))herr('caption must be a caption element');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var o=first(this,'caption');if(o)o.remove();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined)this.insertBefore(v,this.firstChild);});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TA,'tHead',function(){return first(this,'thead');},function(v){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined&&!is(v,'thead'))herr('tHead must be a thead element');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var o=first(this,'thead');if(o)o.remove();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined)this.insertBefore(v,firstBodyRef(this));});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TA,'tFoot',function(){return first(this,'tfoot');},function(v){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined&&!is(v,'tfoot'))herr('tFoot must be a tfoot element');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var o=first(this,'tfoot');if(o)o.remove();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==null&&v!==undefined)this.appendChild(v);});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TA,'tBodies',function(){return HC(ec(this,'tbody'));});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TA,'rows',function(){return HC(tblRows(this));});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.createCaption=function(){var c=first(this,'caption');if(c)return c;c=mk('caption');this.insertBefore(c,this.firstChild);return c;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.deleteCaption=function(){var c=first(this,'caption');if(c)c.remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.createTHead=function(){var h=first(this,'thead');if(h)return h;h=mk('thead');this.insertBefore(h,firstBodyRef(this));return h;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.deleteTHead=function(){var h=first(this,'thead');if(h)h.remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.createTFoot=function(){var f=first(this,'tfoot');if(f)return f;f=mk('tfoot');this.appendChild(f);return f;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.deleteTFoot=function(){var f=first(this,'tfoot');if(f)f.remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.createTBody=function(){var b=mk('tbody');var bs=ec(this,'tbody');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(bs.length){var last=bs[bs.length-1];this.insertBefore(b,last.nextSibling);}else{this.appendChild(b);}return b;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.insertRow=function(i){if(i===undefined)i=-1;i=+i;var rs=tblRows(this),n=rs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<-1||i>n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var tr=mk('tr');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(n===0){var bs=ec(this,'tbody');var sec=bs.length?bs[bs.length-1]:null;if(!sec){sec=mk('tbody');this.appendChild(sec);}sec.appendChild(tr);return tr;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i===-1||i===n){rs[n-1].parentNode.appendChild(tr);return tr;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var ref=rs[i];ref.parentNode.insertBefore(tr,ref);return tr;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TA.deleteRow=function(i){i=+i;var rs=tblRows(this),n=rs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i===-1){if(n)rs[n-1].remove();return;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<0||i>=n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("rs[i].remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TS,'rows',function(){return HC(secRows(this));});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TS.insertRow=function(i){if(i===undefined)i=-1;i=+i;var rs=secRows(this),n=rs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<-1||i>n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var tr=mk('tr');if(i===-1||i===n)this.appendChild(tr);else this.insertBefore(tr,rs[i]);return tr;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TS.deleteRow=function(i){i=+i;var rs=secRows(this),n=rs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i===-1){if(n)rs[n-1].remove();return;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<0||i>=n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("rs[i].remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function rowCells(r){var a=[],c=r.children,i;for(i=0;i<c.length;i++){if(is(c[i],'td')||is(c[i],'th'))a.push(c[i]);}return a;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TR,'cells',function(){return HC(rowCells(this));});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TR,'sectionRowIndex',function(){var p=this.parentNode;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!(is(p,'thead')||is(p,'tbody')||is(p,'tfoot')))return -1;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var rs=secRows(p),i;for(i=0;i<rs.length;i++){if(rs[i]===this)return i;}return -1;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TR,'rowIndex',function(){var p=this.parentNode,t=null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(is(p,'thead')||is(p,'tbody')||is(p,'tfoot')){t=p.parentNode;if(!is(t,'table'))return -1;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(is(p,'table')){t=p;}else return -1;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var rs=tblRows(t),i;for(i=0;i<rs.length;i++){if(rs[i]===this)return i;}return -1;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TR.insertCell=function(i){if(i===undefined)i=-1;i=+i;var cs=rowCells(this),n=cs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<-1||i>n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var td=mk('td');if(i===-1||i===n)this.appendChild(td);else this.insertBefore(td,cs[i]);return td;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("TR.deleteCell=function(i){i=+i;var cs=rowCells(this),n=cs.length;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i===-1){if(n)cs[n-1].remove();return;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(i<0||i>=n)ierr();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("cs[i].remove();};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(TC,'cellIndex',function(){var p=this.parentNode;if(!is(p,'tr'))return -1;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var cs=rowCells(p),i;for(i=0;i<cs.length;i++){if(cs[i]===this)return i;}return -1;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var HCP=HTMLCollection.prototype;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!HCP.item)HCP.item=function(i){i=i>>>0;return i<this.length?this[i]:null;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!HCP.namedItem)HCP.namedItem=function(n){n=''+n;if(n==='')return null;var i;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<this.length;i++){if(this[i].id===n)return this[i];}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<this.length;i++){if(this[i].getAttribute&&this[i].getAttribute('name')===n)return this[i];}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return null;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var NLP=NodeList.prototype;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!NLP.item)NLP.item=function(i){i=i>>>0;return i<this.length?this[i]:null;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("})();"))
+    _pre_nl()
+    js_eval_nested(&hb_pre_buf[0], cast[uint64](hb_pre_w))
+
+
 # Set document.readyState and fire `readystatechange` at the document, which is
 # how the spec pairs them. Safe before any listener exists (_fire_document
 # pre-scans and no-ops), so the initial "loading" set costs nothing.
@@ -8064,6 +8414,9 @@ def _doc_set_ready(st: Ptr[uint8], n: int32):
 
 def _js_build_document():
     _cssom_reset()                       # fresh CSSOM rule model for this page
+    shc_n = 0                            # and a fresh created-<style> sheet memo
+    shc_w = 0
+    g_prelude_done = 0                   # and a fresh host prelude
     doc: int32 = js_new_object_v()
     js_doc = doc
     # DOM interface objects FIRST: every element registered below is branded with
@@ -9085,6 +9438,9 @@ def _run_scripts() -> int32:
                     break
                 be = be + 1
             if be > bs and runnable != 0:
+                # The host prelude goes in immediately before the page's FIRST
+                # executed script, so a script-free page never pays for it.
+                _js_install_prelude()
                 if is_mod != 0:
                     # `<script type=module>`: evaluate as an ES module (own scope,
                     # deferred-style, imports resolved through the browser's module

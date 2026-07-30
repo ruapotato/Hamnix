@@ -1510,6 +1510,13 @@ def _attach_el_natives(o: int32):
     # (the bounding box), so it returns a one-entry DOMRectList (array).
     js_set_prop(o, cast[Ptr[uint8]]("getClientRects"), 14, \
                 js_new_native_fn(js_hbase + NID_GETCLIENTRECTS))
+    # HTMLStyleElement.sheet — an accessor so a SCRIPT-CREATED <style> answers
+    # it the same way a parsed one does (see NID_SHEET_ACC). Source <style>
+    # elements carry an OWN `sheet` property from _build_stylesheets, which
+    # shadows this and keeps their sheet identity stable.
+    js_define_accessor(o, cast[Ptr[uint8]]("sheet"), 5, \
+                       js_new_native_fn(js_hbase + NID_SHEET_ACC), \
+                       js_new_native_fn(js_hbase + NID_SHEET_ACC_S))
 
 
 # Apply a child-list edit to the parent's own NODE-level childNodes array.
