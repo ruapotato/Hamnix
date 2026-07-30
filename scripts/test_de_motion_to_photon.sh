@@ -434,7 +434,7 @@ import re, sys
 def nm(h):
     try: v = int(h, 16)
     except Exception: return '?'
-    b = v.to_bytes(8, 'little').rstrip(b'\x00')
+    b = v.to_bytes(8, 'big').rstrip(b'\x00')
     return ''.join(chr(c) if 32 <= c < 127 else '.' for c in b) or '-'
 runs, cur = [], None
 for line in open(sys.argv[1], errors='replace'):
