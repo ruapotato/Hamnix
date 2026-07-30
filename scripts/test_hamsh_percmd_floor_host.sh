@@ -163,6 +163,14 @@ o.append("alias okalias='ls -l'")
 o.append('echo ==OKALIAS st=$status')
 o.append('echo ==FLOOR CAPS after')
 o.append('arenas gc')
+# EXPLICIT `exit`, and it is load-bearing for the gate's RUNTIME. On the
+# device, sys_read_nb reports 0 = would-block and -1 = EOF (devfd.ad), so the
+# REPL exits cleanly at end-of-input. The x86_64-linux shim cannot make that
+# distinction for a redirected regular file — a read at EOF returns 0, which
+# the editor loop reads as "stdin idle", so the host shell yields forever and
+# only the harness timeout ends it. Without this line the gate always burns
+# its full driver timeout instead of finishing in a couple of minutes.
+o.append('exit')
 print('\n'.join(o))
 PYEOF
 
