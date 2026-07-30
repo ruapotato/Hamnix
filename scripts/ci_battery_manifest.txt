@@ -4462,6 +4462,26 @@ bash scripts/ci_run_gate.sh scripts/test_install_short_write.sh
 # trips a tripwire instead of waiting on a boot. INCONCLUSIVE (125), never a soft
 # green, when the aarch64 cross toolchain or qemu-user is absent on the runner.
 bash scripts/ci_run_gate.sh scripts/test_arm64_build_integrity.sh
+# test_arm64_llvm_lane_diff: the AARCH64 half of the LLVM-lane execution
+# differential. scripts/test_llvm_lane_diff.sh exists because that lane shipped an
+# lshr-for-ashr signedness miscompile to 684 sites in 123 of 266 binaries with
+# every other instrument green (kobjdiff compares a DIFFERENT lane; the native
+# fuzzer never emits a .ll), and it was noticed only because it happened to land
+# in lib/ed25519.ad where a wrong bit rejects a signature. That gate emits for
+# x86-64. The AArch64 path through ssa_llvm.ad is DIFFERENT code — its own data
+# layout, its own `svc #0`/x8 syscall lowering with ll_aarch64_syscall_nr
+# remapping the x86 numbers — and then a different LLVM backend entirely, and
+# NONE of it had randomized execution coverage: the only aarch64 execution
+# evidence in the tree was one hand-written program in test_arm64_a10_userland.sh.
+# One program is a smoke test, not an instrument. This runs the SAME generator and
+# the SAME by-construction oracle on aarch64: emit --target=aarch64, clang, link
+# -static -nostdlib against scripts/adder_llvm_runtime_aarch64.S, and EXECUTE
+# under qemu-aarch64 (qemu-USER, no boot). A bail is a FAIL, not a shrug — the
+# generator stays inside the SSA subset, so a bail is a silent loss of the only
+# coverage this lane has — and a run that executed 0 programs FAILS rather than
+# reading as green. QEMU-SYSTEM-FREE, ~7 s for 25 programs. INCONCLUSIVE (125),
+# never a soft green, when the cross toolchain or qemu-user is absent.
+bash scripts/ci_run_gate.sh scripts/test_arm64_llvm_lane_diff.sh
 # Leak pass 16. The COW share arms, COUNTED under the ONE workload that ever
 # stranded frames: the DE terminal. Pass 15 closed those arms against
 # /bin/u_mmap_fork and said in writing that a leak needing a VMA shape
