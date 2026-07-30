@@ -420,8 +420,29 @@ wait_exit() {
 read -r -a APP_POOL <<< "${SOAK_APPS:-hamwrite hamsheet hamslides hamfmscene hammonscene hamaudioscene hamcalcscene hambrowse hamtermscene}"
 APP_ARGS_hambrowse="--demo"
 
+# PER-LAUNCH COW SAMPLING (leak pass 14). Pass 13 established that the leak is
+# BURSTY, not steady: the per-cycle net was 7, 133, 2, 128, 7, 28, 0, 128, ...
+# — twelve of eighteen cycles at or under 7 and five at 71-250 — so a soak MEAN
+# is not an estimator of it and the run-to-run spread IS the burst count. A
+# bimodal outcome like that means an EVENT that either happens or does not, and
+# the way to name the event is to sample finer than the thing that varies. One
+# `track net` line costs O(arms) with no page-table walk and no frame scan, so
+# it is affordable after every individual app launch; pairing the Nth [net]
+# line with the Nth launch turns "the leak" into "launching X strands N frames,
+# every time" — a reproducible test case rather than a slope.
+NETLOG_F="$OUT_DIR/launch_order.txt"   # one "<cycle> <app>" per launch, in order
+: > "$NETLOG_F"
+net_sample() {
+    [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ] || return 0
+    printf 'echo track net > /proc/meminfo\n' >&3
+    sleep 1
+}
+
 snapshot 000_idle
 sample c0closed || say_fail "baseline sample timed out"
+# Baseline [net] line, so the first launch of the run has a predecessor to
+# difference against. Every later [net] line is post-launch, in launch order.
+net_sample
 
 # The SYSTEM cohort: everything alive before a single app has been launched.
 # None of these may ever take a terminate note.
@@ -473,6 +494,12 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
         pid=$(echo "$line" | sed -n 's/.*mapped pid=\([0-9]*\).*/\1/p')
         [ -n "$pid" ] && { open_pids="$open_pids $pid"; open_names="$open_names $app"; }
         sleep 1
+        # One [net] line per launch, emitted only once THIS app's window is up,
+        # so the delta against the previous line covers exactly this launch.
+        # The host-side order file is the join key — the guest line carries no
+        # app name because the ctl is a fixed-string match.
+        echo "$c $app" >> "$NETLOG_F"
+        net_sample
     done
 
     # let them actually paint before we measure "apps open"
@@ -522,6 +549,13 @@ while [ "$SOAK_MINUTES" -eq 0 ] || [ "$SECONDS" -lt "$DEADLINE" ]; do
     # before/after PagesInUse pair.
     if [ "${HAMNIX_TRACK_ALLOCS:-0}" = "full" ]; then
         printf 'echo track ledger > /proc/meminfo\n' >&3
+        sleep 1
+        # ORIGIN-KEYED balance (leak pass 14). Same cost class, but keyed on
+        # the arm that created each FRAME rather than the arm executing the
+        # call — so `region_free_cow_safe`, which has no PTE and therefore
+        # could not be classified at all in pass 13, reports here like every
+        # other drop. `born - died` per arm is the leaked-frame count.
+        printf 'echo track origin > /proc/meminfo\n' >&3
         sleep 1
     fi
 
@@ -961,6 +995,58 @@ echo "$TAG artifacts      : $OUT_DIR"
 if grep -aq '\[census\]' "$LOG"; then
     echo "$TAG --- orphan census (unreachable tracked frames) ---"
     grep -a '\[census\]' "$LOG" | sed "s/^/$TAG /"
+fi
+# PER-LAUNCH BURST ATTRIBUTION (leak pass 14). Join the ordered [net] lines to
+# the ordered launch list and report, per app, how many COW frames each launch
+# of it strands. This is the statistic that replaces the soak mean: the leak is
+# bursty, so a mean over cycles measures how many bursts a run happened to
+# catch, whereas a per-launch table says which launch IS the burst. An app with
+# a large, repeatable per-launch delta is a deterministic reproducer.
+if grep -aq '\[net\]' "$LOG" && [ -s "$NETLOG_F" ]; then
+    echo "$TAG --- per-launch COW frame deltas (burst attribution) ---"
+    grep -a '\[net\]' "$LOG" > "$OUT_DIR/net_lines.txt"
+    python3 - "$OUT_DIR/net_lines.txt" "$NETLOG_F" <<'PY' | sed "s/^/$TAG /"
+import re, sys
+nets, order = sys.argv[1], sys.argv[2]
+vals = []
+for ln in open(nets, errors="replace"):
+    m = re.search(r"added=(\d+) dropped=(\d+) live=(\d+)", ln)
+    if m:
+        vals.append(tuple(int(x) for x in m.groups()))
+launches = [l.split(None, 1) for l in open(order).read().splitlines() if l.strip()]
+# vals[0] is the pre-first-launch baseline; vals[i] is taken AFTER launch i.
+# A short tail (the run ended mid-cycle) just truncates the join.
+n = min(len(vals) - 1, len(launches))
+if n <= 0:
+    print("per-launch: no usable samples (need a baseline + >=1 launch)")
+    raise SystemExit
+per = {}
+print(f"per-launch samples: {n} (of {len(launches)} launches)")
+for i in range(n):
+    cyc, app = launches[i][0], launches[i][1].strip()
+    d_live = vals[i + 1][2] - vals[i][2]
+    d_net = (vals[i + 1][0] - vals[i][0]) - (vals[i + 1][1] - vals[i][1])
+    per.setdefault(app, []).append((int(cyc), d_live, d_net))
+print(f"{'app':<16} {'n':>3} {'live frames/launch':>20} {'max':>7} "
+      f"{'refs net/launch':>16}")
+for app in sorted(per, key=lambda a: -sum(x[1] for x in per[a]) / len(per[a])):
+    rows = per[app]
+    mean_l = sum(r[1] for r in rows) / len(rows)
+    mean_n = sum(r[2] for r in rows) / len(rows)
+    mx = max(r[1] for r in rows)
+    print(f"{app:<16} {len(rows):>3} {mean_l:>20.1f} {mx:>7} {mean_n:>16.1f}")
+# The named event, if there is one: an app whose EVERY launch strands frames is
+# a deterministic reproducer, which is worth more than any slope. An app that
+# strands on some launches and not others is the burst, and its hit RATE is the
+# quantity to explain.
+print("--- per-launch detail (cycle, live-frame delta) for the top app ---")
+if per:
+    top = max(per, key=lambda a: sum(x[1] for x in per[a]) / len(per[a]))
+    rows = per[top]
+    hits = sum(1 for r in rows if r[1] > 0)
+    print(f"{top}: {hits}/{len(rows)} launches stranded frames")
+    print("  " + " ".join(f"c{r[0]}:{r[1]:+d}" for r in rows))
+PY
 fi
 grep -q "VERDICT: LEAK" "$SUMMARY" && fail=1
 [ "$fail" -ne 0 ] && { echo "$TAG OVERALL FAIL"; exit 1; }
