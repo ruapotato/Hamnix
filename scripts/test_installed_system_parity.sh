@@ -22,6 +22,15 @@
 #      giving up on "/".
 #   3. No man pages at all (`/usr/share/man` is staged into the LIVE cpio;
 #      no hpm package carries it).
+#   4. The package manager offered no extra packages. The live medium
+#      carries the whole native repo in RAM at /iso-packages/, but the
+#      installer installed hamnix-base FROM it and walked away: the target
+#      got no repo, no /etc/hpm/repo and no cached index, so hpm fell back
+#      to https://255.one/ and listed nothing without a network. The
+#      repo-ONLY apps (hamaudiobook, hampaint, hamclock, hammark,
+#      hamangrybirds) are excluded from the hamnix-base closure by design,
+#      so "no repo" meant "those apps are unreachable" — the user's "GUI
+#      offers no extra packages (the audiobook player)" report.
 #
 # ASSERT ON THE EFFECT, NOT ON A FILE EXISTING. A file can be present at the
 # wrong root and still be unreachable — that is precisely the failure mode
@@ -54,7 +63,7 @@
 #   KEEP_LOGS          1 = keep logs + qcow2 on PASS    (default: 0)
 #   MUTATE             comma-separated assertion label(s) to deliberately
 #                      blind, for mutation-testing this gate:
-#                      distro | homedir | audio | man | alive
+#                      distro | homedir | audio | man | pkgrepo | alive
 
 set -uo pipefail
 
@@ -215,6 +224,9 @@ grep -a -q 'install home skeleton' "$LOG_B" \
 grep -a -q 'install: distro/bin/busybox' "$LOG_B" \
     && ok "the #distro step copied a real shell (distro/bin/busybox)" \
     || miss "the #distro step found no shell at the source — it ran against an empty/stub #distro"
+grep -a -q 'package repo mirrored' "$LOG_B" \
+    && ok "installer ran the package-repo mirror step" \
+    || miss "installer never mirrored the package repo onto the target"
 
 # --- Stage C: boot the INSTALLED disk and prove the capabilities ------
 say "Stage C: boot the installed NVMe ALONE (medium detached); drive assertions"
@@ -281,6 +293,27 @@ type_c "cat /usr/share/sounds/boot-jingle.wav | wc -c" 6
 
 # (4) MAN PAGES.
 type_c "man hamsh" 5
+
+# (5) THE PACKAGE MANAGER, driven exactly as a user would. The installed
+#     system used to ship NO repository at all — hpm fell back to
+#     https://255.one/ and, with no network here, `hpm search` returned
+#     nothing, which is the user's "the package manager offers no extra
+#     packages (the audiobook player)" report. The audiobook player is a
+#     repo-ONLY package (excluded from the hamnix-base closure by design),
+#     so it is the honest probe: if the repo is missing it cannot be found
+#     and cannot be installed.
+#
+#     No --repo flag and no --allow-unsigned: this is the BARE command a
+#     user types, so it also proves hpm's default-repo precedence lands on
+#     the on-disk mirror and that the mirror's index signature verifies.
+type_c "hpm refresh" 15
+type_c "hpm search audiobook" 8
+type_c "hpm install hamnix-hamaudiobook" 30
+#     ...and the two things that make it a usable app: the binary on $PATH
+#     and the .desktop the Applications menu enumerates.
+type_c "ls -l /bin/hamaudiobook" 5
+type_c "cat /etc/hamde/apps/hamaudiobook.desktop" 5
+
 type_c "echo PARITY_DONE_99" 4
 sleep 3
 kill "$QEMU_C_PID" 2>/dev/null; wait "$QEMU_C_PID" 2>/dev/null
@@ -333,6 +366,22 @@ grep_c '^1428652' audio \
 grep_c 'NAME|SYNOPSIS|hamsh —' man \
     && ok "man pages installed (man hamsh returned a page)" \
     || miss "man pages missing on the installed system"
+
+grep_c 'refreshed index from file:///var/lib/hpm/repo/' pkgrepo \
+    && ok "KEYSTONE: bare 'hpm refresh' found the on-disk repo mirror (no network)" \
+    || miss "KEYSTONE: 'hpm refresh' found no repository on the installed system — the package manager has nothing to offer"
+grep_c '^hamnix-hamaudiobook' pkgrepo \
+    && ok "KEYSTONE: 'hpm search audiobook' LISTS the audiobook player" \
+    || miss "KEYSTONE: the audiobook player is not listed — the exact user-reported symptom"
+grep_c 'installed hamnix-hamaudiobook' pkgrepo \
+    && ok "KEYSTONE: 'hpm install hamnix-hamaudiobook' succeeded on the installed disk" \
+    || miss "KEYSTONE: installing the audiobook player failed on the installed disk"
+grep_c '/bin/hamaudiobook' pkgrepo \
+    && ok "the audiobook binary landed on PATH after the install" \
+    || miss "no /bin/hamaudiobook after the install"
+grep_c 'Exec=/bin/hamaudiobook' pkgrepo \
+    && ok "the Applications launcher (.desktop) landed — the app is discoverable in the menu" \
+    || miss "no hamaudiobook.desktop — the app would not appear in the Applications menu"
 
 grep_c '^PARITY_DONE_99' alive \
     && ok "the installed shell stayed alive through every command" \
