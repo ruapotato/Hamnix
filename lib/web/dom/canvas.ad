@@ -5003,12 +5003,17 @@ def _js_host_dispatch(id: int32) -> int32:
                 return js_bool(0)
             hcid: int32 = _find_cre_by_obj(js_this())
             if hcid >= 0:
-                hv: int32 = js_get_prop(cre_obj[hcid], &hn[0], cast[uint64](han))
-                hvp: Ptr[uint8] = js_str_ptr(hv)
-                hvn: int32 = _cstr_len(hvp)
-                if hvn > 0 and _is_undef_str(hvp, hvn) == 0:
-                    return js_bool(1)
-                return js_bool(0)
+                # Ask the ONE attribute reader, so hasAttribute and
+                # getAttribute can never disagree. The old code looked only at
+                # the stashed property and required a NON-EMPTY value, so a
+                # created element with `setAttribute(n, '')` — which is
+                # precisely what toggleAttribute() and every boolean content
+                # attribute produce — reported the attribute absent while
+                # getAttribute returned "".
+                hv: int32 = _el_get_attribute(js_this(), &hn[0], han)
+                if js_type_of(hv) == TAG_NULL or js_type_of(hv) == TAG_UNDEF:
+                    return js_bool(0)
+                return js_bool(1)
         return js_bool(0)
     if rel == NID_REMATTR:
         if js_arg_count() >= 1:
@@ -5501,6 +5506,43 @@ def _js_host_dispatch(id: int32) -> int32:
         gnarr: int32 = js_new_array_v()
         if gnel >= 0:
             _collect_attr_names(gnel, gnarr)
+            return gnarr
+        # CREATED node: its attributes live in the object-keyed nsa_ store
+        # (that is where setAttribute puts them), plus the two reflected
+        # properties id / className. This returned an EMPTY array before, so
+        # anything that enumerates an element's attributes — cloneNode, an
+        # attribute-preserving serialiser, a test's assert_array_equals on
+        # getAttributeNames() — silently saw a created element as attributeless.
+        gnq: int32 = 0
+        while gnq < nsa_n:
+            if nsa_obj[gnq] == js_this():
+                gnw: int32 = 0
+                if nsa_pflen[gnq] > 0:
+                    gnk: int32 = 0
+                    while gnk < nsa_pflen[gnq] and gnw < 250:
+                        nnm_name[gnw] = nsa_buf[nsa_pfoff[gnq] + gnk]
+                        gnw = gnw + 1
+                        gnk = gnk + 1
+                    nnm_name[gnw] = 58                     # ':'
+                    gnw = gnw + 1
+                gnj: int32 = 0
+                while gnj < nsa_lnlen[gnq] and gnw < 251:
+                    nnm_name[gnw] = nsa_buf[nsa_lnoff[gnq] + gnj]
+                    gnw = gnw + 1
+                    gnj = gnj + 1
+                js_array_push(gnarr, js_new_string(&nnm_name[0], cast[uint64](gnw)))
+            gnq = gnq + 1
+        if _find_cre_by_obj(js_this()) >= 0:
+            gnid: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("id"), 2)
+            if js_type_of(gnid) == TAG_STR and js_str_bytelen(gnid) > 0 and \
+               _nsa_find(js_this(), cast[Ptr[uint8]](""), -1, \
+                         cast[Ptr[uint8]]("id"), 2) < 0:
+                js_array_push(gnarr, js_new_string(cast[Ptr[uint8]]("id"), 2))
+            gncl: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("className"), 9)
+            if js_type_of(gncl) == TAG_STR and js_str_bytelen(gncl) > 0 and \
+               _nsa_find(js_this(), cast[Ptr[uint8]](""), -1, \
+                         cast[Ptr[uint8]]("class"), 5) < 0:
+                js_array_push(gnarr, js_new_string(cast[Ptr[uint8]]("class"), 5))
         return gnarr
     if rel == NID_HASATTRS:
         # element.hasAttributes() -> true if the start tag declares >=1 attribute.
@@ -5984,6 +6026,14 @@ def _js_host_dispatch(id: int32) -> int32:
         # appending INTO a fragment: the fragment is not part of any render
         # model, so only its JS child list + the back-links are maintained.
         if js_arg_count() >= 1 and _is_fragment(js_this()) != 0:
+            # "if node's parent is non-null, remove node" applies to a FRAGMENT
+            # target exactly as it does to an element one. Without it, the
+            # `while (d.firstChild) frag.appendChild(d.firstChild)` idiom — the
+            # standard way to move a parsed subtree into a fragment, and what
+            # template.content is built with — never terminates: the node stays
+            # in `d` as well, so d.firstChild never advances. It spun until the
+            # string pool was exhausted and took the rest of the page with it.
+            _detach_from_parent_v(js_arg(0))
             tkids: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("children"), 8)
             if js_is_array(tkids) != 0:
                 js_array_push(tkids, js_arg(0))
@@ -8396,6 +8446,106 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("if(!NLP.item)NLP.item=function(i){i=i>>>0;return i<this.length?this[i]:null;};"))
     _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var NP=Node.prototype,EP=Element.prototype;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(NP.parentElement===undefined)NP.parentElement=null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(NP.parentNode===undefined)NP.parentNode=null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var natClone=NP.cloneNode;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function dclone(n,deep){var t=n.nodeType,c,i;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(t===3)c=document.createTextNode(n.data);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(t===4)c=document.createCDATASection?document.createCDATASection(n.data):document.createTextNode(n.data);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(t===8)c=document.createComment(n.data);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(t===11)c=document.createDocumentFragment();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else if(t===1){c=document.createElementNS(n.namespaceURI||NS,n.localName||n.tagName);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var a=n.getAttributeNames?n.getAttributeNames():null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(a){for(i=0;i<a.length;i++){var v=n.getAttribute(a[i]);if(v!==null&&v!==undefined)c.setAttribute(a[i],v);}}}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("else return natClone.call(n,deep);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!c)return c;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(deep&&(t===1||t===11)){var k=n.childNodes;for(i=0;i<k.length;i++){var cc=dclone(k[i],true);if(cc)c.appendChild(cc);}}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return c;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("NP.cloneNode=function(deep){return dclone(this,!!deep);};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Object.defineProperty(HTMLTemplateElement.prototype,'content',{configurable:true,enumerable:true,get:function(){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(this.__hbc)return this.__hbc;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var f=document.createDocumentFragment(),d=document.createElement('div');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("d.innerHTML=this.innerHTML;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("while(d.firstChild)f.appendChild(d.firstChild);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("this.__hbc=f;return f;}});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function badName(s){if(s.length===0)return true;var i,c;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<s.length;i++){c=s.charCodeAt(i);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(c===32||c===9||c===10||c===12||c===13||c===47||c===62||c===61||c===0||c===34||c===39)return true;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return false;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("EP.toggleAttribute=function(n,force){n=''+n;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(badName(n))throw new DOMException('invalid attribute name','InvalidCharacterError');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("n=n.toLowerCase();"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(!this.hasAttribute(n)){if(force===false)return false;this.setAttribute(n,'');return true;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(force===true)return true;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("this.removeAttribute(n);return false;};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var reflBusy=0,getBusy=0;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function gat(el,n){if(getBusy)return null;getBusy=1;var v=el.getAttribute(n);getBusy=0;return v;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function refS(P,prop,attr){def(P,prop,function(){var v=gat(this,attr);return v===null?'':v;},function(v){if(reflBusy)return;reflBusy=1;this.setAttribute(attr,''+v);reflBusy=0;});}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function refB(P,prop,attr){def(P,prop,function(){return this.hasAttribute(attr);},function(v){if(reflBusy)return;reflBusy=1;if(v)this.setAttribute(attr,'');else this.removeAttribute(attr);"))
+    _pre_put(cast[Ptr[uint8]]("reflBusy=0;});}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function refL(P,prop,attr,dflt){def(P,prop,function(){var v=gat(this,attr);if(v===null)return dflt;v=parseInt(v,10);return isNaN(v)?dflt:v;},function(v){if(reflBusy)return;reflBusy=1;"))
+    _pre_put(cast[Ptr[uint8]]("this.setAttribute(attr,''+(v|0));reflBusy=0;});}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var OL=HTMLOListElement.prototype;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("refL(OL,'start','start',1);refB(OL,'reversed','reversed');refS(OL,'type','type');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("refL(HTMLLIElement.prototype,'value','value',0);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLTitleElement.prototype,'text',function(){var k=this.childNodes,s='',i;for(i=0;i<k.length;i++){if(k[i].nodeType===3)s+=k[i].data;}return s;},function(v){this.textContent=v;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function urlOf(e){var h=e.getAttribute('href');if(h===null)return null;try{return new URL(h,document.baseURI||location.href);}catch(x){return null;}}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function urlPart(P,prop,key,dflt){def(P,prop,function(){var u=urlOf(this);return u?u[key]:dflt;});}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("[HTMLAnchorElement.prototype,HTMLAreaElement.prototype].forEach(function(P){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("urlPart(P,'protocol','protocol','');urlPart(P,'host','host','');urlPart(P,'hostname','hostname','');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("urlPart(P,'port','port','');urlPart(P,'pathname','pathname','');urlPart(P,'search','search','');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("urlPart(P,'hash','hash','');urlPart(P,'username','username','');urlPart(P,'password','password','');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(P,'origin',function(){var u=urlOf(this);return u?u.origin:'';});});"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("})();"))
     _pre_nl()
     js_eval_nested(&hb_pre_buf[0], cast[uint64](hb_pre_w))
@@ -9732,6 +9882,19 @@ def _cre_click_target(cid: int32) -> int32:
 # is innerHTML (raw) if set, else the escaped textContent followed by its nested
 # created children (so a table > tr > td subtree built entirely in script
 # renders with its full structure). Detached nodes (node.remove()) are skipped.
+# Is JS object `v` an element of the (possibly absent) childNodes array `kids`?
+def _kid_in_nodes(kids: int32, v: int32) -> int32:
+    if kids == 0 or js_is_array(kids) == 0:
+        return 0
+    i: int32 = 0
+    n: int32 = js_array_len(kids)
+    while i < n:
+        if js_array_get(kids, i) == v:
+            return 1
+        i = i + 1
+    return 0
+
+
 def _emit_created(cid: int32):
     if cre_gone[cid] != 0:
         return
@@ -9830,11 +9993,22 @@ def _emit_created(cid: int32):
     if hn > 0 and _is_undef_str(hp, hn) == 0:
         _rw_ovbuf_ptr(hp, hn)
     else:
+        # DOUBLE-EMITTED TEXT (fixed 2026-07-30). _node_direct_text already
+        # emits every Text/CDATA child that is in this node's childNodes, and
+        # the cc_ walk below then emitted the SAME text nodes again through
+        # their own cre records: `p.appendChild(document.createTextNode('a'))`
+        # serialised as `<p>aa</p>` in the PARENT's innerHTML — while
+        # `p.innerHTML` itself, which takes the _serialize_inner_cre path, said
+        # `a`. Two serialisers disagreeing about one tree. Skip a text child
+        # here exactly when _node_direct_text has already accounted for it.
         _rw_js_escaped(_node_direct_text(co))
+        cokids: int32 = _nd_kids(co)
         a: int32 = 0
         while a < cc_n:
             if cc_removed[a] == 0 and cc_owner[a] == cid:
-                _emit_created(cc_child[a])
+                if cre_is_text[cc_child[a]] != 1 or \
+                   _kid_in_nodes(cokids, cre_obj[cc_child[a]]) == 0:
+                    _emit_created(cc_child[a])
             a = a + 1
     if has_style != 0:
         _rw_cstr(cast[Ptr[uint8]]("</span>"))
