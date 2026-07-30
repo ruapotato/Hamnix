@@ -1258,6 +1258,17 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_CONTAINS))
     js_set_prop(o, cast[Ptr[uint8]]("getAttributeNames"), 17, \
                 js_new_native_fn(js_hbase + NID_GETATTRNAMES))
+    # namespace-aware attribute + tag-name API
+    js_set_prop(o, cast[Ptr[uint8]]("setAttributeNS"), 14, \
+                js_new_native_fn(js_hbase + NID_SETATTRNS))
+    js_set_prop(o, cast[Ptr[uint8]]("getAttributeNS"), 14, \
+                js_new_native_fn(js_hbase + NID_GETATTRNS))
+    js_set_prop(o, cast[Ptr[uint8]]("hasAttributeNS"), 14, \
+                js_new_native_fn(js_hbase + NID_HASATTRNS))
+    js_set_prop(o, cast[Ptr[uint8]]("removeAttributeNS"), 17, \
+                js_new_native_fn(js_hbase + NID_REMATTRNS))
+    js_set_prop(o, cast[Ptr[uint8]]("getElementsByTagNameNS"), 22, \
+                js_new_native_fn(js_hbase + NID_GETBYTAGNS))
     js_set_prop(o, cast[Ptr[uint8]]("hasAttributes"), 13, \
                 js_new_native_fn(js_hbase + NID_HASATTRS))
     # Constraint Validation: checkValidity() on any control (and forms — the

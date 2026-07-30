@@ -1110,6 +1110,237 @@ def _cls_write_o(objv: int32, s: Ptr[uint8], sn: int32):
                 js_new_string(s, cast[uint64](sn)))
 
 
+# ---- namespaced / created-element attribute store ---------------------------
+def _nsa_push(p: Ptr[uint8], n: int32) -> int32:
+    off: int32 = nsa_buf_len
+    i: int32 = 0
+    while i < n and nsa_buf_len < 65536:
+        nsa_buf[nsa_buf_len] = p[i]
+        nsa_buf_len = nsa_buf_len + 1
+        i = i + 1
+    return off
+
+
+def _nsa_seg_eq(off: int32, ln: int32, p: Ptr[uint8], n: int32) -> int32:
+    if ln != n:
+        return 0
+    i: int32 = 0
+    while i < n:
+        if nsa_buf[off + i] != p[i]:
+            return 0
+        i = i + 1
+    return 1
+
+
+# Match on (element, namespace, localName). `nsn` < 0 means the null namespace.
+def _nsa_find(objv: int32, nsp: Ptr[uint8], nsn: int32, lp: Ptr[uint8], \
+              ln: int32) -> int32:
+    i: int32 = 0
+    while i < nsa_n:
+        if nsa_obj[i] == objv and _nsa_seg_eq(nsa_lnoff[i], nsa_lnlen[i], lp, ln) != 0:
+            if nsn < 0:
+                if nsa_nslen[i] < 0:
+                    return i
+            elif nsa_nslen[i] >= 0 and \
+                 _nsa_seg_eq(nsa_nsoff[i], nsa_nslen[i], nsp, nsn) != 0:
+                return i
+        i = i + 1
+    return -1
+
+
+def _nsa_set(objv: int32, nsp: Ptr[uint8], nsn: int32, pfp: Ptr[uint8], \
+             pfn: int32, lp: Ptr[uint8], ln: int32, vp: Ptr[uint8], vn: int32):
+    old: int32 = _nsa_find(objv, nsp, nsn, lp, ln)
+    if old >= 0:
+        nsa_vloff[old] = _nsa_push(vp, vn)
+        nsa_vllen[old] = vn
+        return
+    if nsa_n >= NSA_MAX or nsa_buf_len + nsn + pfn + ln + vn + 8 >= 65536:
+        return
+    k: int32 = nsa_n
+    nsa_obj[k] = objv
+    nsa_nslen[k] = nsn
+    if nsn > 0:
+        nsa_nsoff[k] = _nsa_push(nsp, nsn)
+    nsa_pflen[k] = pfn
+    if pfn > 0:
+        nsa_pfoff[k] = _nsa_push(pfp, pfn)
+    nsa_lnoff[k] = _nsa_push(lp, ln)
+    nsa_lnlen[k] = ln
+    nsa_vloff[k] = _nsa_push(vp, vn)
+    nsa_vllen[k] = vn
+    nsa_n = k + 1
+
+
+# Append this element's stored attributes to its NamedNodeMap.
+def _nsa_collect(objv: int32, m: int32):
+    i: int32 = 0
+    while i < nsa_n:
+        if nsa_obj[i] == objv:
+            qw: int32 = 0
+            if nsa_pflen[i] > 0:
+                k: int32 = 0
+                while k < nsa_pflen[i] and qw < 250:
+                    nnm_name[qw] = nsa_buf[nsa_pfoff[i] + k]
+                    qw = qw + 1
+                    k = k + 1
+                nnm_name[qw] = 58                          # ':'
+                qw = qw + 1
+            j: int32 = 0
+            while j < nsa_lnlen[i] and qw < 251:
+                nnm_name[qw] = nsa_buf[nsa_lnoff[i] + j]
+                qw = qw + 1
+                j = j + 1
+            nnm_name[qw] = 0
+            av: int32 = _new_attr_obj(&nnm_name[0], qw, \
+                        js_new_string(&nsa_buf[nsa_vloff[i]], \
+                                      cast[uint64](nsa_vllen[i])), objv)
+            if nsa_nslen[i] > 0:
+                js_set_prop(av, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                            js_new_string(&nsa_buf[nsa_nsoff[i]], \
+                                          cast[uint64](nsa_nslen[i])))
+            i = i + 1
+            js_array_push(m, av)
+        else:
+            i = i + 1
+
+
+# Split a qualified name into prefix / localName inside nsq_buf-independent
+# scratch. Returns the index of the ':' or -1.
+def _qname_colon(qp: Ptr[uint8], qn: int32) -> int32:
+    i: int32 = 0
+    while i < qn:
+        if qp[i] == 58:
+            return i
+        i = i + 1
+    return -1
+
+
+# ---- namespace-aware attribute + tag-name API -------------------------------
+# Modelled on the OBJECT-keyed nsa_* store so a created element and a source
+# element behave the same. setAttributeNS also mirrors the value into the plain
+# attribute path, because the qualified name IS the key getAttribute() uses.
+nsa_lp:  Array[128, uint8]           # localName scratch
+nsa_pp:  Array[128, uint8]           # prefix scratch
+nsa_vv:  Array[4096, uint8]          # value scratch
+
+
+def _ns_dispatch(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    nsn: int32 = -1
+    if js_arg_count() >= 1 and js_type_of(js_arg(0)) != TAG_NULL and \
+       js_type_of(js_arg(0)) != TAG_UNDEF:
+        nsn = _arg_bytes(0, &nsuri_buf[0], 256)
+        if nsn == 0:
+            nsn = -1
+    if rel == NID_GETBYTAGNS:
+        garr: int32 = js_new_array_v()
+        gln: int32 = 0
+        if js_arg_count() >= 2:
+            gln = _arg_bytes(1, &nsa_lp[0], 128)
+        gall: int32 = js_new_array_v()
+        _set_query_scope()
+        _dom_collect_selector(cast[Ptr[uint8]]("*"), 1, g_qlo, g_qhi, gall)
+        _cre_collect(cast[Ptr[uint8]]("*"), 1, gall)
+        gi: int32 = 0
+        while gi < js_array_len(gall):
+            gel: int32 = js_array_get(gall, gi)
+            if _ns_el_matches(gel, nsn, &nsa_lp[0], gln) != 0:
+                js_array_push(garr, gel)
+            gi = gi + 1
+        return garr
+    # the remaining four take (namespace, name-ish) — split per method below.
+    if rel == NID_SETATTRNS:
+        if js_arg_count() < 3:
+            return js_undefined()
+        qn: int32 = _arg_bytes(1, &nsq_buf[0], 128)
+        qc: int32 = _validate_qname(&nsq_buf[0], qn, &nsuri_buf[0], nsn)
+        if qc != 0:
+            return _throw_qname(qc)
+        col: int32 = _qname_colon(&nsq_buf[0], qn)
+        pfn: int32 = -1
+        lo: int32 = 0
+        if col >= 0:
+            pfn = col
+            lo = col + 1
+        k: int32 = 0
+        while k < pfn and k < 128:
+            nsa_pp[k] = nsq_buf[k]
+            k = k + 1
+        j: int32 = 0
+        while lo + j < qn and j < 128:
+            nsa_lp[j] = nsq_buf[lo + j]
+            j = j + 1
+        vn: int32 = _arg_bytes(2, &nsa_vv[0], 4096)
+        _nsa_set(thisv, &nsuri_buf[0], nsn, &nsa_pp[0], pfn, &nsa_lp[0], j, \
+                 &nsa_vv[0], vn)
+        # getAttribute(qualifiedName) must see it too.
+        sel: int32 = _find_el_by_obj(thisv)
+        if sel >= 0:
+            _sattr_set(sel, &nsq_buf[0], qn, &nsa_vv[0], vn)
+        else:
+            nsq_buf[qn] = 0
+            js_set_prop(thisv, &nsq_buf[0], cast[uint64](qn), js_arg(2))
+        g_attr_gen = g_attr_gen + 1
+        return js_undefined()
+    ln2: int32 = 0
+    if js_arg_count() >= 2:
+        ln2 = _arg_bytes(1, &nsa_lp[0], 128)
+    idx: int32 = _nsa_find(thisv, &nsuri_buf[0], nsn, &nsa_lp[0], ln2)
+    if rel == NID_HASATTRNS:
+        if idx >= 0:
+            return js_bool(1)
+        # An attribute that came from the source start tag has no nsa_* row;
+        # in an HTML document it is in the null namespace.
+        if nsn < 0:
+            nsa_lp[ln2] = 0
+            return js_bool(_el_has_attribute(thisv, &nsa_lp[0], ln2))
+        return js_bool(0)
+    if rel == NID_GETATTRNS:
+        if idx >= 0:
+            return js_new_string(&nsa_buf[nsa_vloff[idx]], \
+                                 cast[uint64](nsa_vllen[idx]))
+        if nsn < 0:
+            nsa_lp[ln2] = 0
+            return _el_get_attribute(thisv, &nsa_lp[0], ln2)
+        return js_null()
+    # NID_REMATTRNS
+    if idx >= 0:
+        nsa_obj[idx] = -1
+        g_attr_gen = g_attr_gen + 1
+    return js_undefined()
+
+
+# Does element `elv` match getElementsByTagNameNS(ns, local)? "*" matches all.
+def _ns_el_matches(elv: int32, nsn: int32, lp: Ptr[uint8], ln: int32) -> int32:
+    nsv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("namespaceURI"), 12)
+    if nsn == 1 and nsuri_buf[0] == 42:                    # namespace "*"
+        pass
+    elif nsn < 0:
+        if js_type_of(nsv) == TAG_STR and js_str_bytelen(nsv) > 0:
+            return 0
+    else:
+        if js_type_of(nsv) != TAG_STR:
+            return 0
+        if _bytes_eq(js_str_bytes(nsv), js_str_bytelen(nsv), \
+                     &nsuri_buf[0], nsn) == 0:
+            return 0
+    if ln == 1 and lp[0] == 42:                            # localName "*"
+        return 1
+    lv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("localName"), 9)
+    if js_type_of(lv) != TAG_STR:
+        return 0
+    return _bytes_eq(js_str_bytes(lv), js_str_bytelen(lv), lp, ln)
+
+
+# element.hasAttribute(name), as a plain function (see _el_get_attribute).
+def _el_has_attribute(thisv: int32, np: Ptr[uint8], n: int32) -> int32:
+    v: int32 = _el_get_attribute(thisv, np, n)
+    if js_type_of(v) == TAG_NULL or js_type_of(v) == TAG_UNDEF:
+        return 0
+    return 1
+
+
 # Does created element `elv` answer to getElementsByTagName(`np`[0..nn))?
 def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
     if nn == 1 and np[0] == 42:                            # "*"
@@ -1137,15 +1368,19 @@ def _gbt_name_matches(elv: int32, np: Ptr[uint8], nn: int32) -> int32:
         gbt_qn[qw] = lp[li]
         qw = qw + 1
         li = li + 1
-    if _bytes_eq(&gbt_qn[0], qw, np, nn) != 0:
-        return 1
     nsv: int32 = js_get_prop(elv, cast[Ptr[uint8]]("namespaceURI"), 12)
-    if js_type_of(nsv) != TAG_STR:
-        return 0
-    if _bytes_eq(js_str_bytes(nsv), js_str_bytelen(nsv), \
-                 cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28) == 0:
-        return 0
-    # HTML namespace: qualified name compared against the LOWERCASED argument.
+    ishtml: int32 = 0
+    if js_type_of(nsv) == TAG_STR and \
+       _bytes_eq(js_str_bytes(nsv), js_str_bytelen(nsv), \
+                 cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28) != 0:
+        ishtml = 1
+    if ishtml == 0:
+        # Non-HTML namespace: the qualified name must equal the argument
+        # EXACTLY (case-sensitively).
+        return _bytes_eq(&gbt_qn[0], qw, np, nn)
+    # HTML namespace in an HTML document: the qualified name must equal the
+    # LOWERCASED argument. An <Abc> in the HTML namespace therefore does NOT
+    # answer to getElementsByTagName("Abc").
     if qw != nn:
         return 0
     i: int32 = 0
@@ -1207,7 +1442,16 @@ def _el_get_attribute(thisv: int32, nmp: Ptr[uint8], an: int32) -> int32:
                 return js_null()
             return gpv
         return js_null()
-    # created node: read the property we stashed (class -> className).
+    # created node: the object-keyed attribute store is authoritative (it is
+    # where setAttribute() lower-cases the name), then the stashed property.
+    gni: int32 = 0
+    while gni < an and gni < 128:
+        nsa_lp[gni] = _hx_lower(nmp[gni])
+        gni = gni + 1
+    gns: int32 = _nsa_find(thisv, cast[Ptr[uint8]](""), -1, &nsa_lp[0], gni)
+    if gns >= 0:
+        return js_new_string(&nsa_buf[nsa_vloff[gns]], \
+                             cast[uint64](nsa_vllen[gns]))
     gcid: int32 = _find_cre_by_obj(thisv)
     if gcid >= 0:
         if _bytes_eq(nmp, an, cast[Ptr[uint8]]("class"), 5) != 0:
@@ -2564,6 +2808,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _feat_accessor(rel)
     if rel >= NID_IMPL_HASFEAT and rel <= NID_IMPL_CREDOCT:
         return _impl_dispatch(rel)
+    if rel >= NID_SETATTRNS and rel <= NID_GETBYTAGNS:
+        return _ns_dispatch(rel)
     if rel >= NID_ATTRS_ACC and rel <= NID_PREFIX_SET:
         return _nsattr_accessor(rel)
     if rel == NID_NNM_GETNAMED:
@@ -2773,8 +3019,8 @@ def _js_host_dispatch(id: int32) -> int32:
         if js_arg_count() >= 1:
             tnm: int32 = _arg_bytes(0, &dom_idtmp[0], 256)
             _set_query_scope()
-            _dom_collect_selector(&dom_idtmp[0], tnm, g_qlo, g_qhi, tarr)
             traw: int32 = js_new_array_v()
+            _dom_collect_selector(&dom_idtmp[0], tnm, g_qlo, g_qhi, traw)
             _cre_collect(&dom_idtmp[0], tnm, traw)         # + created nodes
             # The selector machinery matches tag names ASCII-case-INSENSITIVELY,
             # which is right for parsed HTML but not for createElementNS nodes:
@@ -2842,6 +3088,14 @@ def _js_host_dispatch(id: int32) -> int32:
                 else:
                     js_set_prop(rtgt, &rn[0], cast[uint64](ran), \
                                 js_new_string(&dom_txtbuf[0], 0))
+                rla: int32 = 0
+                while rla < ran and rla < 128:
+                    nsa_lp[rla] = _hx_lower(rn[rla])
+                    rla = rla + 1
+                rnsi: int32 = _nsa_find(rtgt, cast[Ptr[uint8]](""), -1, \
+                                        &nsa_lp[0], rla)
+                if rnsi >= 0:
+                    nsa_obj[rnsi] = -1
                 _mo_record_attr(js_this(), &rn[0], ran, rm_oldattr)
         return js_undefined()
     if rel == NID_REMEVT:
@@ -3294,6 +3548,9 @@ def _js_host_dispatch(id: int32) -> int32:
         nsarg: int32 = 0
         if rel == NID_CREATE_NS:
             nsarg = 1
+        if cre_n >= CRE_MAX and dom_warn_cre == 0:
+            dom_warn_cre = 1
+            js_out_note(cast[Ptr[uint8]]("[engine] CEILING CRE_MAX reached: further document.createElement/createElementNS calls return null and the page will fail on the next .appendChild. CRE_MAX="), CRE_MAX)
         if js_arg_count() < nsarg + 1 or cre_n >= CRE_MAX:
             return js_null()
         tn: int32 = _arg_bytes(nsarg, &dom_idtmp[0], 256)
@@ -3922,6 +4179,20 @@ def _js_host_dispatch(id: int32) -> int32:
                     _set_url_prop(tgt, &nm2[0], cast[uint64](an2), suv, suvn)
                 else:
                     js_set_prop(tgt, &nm2[0], cast[uint64](an2), js_arg(1))
+                # Record it as a real ATTRIBUTE too, so element.attributes can
+                # enumerate it. A created element has no dom_* row and no
+                # sattr_* entry, so before this its setAttribute() was invisible
+                # to element.attributes (dom/nodes/case.html asserts
+                # node.attributes[0].localName after setAttribute).
+                if el3 < 0:
+                    la: int32 = 0
+                    while la < an2 and la < 128:
+                        nsa_lp[la] = _hx_lower(nm2[la])
+                        la = la + 1
+                    lav: int32 = _arg_bytes(1, &nsa_vv[0], 4096)
+                    _nsa_set(tgt, cast[Ptr[uint8]](""), -1, \
+                             cast[Ptr[uint8]](""), -1, &nsa_lp[0], la, \
+                             &nsa_vv[0], lav)
                 _mo_record_attr(js_this(), &nm2[0], an2, mo_oldattr)
         return js_undefined()
     if rel == NID_GETCTX:
@@ -4440,6 +4711,7 @@ def _build_attrs_map(thisv: int32) -> int32:
                                                 cast[uint64](sattr_vlen[s])), \
                                   thisv))
             s = s + 1
+    _nsa_collect(thisv, m)
     js_set_prop(m, cast[Ptr[uint8]]("getNamedItem"), 12, \
                 js_new_native_fn(js_hbase + NID_NNM_GETNAMED))
     js_set_prop(m, cast[Ptr[uint8]]("item"), 4, \
@@ -5375,6 +5647,8 @@ def _js_build_document():
                 js_new_native_fn(js_hbase + NID_GETBYCLASS))
     js_set_prop(doc, cast[Ptr[uint8]]("getElementsByTagName"), 20, \
                 js_new_native_fn(js_hbase + NID_GETBYTAG))
+    js_set_prop(doc, cast[Ptr[uint8]]("getElementsByTagNameNS"), 22, \
+                js_new_native_fn(js_hbase + NID_GETBYTAGNS))
     js_set_prop(doc, cast[Ptr[uint8]]("addEventListener"), 16, \
                 js_new_native_fn(js_hbase + NID_ADDEVT))
     # The other two halves of the EventTarget interface on `document`: pages do

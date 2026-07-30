@@ -311,31 +311,38 @@ g_radioname_len: int32 = 0
 # records — the TOP-LEVEL mount points where a script-built subtree attaches
 # under an existing source element. ap_removed marks an edge unlinked
 # (removeChild / node.remove()).
-APPEND_MAX:  int32 = 256
-ap_parent:   Array[256, int32]
-ap_child:    Array[256, int32]
-ap_removed:  Array[256, int32]
+APPEND_MAX:  int32 = 2048
+ap_parent:   Array[2048, int32]
+ap_child:    Array[2048, int32]
+ap_removed:  Array[2048, int32]
 ap_n:        int32 = 0
 
 # createElement / createTextNode nodes (not in source): a tag + a JS object we
 # read back. cre_is_text marks a text node (no tag; textContent only).
 # cre_gone marks a node detached from the tree (node.remove()/removeChild),
 # so the emitter skips it wherever it is referenced.
-CRE_MAX:     int32 = 256
-cre_obj:     Array[256, int32]
-cre_tag_off: Array[256, int32]       # tag name in dom_idbuf
-cre_tag_len: Array[256, int32]
-cre_is_text: Array[256, int32]       # 1 = text node (emit escaped text only)
-cre_gone:    Array[256, int32]       # 1 = detached (skip when emitting)
+# 256 -> 8192 (2026-07-29). 256 created nodes is not a page budget, it is a
+# few seconds of any framework render, and the overflow behaviour was a SILENT
+# `return null` from document.createElement — so the page died on
+# `.appendChild of null` with no clue why. Measured: dom/nodes/case.html builds
+# ~3,000 elements and lost 179 subtests to this. DOM_MAX (source elements) is
+# already 8192; match it, and say so out loud when it is reached.
+CRE_MAX:     int32 = 8192
+cre_obj:     Array[8192, int32]
+cre_tag_off: Array[8192, int32]      # tag name in dom_idbuf
+cre_tag_len: Array[8192, int32]
+cre_is_text: Array[8192, int32]      # 1 = text node (emit escaped text only)
+cre_gone:    Array[8192, int32]      # 1 = detached (skip when emitting)
 cre_n:       int32 = 0
+dom_warn_cre: int32 = 0              # 1 = the CRE_MAX ceiling note has been emitted
 
 # created-node -> created-node child edges (nesting): a script can build a
 # whole subtree (table > tr > td) before mounting its root. Ordered by
 # insertion; cc_removed marks an unlinked edge.
-CC_MAX:      int32 = 1024
-cc_owner:    Array[1024, int32]      # parent created-node id
-cc_child:    Array[1024, int32]      # child created-node id
-cc_removed:  Array[1024, int32]
+CC_MAX:      int32 = 16384
+cc_owner:    Array[16384, int32]     # parent created-node id
+cc_child:    Array[16384, int32]     # child created-node id
+cc_removed:  Array[16384, int32]
 cc_n:        int32 = 0
 
 # innerHTML-setter fragment parser scratch (see _parse_fragment). A bounded
@@ -459,6 +466,27 @@ sattr_n:       int32 = 0
 # element it prints: with a mutated DOM each read re-SERIALISES the subtree, so
 # printing the same <html> element 200 times built 200 copies of the document.
 # Keyed on a DOM-mutation generation so a read after any mutation recomputes.
+# Namespaced / created-element attribute store, keyed on the element OBJECT
+# handle so it serves both source and created nodes. The pre-existing stores do
+# not: sattr_* is keyed on a dom_* row (source only) and a created element's
+# setAttribute() just wrote a JS property, which cannot be enumerated as an
+# attribute list (the object also carries tagName/nodeType/...). Every entry
+# records namespace + prefix + localName + value, which is what
+# element.attributes[i].prefix/.localName/.namespaceURI need.
+NSA_MAX:     int32 = 2048
+nsa_obj:     Array[2048, int32]      # owning element object handle (-1 = removed)
+nsa_nsoff:   Array[2048, int32]
+nsa_nslen:   Array[2048, int32]      # -1 = null namespace
+nsa_pfoff:   Array[2048, int32]
+nsa_pflen:   Array[2048, int32]      # -1 = null prefix
+nsa_lnoff:   Array[2048, int32]
+nsa_lnlen:   Array[2048, int32]
+nsa_vloff:   Array[2048, int32]
+nsa_vllen:   Array[2048, int32]
+nsa_buf:     Array[65536, uint8]
+nsa_buf_len: int32 = 0
+nsa_n:       int32 = 0
+
 IHC_MAX:     int32 = 512
 ihc_el:      Array[512, int32]
 ihc_val:     Array[512, int32]
@@ -1204,6 +1232,9 @@ def _dom_reset():
     ihc_n = 0
     ihc_next = 0
     g_dom_gen = 1
+    nsa_n = 0
+    dom_warn_cre = 0
+    nsa_buf_len = 0
     ddi: int32 = 0
     while ddi < DOM_MAX:
         dom_detached[ddi] = 0
