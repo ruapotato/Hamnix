@@ -14,7 +14,10 @@
  * Build wrapper: scripts/adder_cc_llvm.sh. */
 #include <unistd.h>
 
-long print_u64(unsigned long v) {
+/* WEAK: an Adder program that DEFINES print_u64 itself (the differential
+ * fuzzer's PRELUDE does, on top of extern sys_write) emits a strong definition
+ * in its .ll; this stub must then yield instead of colliding at link time. */
+__attribute__((weak)) long print_u64(unsigned long v) {
     char buf[32];
     char tmp[32];
     int n = 0, t = 0;
@@ -24,4 +27,16 @@ long print_u64(unsigned long v) {
     buf[n++] = '\n';
     (void)!write(1, buf, n);
     return 0;
+}
+
+/* sys_write(fd, buf, count) — the raw-syscall primitive an Adder program
+ * declares `extern` and builds its own print_u64 on top of (the differential
+ * fuzzer's PRELUDE and tests/fuzz/regress_ptr_signedness.ad both do). It is
+ * `extern` in Adder, so the .ll emits `declare i64 @sys_write(i32, ptr, i64)`
+ * and the link needs a definition. Without it NO fuzzer-shaped program could
+ * be run through the LLVM lane at all — which is why the lane that ships all
+ * 272 userland apps had no execution-differential coverage, and why the
+ * Ed25519 lshr-for-ashr miscompile reached every binary unseen. */
+__attribute__((weak)) long sys_write(int fd, const char *buf, unsigned long count) {
+    return (long)write(fd, buf, count);
 }

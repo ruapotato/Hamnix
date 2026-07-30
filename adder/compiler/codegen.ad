@@ -2091,9 +2091,23 @@ def member_scalar_signedness(node: uint32) -> uint32:
     sidx1: uint32 = member_resolve(obj, &is_ptr)
     if sidx1 == 0:
         return 0
+    return member_scalar_signedness_in(sidx1, nd_name_off[node], nd_name_len[node])
+
+
+# Same, but with the containing struct ALREADY resolved (1-based index). Split
+# out of member_scalar_signedness so a caller that resolved the struct by some
+# other means can reuse the field-tristate lookup. ssa.ad needs exactly this:
+# member_resolve walks codegen's LOCAL type-node table, which the SSA/LLVM lane
+# never populates, so `s[0].field` on a `Ptr[Struct]` PARAMETER resolved to 0 =
+# "unknown" there — and unknown means UNSIGNED for `>>`/`/`/`%` and SIGNED for
+# every ordered compare. `ptr[0].field` is the canonical Adder struct idiom
+# (LANGUAGE.md), so that was not a corner case. ssa.ad resolves the struct from
+# its OWN ssa_local_struct table and then calls in here.
+def member_scalar_signedness_in(sidx1: uint32, name_off: uint32,
+                                name_len: uint32) -> uint32:
     foff: uint32 = 0
     fsgn: uint32 = 0
-    fsz: uint32 = struct_field_find(sidx1, nd_name_off[node], nd_name_len[node], &foff, &fsgn)
+    fsz: uint32 = struct_field_find(sidx1, name_off, name_len, &foff, &fsgn)
     if fsz == SF_NOFIELD:
         return 0
     # locate the field index again to read sf_signedness (struct_field_find
@@ -2104,7 +2118,7 @@ def member_scalar_signedness(node: uint32) -> uint32:
     i: uint32 = 0
     while i < n:
         idx: uint32 = base + i
-        if name_match(sf_name_off[idx], sf_name_len[idx], nd_name_off[node], nd_name_len[node]) != 0:
+        if name_match(sf_name_off[idx], sf_name_len[idx], name_off, name_len) != 0:
             return sf_signedness[idx]
         i = i + 1
     return 0
