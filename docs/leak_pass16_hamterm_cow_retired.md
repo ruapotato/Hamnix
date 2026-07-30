@@ -33,23 +33,38 @@ established: `cow_share_page` takes a frame `0 -> 2` and the child's death
 returns it to 1, not 0, so an absolute balance is a permanent false red while
 the parent lives.
 
-Run: 4 cycles, image age 344 s against the commit it was built from.
+Two runs, on two separately-built images: **4 cycles** (image age 344 s) and,
+after the fixes below, **6 cycles** (image age 0 s). Six cycles give five
+inter-cycle deltas, so "constant positive net" versus "settles to zero" is a
+shape rather than a pair of numbers.
 
 ---
 
 ## 1. THE ANSWER — no COW share arm strands a frame under the terminal
 
-`track org` over every arm, after four terminal open/closes:
+`track org` over every arm, after six terminal open/closes (run 2):
 
 | arm | span | TOTAL live | owner-dead | owner-stray |
 |----:|------|-----------:|-----------:|------------:|
 | 1  | W^X RO verbatim share | 101 | **0** | **0** |
 | 2  | residual (unnamed caller) | 0 | 0 | 0 |
-| 5  | `cow_resolve_pte` private copy | 12 | **0** | **0** |
-| 19 | ELF image span | 20 | **0** | **0** |
-| 21 | user stack span | 63 | **0** | **0** |
-| 23 | owner mmap VMA fork share | 16 | **0** | **0** |
+| 5  | `cow_resolve_pte` private copy | 10 | **0** | **0** |
+| 19 | ELF image span | 21 | **0** | **0** |
+| 21 | user stack span | 64 | **0** | **0** |
+| 23 | owner mmap VMA fork share | 21 | **0** | **0** |
 | 24 | demand-resident fork share | 64 | **0** | **0** |
+
+Per-cycle nets over the six-cycle run, for the two arms pass 15 named:
+
+```
+arm    d2      d3      d4      d5      d6
+23     +2      +2      +3      +2      +3     -> RESIDENCY (see below)
+24     -3      +0      +0      +3      -3     -> closed
+```
+
+Arm 23 is the only arm with a persistent positive net, and it is the same
+`hamsh`-arena-growth residency pass 15 named and adjudicated: `owner-dead = 0`,
+`owner-stray = 0` over all 21 survivors.
 
 **`owner-dead = 0` and `owner-stray = 0` on every arm.** Not one survivor of
 any COW share path has a dead owner, and not one has a live owner that no
@@ -167,6 +182,8 @@ about.
 
 The census, with both controls green in the same sweep:
 
+Run 1 (4 cycles):
+
 ```
 [census] walked 20 address spaces
 [census] orphaned frames: 2 (of 6090 live)
@@ -177,6 +194,14 @@ The census, with both controls green in the same sweep:
 [census] site 20: 1 orphans, live 64
 ```
 
+**Run 2 (6 cycles) reported `orphaned frames: 1` — the plant and nothing
+else**, with site 20 again at live 64 and `+0` across all six cycles. So the
+site-20 orphan is not reproducible run-to-run and is not per-cycle in either
+run. It is a single transient frame, not a slope, and the strongest statement
+the data supports is the one the second run makes: **under six identical
+terminal open/closes, the whole machine holds exactly one unreachable frame
+and it is the one deliberately planted there.**
+
 One of the two is the deliberately planted positive control, identified by its
 `0xc0ffee00` tag rather than by its site (the plant allocates at a real
 user-mapped site, so a gate that assumed a site would mis-credit it). The
@@ -186,8 +211,9 @@ stack prefix.**
 What is counted about it:
 
 * Site 20's live count is **64 — exactly one order-6 run — and it did not move
-  by a single frame across four cycles** (`+0 +0 +0`). Whatever this is, it is
-  **not per-cycle**; a leak on the terminal path would have shown four of them.
+  by a single frame across four cycles, nor across six in the second run**
+  (`+0` throughout). Whatever this is, it is **not per-cycle**; a leak on the
+  terminal path would have shown one per cycle.
 * Arm 21 (the user-stack span) holds **63** survivors. 63 = 64 − 1. The one
   frame the census calls unreachable is the one page of that 64-page run that
   the COW ledger no longer tracks.
