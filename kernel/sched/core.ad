@@ -7447,7 +7447,7 @@ def _mm_census_walk_task(su: uint64):
     local_irq_restore(irq)
 
 
-# Cumulative stale-leaf tally across every reap (see _mm_reap_stale_leaf_audit).
+# Cumulative stale-leaf tally across every reap (see mm_reap_stale_leaf_audit).
 _mm_stale_leaves_total: uint64 = 0
 _mm_stale_reaps:        uint64 = 0
 
@@ -7489,7 +7489,7 @@ def _mm_leaf_unreclaimed(su: uint64, phys: uint64) -> int32:
     return 1
 
 
-def _mm_reap_stale_leaf_audit(su: uint64):
+def mm_reap_stale_leaf_audit(su: uint64):
     # Count the USER leaves this task still maps at the instant its page
     # tables are destroyed — the references that die un-dropped.
     #
@@ -8296,8 +8296,8 @@ def task_reap(slot: int32):
     #     WHOLESALE frees below have not run yet, so image_phys / interp_phys
     #     / ustack_phys still name the runs that ARE about to be reclaimed.
     #     That makes this the one moment where "a leaf nothing will reclaim"
-    #     is exactly computable — see _mm_reap_stale_leaf_audit.
-    _mm_reap_stale_leaf_audit(su)
+    #     is exactly computable — see mm_reap_stale_leaf_audit.
+    mm_reap_stale_leaf_audit(su)
     # 1. ELF image region (physical) — back to the region pool, COW-safely.
     #    region_free_cow_safe drops this owner's per-PFN COW reference on
     #    every image frame BEFORE pooling: a frame a live forked relative

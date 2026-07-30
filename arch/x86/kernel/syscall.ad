@@ -2704,7 +2704,7 @@ def _do_execve_inner(a0: uint64, a1: uint64, a2: uint64) -> int64:
     # The reap-side audit reports ZERO of these, so if the leak is a lost
     # reference at all, it is lost HERE. Cross-module call into
     # kernel/sched/core.ad.
-    _mm_reap_stale_leaf_audit(exec_slot)
+    mm_reap_stale_leaf_audit(exec_slot)
     entry: uint64 = elf_load_blob(cast[Ptr[uint8]](blob), sz)
     if entry == 0:
         # #106 GRACEFUL OOM. Two bugs converged here into a boot-wedge:
