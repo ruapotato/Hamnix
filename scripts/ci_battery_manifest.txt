@@ -4437,3 +4437,28 @@ bash scripts/test_llvm_lane_diff.sh
 # install, and exits nonzero. INCONCLUSIVE (125), never a soft green, when the
 # multi-chunk condition was not actually reached. ~7 min, one QEMU.
 bash scripts/ci_run_gate.sh scripts/test_install_short_write.sh
+# test_arm64_build_integrity: ARM64 IS THE LANE THAT QUIETLY STOPS BUILDING, and
+# it has now done so TWICE by the same shape. 2026-07-28: api_autostubs
+# regeneration collided with the hand-maintained arch/arm64/llvm/stubs.c ->
+# multiple definition. 2026-07-30: the MIRROR of it — stubs.c covered "the 5 LLVM
+# bails (start_kernel, do_syscall, ...)", the SSA/LLVM subset broadened on the
+# x86 track, `do_syscall` started EMITTING instead of bailing, and its emitted
+# body called the still-bailed `_do_syscall_dispatch` that stubs.c had never
+# listed because do_syscall itself used to be the stub: "relocation truncated to
+# fit: R_AARCH64_CALL26 against undefined symbol". Both times a hand-maintained
+# list drifted against a moving compiler; build_kernel_llvm_arm64.sh step 3c now
+# derives it from the emitter's own `; BAILED` markers, and this gate asserts the
+# invariants that fix rests on — every BAILED symbol defined in the image, and
+# the autostub file defining ONLY BAILED symbols so it can never decay into
+# "stub whatever is undefined" (which would be a soft green by construction).
+# It also covers the OTHER ARM64 lane, the hand-written seed encoder
+# (compiler/codegen_arm64.py), and does not merely inspect emitted code: it RUNS
+# the aarch64 binary under qemu-aarch64 user-mode and requires exit 42, which the
+# program returns only if a for-loop sum, fib(10), sum_to(10) and array
+# round-trips all agree. Emitted-code inspection is what let the lshr/ashr
+# signedness miscompile ship 684 sites deep; execution against an oracle is the
+# only thing that catches that class. QEMU-SYSTEM-FREE (~90 s) and deliberately
+# cheaper than test_arm64_llvm_kernel.sh's full TCG boot, so a link regression
+# trips a tripwire instead of waiting on a boot. INCONCLUSIVE (125), never a soft
+# green, when the aarch64 cross toolchain or qemu-user is absent on the runner.
+bash scripts/ci_run_gate.sh scripts/test_arm64_build_integrity.sh
