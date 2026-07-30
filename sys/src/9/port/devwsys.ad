@@ -3419,7 +3419,7 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
     # `wklat <n>` — the WAKE->DISPATCH latency instrument + the wakeup
     # preemption kill-switch (kernel/sched/core.ad).
     #   0 wakeup preemption OFF   1 ON   2 reset+arm   3 report   4 disarm
-    #   5 start the in-kernel probe
+    #   5 start the in-kernel probe   6 dump the outlier CONTEXT ring
     # Parsed before the hostowner gate for exactly the reason `sysirq` and
     # `ptrlat` are. /proc/self/ctl's `wklat` verb is uid-0-or-hostowner only,
     # so on a real DE boot it answers "ctl write refused rc=-1" and measures
