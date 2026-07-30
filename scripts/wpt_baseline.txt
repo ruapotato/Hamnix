@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 885
+#!PASS_FLOOR 1123
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope (.a) is valid
@@ -566,36 +566,6 @@ dom/historical-mutation-events.html	The DOMNodeRemovedFromDocument mutation even
 dom/historical-mutation-events.html	The DOMSubtreeModified mutation event must not be fired.
 dom/historical.html	Attr member must be removed: isId
 dom/historical.html	Attr member must be removed: schemaTypeInfo
-dom/historical.html	DOMImplementation.getFeature() must be removed.
-dom/historical.html	DocumentType member must be removed: entities
-dom/historical.html	DocumentType member must be removed: internalSubset
-dom/historical.html	DocumentType member must be removed: notations
-dom/historical.html	Historical DOM features must be removed: async
-dom/historical.html	Historical DOM features must be removed: commands
-dom/historical.html	Historical DOM features must be removed: createEntityReference
-dom/historical.html	Historical DOM features must be removed: cssElementMap
-dom/historical.html	Historical DOM features must be removed: defaultCharset
-dom/historical.html	Historical DOM features must be removed: domConfig
-dom/historical.html	Historical DOM features must be removed: height
-dom/historical.html	Historical DOM features must be removed: normalizeDocument
-dom/historical.html	Historical DOM features must be removed: origin
-dom/historical.html	Historical DOM features must be removed: renameNode
-dom/historical.html	Historical DOM features must be removed: strictErrorChecking
-dom/historical.html	Historical DOM features must be removed: width
-dom/historical.html	Historical DOM features must be removed: xmlEncoding
-dom/historical.html	Historical DOM features must be removed: xmlStandalone
-dom/historical.html	Historical DOM features must be removed: xmlVersion
-dom/historical.html	Node member must be removed: attributes
-dom/historical.html	Node member must be removed: getFeature
-dom/historical.html	Node member must be removed: getUserData
-dom/historical.html	Node member must be removed: hasAttributes
-dom/historical.html	Node member must be removed: isSupported
-dom/historical.html	Node member must be removed: localName
-dom/historical.html	Node member must be removed: namespaceURI
-dom/historical.html	Node member must be removed: prefix
-dom/historical.html	Node member must be removed: rootNode
-dom/historical.html	Node member must be removed: setUserData
-dom/historical.html	XMLDocument.load
 dom/interface-objects.html	Should be able to delete AbortController.
 dom/interface-objects.html	Should be able to delete AbortSignal.
 dom/interface-objects.html	Should be able to delete Attr.
@@ -624,11 +594,13 @@ dom/lists/DOMTokenList-Iterable.html	DOMTokenList has forEach method.
 dom/lists/DOMTokenList-Iterable.html	DOMTokenList has length method.
 dom/lists/DOMTokenList-Iterable.html	DOMTokenList has values method.
 dom/lists/DOMTokenList-Iterable.html	DOMTokenList is iterable via for-of loop.
-dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.classList in  namespace should be DOMTokenList.
-dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.classList in http://example.com/ namespace should be DOMTokenList.
-dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
-dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
-dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	a.relList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	a.relList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	area.relList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sandbox in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	link.relList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	link.sizes in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
+dom/lists/DOMTokenList-coverage-for-attributes.html	output.htmlFor in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
 dom/lists/DOMTokenList-iteration.html	classList
 dom/lists/DOMTokenList-iteration.html	classList inheritance from Array.prototype
 dom/lists/DOMTokenList-iteration.html	classList.entries
@@ -907,159 +879,401 @@ dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with sibling of child as
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() with undefined as an argument.
 dom/nodes/ChildNode-replaceWith.html	Text.replaceWith() without any argument.
 dom/nodes/Comment-constructor.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/DOMImplementation-createDocument.html	Untitled
-dom/nodes/DOMImplementation-createDocument.html	createDocument with missing arguments
-dom/nodes/DOMImplementation-createDocumentType.html	Untitled
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "",":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "","f:oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "","foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "",null,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/",":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","f1oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","f:oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","foo1",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xml",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xmlfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xmlfoo:bar",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xmlns",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "/","xmlns:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","-foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/",".foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","0:a",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/",":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","<foo>",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","XML:foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","XMLNS",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","XMLNS:foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","_:_",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","_:h0",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","_:test",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a-b:c",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a.b:c",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:0",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:_",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:aெ",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:̀",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:;",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","a:ெ",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","aெ:a",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","f1oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","f::oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","f:o:o",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","f:oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","fo<o",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","foo1",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","l_:_",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:!",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:#",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:$",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:%",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:&",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:'",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:(",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:)",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:*",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:+",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:,",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:/",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:;",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:<",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:=",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:>",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:@",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:[",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:\"",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:\\",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:]",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:^",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:`",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:a ",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:{",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:}",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","namespaceURI:~",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","ns0:test",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","ns:_0",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","ns:a0",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","prefix::local",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","test:xmlns",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xml",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xml:test",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xmlfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xmlfoo:bar",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xmlns",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xmlns:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","xmlns:test",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","̀:a",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/",";:a",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://example.com/","ெ:a",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/",":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","f1oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","f:oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","foo1",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","xml",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","xmlfoo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/2000/xmlns/","xmlns",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace",":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","f1oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","f:oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","foo1",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xml",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xml:foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xmlfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xmlfoo:bar",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xmlns",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespace","xmlns:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/XML/1998/namespaces","xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: "http://www.w3.org/xml/1998/namespace","xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "/","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","0:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","XML:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","XMLNS",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","XMLNS:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","_:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","_:h0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","_:test",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a-b:c",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a.b:c",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a:aெ",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a:̀",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a:;",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","a:ெ",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","aெ:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","f::oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","f:o:o",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","fo<o",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","l_:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","ns0:test",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","ns:_0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","ns:a0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","prefix::local",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","test:xmlns",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","̀:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/",";:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://example.com/","ெ:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/2000/xmlns/","xmlns",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","xml:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for "http://www.w3.org/XML/1998/namespace","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"\ufffffoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"f<oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"f\uffffoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"foo\uffff",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"foo}",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"f}oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,";foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,"ெfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for null,undefined,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,"f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,"foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,"foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,"xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,"xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: characterSet aliases for undefined,undefined,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "/","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","0:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","XML:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","XMLNS",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","XMLNS:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","_:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","_:h0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","_:test",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a-b:c",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a.b:c",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a:aெ",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a:̀",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a:;",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","a:ெ",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","aெ:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","f::oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","f:o:o",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","fo<o",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","l_:_",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","ns0:test",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","ns:_0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","ns:a0",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","prefix::local",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","test:xmlns",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","̀:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/",";:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://example.com/","ெ:a",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/2000/xmlns/","xmlns",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","f:oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","xml:foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for "http://www.w3.org/XML/1998/namespace","xmlfoo:bar",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"\ufffffoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"f<oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"f\uffffoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"foo\uffff",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"foo}",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"f}oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,";foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,"ெfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for null,undefined,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,"f1oo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,"foo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,"foo1",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,"xml",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,"xmlfoo",null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: metadata for undefined,undefined,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"-foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,".foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,":",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"<foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"<foo>",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"\ufffffoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"^^",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f1oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f:o:o",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f:oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f<oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f\uffffoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"fo o",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo1",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo>",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo\uffff",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"foo}",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"f}oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"null:xml",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xml",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xmlfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xmlfoo:bar",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xmlns",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"xmlns:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"}foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,";foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,"ெfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,null,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: null,undefined,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"1foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,":foo",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"f1oo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"f::oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"f:oo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"foo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"foo1",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"foo:",null,"INVALID_CHARACTER_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xml",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xml:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xmlfoo",null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xmlfoo:bar",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xmlns",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,"xmlns:foo",null,"NAMESPACE_ERR"
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,null,null,null
+dom/nodes/DOMImplementation-createDocument.html	createDocument test: undefined,undefined,null,null
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("#", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("$", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("%", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("&", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("'", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("(", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType(")", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("*", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("1foo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType(":foo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("@", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("@foo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("^", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("_:_", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("_:_.", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("_:a-", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("_:h0", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("_:test", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("`", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("a-b:c", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("a-b:c.j", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("a.b:c", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:!", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:#", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:$", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:%", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:&", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:'", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:(", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:)", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:*", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:+", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:,", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:/", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:;", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:<", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:=", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:>", "", "") should throw INVALID_CHARACTER_ERR
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:@", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:[", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:\"", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:\\", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:]", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:^", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:`", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:a ", "", "") should throw INVALID_CHARACTER_ERR
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:{", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:}", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("edi:~", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("f1oo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("f:oo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("f@oo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "f'o\"o") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "f'oo") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "f\"oo") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "foo") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "", "foo>") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "f'o\"o", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "f'oo", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "f\"oo", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "foo", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo", "foo>", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo1", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo:", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("foo@", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("l_:_", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("ns0:test", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("ns:EEE.", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("ns:_-", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("ns:_0", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("ns:a0", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("prefix::local", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("test:root", "1234", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("test:root", "1234", "test") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("test:root", "test", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("test:root", "test", "test") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("{", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("}", "", "") should work
+dom/nodes/DOMImplementation-createDocumentType.html	createDocumentType("~", "", "") should work
 dom/nodes/DOMImplementation-createHTMLDocument-with-saved-implementation.html	createHTMLDocument(): from a saved and detached implementation does not return null
-dom/nodes/DOMImplementation-createHTMLDocument.html	Missing title argument
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 0: "","",""
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 1: null,"null","null"
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 2: undefined,undefined,""
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 3: "foo  bar baz","foo  bar baz","foo bar baz"
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 4: "foo\t\tbar baz","foo\t\tbar baz","foo bar baz"
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 5: "foo\n\nbar baz","foo\n\nbar baz","foo bar baz"
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 6: "foo\f\fbar baz","foo\f\fbar baz","foo bar baz"
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 7: "foo\r\rbar baz","foo\r\rbar baz","foo bar baz"
 dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): URL parsing
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): characterSet aliases
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): document location getter is null
-dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): metadata
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" Core", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" Core", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" XML", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" XML", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Co re", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Co re", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("CoRe", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("CoRe", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Coare", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Coare", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core ", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core ", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 1)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 100)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 2)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 3)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", undefined)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Corea", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Corea", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("This is filler text.", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XM L", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XM L", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML ", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML ", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3. 0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0 ")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0a")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.a0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a100.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a2.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a3.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 1)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 100)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 2)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 3)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", undefined)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMLa", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMLa", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMaL", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMaL", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XmL", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XmL", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aCore", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aCore", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aXML", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aXML", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("core", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("core", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("http://www.w3.org/TR/SVG11/feature#Script")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("http://www.w3.org/TR/SVG11/feature#Script", "7.5")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "1.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "1.0")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "1.1")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("xml", "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature("xml", null)
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature()
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(null, "")
-dom/nodes/DOMImplementation-hasFeature.html	hasFeature(undefined, "")
 dom/nodes/Document-adoptNode.html	Adopting a Document should throw.
 dom/nodes/Document-adoptNode.html	Adopting an Element called ':good:times:' should work.
 dom/nodes/Document-adoptNode.html	Adopting an Element called 'x<' should work.
@@ -1069,7 +1283,6 @@ dom/nodes/Document-characterSet-normalization-2.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Document-constructor.html	new Document(): URL parsing
 dom/nodes/Document-constructor.html	new Document(): characterSet aliases
 dom/nodes/Document-constructor.html	new Document(): children
-dom/nodes/Document-constructor.html	new Document(): interfaces
 dom/nodes/Document-constructor.html	new Document(): metadata
 dom/nodes/Document-contentType/contentType/contenttype_bmp.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Document-contentType/contentType/contenttype_css.html	<FILE PRODUCED NO RESULTS>
@@ -1084,9 +1297,43 @@ dom/nodes/Document-contentType/contentType/contenttype_png.html	<FILE PRODUCED N
 dom/nodes/Document-contentType/contentType/contenttype_txt.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Document-contentType/contentType/contenttype_xml.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Document-contentType/contentType/createDocument.html	Untitled
-dom/nodes/Document-contentType/contentType/createHTMLDocument.html	Untitled
 dom/nodes/Document-contentType/contentType/xhr_responseType_document.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/Document-createAttribute.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("") should throw
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("'")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("0")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("0:a")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute(":")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute(":a")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("TITLE")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("X")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("\"")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("\\")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("a:0")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("invalid^Name")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("title")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("x")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("x:y:x")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute("~")
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute(null)
+dom/nodes/Document-createAttribute.html	HTML document.createAttribute(undefined)
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("") should throw
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("'")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("0")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("0:a")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute(":")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute(":a")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("TITLE")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("X")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("\"")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("\\")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("a:0")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("invalid^Name")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("title")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("x")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("x:y:x")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute("~")
+dom/nodes/Document-createAttribute.html	XML document.createAttribute(null)
+dom/nodes/Document-createAttribute.html	XML document.createAttribute(undefined)
 dom/nodes/Document-createCDATASection.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/Document-createComment.html	createComment("-b")
 dom/nodes/Document-createComment.html	createComment("\v")
@@ -1094,7 +1341,6 @@ dom/nodes/Document-createComment.html	createComment("a -- b")
 dom/nodes/Document-createComment.html	createComment("a-")
 dom/nodes/Document-createComment.html	createComment(null)
 dom/nodes/Document-createComment.html	createComment(undefined)
-dom/nodes/Document-createElement-namespace.html	Created element's namespace in created HTML document
 dom/nodes/Document-createElement-namespace.html	Created element's namespace in created HTML document by DOMParser ('text/html')
 dom/nodes/Document-createElement-namespace.html	Created element's namespace in created MathML document
 dom/nodes/Document-createElement-namespace.html	Created element's namespace in created SVG document
@@ -1176,8 +1422,6 @@ dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', '*')
 dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', 'body')
 dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('http://www.w3.org/1999/xhtml', '*')
 dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS() should be a live collection
-dom/nodes/Document-implementation.html	Getting implementation off different documents
-dom/nodes/Document-implementation.html	Getting implementation off the same document
 dom/nodes/Document-importNode.html	False 'deep' argument.
 dom/nodes/Document-importNode.html	Import an Attr node with namespace/prefix correctly.
 dom/nodes/Document-importNode.html	No 'deep' argument.
@@ -1191,7 +1435,10 @@ dom/nodes/DocumentFragment-getElementById.html	It must return the first element 
 dom/nodes/DocumentFragment-getElementById.html	It must return the first element when there are matches, using a template
 dom/nodes/DocumentFragment-getElementById.html	The method must exist
 dom/nodes/DocumentType-literal.html	Untitled
-dom/nodes/DocumentType-remove.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/DocumentType-remove.html	doctype should support remove()
+dom/nodes/DocumentType-remove.html	remove() should work if doctype does have a parent
+dom/nodes/DocumentType-remove.html	remove() should work if doctype does have a parent and siblings
+dom/nodes/DocumentType-remove.html	remove() should work if doctype doesn't have a parent
 dom/nodes/Element-childElementCount-dynamic-add.html	Untitled
 dom/nodes/Element-childElementCount-dynamic-remove.html	Untitled
 dom/nodes/Element-children.html	Untitled
@@ -1205,7 +1452,6 @@ dom/nodes/Element-closest.html	Element.closest with context node 'test4' and sel
 dom/nodes/Element-closest.html	Element.closest with context node 'test4' and selector '[default]'
 dom/nodes/Element-closest.html	Element.closest with context node 'test4' and selector 'select > :scope'
 dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'input[required]'
-dom/nodes/Element-firstElementChild-namespace.html	Untitled
 dom/nodes/Element-getElementsByClassName.html	Interface should be correct.
 dom/nodes/Element-getElementsByClassName.html	getElementsByClassName() should be a live collection
 dom/nodes/Element-getElementsByTagName-change-document-HTMLNess.html	<FILE PRODUCED NO RESULTS>
@@ -1275,8 +1521,6 @@ dom/nodes/Element-tagName.html	tagName should be updated when changing ownerDocu
 dom/nodes/Element-tagName.html	tagName should not upper-case for SVG elements in HTML documents.
 dom/nodes/Element-tagName.html	tagName should not upper-case for other non-HTML namespaces
 dom/nodes/Element-webkitMatchesSelector.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/MutationObserver-attributes.html	attributes Element.attributes.value: same id mutation
-dom/nodes/MutationObserver-attributes.html	attributes Element.attributes.value: update mutation
 dom/nodes/MutationObserver-attributes.html	attributes Element.id: same value mutation
 dom/nodes/MutationObserver-attributes.html	attributes Element.removeAttribute: removal no mutation
 dom/nodes/MutationObserver-attributes.html	attributes Element.setAttribute: classname mutation
@@ -1660,42 +1904,91 @@ dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'par
 dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent of the type that 'parent' is.
 dom/nodes/Node-replaceChild.html	Should check whether 'child' is a child of 'parent' before checking whether 'node' is of a type that can have a parent.
 dom/nodes/Node-replaceChild.html	replaceChild should work in the presence of mutation events.
-dom/nodes/Node-textContent.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/Node-textContent.html	DocumentFragment with children
+dom/nodes/Node-textContent.html	DocumentFragment with children set to ""
+dom/nodes/Node-textContent.html	DocumentFragment with children set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	DocumentFragment with children set to "abc"
+dom/nodes/Node-textContent.html	DocumentFragment with children set to "d\0e"
+dom/nodes/Node-textContent.html	DocumentFragment with children set to 42
+dom/nodes/Node-textContent.html	DocumentFragment with children set to null
+dom/nodes/Node-textContent.html	DocumentFragment with children set to undefined
+dom/nodes/Node-textContent.html	DocumentFragment with descendants
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to ""
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to "abc"
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to "d\0e"
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to 42
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to null
+dom/nodes/Node-textContent.html	DocumentFragment with descendants set to undefined
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to ""
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to "abc"
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to "d\0e"
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to 42
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to null
+dom/nodes/Node-textContent.html	DocumentFragment with empty text node as child set to undefined
+dom/nodes/Node-textContent.html	DocumentFragment without children set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	DocumentFragment without children set to "abc"
+dom/nodes/Node-textContent.html	DocumentFragment without children set to "d\0e"
+dom/nodes/Node-textContent.html	DocumentFragment without children set to 42
+dom/nodes/Node-textContent.html	DocumentFragment without children set to null
+dom/nodes/Node-textContent.html	DocumentFragment without children set to undefined
+dom/nodes/Node-textContent.html	Element with children
+dom/nodes/Node-textContent.html	Element with children set to ""
+dom/nodes/Node-textContent.html	Element with children set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	Element with children set to "abc"
+dom/nodes/Node-textContent.html	Element with children set to "d\0e"
+dom/nodes/Node-textContent.html	Element with children set to 42
+dom/nodes/Node-textContent.html	Element with children set to null
+dom/nodes/Node-textContent.html	Element with children set to undefined
+dom/nodes/Node-textContent.html	Element with descendants
+dom/nodes/Node-textContent.html	Element with descendants set to ""
+dom/nodes/Node-textContent.html	Element with descendants set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	Element with descendants set to "abc"
+dom/nodes/Node-textContent.html	Element with descendants set to "d\0e"
+dom/nodes/Node-textContent.html	Element with descendants set to 42
+dom/nodes/Node-textContent.html	Element with descendants set to null
+dom/nodes/Node-textContent.html	Element with descendants set to undefined
+dom/nodes/Node-textContent.html	Element with empty text node as child set to ""
+dom/nodes/Node-textContent.html	Element with empty text node as child set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	Element with empty text node as child set to "abc"
+dom/nodes/Node-textContent.html	Element with empty text node as child set to "d\0e"
+dom/nodes/Node-textContent.html	Element with empty text node as child set to 42
+dom/nodes/Node-textContent.html	Element with empty text node as child set to null
+dom/nodes/Node-textContent.html	Element with empty text node as child set to undefined
+dom/nodes/Node-textContent.html	Element without children set to ""
+dom/nodes/Node-textContent.html	Element without children set to "<b>xyz</b>"
+dom/nodes/Node-textContent.html	Element without children set to "abc"
+dom/nodes/Node-textContent.html	Element without children set to "d\0e"
+dom/nodes/Node-textContent.html	Element without children set to 42
+dom/nodes/Node-textContent.html	Element without children set to null
+dom/nodes/Node-textContent.html	Element without children set to undefined
+dom/nodes/Node-textContent.html	For DocumentType created by parser, setting textContent should do nothing
+dom/nodes/Node-textContent.html	For DocumentType created by parser, textContent should be null
+dom/nodes/Node-textContent.html	For DocumentType created by script, setting textContent should do nothing
+dom/nodes/Node-textContent.html	For DocumentType created by script, textContent should be null
+dom/nodes/Node-textContent.html	For Documents created by createDocument, setting textContent should do nothing
+dom/nodes/Node-textContent.html	For Documents created by createDocument, textContent should be null
+dom/nodes/Node-textContent.html	For Documents created by createHTMLDocument, setting textContent should do nothing
+dom/nodes/Node-textContent.html	For Documents created by createHTMLDocument, textContent should be null
+dom/nodes/Node-textContent.html	For Documents created by parser, setting textContent should do nothing
+dom/nodes/Node-textContent.html	For Documents created by parser, textContent should be null
+dom/nodes/Node-textContent.html	For a Comment, textContent should set the data
+dom/nodes/Node-textContent.html	For a ProcessingInstruction with data, textContent should be that data
+dom/nodes/Node-textContent.html	For a ProcessingInstruction, textContent should set the data
+dom/nodes/Node-textContent.html	For a Text, textContent should set the data
+dom/nodes/Node-textContent.html	For an empty DocumentFragment, textContent should be the empty string
+dom/nodes/Node-textContent.html	For an empty ProcessingInstruction, textContent should be the empty string
 dom/nodes/NodeList-Iterable.html	NodeList has Symbol.iterator.
 dom/nodes/NodeList-Iterable.html	NodeList has entries method.
 dom/nodes/NodeList-Iterable.html	NodeList has values method.
-dom/nodes/NodeList-Iterable.html	live NodeLists are for-of iterable and update appropriately
 dom/nodes/NodeList-static-length-getter-tampered-1.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-2.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-3.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with null as an argument, on a parent having a child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with null as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with one element and text as argument, on a parent having a child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with only one element as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with only text as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with the same element twice.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() with undefined as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	DocumentFragment.append() without any argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	Element.append() with null as an argument, on a parent having a child.
-dom/nodes/ParentNode-append.html	Element.append() with null as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	Element.append() with one element and text as argument, on a parent having a child.
-dom/nodes/ParentNode-append.html	Element.append() with only one element as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	Element.append() with only text as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	Element.append() with the same element twice.
-dom/nodes/ParentNode-append.html	Element.append() with undefined as an argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	Element.append() without any argument, on a parent having no child.
-dom/nodes/ParentNode-append.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a doctype and parent is a document with an element, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a doctype and parent is a document with another doctype, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is an Element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
-dom/nodes/ParentNode-append.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/ParentNode-children.html	ParentNode.children should be a live collection
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with null as an argument, on a parent having a child.
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with null as an argument, on a parent having no child.
@@ -1768,7 +2061,11 @@ dom/nodes/Text-splitText.html	Split text after end of data
 dom/nodes/Text-splitText.html	Split text at beginning
 dom/nodes/Text-splitText.html	Split text at end
 dom/nodes/Text-wholeText.html	wholeText returns text of all Text nodes logically adjacent to the node, in document order.
-dom/nodes/append-on-Document.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/append-on-Document.html	Document.append() with only one element as an argument, on a Document having no child.
+dom/nodes/append-on-Document.html	Document.append() with only one element as an argument, on a Document having one child.
+dom/nodes/append-on-Document.html	Document.append() with text as an argument, on a Document having no child.
+dom/nodes/append-on-Document.html	Document.append() with two elements as the argument, on a Document having no child.
+dom/nodes/append-on-Document.html	Document.append() without any argument, on a Document having no child.
 dom/nodes/attach-shadow-realm-after-adoption.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/attributes-namednodemap.html	an attribute set by setAttribute should be accessible as a field on the `attributes` field of an Element
 dom/nodes/attributes-namednodemap.html	an attribute with a null namespace should be accessible as a field on the `attributes` field of an Element
@@ -1788,7 +2085,6 @@ dom/nodes/attributes.html	Basic functionality of removeAttributeNode
 dom/nodes/attributes.html	Basic functionality of setAttributeNode
 dom/nodes/attributes.html	Basic functionality of setAttributeNodeNS
 dom/nodes/attributes.html	Basic functionality should be intact. (toggleAttribute)
-dom/nodes/attributes.html	Entities in attributes should have been expanded while parsing.
 dom/nodes/attributes.html	First set attribute is returned by getAttribute
 dom/nodes/attributes.html	First set attribute is returned with mapped attribute set first
 dom/nodes/attributes.html	First set attribute is returned with mapped attribute set later
@@ -1805,7 +2101,6 @@ dom/nodes/attributes.html	Own property names should include all qualified names 
 dom/nodes/attributes.html	Own property names should only include all-lowercase qualified names for an HTML element in an HTML document
 dom/nodes/attributes.html	Replacing an attr by itself
 dom/nodes/attributes.html	Setting the same attribute with another prefix should not change the prefix
-dom/nodes/attributes.html	Specified attributes should be accessible.
 dom/nodes/attributes.html	Style attributes are not normalized
 dom/nodes/attributes.html	The XMLNS namespace should require xmlns as prefix or qualified name
 dom/nodes/attributes.html	The xml prefix should not be allowed for arbitrary namespaces
@@ -1841,11 +2136,6 @@ dom/nodes/attributes.html	toggleAttribute should set the first attribute with th
 dom/nodes/attributes.html	xmlns should be allowed as local name
 dom/nodes/attributes.html	xmlns should be allowed as prefix in the XMLNS namespace
 dom/nodes/attributes.html	xmlns should be allowed as qualified name in the XMLNS namespace
-dom/nodes/case.html	createElement ABC
-dom/nodes/case.html	createElement Abc
-dom/nodes/case.html	createElement abc
-dom/nodes/case.html	createElement Ä
-dom/nodes/case.html	createElement ä
 dom/nodes/case.html	createElementNS ABC
 dom/nodes/case.html	createElementNS Abc
 dom/nodes/case.html	createElementNS abc
@@ -1886,19 +2176,10 @@ dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Abc,Ä
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Abc,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,ABC
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,Abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,Ä
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,ABC
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,Abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,Ä
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,ABC
 dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,Abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,abc
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,Ä
-dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,ABC,ABC
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,ABC,Abc
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,ABC,abc
@@ -1911,7 +2192,6 @@ dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,Abc,Ä
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,Abc,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,ABC
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,Abc
-dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,abc
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,Ä
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,ä
 dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,Ä,ABC
@@ -2012,7 +2292,6 @@ dom/nodes/case.html	getElementsByTagName ABC
 dom/nodes/case.html	getElementsByTagName Abc
 dom/nodes/case.html	getElementsByTagName a:Ä
 dom/nodes/case.html	getElementsByTagName a:ä
-dom/nodes/case.html	getElementsByTagName abc
 dom/nodes/case.html	getElementsByTagName Ä
 dom/nodes/case.html	getElementsByTagName ä
 dom/nodes/case.html	getElementsByTagNameNS ,ABC
@@ -2326,7 +2605,11 @@ dom/nodes/node-realm-preserved-across-frameless-adoption.html	Built-in element f
 dom/nodes/node-realm-preserved-across-frameless-adoption.html	Comment node from a frameless document keeps its creation realm after adoption
 dom/nodes/node-realm-preserved-across-frameless-adoption.html	Never-wrapped descendant from a frameless document keeps its creation realm after adoption
 dom/nodes/node-realm-preserved-across-frameless-adoption.html	Text node from a frameless document keeps its creation realm after adoption
-dom/nodes/prepend-on-Document.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/prepend-on-Document.html	Document.append() with only one element as an argument, on a Document having one child.
+dom/nodes/prepend-on-Document.html	Document.prepend() with only one element as an argument, on a Document having no child.
+dom/nodes/prepend-on-Document.html	Document.prepend() with text as an argument, on a Document having no child.
+dom/nodes/prepend-on-Document.html	Document.prepend() with two elements as the argument, on a Document having no child.
+dom/nodes/prepend-on-Document.html	Document.prepend() without any argument, on a Document having no child.
 dom/nodes/processing-instruction-attributes.html	Distinct attribute name (source: html-dom): ABC and abc
 dom/nodes/processing-instruction-attributes.html	Distinct attribute name (source: html-dom): abC and abc
 dom/nodes/processing-instruction-attributes.html	Distinct attribute name (source: html-dom): x123A and x123a
@@ -3500,6 +3783,10 @@ url/failure.html	Loading data…
 +dom/events/passive-by-default.html	wheel listener is passive with {passive:true} for undefined
 +dom/events/passive-by-default.html	wheel listener is passive with {passive:undefined} for undefined
 +dom/historical-mutation-events.html	Historical DOM features must be removed: MutationEvent
++dom/historical.html	DOMImplementation.getFeature() must be removed.
++dom/historical.html	DocumentType member must be removed: entities
++dom/historical.html	DocumentType member must be removed: internalSubset
++dom/historical.html	DocumentType member must be removed: notations
 +dom/historical.html	Event should not have this constant: BLUR
 +dom/historical.html	Event should not have this constant: CHANGE
 +dom/historical.html	Event should not have this constant: CLICK
@@ -3538,38 +3825,364 @@ url/failure.html	Loading data…
 +dom/historical.html	Historical DOM features must be removed: SVGPathSegList
 +dom/historical.html	Historical DOM features must be removed: TypeInfo
 +dom/historical.html	Historical DOM features must be removed: UserDataHandler
++dom/historical.html	Historical DOM features must be removed: async
++dom/historical.html	Historical DOM features must be removed: commands
++dom/historical.html	Historical DOM features must be removed: createEntityReference
++dom/historical.html	Historical DOM features must be removed: cssElementMap
++dom/historical.html	Historical DOM features must be removed: defaultCharset
++dom/historical.html	Historical DOM features must be removed: domConfig
++dom/historical.html	Historical DOM features must be removed: height
++dom/historical.html	Historical DOM features must be removed: normalizeDocument
++dom/historical.html	Historical DOM features must be removed: origin
++dom/historical.html	Historical DOM features must be removed: renameNode
 +dom/historical.html	Historical DOM features must be removed: schemaTypeInfo
 +dom/historical.html	Historical DOM features must be removed: setIdAttribute
 +dom/historical.html	Historical DOM features must be removed: setIdAttributeNS
 +dom/historical.html	Historical DOM features must be removed: setIdAttributeNode
++dom/historical.html	Historical DOM features must be removed: strictErrorChecking
++dom/historical.html	Historical DOM features must be removed: width
++dom/historical.html	Historical DOM features must be removed: xmlEncoding
++dom/historical.html	Historical DOM features must be removed: xmlStandalone
++dom/historical.html	Historical DOM features must be removed: xmlVersion
++dom/historical.html	Node member must be removed: attributes
++dom/historical.html	Node member must be removed: getFeature
++dom/historical.html	Node member must be removed: getUserData
++dom/historical.html	Node member must be removed: hasAttributes
++dom/historical.html	Node member must be removed: isSupported
++dom/historical.html	Node member must be removed: localName
++dom/historical.html	Node member must be removed: namespaceURI
++dom/historical.html	Node member must be removed: prefix
++dom/historical.html	Node member must be removed: rootNode
++dom/historical.html	Node member must be removed: setUserData
 +dom/historical.html	Text member must be removed: isElementContentWhitespace
 +dom/historical.html	Text member must be removed: replaceWholeText
 +dom/historical.html	Window member must be removed: attachEvent
 +dom/historical.html	Window member must be removed: content
 +dom/historical.html	Window member must be removed: sidebar
++dom/historical.html	XMLDocument.load
 +dom/historical.html	document.load
 +dom/interface-objects.html	Interface objects properties should not be Enumerable
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in  namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://example.com/ namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in  namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://example.com/ namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.relList in http://www.w3.org/2000/svg namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in  namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://example.com/ namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in  namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://example.com/ namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
-+dom/lists/DOMTokenList-coverage-for-attributes.html	undefined.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	a.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	area.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	iframe.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	link.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	output.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	td.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.classList in  namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.classList in http://example.com/ namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.classList in http://www.w3.org/1998/Math/MathML namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.classList in http://www.w3.org/1999/xhtml namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.classList in http://www.w3.org/2000/svg namespace should be DOMTokenList.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.htmlFor in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.htmlFor in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.htmlFor in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.htmlFor in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.htmlFor in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.relList in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.relList in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.relList in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.relList in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.relList in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sandbox in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sandbox in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sandbox in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sandbox in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sandbox in http://www.w3.org/2000/svg namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in  namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://example.com/ namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/1998/Math/MathML namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/1999/xhtml namespace should be undefined.
++dom/lists/DOMTokenList-coverage-for-attributes.html	th.sizes in http://www.w3.org/2000/svg namespace should be undefined.
++dom/nodes/DOMImplementation-createDocumentType.html	Untitled
++dom/nodes/DOMImplementation-createHTMLDocument.html	Missing title argument
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 0: "","",""
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 1: null,"null","null"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 2: undefined,undefined,""
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 3: "foo  bar baz","foo  bar baz","foo bar baz"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 4: "foo\t\tbar baz","foo\t\tbar baz","foo bar baz"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 5: "foo\n\nbar baz","foo\n\nbar baz","foo bar baz"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 6: "foo\f\fbar baz","foo\f\fbar baz","foo bar baz"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument test 7: "foo\r\rbar baz","foo\r\rbar baz","foo bar baz"
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): characterSet aliases
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): document location getter is null
++dom/nodes/DOMImplementation-createHTMLDocument.html	createHTMLDocument(): metadata
 +dom/nodes/DOMImplementation-hasFeature.html	Untitled
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" Core", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" Core", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" XML", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(" XML", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Co re", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Co re", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("CoRe", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("CoRe", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Coare", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Coare", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core ", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core ", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", " 3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "1.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "100.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "2.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "3.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", "a3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 1)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 100)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 2)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", 3)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Core", undefined)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Corea", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("Corea", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("This is filler text.", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XM L", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XM L", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML ", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML ", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", " 3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "1.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "100.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "2.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3. 0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0 ")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.0a")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "3.a0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a100.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a2.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", "a3.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 1)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 100)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 2)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", 3)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XML", undefined)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMLa", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMLa", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMaL", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XMaL", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XmL", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("XmL", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aCore", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aCore", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aXML", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("aXML", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("core", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("core", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("http://www.w3.org/TR/SVG11/feature#Script")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("http://www.w3.org/TR/SVG11/feature#Script", "7.5")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.dom.svg", "1.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "1.0")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("org.w3c.svg", "1.1")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("xml", "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature("xml", null)
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature()
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(null, "")
++dom/nodes/DOMImplementation-hasFeature.html	hasFeature(undefined, "")
++dom/nodes/Document-constructor.html	new Document(): interfaces
++dom/nodes/Document-contentType/contentType/createHTMLDocument.html	Untitled
++dom/nodes/Document-createElement-namespace.html	Created element's namespace in created HTML document
 +dom/nodes/Document-createElement-namespace.html	Created element's namespace in current document
 +dom/nodes/Document-createEvent.https.html	BEFOREUNLOADEVENT should be an alias for BeforeUnloadEvent.
 +dom/nodes/Document-createEvent.https.html	BeforeUnloadEvent should be an alias for BeforeUnloadEvent.
@@ -3854,6 +4467,8 @@ url/failure.html	Loading data…
 +dom/nodes/Document-getElementById.html	update `id` attribute via setAttribute/removeAttribute
 +dom/nodes/Document-getElementById.html	where insertion order and tree order don't match
 +dom/nodes/Document-getElementsByTagName.html	Caching is allowed
++dom/nodes/Document-implementation.html	Getting implementation off different documents
++dom/nodes/Document-implementation.html	Getting implementation off the same document
 +dom/nodes/DocumentFragment-querySelectorAll-after-modification.html	Untitled
 +dom/nodes/Element-childElement-null.html	Untitled
 +dom/nodes/Element-childElementCount-nochild.html	Untitled
@@ -3879,6 +4494,7 @@ url/failure.html	Loading data…
 +dom/nodes/Element-closest.html	Element.closest with context node 'test6' and selector 'input + fieldset'
 +dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'form > input[required]'
 +dom/nodes/Element-closest.html	Element.closest with context node 'test9' and selector 'select[required]'
++dom/nodes/Element-firstElementChild-namespace.html	Untitled
 +dom/nodes/Element-firstElementChild.html	Untitled
 +dom/nodes/Element-getElementsByClassName.html	getElementsByClassName should work on disconnected subtrees.
 +dom/nodes/Element-getElementsByTagName.html	Caching is allowed
@@ -3934,10 +4550,17 @@ url/failure.html	Loading data…
 +dom/nodes/Node-nodeName.html	For Text nodes, nodeName should return "#text".
 +dom/nodes/Node-parentElement.html	When the parent is a document, parentElement should be null (element)
 +dom/nodes/Node-replaceChild.html	Replacing a node with itself should not move the node
++dom/nodes/Node-textContent.html	DocumentFragment without children set to ""
++dom/nodes/Node-textContent.html	For a Comment with data, textContent should be that data
++dom/nodes/Node-textContent.html	For a Text with data, textContent should be that data
++dom/nodes/Node-textContent.html	For an empty Comment, textContent should be the empty string
++dom/nodes/Node-textContent.html	For an empty Element, textContent should be the empty string
++dom/nodes/Node-textContent.html	For an empty Text, textContent should be the empty string
 +dom/nodes/NodeList-Iterable.html	NodeList has forEach method.
 +dom/nodes/NodeList-Iterable.html	NodeList has length method.
 +dom/nodes/NodeList-Iterable.html	NodeList is iterable via for-of loop.
 +dom/nodes/NodeList-Iterable.html	NodeList responds to Object.keys correctly
++dom/nodes/NodeList-Iterable.html	live NodeLists are for-of iterable and update appropriately
 +dom/nodes/ParentNode-querySelector-escapes.html	"&B" should match with "#\\26 B"
 +dom/nodes/ParentNode-querySelector-escapes.html	"--" should match with "#--"
 +dom/nodes/ParentNode-querySelector-escapes.html	"---" should match with "#---"
@@ -4009,15 +4632,33 @@ url/failure.html	Loading data…
 +dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelector
 +dom/nodes/ParentNode-querySelectors-space-and-dash-attribute-value.html	querySelectorAll
 +dom/nodes/attributes.html	Basic functionality should be intact.
++dom/nodes/attributes.html	Entities in attributes should have been expanded while parsing.
++dom/nodes/attributes.html	Specified attributes should be accessible.
 +dom/nodes/attributes.html	setAttribute should not throw even if a load is not allowed
 +dom/nodes/attributes.html	setAttribute should not throw even when qualifiedName starts with 'xmlns'
 +dom/nodes/attributes.html	setAttributeNode, if it fires mutation events, should fire one with the new node when resetting an existing attribute
++dom/nodes/case.html	createElement ABC
++dom/nodes/case.html	createElement Abc
++dom/nodes/case.html	createElement abc
++dom/nodes/case.html	createElement Ä
++dom/nodes/case.html	createElement ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,abc
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,Ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,abc,ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,abc
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,Ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,Ä,ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,abc
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,Ä
++dom/nodes/case.html	createElementNS http://www.w3.org/1999/xhtml,ä,ä
++dom/nodes/case.html	createElementNS http://www.w3.org/2000/svg,abc,abc
 +dom/nodes/case.html	getAttribute abc
 +dom/nodes/case.html	getAttribute Ä
 +dom/nodes/case.html	getAttribute ä
 +dom/nodes/case.html	getElementsByTagName a:ABC
 +dom/nodes/case.html	getElementsByTagName a:Abc
 +dom/nodes/case.html	getElementsByTagName a:abc
++dom/nodes/case.html	getElementsByTagName abc
 +dom/nodes/getElementsByClassName-04.htm	Untitled
 +dom/nodes/getElementsByClassName-07.htm	Untitled
 +dom/nodes/getElementsByClassName-08.htm	Untitled

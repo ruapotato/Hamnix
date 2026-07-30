@@ -1063,6 +1063,114 @@ def _count_attrs(el: int32) -> int32:
     return _scan_attr_names(el, -1)
 
 
+# ---- classList owner resolution (source OR created element) -----------------
+# _find_el_by_clsobj only knows SOURCE elements. A created element's token list
+# is registered in clsown_* instead, so the whole DOMTokenList family works on
+# document.createElement(...) nodes too.
+def _clsown_add(clsv: int32, objv: int32):
+    if clsown_n >= CLSOWN_MAX:
+        return
+    clsown_list[clsown_n] = clsv
+    clsown_obj[clsown_n] = objv
+    clsown_n = clsown_n + 1
+
+
+def _cls_owner_obj(clsv: int32) -> int32:
+    e: int32 = _find_el_by_clsobj(clsv)
+    if e >= 0:
+        return dom_obj[e]
+    i: int32 = 0
+    while i < clsown_n:
+        if clsown_list[i] == clsv:
+            return clsown_obj[i]
+        i = i + 1
+    return 0
+
+
+# _cls_read / _cls_write keyed on the element OBJECT rather than its dom_* row.
+def _cls_read_o(objv: int32) -> Ptr[uint8]:
+    clv: int32 = js_get_prop(objv, cast[Ptr[uint8]]("className"), 9)
+    p: Ptr[uint8] = js_str_ptr(clv)
+    n: int32 = _cstr_len(p)
+    if n > 1023:
+        n = 1023
+    if _is_undef_str(p, n) != 0:
+        n = 0
+    i: int32 = 0
+    while i < n:
+        g_cls_cur[i] = p[i]
+        i = i + 1
+    g_cls_cur[n] = 0
+    g_cls_len = n
+    return &g_cls_cur[0]
+
+
+def _cls_write_o(objv: int32, s: Ptr[uint8], sn: int32):
+    js_set_prop(objv, cast[Ptr[uint8]]("className"), 9, \
+                js_new_string(s, cast[uint64](sn)))
+
+
+# element.getAttribute(name) as a plain function of (element object, name) so
+# the NamedNodeMap builder below can reuse the EXACT same resolution order the
+# JS-visible method uses (override store -> source start tag -> reflected
+# property) rather than growing a second, divergent copy of it.
+def _el_get_attribute(thisv: int32, nmp: Ptr[uint8], an: int32) -> int32:
+    # 'style' mirrors the .style store (serialized), so getAttribute and
+    # .style stay consistent for both source and created nodes.
+    if _bytes_eq(nmp, an, cast[Ptr[uint8]]("style"), 5) != 0:
+        gsto: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("style"), 5)
+        return _style_serialize(gsto)
+    el2: int32 = _find_el_by_obj(thisv)
+    if el2 >= 0:
+        # a setAttribute()/removeAttribute() override outranks the
+        # source start tag (chromium: getAttribute reports the CURRENT
+        # content attribute, not the parsed one).
+        so: int32 = _sattr_find(el2, nmp, an)
+        if so >= 0:
+            if sattr_vlen[so] < 0:
+                return js_null()
+            return js_new_string(&sattr_buf[sattr_voff[so]], \
+                                 cast[uint64](sattr_vlen[so]))
+        te2: uint64 = cast[uint64](dom_cstart[el2]) - 1
+        if _hx_find_attr(cast[uint64](dom_ns[el2]), te2, nmp) != 0:
+            # ENTITY-DECODED, like every other attribute read: chromium
+            # answers "?a=1&b=2" for href="?a=1&amp;b=2", not the raw
+            # source text.
+            vlen: int32 = _attr_decode_scratch()
+            return js_new_string(&g_attrdec[0], cast[uint64](vlen))
+        # Not in the source tag: a prior setAttribute() stored the value as
+        # a property on the element's JS object — honour that round-trip
+        # (e.g. data-*/aria-* attributes added at runtime).
+        if _bytes_eq(nmp, an, cast[Ptr[uint8]]("class"), 5) != 0:
+            gcv: int32 = js_get_prop(dom_obj[el2], \
+                                     cast[Ptr[uint8]]("className"), 9)
+            gcp: Ptr[uint8] = js_str_ptr(gcv)
+            if _is_undef_str(gcp, _cstr_len(gcp)) == 0:
+                return gcv
+            return js_null()
+        gpv: int32 = js_get_prop(dom_obj[el2], nmp, cast[uint64](an))
+        gpp: Ptr[uint8] = js_str_ptr(gpv)
+        if _is_undef_str(gpp, _cstr_len(gpp)) == 0:
+            # `src`/`href`/`alt`/`title` are reflected onto every element
+            # object and DEFAULT to "" (IDL String semantics, so
+            # `img.src.substring(...)` never throws). But getAttribute
+            # reports the CONTENT attribute, which is genuinely absent
+            # here — the source tag was already checked above — so it must
+            # still answer null, not "".
+            if _cstr_len(gpp) == 0 and _is_reflected_idl_attr(nmp, an) != 0:
+                return js_null()
+            return gpv
+        return js_null()
+    # created node: read the property we stashed (class -> className).
+    gcid: int32 = _find_cre_by_obj(thisv)
+    if gcid >= 0:
+        if _bytes_eq(nmp, an, cast[Ptr[uint8]]("class"), 5) != 0:
+            return js_get_prop(cre_obj[gcid], \
+                               cast[Ptr[uint8]]("className"), 9)
+        return js_get_prop(cre_obj[gcid], nmp, cast[uint64](an))
+    return js_null()
+
+
 # ---- Constraint Validation helpers ---------------------------------
 # A minimal, WHATWG-shaped e-mail check (a deliberate willful violation like the
 # HTML spec's own): exactly one '@' with a non-empty local part and a non-empty,
@@ -2158,7 +2266,15 @@ def _lazy_el_accessor(rel: int32) -> int32:
         return sv
     if rel == NID_CLS_ACC:
         if idx < 0:
-            return js_undefined()
+            # A CREATED element (createElement/createElementNS) has no dom_* row
+            # but still has a classList — chromium gives one to every Element in
+            # every namespace (dom/lists/DOMTokenList-coverage-for-attributes).
+            if _find_cre_by_obj(thisv) < 0:
+                return js_undefined()
+            ccv: int32 = _new_classlist_obj()
+            js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, ccv)
+            _clsown_add(ccv, thisv)
+            return ccv
         cv: int32 = _new_classlist_obj()
         js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, cv)
         dom_clsobj[idx] = cv                              # maps the token list back
@@ -2329,6 +2445,32 @@ def _js_host_dispatch(id: int32) -> int32:
         return _lazy_el_accessor(rel)
     if rel >= NID_F_GETCTX and rel <= NID_F_SUBMIT_S:
         return _feat_accessor(rel)
+    if rel >= NID_IMPL_HASFEAT and rel <= NID_IMPL_CREDOCT:
+        return _impl_dispatch(rel)
+    if rel >= NID_ATTRS_ACC and rel <= NID_PREFIX_SET:
+        return _nsattr_accessor(rel)
+    if rel == NID_NNM_GETNAMED:
+        gnn: int32 = 0
+        if js_arg_count() >= 1:
+            gnn = _js_str_to_cbuf(js_arg(0), &nnm_name[0], 80)
+        gnm: int32 = js_this()
+        gni: int32 = 0
+        while gni < js_array_len(gnm):
+            gav: int32 = js_array_get(gnm, gni)
+            gnv: int32 = js_get_prop(gav, cast[Ptr[uint8]]("name"), 4)
+            if _bytes_eq(js_str_bytes(gnv), js_str_bytelen(gnv), \
+                         &nnm_name[0], gnn) != 0:
+                return gav
+            gni = gni + 1
+        return js_null()
+    if rel == NID_NNM_ITEM:
+        inm: int32 = js_this()
+        ii: int32 = 0
+        if js_arg_count() >= 1:
+            ii = cast[int32](js_to_number(js_arg(0)))
+        if ii < 0 or ii >= js_array_len(inm):
+            return js_null()
+        return js_array_get(inm, ii)
     if rel == NID_MATCHMEDIA:
         return _match_media()
     if rel == NID_MQL_NOOP:
@@ -3200,14 +3342,14 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_CLSADD or rel == NID_CLSREM or rel == NID_CLSTOG or \
        rel == NID_CLSHAS:
         # element.classList.add/remove/toggle/contains(name)
-        ce: int32 = _find_el_by_clsobj(js_this())
-        if ce < 0 or js_arg_count() < 1:
+        ce: int32 = _cls_owner_obj(js_this())
+        if ce == 0 or js_arg_count() < 1:
             if rel == NID_CLSHAS or rel == NID_CLSTOG:
                 return js_bool(0)
             return js_undefined()
         tk: Array[128, uint8]
         tn: int32 = _arg_bytes(0, &tk[0], 128)
-        cur: Ptr[uint8] = _cls_read(ce)
+        cur: Ptr[uint8] = _cls_read_o(ce)
         cn: int32 = g_cls_len
         present: int32 = _clstr_has(cur, cn, &tk[0], tn)
         if rel == NID_CLSHAS:
@@ -3218,11 +3360,11 @@ def _js_host_dispatch(id: int32) -> int32:
             while ai_ca < js_arg_count():
                 catk: Array[128, uint8]
                 catn: int32 = _arg_bytes(ai_ca, &catk[0], 128)
-                ccur: Ptr[uint8] = _cls_read(ce)
+                ccur: Ptr[uint8] = _cls_read_o(ce)
                 ccn: int32 = g_cls_len
                 if catn > 0 and _clstr_has(ccur, ccn, &catk[0], catn) == 0:
                     cnw: int32 = _cls_build_with(ccur, ccn, &catk[0], catn)
-                    _cls_write(ce, &g_cls_scr[0], cnw)
+                    _cls_write_o(ce, &g_cls_scr[0], cnw)
                 ai_ca = ai_ca + 1
             return js_undefined()
         if rel == NID_CLSREM:
@@ -3231,11 +3373,11 @@ def _js_host_dispatch(id: int32) -> int32:
             while ai_cr < js_arg_count():
                 crtk: Array[128, uint8]
                 crtn: int32 = _arg_bytes(ai_cr, &crtk[0], 128)
-                rcur: Ptr[uint8] = _cls_read(ce)
+                rcur: Ptr[uint8] = _cls_read_o(ce)
                 rcn: int32 = g_cls_len
                 if crtn > 0 and _clstr_has(rcur, rcn, &crtk[0], crtn) != 0:
                     rnw: int32 = _cls_build_without(rcur, rcn, &crtk[0], crtn)
-                    _cls_write(ce, &g_cls_scr[0], rnw)
+                    _cls_write_o(ce, &g_cls_scr[0], rnw)
                 ai_cr = ai_cr + 1
             return js_undefined()
         # NID_CLSTOG: flip membership, OR honour an optional force arg.
@@ -3249,39 +3391,39 @@ def _js_host_dispatch(id: int32) -> int32:
         if want != 0:
             if present == 0 and tn > 0:
                 nw4: int32 = _cls_build_with(cur, cn, &tk[0], tn)
-                _cls_write(ce, &g_cls_scr[0], nw4)
+                _cls_write_o(ce, &g_cls_scr[0], nw4)
             return js_bool(1)
         if present != 0:
             nw3: int32 = _cls_build_without(cur, cn, &tk[0], tn)
-            _cls_write(ce, &g_cls_scr[0], nw3)
+            _cls_write_o(ce, &g_cls_scr[0], nw3)
         return js_bool(0)
     if rel == NID_CLSREPL:
         # element.classList.replace(oldName, newName) -> bool. Replaces oldName
         # with newName only if oldName is present (per spec); returns whether a
         # replacement happened.
-        re: int32 = _find_el_by_clsobj(js_this())
-        if re < 0 or js_arg_count() < 2:
+        re: int32 = _cls_owner_obj(js_this())
+        if re == 0 or js_arg_count() < 2:
             return js_bool(0)
         ok: Array[128, uint8]
         on_: int32 = _arg_bytes(0, &ok[0], 128)
         nk: Array[128, uint8]
         nn2: int32 = _arg_bytes(1, &nk[0], 128)
-        rcur: Ptr[uint8] = _cls_read(re)
+        rcur: Ptr[uint8] = _cls_read_o(re)
         rcn: int32 = g_cls_len
         if _clstr_has(rcur, rcn, &ok[0], on_) == 0:
             return js_bool(0)
         w: int32 = _cls_build_without(rcur, rcn, &ok[0], on_)
         if nn2 > 0 and _clstr_has(&g_cls_scr[0], w, &nk[0], nn2) == 0:
             w = _cls_build_with(&g_cls_scr[0], w, &nk[0], nn2)
-        _cls_write(re, &g_cls_scr[0], w)
+        _cls_write_o(re, &g_cls_scr[0], w)
         return js_bool(1)
     if rel == NID_CLSITEM:
         # element.classList.item(index) -> the class token at index, else null.
-        ie: int32 = _find_el_by_clsobj(js_this())
-        if ie < 0 or js_arg_count() < 1:
+        ie: int32 = _cls_owner_obj(js_this())
+        if ie == 0 or js_arg_count() < 1:
             return js_null()
         ix: int32 = cast[int32](js_to_number(js_arg(0)))
-        icur: Ptr[uint8] = _cls_read(ie)
+        icur: Ptr[uint8] = _cls_read_o(ie)
         icn: int32 = g_cls_len
         ii: int32 = 0
         ik: int32 = 0
@@ -3530,59 +3672,7 @@ def _js_host_dispatch(id: int32) -> int32:
         if js_arg_count() >= 1:
             nm: Array[64, uint8]
             an: int32 = _arg_bytes(0, &nm[0], 64)
-            # 'style' mirrors the .style store (serialized), so getAttribute and
-            # .style stay consistent for both source and created nodes.
-            if _bytes_eq(&nm[0], an, cast[Ptr[uint8]]("style"), 5) != 0:
-                gsto: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("style"), 5)
-                return _style_serialize(gsto)
-            el2: int32 = _find_el_by_obj(js_this())
-            if el2 >= 0:
-                # a setAttribute()/removeAttribute() override outranks the
-                # source start tag (chromium: getAttribute reports the CURRENT
-                # content attribute, not the parsed one).
-                so: int32 = _sattr_find(el2, &nm[0], an)
-                if so >= 0:
-                    if sattr_vlen[so] < 0:
-                        return js_null()
-                    return js_new_string(&sattr_buf[sattr_voff[so]], \
-                                         cast[uint64](sattr_vlen[so]))
-                te2: uint64 = cast[uint64](dom_cstart[el2]) - 1
-                if _hx_find_attr(cast[uint64](dom_ns[el2]), te2, &nm[0]) != 0:
-                    # ENTITY-DECODED, like every other attribute read: chromium
-                    # answers "?a=1&b=2" for href="?a=1&amp;b=2", not the raw
-                    # source text.
-                    vlen: int32 = _attr_decode_scratch()
-                    return js_new_string(&g_attrdec[0], cast[uint64](vlen))
-                # Not in the source tag: a prior setAttribute() stored the value as
-                # a property on the element's JS object — honour that round-trip
-                # (e.g. data-*/aria-* attributes added at runtime).
-                if _bytes_eq(&nm[0], an, cast[Ptr[uint8]]("class"), 5) != 0:
-                    gcv: int32 = js_get_prop(dom_obj[el2], \
-                                             cast[Ptr[uint8]]("className"), 9)
-                    gcp: Ptr[uint8] = js_str_ptr(gcv)
-                    if _is_undef_str(gcp, _cstr_len(gcp)) == 0:
-                        return gcv
-                    return js_null()
-                gpv: int32 = js_get_prop(dom_obj[el2], &nm[0], cast[uint64](an))
-                gpp: Ptr[uint8] = js_str_ptr(gpv)
-                if _is_undef_str(gpp, _cstr_len(gpp)) == 0:
-                    # `src`/`href`/`alt`/`title` are reflected onto every element
-                    # object and DEFAULT to "" (IDL String semantics, so
-                    # `img.src.substring(...)` never throws). But getAttribute
-                    # reports the CONTENT attribute, which is genuinely absent
-                    # here — the source tag was already checked above — so it must
-                    # still answer null, not "".
-                    if _cstr_len(gpp) == 0 and _is_reflected_idl_attr(&nm[0], an) != 0:
-                        return js_null()
-                    return gpv
-                return js_null()
-            # created node: read the property we stashed (class -> className).
-            gcid: int32 = _find_cre_by_obj(js_this())
-            if gcid >= 0:
-                if _bytes_eq(&nm[0], an, cast[Ptr[uint8]]("class"), 5) != 0:
-                    return js_get_prop(cre_obj[gcid], \
-                                       cast[Ptr[uint8]]("className"), 9)
-                return js_get_prop(cre_obj[gcid], &nm[0], cast[uint64](an))
+            return _el_get_attribute(js_this(), &nm[0], an)
         return js_null()
     if rel == NID_SETATTR:
         if js_arg_count() >= 2:
@@ -4043,6 +4133,419 @@ def _scan_title() -> int32:
 # Install one DOM interface object: a global constructor `name` whose
 # `.prototype` chains to `parent_proto` (0 = leave it on Object.prototype).
 # Returns the prototype value so callers can chain the next interface onto it.
+# ====================================================================
+# Element.attributes / localName / prefix, DOMImplementation, and the
+# namespace-aware attribute API (round 10 — WPT conformance).
+#
+# `attributes` was the highest-leverage of these and NOT for the reason it
+# looks: testharness.js's format_value() prints an element by walking
+# `val.attributes.length`, so a missing `attributes` turned 188 real WPT
+# failure messages into "cannot read property 'length' of null or undefined"
+# and hid what was actually wrong. Measured 2026-07-29 against the vendored
+# subset; see docs/browser_wpt_conformance.md.
+# ====================================================================
+nnm_name: Array[80, uint8]           # NUL-terminated attribute-name scratch
+nsq_buf:  Array[128, uint8]          # qualified-name scratch for the *NS methods
+impl_title: Array[1024, uint8]       # createHTMLDocument(title) scratch
+
+
+# Copy a JS string value into `dst` (capacity `cap`) and NUL-terminate it.
+# Returns the byte length written. The attribute helpers below all take
+# NUL-terminated names because _hx_find_attr scans a C string.
+def _js_str_to_cbuf(v: int32, dst: Ptr[uint8], cap: int32) -> int32:
+    p: Ptr[uint8] = js_str_bytes(v)
+    n: int32 = js_str_bytelen(v)
+    if n > cap - 1:
+        n = cap - 1
+    i: int32 = 0
+    while i < n:
+        dst[i] = p[i]
+        i = i + 1
+    dst[n] = 0
+    return n
+
+
+# One Attr node. Enough of the interface for format_value, for
+# `attributes[i].name/.value`, and for getNamedItem round-trips.
+def _new_attr_obj(np: Ptr[uint8], nn: int32, valv: int32, ownerv: int32) -> int32:
+    a: int32 = js_new_object_v()
+    if g_proto_attr != 0:
+        js_set_proto_v(a, g_proto_attr)
+    nv: int32 = js_new_string(np, cast[uint64](nn))
+    # The local name is the part after a ':' in a qualified name; HTML-parsed
+    # attributes have no prefix, so name == localName for almost everything.
+    lstart: int32 = 0
+    ci: int32 = 0
+    while ci < nn:
+        if np[ci] == 58:                                   # ':'
+            lstart = ci + 1
+        ci = ci + 1
+    lv: int32 = nv
+    pv: int32 = js_null()
+    if lstart > 0:
+        lv = js_new_string(&np[lstart], cast[uint64](nn - lstart))
+        pv = js_new_string(np, cast[uint64](lstart - 1))
+    js_set_prop(a, cast[Ptr[uint8]]("name"), 4, nv)
+    js_set_prop(a, cast[Ptr[uint8]]("nodeName"), 8, nv)
+    js_set_prop(a, cast[Ptr[uint8]]("localName"), 9, lv)
+    js_set_prop(a, cast[Ptr[uint8]]("prefix"), 6, pv)
+    js_set_prop(a, cast[Ptr[uint8]]("value"), 5, valv)
+    js_set_prop(a, cast[Ptr[uint8]]("nodeValue"), 9, valv)
+    js_set_prop(a, cast[Ptr[uint8]]("textContent"), 11, valv)
+    js_set_prop(a, cast[Ptr[uint8]]("nodeType"), 8, js_number(2.0))
+    js_set_prop(a, cast[Ptr[uint8]]("namespaceURI"), 12, js_null())
+    js_set_prop(a, cast[Ptr[uint8]]("specified"), 9, js_bool(1))
+    js_set_prop(a, cast[Ptr[uint8]]("ownerElement"), 12, ownerv)
+    return a
+
+
+# Build the element's NamedNodeMap. It is an ARRAY so `length` and `[i]` are
+# the engine's own fast paths (a browser's NamedNodeMap is indexed the same
+# way); getNamedItem/item are attached on top.
+def _build_attrs_map(thisv: int32) -> int32:
+    m: int32 = js_new_array_v()
+    el: int32 = _find_el_by_obj(thisv)
+    if el >= 0:
+        names: int32 = js_new_array_v()
+        _collect_attr_names(el, names)
+        n: int32 = js_array_len(names)
+        i: int32 = 0
+        while i < n:
+            nl: int32 = _js_str_to_cbuf(js_array_get(names, i), &nnm_name[0], 80)
+            vv: int32 = _el_get_attribute(thisv, &nnm_name[0], nl)
+            # removeAttribute() after parse leaves the source tag intact; the
+            # override store answers null, and a null-valued attribute is GONE.
+            if js_type_of(vv) != TAG_NULL:
+                js_array_push(m, _new_attr_obj(&nnm_name[0], nl, vv, thisv))
+            i = i + 1
+        # attributes added at runtime by setAttribute() live only in the
+        # override store; append the ones the start tag never declared.
+        s: int32 = 0
+        while s < sattr_n:
+            if sattr_el[s] == el and sattr_vlen[s] >= 0:
+                sl: int32 = sattr_nlen[s]
+                if sl > 79:
+                    sl = 79
+                k: int32 = 0
+                while k < sl:
+                    nnm_name[k] = sattr_buf[sattr_noff[s] + k]
+                    k = k + 1
+                nnm_name[sl] = 0
+                if _hx_find_attr(cast[uint64](dom_ns[el]), \
+                                 cast[uint64](dom_cstart[el]) - 1, \
+                                 &nnm_name[0]) == 0:
+                    js_array_push(m, _new_attr_obj(&nnm_name[0], sl, \
+                                  js_new_string(&sattr_buf[sattr_voff[s]], \
+                                                cast[uint64](sattr_vlen[s])), \
+                                  thisv))
+            s = s + 1
+    js_set_prop(m, cast[Ptr[uint8]]("getNamedItem"), 12, \
+                js_new_native_fn(js_hbase + NID_NNM_GETNAMED))
+    js_set_prop(m, cast[Ptr[uint8]]("item"), 4, \
+                js_new_native_fn(js_hbase + NID_NNM_ITEM))
+    return m
+
+
+# el.localName — the lowercase tag name for an HTML element. Derived from
+# tagName so it works for source AND created elements without a second string
+# per element.
+def _el_local_name(thisv: int32) -> int32:
+    tv: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tv) != TAG_STR:
+        return js_undefined()
+    tp: Ptr[uint8] = js_str_bytes(tv)
+    tl: int32 = js_str_bytelen(tv)
+    if tl > 127:
+        tl = 127
+    i: int32 = 0
+    lstart: int32 = 0
+    while i < tl:
+        nsq_buf[i] = _hx_lower(tp[i])
+        if tp[i] == 58:                                    # ':' — drop the prefix
+            lstart = i + 1
+        i = i + 1
+    return js_new_string(&nsq_buf[lstart], cast[uint64](tl - lstart))
+
+
+def _el_prefix(thisv: int32) -> int32:
+    tv: int32 = js_get_prop(thisv, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tv) != TAG_STR:
+        return js_null()
+    tp: Ptr[uint8] = js_str_bytes(tv)
+    tl: int32 = js_str_bytelen(tv)
+    i: int32 = 0
+    while i < tl:
+        if tp[i] == 58:
+            k: int32 = 0
+            while k < i and k < 127:
+                nsq_buf[k] = _hx_lower(tp[k])
+                k = k + 1
+            return js_new_string(&nsq_buf[0], cast[uint64](k))
+        i = i + 1
+    return js_null()
+
+
+# The lazy accessor pair behind el.attributes / el.localName / el.prefix.
+def _nsattr_accessor(rel: int32) -> int32:
+    thisv: int32 = js_this()
+    if rel == NID_ATTRS_ACC:
+        mv: int32 = _build_attrs_map(thisv)
+        # NOT memoised as an own property: setAttribute() after the first read
+        # must show up, and a browser's NamedNodeMap is live.
+        return mv
+    if rel == NID_LOCALNAME_ACC:
+        return _el_local_name(thisv)
+    if rel == NID_PREFIX_ACC:
+        return _el_prefix(thisv)
+    wv: int32 = js_undefined()
+    if js_arg_count() > 0:
+        wv = js_arg(0)
+    if rel == NID_ATTRS_ACC_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("attributes"), 10, wv)
+    elif rel == NID_LOCALNAME_SET:
+        js_set_own(thisv, cast[Ptr[uint8]]("localName"), 9, wv)
+    else:
+        js_set_own(thisv, cast[Ptr[uint8]]("prefix"), 6, wv)
+    return js_undefined()
+
+
+# DOMImplementation. hasFeature is spec'd to answer true for EVERY argument
+# list — the spec keeps it only so legacy feature detection stays truthy
+# (https://dom.spec.whatwg.org/#dom-domimplementation-hasfeature), which is
+# exactly what DOMImplementation-hasFeature.html's 136 subtests assert.
+def _new_doctype_obj(np: Ptr[uint8], nn: int32, pubv: int32, sysv: int32) -> int32:
+    d: int32 = js_new_object_v()
+    if g_proto_doctype != 0:
+        js_set_proto_v(d, g_proto_doctype)
+    nv: int32 = js_new_string(np, cast[uint64](nn))
+    js_set_prop(d, cast[Ptr[uint8]]("name"), 4, nv)
+    js_set_prop(d, cast[Ptr[uint8]]("nodeName"), 8, nv)
+    js_set_prop(d, cast[Ptr[uint8]]("nodeType"), 8, js_number(10.0))
+    js_set_prop(d, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("publicId"), 8, pubv)
+    js_set_prop(d, cast[Ptr[uint8]]("systemId"), 8, sysv)
+    js_set_prop(d, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("childNodes"), 10, js_new_array_v())
+    return d
+
+
+# A bare element node for a synthetic (createHTMLDocument) tree. These are NOT
+# registered in the source-element table — the synthetic document has no source
+# — so they carry their own childNodes/children arrays and identity props.
+def _new_bare_el(tag: Ptr[uint8], tl: int32, proto: int32) -> int32:
+    e: int32 = js_new_object_v()
+    lo: Array[32, uint8]
+    up: Array[32, uint8]
+    i: int32 = 0
+    while i < tl and i < 31:
+        lo[i] = _hx_lower(tag[i])
+        uc: uint8 = tag[i]
+        if uc >= 97 and uc <= 122:
+            uc = uc - 32
+        up[i] = uc
+        i = i + 1
+    if proto != 0:
+        js_set_proto_v(e, proto)
+    else:
+        _attach_el_methods(e)
+    js_set_prop(e, cast[Ptr[uint8]]("tagName"), 7, \
+                js_new_string(&up[0], cast[uint64](i)))
+    js_set_prop(e, cast[Ptr[uint8]]("nodeName"), 8, \
+                js_new_string(&up[0], cast[uint64](i)))
+    js_set_prop(e, cast[Ptr[uint8]]("localName"), 9, \
+                js_new_string(&lo[0], cast[uint64](i)))
+    js_set_prop(e, cast[Ptr[uint8]]("nodeType"), 8, js_number(1.0))
+    js_set_prop(e, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+    js_set_prop(e, cast[Ptr[uint8]]("prefix"), 6, js_null())
+    js_set_prop(e, cast[Ptr[uint8]]("namespaceURI"), 12, \
+                js_new_string(cast[Ptr[uint8]]("http://www.w3.org/1999/xhtml"), 28))
+    kids: int32 = js_new_array_v()
+    js_set_own(e, cast[Ptr[uint8]]("children"), 8, js_new_array_v())
+    js_set_own(e, cast[Ptr[uint8]]("childNodes"), 10, kids)
+    js_set_prop(e, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+    js_set_prop(e, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+    js_set_prop(e, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    return e
+
+
+def _bare_append(parent: int32, child: int32):
+    kids: int32 = js_get_prop(parent, cast[Ptr[uint8]]("childNodes"), 10)
+    js_array_push(kids, child)
+    js_set_prop(parent, cast[Ptr[uint8]]("lastChild"), 9, child)
+    if js_array_len(kids) == 1:
+        js_set_prop(parent, cast[Ptr[uint8]]("firstChild"), 10, child)
+    js_set_prop(child, cast[Ptr[uint8]]("parentNode"), 10, parent)
+    ct: int32 = js_get_prop(child, cast[Ptr[uint8]]("nodeType"), 8)
+    if cast[int32](js_to_number(ct)) == 1:
+        js_array_push(js_get_prop(parent, cast[Ptr[uint8]]("children"), 8), child)
+
+
+# implementation.createHTMLDocument([title]) — a DETACHED document: doctype +
+# <html><head>[<title>]</head><body></body></html>. It is not laid out and it
+# is not the rendered document; it exists so the ~120 WPT subtests that build a
+# scratch document to move nodes between can run at all.
+def _new_html_document(has_title: int32, titlev: int32) -> int32:
+    d: int32 = js_new_object_v()
+    if g_proto_doc != 0:
+        js_set_proto_v(d, g_proto_doc)
+    _node_constants(d)
+    js_set_prop(d, cast[Ptr[uint8]]("nodeType"), 8, js_number(9.0))
+    js_set_prop(d, cast[Ptr[uint8]]("nodeName"), 8, \
+                js_new_string(cast[Ptr[uint8]]("#document"), 9))
+    js_set_prop(d, cast[Ptr[uint8]]("nodeValue"), 9, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    dt: int32 = _new_doctype_obj(cast[Ptr[uint8]]("html"), 4, \
+                                 js_new_string(cast[Ptr[uint8]](""), 0), \
+                                 js_new_string(cast[Ptr[uint8]](""), 0))
+    js_set_prop(dt, cast[Ptr[uint8]]("parentNode"), 10, d)
+    js_set_prop(d, cast[Ptr[uint8]]("doctype"), 7, dt)
+    htmlel: int32 = _new_bare_el(cast[Ptr[uint8]]("html"), 4, g_proto_html)
+    headel: int32 = _new_bare_el(cast[Ptr[uint8]]("head"), 4, g_proto_head)
+    bodyel: int32 = _new_bare_el(cast[Ptr[uint8]]("body"), 4, g_proto_body)
+    if has_title != 0:
+        titleel: int32 = _new_bare_el(cast[Ptr[uint8]]("title"), 5, g_proto_title)
+        tnode: int32 = js_new_object_v()
+        if g_proto_text != 0:
+            js_set_proto_v(tnode, g_proto_text)
+        js_set_prop(tnode, cast[Ptr[uint8]]("nodeType"), 8, js_number(3.0))
+        js_set_prop(tnode, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#text"), 5))
+        js_set_prop(tnode, cast[Ptr[uint8]]("data"), 4, titlev)
+        js_set_prop(tnode, cast[Ptr[uint8]]("nodeValue"), 9, titlev)
+        js_set_prop(tnode, cast[Ptr[uint8]]("textContent"), 11, titlev)
+        _bare_append(titleel, tnode)
+        _bare_append(headel, titleel)
+    _bare_append(htmlel, headel)
+    _bare_append(htmlel, bodyel)
+    dkids: int32 = js_new_array_v()
+    js_array_push(dkids, dt)
+    js_array_push(dkids, htmlel)
+    js_set_own(d, cast[Ptr[uint8]]("childNodes"), 10, dkids)
+    dech: int32 = js_new_array_v()
+    js_array_push(dech, htmlel)
+    js_set_own(d, cast[Ptr[uint8]]("children"), 8, dech)
+    js_set_prop(htmlel, cast[Ptr[uint8]]("parentNode"), 10, d)
+    js_set_prop(d, cast[Ptr[uint8]]("documentElement"), 15, htmlel)
+    js_set_prop(d, cast[Ptr[uint8]]("head"), 4, headel)
+    js_set_prop(d, cast[Ptr[uint8]]("body"), 4, bodyel)
+    js_set_prop(d, cast[Ptr[uint8]]("firstChild"), 10, dt)
+    js_set_prop(d, cast[Ptr[uint8]]("lastChild"), 9, htmlel)
+    js_set_prop(d, cast[Ptr[uint8]]("URL"), 3, \
+                js_new_string(cast[Ptr[uint8]]("about:blank"), 11))
+    js_set_prop(d, cast[Ptr[uint8]]("documentURI"), 11, \
+                js_new_string(cast[Ptr[uint8]]("about:blank"), 11))
+    js_set_prop(d, cast[Ptr[uint8]]("compatMode"), 10, \
+                js_new_string(cast[Ptr[uint8]]("CSS1Compat"), 10))
+    js_set_prop(d, cast[Ptr[uint8]]("characterSet"), 12, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("charset"), 7, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("inputEncoding"), 13, \
+                js_new_string(cast[Ptr[uint8]]("UTF-8"), 5))
+    js_set_prop(d, cast[Ptr[uint8]]("contentType"), 11, \
+                js_new_string(cast[Ptr[uint8]]("text/html"), 9))
+    js_set_prop(d, cast[Ptr[uint8]]("location"), 8, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("defaultView"), 11, js_null())
+    if has_title != 0:
+        js_set_prop(d, cast[Ptr[uint8]]("title"), 5, titlev)
+    else:
+        js_set_prop(d, cast[Ptr[uint8]]("title"), 5, \
+                    js_new_string(cast[Ptr[uint8]](""), 0))
+    # The node factories a scratch document is used for. They mint nodes in the
+    # main heap (there is one node pool) — which is what every consumer here
+    # actually needs: a node it can append into this document's tree.
+    js_set_prop(d, cast[Ptr[uint8]]("createElement"), 13, \
+                js_new_native_fn(js_hbase + NID_CREATE))
+    js_set_prop(d, cast[Ptr[uint8]]("createElementNS"), 15, \
+                js_new_native_fn(js_hbase + NID_CREATE_NS))
+    js_set_prop(d, cast[Ptr[uint8]]("createTextNode"), 14, \
+                js_new_native_fn(js_hbase + NID_CTEXT))
+    js_set_prop(d, cast[Ptr[uint8]]("createComment"), 13, \
+                js_new_native_fn(js_hbase + NID_CREATECOMMENT))
+    js_set_prop(d, cast[Ptr[uint8]]("createDocumentFragment"), 22, \
+                js_new_native_fn(js_hbase + NID_CREATEFRAG))
+    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
+    return d
+
+
+def _new_impl_obj() -> int32:
+    impl: int32 = js_new_object_v()
+    if g_proto_impl != 0:
+        js_set_proto_v(impl, g_proto_impl)
+    js_set_prop(impl, cast[Ptr[uint8]]("hasFeature"), 10, \
+                js_new_native_fn(js_hbase + NID_IMPL_HASFEAT))
+    js_set_prop(impl, cast[Ptr[uint8]]("createHTMLDocument"), 18, \
+                js_new_native_fn(js_hbase + NID_IMPL_CREHTMLD))
+    js_set_prop(impl, cast[Ptr[uint8]]("createDocument"), 14, \
+                js_new_native_fn(js_hbase + NID_IMPL_CREDOC))
+    js_set_prop(impl, cast[Ptr[uint8]]("createDocumentType"), 18, \
+                js_new_native_fn(js_hbase + NID_IMPL_CREDOCT))
+    return impl
+
+
+def _impl_dispatch(rel: int32) -> int32:
+    if rel == NID_IMPL_HASFEAT:
+        return js_bool(1)
+    if rel == NID_IMPL_CREDOCT:
+        dtn: int32 = 0
+        if js_arg_count() >= 1:
+            dtn = _js_str_to_cbuf(js_arg(0), &nsq_buf[0], 128)
+        pubv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        sysv: int32 = pubv
+        if js_arg_count() >= 2:
+            pubv = js_arg(1)
+        if js_arg_count() >= 3:
+            sysv = js_arg(2)
+        return _new_doctype_obj(&nsq_buf[0], dtn, pubv, sysv)
+    if rel == NID_IMPL_CREHTMLD:
+        # `title` is an OPTIONAL DOMString: omitted (or explicitly undefined)
+        # means the synthetic <head> gets no <title> child at all, while
+        # createHTMLDocument(null) really does title the document "null".
+        if js_arg_count() < 1 or js_type_of(js_arg(0)) == TAG_UNDEF:
+            return _new_html_document(0, js_undefined())
+        tn2: int32 = _arg_bytes(0, &impl_title[0], 1024)
+        return _new_html_document(1, js_new_string(&impl_title[0], \
+                                                   cast[uint64](tn2)))
+    # createDocument(namespace, qualifiedName, doctype) — an XML document. The
+    # engine has one (HTML) node model, so this answers the same detached shape
+    # with the requested root element and NO head/body.
+    d: int32 = js_new_object_v()
+    if g_proto_doc != 0:
+        js_set_proto_v(d, g_proto_doc)
+    _node_constants(d)
+    js_set_prop(d, cast[Ptr[uint8]]("nodeType"), 8, js_number(9.0))
+    js_set_prop(d, cast[Ptr[uint8]]("nodeName"), 8, \
+                js_new_string(cast[Ptr[uint8]]("#document"), 9))
+    js_set_prop(d, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    js_set_prop(d, cast[Ptr[uint8]]("contentType"), 11, \
+                js_new_string(cast[Ptr[uint8]]("application/xml"), 15))
+    js_set_prop(d, cast[Ptr[uint8]]("doctype"), 7, js_null())
+    kids: int32 = js_new_array_v()
+    root: int32 = js_null()
+    qn: int32 = 0
+    if js_arg_count() >= 2:
+        qn = _arg_bytes(1, &nsq_buf[0], 128)
+    if qn > 0:
+        root = _new_bare_el(&nsq_buf[0], qn, 0)
+        if js_arg_count() >= 1:
+            js_set_prop(root, cast[Ptr[uint8]]("namespaceURI"), 12, js_arg(0))
+        js_set_prop(root, cast[Ptr[uint8]]("parentNode"), 10, d)
+        js_array_push(kids, root)
+    js_set_own(d, cast[Ptr[uint8]]("childNodes"), 10, kids)
+    js_set_prop(d, cast[Ptr[uint8]]("documentElement"), 15, root)
+    js_set_prop(d, cast[Ptr[uint8]]("firstChild"), 10, root)
+    js_set_prop(d, cast[Ptr[uint8]]("lastChild"), 9, root)
+    js_set_prop(d, cast[Ptr[uint8]]("createElement"), 13, \
+                js_new_native_fn(js_hbase + NID_CREATE))
+    js_set_prop(d, cast[Ptr[uint8]]("createElementNS"), 15, \
+                js_new_native_fn(js_hbase + NID_CREATE_NS))
+    js_set_prop(d, cast[Ptr[uint8]]("createTextNode"), 14, \
+                js_new_native_fn(js_hbase + NID_CTEXT))
+    js_set_prop(d, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
+    return d
+
+
 def _dom_interface(name: Ptr[uint8], nlen: uint64, parent_proto: int32) -> int32:
     ctor: int32 = js_new_native_fn(js_hbase + NID_NODE_CTOR)
     js_global_set(name, nlen, ctor)
@@ -4130,6 +4633,17 @@ def _build_dom_interfaces():
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("childNodes"), 10, \
                        js_new_native_fn(js_hbase + NID_NODES_ACC), \
                        js_new_native_fn(js_hbase + NID_NODES_ACC_SET))
+    # attributes / localName / prefix: derived on demand from the start tag +
+    # override store, so no per-element cost until something asks.
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("attributes"), 10, \
+                       js_new_native_fn(js_hbase + NID_ATTRS_ACC), \
+                       js_new_native_fn(js_hbase + NID_ATTRS_ACC_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("localName"), 9, \
+                       js_new_native_fn(js_hbase + NID_LOCALNAME_ACC), \
+                       js_new_native_fn(js_hbase + NID_LOCALNAME_SET))
+    js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("prefix"), 6, \
+                       js_new_native_fn(js_hbase + NID_PREFIX_ACC), \
+                       js_new_native_fn(js_hbase + NID_PREFIX_SET))
     # el.style / el.classList carry per-element STATE, but their methods do not:
     # one shared copy each on the real interface prototype (which also makes
     # `el.style instanceof CSSStyleDeclaration` and
@@ -4138,6 +4652,11 @@ def _build_dom_interfaces():
     _attach_style_natives(g_proto_style)
     g_proto_clslist = _dom_interface(cast[Ptr[uint8]]("DOMTokenList"), 12, 0)
     _attach_clslist_natives(g_proto_clslist)
+    # WPT's assert_class_string() IS Object.prototype.toString.call(), so an
+    # untagged host prototype reports the generic "[object Object]". Tagged
+    # here (not on the element interfaces, whose per-tag class we do not model).
+    js_tag_object(g_proto_clslist, cast[Ptr[uint8]]("DOMTokenList"))
+    js_tag_object(g_proto_style, cast[Ptr[uint8]]("CSSStyleDeclaration"))
     chard: int32 = _dom_interface(cast[Ptr[uint8]]("CharacterData"), 13, g_proto_node)
     g_proto_text = _dom_interface(cast[Ptr[uint8]]("Text"), 4, chard)
     g_proto_comm = _dom_interface(cast[Ptr[uint8]]("Comment"), 7, chard)
@@ -4145,6 +4664,28 @@ def _build_dom_interfaces():
                                   g_proto_node)
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
     _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
+    _dom_interface(cast[Ptr[uint8]]("XMLDocument"), 11, g_proto_doc)
+    g_proto_doctype = _dom_interface(cast[Ptr[uint8]]("DocumentType"), 12, \
+                                     g_proto_node)
+    g_proto_attr = _dom_interface(cast[Ptr[uint8]]("Attr"), 4, g_proto_node)
+    g_proto_nnm = _dom_interface(cast[Ptr[uint8]]("NamedNodeMap"), 12, 0)
+    g_proto_impl = _dom_interface(cast[Ptr[uint8]]("DOMImplementation"), 17, 0)
+    js_tag_object(g_proto_doctype, cast[Ptr[uint8]]("DocumentType"))
+    js_tag_object(g_proto_attr, cast[Ptr[uint8]]("Attr"))
+    js_tag_object(g_proto_nnm, cast[Ptr[uint8]]("NamedNodeMap"))
+    js_tag_object(g_proto_impl, cast[Ptr[uint8]]("DOMImplementation"))
+    g_proto_html = _dom_interface(cast[Ptr[uint8]]("HTMLHtmlElement"), 15, \
+                                  g_proto_elem)
+    g_proto_head = _dom_interface(cast[Ptr[uint8]]("HTMLHeadElement"), 15, \
+                                  g_proto_elem)
+    g_proto_body = _dom_interface(cast[Ptr[uint8]]("HTMLBodyElement"), 15, \
+                                  g_proto_elem)
+    g_proto_title = _dom_interface(cast[Ptr[uint8]]("HTMLTitleElement"), 16, \
+                                   g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLHeadingElement"), 18, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLSpanElement"), 15, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLParagraphElement"), 20, g_proto_elem)
+    _dom_interface(cast[Ptr[uint8]]("HTMLUnknownElement"), 18, g_proto_elem)
     _dom_interface(cast[Ptr[uint8]]("HTMLInputElement"), 16, g_proto_elem)
     _dom_interface(cast[Ptr[uint8]]("HTMLDivElement"), 14, g_proto_elem)
     _dom_interface(cast[Ptr[uint8]]("HTMLAnchorElement"), 17, g_proto_elem)
@@ -4368,6 +4909,10 @@ def _js_build_document():
     # A document's ownerDocument is null (it IS the document) — code that walks
     # `n.ownerDocument || n` relies on the null, not on undefined.
     js_set_prop(doc, cast[Ptr[uint8]]("ownerDocument"), 13, js_null())
+    # document.implementation — the DOMImplementation for THIS document. It is
+    # a per-document object (Document-implementation.html asserts a scratch
+    # document's implementation is a different object), minted once here.
+    js_set_prop(doc, cast[Ptr[uint8]]("implementation"), 14, _new_impl_obj())
     # document.cookie — a live accessor over the jar (see _cookie_read/_write).
     js_define_accessor(doc, cast[Ptr[uint8]]("cookie"), 6, \
                        js_new_native_fn(js_hbase + NID_COOKIE_GET), \

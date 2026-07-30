@@ -615,6 +615,15 @@ def js_define_accessor(objv: int32, name: Ptr[uint8], n: uint64, \
                         getter, setter)
 
 
+# Brand `objv` with a @@toStringTag so Object.prototype.toString.call(x) reads
+# "[object <tag>]". The DOM interface prototypes need this: WPT's
+# assert_class_string() is exactly Object.prototype.toString.call(), and a
+# host object with no tag reports the generic "[object Object]".
+def js_tag_object(objv: int32, tag: Ptr[uint8]):
+    ext_pin(objv)
+    tag_object(objv, tag)
+
+
 def js_array_push(arrv: int32, val: int32):
     ext_pin(arrv)
     ext_pin(val)
