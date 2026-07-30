@@ -784,6 +784,61 @@ def install_distro_tree(p2: Ptr[uint8]) -> int32:
     return 0
 
 
+# --- the package repo on the installed disk --------------------------
+#
+# Lay the install medium's in-RAM native package mirror (/iso-packages)
+# down under `usr/share/hpm/repo/` on the target, and write the target's
+# `/etc/hpm/repo` so a bare `hpm refresh` there points at it. NOT under
+# /var: `/var` is a shadow tmpfs whose boot skeleton pre-creates
+# /var/lib/hpm (fs/tmpfs.ad), and a pre-created tmpfs directory shadows
+# the ext4 one — the first version of this step put the mirror there, the
+# files landed on disk (confirmed with debugfs) and hpm still reported
+# "cannot open /var/lib/hpm/repo/main/index.json". See
+# scripts/build_initramfs.py::_stage_installed_pkg_repo for that and the
+# other two measured limits (ext4 directory size, manifest size).
+#
+# WHY: the installed system used to ship NO repo at all. This step ran
+# `hpm --repo=file:///iso-packages install hamnix-base` onto the target
+# and walked away; the installed root then had no /iso-packages, no
+# /etc/hpm/repo and no cached index, so hpm fell back to the network
+# default (https://255.one/). On a box without working networking `hpm
+# search` returned nothing and the Software app (/bin/hamsoftware) could
+# only show the apps already on disk — which is the "the package manager
+# offers no extra packages (the audiobook player)" report. The repo-ONLY
+# apps (hamnix-hamaudiobook, hamnix-hampaint, hamnix-hamclock,
+# hamnix-hammark, hamnix-hamangrybirds) are deliberately excluded from
+# the hamnix-base closure, so with no repo they were unreachable.
+#
+# Same shape, same transport, as install_distro_tree: a build-time
+# manifest (scripts/build_initramfs.py::_stage_installed_pkg_repo emits
+# /etc/install/packages.manifest) pushed through
+# /bin/install_rootfs_from_manifest. Best-effort — a medium built
+# without the mirror (a plain dev cpio) leaves the installed system
+# exactly as it was before this step existed.
+def install_package_repo(p2: Ptr[uint8]) -> int32:
+    write_str(1, "[install] (6/7) mirror package repo (/iso-packages) -> "
+                 "usr/share/hpm/repo/ on ")
+    write_str(1, p2)
+    write_str(1, "\n")
+    if _path_readable(
+            cast[Ptr[uint8]]("/etc/install/packages.manifest")) == 0:
+        write_str(2, "[install] WARN: no /etc/install/packages.manifest on "
+                     "this medium — the installed system will have no local "
+                     "package repo (hpm will need the network)\n")
+        return -1
+    rc: int32 = run_tool4(
+        cast[Ptr[uint8]]("install_rootfs_from_manifest"), p2,
+        cast[Ptr[uint8]]("/etc/install/packages.manifest"),
+        cast[Ptr[uint8]](0), cast[Ptr[uint8]](0))
+    if rc != 0:
+        write_str(2, "[install] WARN: package-repo manifest install returned "
+                     "non-zero\n")
+        return -1
+    write_str(1, "[install] (6/7) package repo mirrored "
+                 "(hpm install hamnix-hamaudiobook will resolve offline)\n")
+    return 0
+
+
 # --- the install user's home skeleton --------------------------------
 #
 # Populate /home/<user> from /etc/skel — critically ~/Desktop, whose ~20
@@ -1332,6 +1387,12 @@ def do_install(esp_mb: uint64) -> int32:
     # installed system's `enter linux { ... }` has a real Debian root.
     # Best-effort — see install_distro_tree.
     install_distro_tree(&target_p2[0])
+
+    # 6/7: mirror the medium's package repo onto the target + point the
+    # installed /etc/hpm/repo at it, so `hpm search` / the Software app
+    # offer the repo-only apps offline. Best-effort — see
+    # install_package_repo.
+    install_package_repo(&target_p2[0])
 
     # 6/7: populate the install user's home from /etc/skel (the desktop
     # launcher set lives in ~/Desktop). Best-effort.

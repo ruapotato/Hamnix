@@ -620,7 +620,14 @@ def main() -> int32:
     # refreshed), do a one-shot `hpm refresh` so the FULL channel — including
     # repo-only apps (e.g. the audiobook) not yet installed — populates the
     # list. On the live image /etc/hpm/repo points at the on-image file://
-    # repo, so this is an instant offline read; the Refresh button re-fetches.
+    # repo; on an INSTALLED system it points at the /usr/share/hpm/repo mirror
+    # the installer copied off the medium (user/install.ad::
+    # install_package_repo). Either way this is an instant offline read and
+    # needs no network — before that mirror existed the installed root had
+    # no repo at all, hpm defaulted to https://255.one/, the refresh found
+    # nothing, and this window showed only already-installed apps, which is
+    # the "package manager offers no extra packages" report. The Refresh
+    # button re-fetches.
     _load_index()
     if avail_count == 0:
         _do_refresh()

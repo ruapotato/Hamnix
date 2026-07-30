@@ -21,7 +21,9 @@ fs/initramfs_blob.S (which is committed; assembly happens at build
 time without re-running this script).
 """
 
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -2718,6 +2720,209 @@ if _HPM_TEST_REPO_C:
             FILES.append((f"/test-hpm-repo-conflict/{_rel.as_posix()}",
                           _fh.read()))
 
+# --- the INSTALLED system's local package repo ------------------------
+#
+# WHY THIS EXISTS (the "package manager offers no extra packages" report).
+#
+# The live/installer medium carries the whole native repo in RAM at
+# /iso-packages/, so on the LIVE image `hpm search` / the Software app list
+# every package including the repo-ONLY apps (hamnix-hamaudiobook,
+# hamnix-hampaint, hamnix-hamclock, ...). The INSTALLED system shipped NO
+# repo at all: user/install.ad ran `hpm --repo=file:///iso-packages install
+# hamnix-base` onto the target and then walked away, so the installed root
+# had no /iso-packages, no /etc/hpm/repo and no cached index. hpm fell back
+# to the network default (https://255.one/), and on a box with no working
+# network `hpm search` returned nothing — the Software window faithfully
+# showed only the already-installed apps and the audiobook player was
+# undiscoverable and uninstallable.
+#
+# This is the SAME SHAPE as the `enter linux { sh }` -> "sh not found"
+# report: content the live medium has that the install never copied. The
+# fix is the same one gen_install_manifest.py::gen_distro_manifest uses —
+# a manifest of (target <- live source) rows that user/install.ad feeds to
+# /bin/install_rootfs_from_manifest, laying the mirror down on the target
+# ext4 as FILES.
+#
+# Layout on the installed root:
+#   /usr/share/hpm/repo/main/index.json + packages/*.tar.gz  (the mirror)
+#   /etc/hpm/repo  -> "file:///usr/share/hpm/repo/"          (hpm's default)
+#
+# hpm's own `_set_repo_default` also probes that index.json directly, so the
+# mirror works even if /etc/hpm/repo is absent.
+#
+# THREE MEASURED CONSTRAINTS SHAPE THIS. All three were found by running the
+# first version of this code through a real install (Stage B/C of
+# scripts/test_installed_system_parity.sh), not by reading code:
+#
+#  (1) NOT /var/lib/hpm/repo. `/var` is a shadow tmpfs mount
+#      (fs/vfs_mount.ad::vfs_mount_init_base) AND fs/tmpfs.ad's boot
+#      skeleton pre-creates `/var/lib/hpm`. A pre-created tmpfs directory is
+#      authoritative for lookups beneath it, so on the installed boot
+#      `/var/lib/hpm/repo/...` resolved against the empty tmpfs dir and
+#      never fell through to ext4 — the files were provably ON DISK
+#      (debugfs) and still "did not exist" to hpm. `/usr` is a shadow tmpfs
+#      too but has no such skeleton entry, and ext4 fall-through there is
+#      already proven by the installed system's /usr/share/music assets.
+#
+#  (2) AT MOST ~114 FILES PER DIRECTORY. fs/ext4.ad::ext4_dir_insert says so
+#      itself: "M16.63 does NOT grow the directory by allocating a new block
+#      — if the last block has no slack, this fails with -1". Mirroring all
+#      199 packages filled the 4 KiB directory block and the last 88 rows
+#      failed with `ext4: blob_save_at_path FAIL (dir_insert)`. So the
+#      mirror carries only the packages that a base install does NOT already
+#      have — see _installed_repo_wanted_urls below — which is a handful.
+#
+#  (3) MANIFEST <= 64 KiB. user/install_rootfs_from_manifest.ad's
+#      MANIFEST_MAX is 65536 and each mirrored file <= its MAX_BODY of
+#      4 MiB. Both are asserted at build time below, loudly, because
+#      install_rootfs_from_manifest SKIPS an unreadable source silently —
+#      a truncated mirror would otherwise ship looking healthy.
+#
+# EXCLUSION: `linux-debian-12` is never mirrored. Its payload is the
+# Debian/Linux userland, which install.ad already lays down file-by-file
+# under `distro/` (install_distro_tree).
+_INSTALLED_REPO_TARGET = "usr/share/hpm/repo"
+_INSTALLED_REPO_URL = "file:///usr/share/hpm/repo/"
+_INSTALLED_REPO_SKIP_PREFIXES = ("linux-debian-12-",)
+# Hard ceilings from the consumers named above. Kept below the measured
+# limits, not at them.
+_INSTALLED_REPO_MAX_PER_DIR = 100          # ext4_dir_insert, one 4 KiB block
+_INSTALLED_REPO_MAX_MANIFEST = 60000       # install_rootfs_from_manifest
+_INSTALLED_REPO_MAX_FILE = 4 * 1024 * 1024  # install_rootfs_from_manifest
+
+
+def _installed_repo_wanted_urls(repo_root):
+    """Package tarball URLs to mirror onto the installed root.
+
+    A base install already carries the whole `hamnix-base` dependency
+    closure, so re-shipping those tarballs buys nothing and blows the
+    ~114-entry ext4 directory ceiling. What a user actually cannot reach
+    without a repo is the opposite set: the repo-ONLY apps that are
+    deliberately excluded from the closure (hamnix-hamaudiobook,
+    hamnix-hampaint, hamnix-hamclock, hamnix-hammark,
+    hamnix-hamangrybirds, ...). Compute that set FROM THE INDEX rather
+    than hardcoding names, so a new repo-only package is mirrored the day
+    it is added.
+
+    Returns a set of index `url` values (e.g. "packages/x-1.0.0.tar.gz"),
+    or None if the index cannot be read (caller then mirrors nothing but
+    the index itself).
+    """
+    idx_path = repo_root / "main" / "index.json"
+    try:
+        idx = json.loads(idx_path.read_text())
+    except (OSError, ValueError):
+        return None
+    by_name = {p["name"]: p for p in idx.get("packages", [])}
+    closure = set()
+    stack = ["hamnix-base"]
+    while stack:
+        name = stack.pop()
+        if name in closure or name not in by_name:
+            continue
+        closure.add(name)
+        for dep in by_name[name].get("depends", []):
+            stack.append(re.split(r"[<>=!\s]", dep, 1)[0].strip())
+    return {p["url"] for p in idx.get("packages", [])
+            if p["name"] not in closure and "url" in p}
+
+
+def _stage_installed_pkg_repo(files, rels, live_prefix, repo_root, sizes):
+    """Emit the installed-system package-repo manifest into the cpio.
+
+    `rels` are repo-root-relative posix paths (e.g. "main/index.json") that
+    were just staged into the cpio under `live_prefix` (e.g. "/iso-packages/").
+    `sizes` maps rel -> byte size. Appends two cpio entries:
+
+      /etc/install/hpm-repo.installed  the one-line /etc/hpm/repo the target
+                                       gets (a file:// URL naming the mirror)
+      /etc/install/packages.manifest   `<target_path> <source_path>` rows
+                                       consumed by install_rootfs_from_manifest
+
+    Raises SystemExit if the result would exceed a consumer limit — a
+    silently truncated mirror is the failure mode this is guarding against.
+    Returns the number of mirrored package files.
+    """
+    cfg = (b"# hpm default repo base (first bare line) on an INSTALLED\n"
+           b"# Hamnix system. Points at the on-disk mirror the installer\n"
+           b"# copied off the install medium, so `hpm search` / `hpm install`\n"
+           b"# and the Software app work with no network. Replace the line\n"
+           b"# below with `https://255.one/` (or comment it out) to track the\n"
+           b"# network repo instead; `hpm --repo=<url> ...` overrides per run.\n"
+           + _INSTALLED_REPO_URL.encode() + b"\n")
+    files.append(("/etc/install/hpm-repo.installed", cfg))
+
+    wanted = _installed_repo_wanted_urls(repo_root)
+
+    lines = [
+        "# /etc/install/packages.manifest - generated by",
+        "# scripts/build_initramfs.py at image build time.",
+        "#",
+        "# Mirrors the live medium's in-RAM native package repo onto the",
+        "# INSTALLED root so hpm has a working offline repository there.",
+        "# Consumed by user/install.ad::install_package_repo via",
+        "# /bin/install_rootfs_from_manifest (same transport as",
+        "# distro.manifest). Format: <target_path> <source_path>.",
+        "#",
+        "# The channel index is mirrored whole (so `hpm search` lists the",
+        "# full catalogue); the TARBALLS mirrored are the packages outside",
+        "# the hamnix-base closure — the repo-only apps a base install does",
+        "# not already carry. See _stage_installed_pkg_repo for the three",
+        "# measured limits that shape this.",
+        "",
+    ]
+    n = 0
+    per_dir = {}
+    for rel in rels:
+        base = rel.rsplit("/", 1)[-1]
+        if base.startswith(_INSTALLED_REPO_SKIP_PREFIXES):
+            continue
+        # Channel metadata (index.json / index.json.sig / anything not under
+        # a channel's packages/ dir) is always mirrored; tarballs are
+        # filtered to the repo-only set.
+        if "/packages/" in rel and wanted is not None:
+            url = rel.split("/", 1)[1] if "/" in rel else rel
+            if url not in wanted:
+                continue
+        size = sizes.get(rel, 0)
+        if size > _INSTALLED_REPO_MAX_FILE:
+            raise SystemExit(
+                f"[build_initramfs] package-repo mirror: {rel} is {size} "
+                f"bytes, over install_rootfs_from_manifest's "
+                f"{_INSTALLED_REPO_MAX_FILE}-byte MAX_BODY. It would be "
+                f"SKIPPED at install time and the mirror would ship "
+                f"incomplete.")
+        tgt = f"{_INSTALLED_REPO_TARGET}/{rel}"
+        d = tgt.rsplit("/", 1)[0]
+        per_dir[d] = per_dir.get(d, 0) + 1
+        lines.append(f"{tgt}    {live_prefix}{rel}")
+        n += 1
+    lines.append("")
+    lines.append("# The installed system's hpm default-repo config, pointing")
+    lines.append("# at the mirror laid down by the rows above.")
+    lines.append("etc/hpm/repo    /etc/install/hpm-repo.installed")
+    lines.append("")
+
+    for d, count in sorted(per_dir.items()):
+        if count > _INSTALLED_REPO_MAX_PER_DIR:
+            raise SystemExit(
+                f"[build_initramfs] package-repo mirror: {count} files in "
+                f"{d}/, over the {_INSTALLED_REPO_MAX_PER_DIR} ceiling. "
+                f"fs/ext4.ad::ext4_dir_insert cannot grow a directory past "
+                f"its first 4 KiB block, so the overflow would fail with "
+                f"'blob_save_at_path FAIL (dir_insert)' and the mirror would "
+                f"ship truncated.")
+
+    blob = "\n".join(lines).encode()
+    if len(blob) > _INSTALLED_REPO_MAX_MANIFEST:
+        raise SystemExit(
+            f"[build_initramfs] package-repo mirror: manifest is {len(blob)} "
+            f"bytes, over install_rootfs_from_manifest's MANIFEST_MAX "
+            f"({_INSTALLED_REPO_MAX_MANIFEST} usable of 65536).")
+    files.append(("/etc/install/packages.manifest", blob))
+    return n
+
+
 # ISO mini-repo for the hpm-driven installer. scripts/build_iso.sh
 # builds the v1 packages via scripts/build_packages.py (kernel ELF +
 # userland are by then already current) and stages the resulting
@@ -2741,10 +2946,14 @@ if _HPM_ISO_PACKAGES:
             f"HAMNIX_ISO_PACKAGES={_HPM_ISO_PACKAGES!r}: not a directory")
     _n_iso_pkg_files = 0
     _n_iso_pkg_bytes = 0
+    _iso_pkg_rels: list[str] = []
+    _iso_pkg_sizes: dict[str, int] = {}
     for _f in sorted(_iso_pkgs_root.rglob("*")):
         if not _f.is_file():
             continue
         _rel = _f.relative_to(_iso_pkgs_root)
+        _iso_pkg_rels.append(_rel.as_posix())
+        _iso_pkg_sizes[_rel.as_posix()] = _f.stat().st_size
         with _f.open("rb") as _fh:
             _bytes = _fh.read()
         # NOTE: the brief specified /mnt/iso-packages/, but the kernel
@@ -2770,6 +2979,11 @@ if _HPM_ISO_PACKAGES:
                   b"# override per-invocation with `hpm --repo=<url> ...`.\n"
                   b"file:///iso-packages/\n"))
     print("  [iso-packages] wrote /etc/hpm/repo -> file:///iso-packages/")
+    _n_mirror = _stage_installed_pkg_repo(FILES, _iso_pkg_rels,
+                                          "/iso-packages/", _iso_pkgs_root,
+                                          _iso_pkg_sizes)
+    print(f"  [iso-packages] wrote /etc/install/packages.manifest "
+          f"({_n_mirror} rows) -> {_INSTALLED_REPO_URL} on the installed root")
 
 _CPIO_STRESS_RAW = os.environ.get("HAMNIX_CPIO_STRESS_FILES", "")
 if _CPIO_STRESS_RAW:
@@ -3022,19 +3236,35 @@ if os.environ.get("HAMNIX_INSTALLER_BLOB") == "1":
             f"this).")
     _repo_count = 0
     _repo_bytes = 0
+    _blob_pkg_rels: list[str] = []
+    _blob_pkg_sizes: dict[str, int] = {}
     for _root, _dirs, _names in os.walk(_repo_main):
-        for _nm in _names:
+        for _nm in sorted(_names):
             _abs = Path(_root) / _nm
             _rel = _abs.relative_to(_repo_main)
-            _cpio_path = "/iso-packages/main/" + str(_rel).replace(os.sep, "/")
+            _relp = str(_rel).replace(os.sep, "/")
+            _cpio_path = "/iso-packages/main/" + _relp
             _data = _abs.read_bytes()
             FILES.append((_cpio_path, _data))
+            _blob_pkg_rels.append("main/" + _relp)
+            _blob_pkg_sizes["main/" + _relp] = len(_data)
             _repo_count += 1
             _repo_bytes += len(_data)
     print(f"[build_initramfs] HAMNIX_INSTALLER_BLOB=1: packed in-RAM package "
           f"repo /iso-packages/main/ ({_repo_count} files, "
           f"{_repo_bytes/(1<<20):.1f} MiB) for the Debian-style root "
           f"install.", flush=True)
+    # ...and the manifest that copies that same mirror onto the INSTALLED
+    # root, so the installed box has a working offline hpm repository (and
+    # therefore a Software app that lists the repo-only apps). See
+    # _stage_installed_pkg_repo above for why.
+    _n_mirror = _stage_installed_pkg_repo(FILES, sorted(_blob_pkg_rels),
+                                          "/iso-packages/", _repo_root,
+                                          _blob_pkg_sizes)
+    print(f"[build_initramfs] HAMNIX_INSTALLER_BLOB=1: wrote "
+          f"/etc/install/packages.manifest ({_n_mirror} rows) — the installer "
+          f"mirrors the repo to {_INSTALLED_REPO_URL} on the target.",
+          flush=True)
 
 # Native Intel HDA audio self-test. scripts/test_hda_audio.sh sets
 # ENABLE_AUDIO_TEST=1 to plant /etc/audio-test; init/main.ad's boot:37.aud
