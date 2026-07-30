@@ -2795,14 +2795,29 @@ def _installed_repo_wanted_urls(repo_root):
     """Package tarball URLs to mirror onto the installed root.
 
     A base install already carries the whole `hamnix-base` dependency
-    closure, so re-shipping those tarballs buys nothing and blows the
-    ~114-entry ext4 directory ceiling. What a user actually cannot reach
-    without a repo is the opposite set: the repo-ONLY apps that are
+    closure, so re-shipping ALL of those tarballs buys nothing and blows
+    the ~114-entry ext4 directory ceiling. What a user actually cannot
+    reach without a repo is the opposite set: the repo-ONLY apps that are
     deliberately excluded from the closure (hamnix-hamaudiobook,
     hamnix-hampaint, hamnix-hamclock, hamnix-hammark,
     hamnix-hamangrybirds, ...). Compute that set FROM THE INDEX rather
     than hardcoding names, so a new repo-only package is mirrored the day
     it is added.
+
+    ...PLUS THEIR OWN DEPENDENCY CLOSURE. `hpm install` resolves the
+    named package's full closure and fetches every member's tarball; it
+    does not know (and has no installed-package database on the target
+    that would tell it) that hamnix-init / hamnix-hamsh /
+    hamnix-desktop-core / hamnix-drivers-snd-hda are already on disk. With
+    only the repo-only tarballs mirrored, `hpm install hamnix-hamaudiobook`
+    resolved 5 packages and died on the first dependency:
+
+        hpm: cannot open /usr/share/hpm/repo/main/packages/hamnix-init-1.0.0.tar.gz
+
+    The closure adds exactly 4 tarballs (2.5 MB total, 11 files in
+    main/packages/) — comfortably inside all three measured limits below,
+    which is why this is the right side to fix it on rather than teaching
+    the resolver about a package database the target does not have.
 
     Returns a set of index `url` values (e.g. "packages/x-1.0.0.tar.gz"),
     or None if the index cannot be read (caller then mirrors nothing but
@@ -2814,17 +2829,24 @@ def _installed_repo_wanted_urls(repo_root):
     except (OSError, ValueError):
         return None
     by_name = {p["name"]: p for p in idx.get("packages", [])}
-    closure = set()
-    stack = ["hamnix-base"]
-    while stack:
-        name = stack.pop()
-        if name in closure or name not in by_name:
-            continue
-        closure.add(name)
-        for dep in by_name[name].get("depends", []):
-            stack.append(re.split(r"[<>=!\s]", dep, 1)[0].strip())
-    return {p["url"] for p in idx.get("packages", [])
-            if p["name"] not in closure and "url" in p}
+
+    def _closure(seed_names):
+        seen = set()
+        stack = list(seed_names)
+        while stack:
+            name = stack.pop()
+            if name in seen or name not in by_name:
+                continue
+            seen.add(name)
+            for dep in by_name[name].get("depends", []):
+                stack.append(re.split(r"[<>=!\s]", dep, 1)[0].strip())
+        return seen
+
+    base = _closure(["hamnix-base"])
+    repo_only = [p["name"] for p in idx.get("packages", [])
+                 if p["name"] not in base]
+    wanted = _closure(repo_only)
+    return {by_name[n]["url"] for n in wanted if "url" in by_name[n]}
 
 
 def _stage_installed_pkg_repo(files, rels, live_prefix, repo_root, sizes):
