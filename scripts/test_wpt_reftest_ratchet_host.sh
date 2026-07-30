@@ -25,8 +25,9 @@
 # reftest the engine does not pass today, plus the set that DOES pass. This gate
 # re-runs the lane and fails if:
 #
-#   * a reftest that PASSED at baseline no longer passes,
+#   * a reftest that PASSED (or WEAK-PASSED) at baseline no longer does,
 #   * the PASS count drops below #!PASS_FLOOR,
+#   * the WEAK-PASS count drops below #!WEAK_PASS_FLOOR,
 #   * the NONDISCRIMINATING count rises above #!ND_CEILING,
 #   * a test in the baseline produces no record at all (coverage shrank), or
 #   * #!TREE_SHA256 stops matching -- a vendored test/reference was edited, or a
@@ -36,19 +37,32 @@
 # no longer does (#!ERROR_CEILING): that is the absence of an observation, not a
 # conformance result.
 #
-# #!ND_CEILING is the clause that actually has teeth while #!PASS_FLOOR is 0. A
-# pair goes NONDISCRIMINATING when an engine with NO CSS at all would satisfy it
-# too. So if the engine stops applying float placement or margin collapsing,
-# those pairs LEAVE the scored denominator, the pass floor is still met (0 >= 0)
-# and the error ceiling is still met -- a total loss of the tranche's subject
-# matter would otherwise exit 0.
+# TWO PASS CLASSES
+# ================
+# A holding pair is qualified by MUTATING THE TEST: neutralize one declaration
+# (rename its property to an unknown one) and re-compare against the UNCHANGED
+# reference. PASS means the holding is load-bearing on a declaration the
+# reference does NOT supply verbatim -- so a bug shared by both sides cannot
+# cancel. WEAK-PASS means it depends on CSS but only through declarations the
+# reference repeats identically, which cannot distinguish an engine that honours
+# this test's own subject matter from one that does not. NONDISCRIMINATING means
+# the render does not depend on CSS at all.
 #
-# The floor guards an ABSOLUTE count, never a ratio. The scored denominator is
-# PASS+FAIL and it MOVES: a pair excluded as NONDISCRIMINATING (a null engine
-# with no CSS would also satisfy it) becomes discriminating the moment the
-# engine starts honouring the property, entering the denominator — usually as a
-# FAIL at first. A real fix can therefore LOWER the ratio. An absolute floor
-# only ever asks "are we still passing at least as many real tests as before".
+# This replaced a single global-strip control that was capping progress: 57 of
+# the 67 remaining failures use a trivial `ref-filled-green-*` reference, both
+# sides of which collapse to the same boilerplate sentence with CSS removed, so
+# FIXING one moved it FAIL -> NONDISCRIMINATING and pushed against #!ND_CEILING.
+# Under the mutation model the ND class is monotone in the right direction -- a
+# pair only enters it when the render STOPS depending on CSS -- so the ceiling
+# catches loss without capping gain. scripts/wpt_reftest_score.py documents the
+# before/after measurement.
+#
+# The floors guard ABSOLUTE counts, never a ratio. The scored denominator is
+# PASS+WEAK-PASS+FAIL and it MOVES: a pair excluded as NONDISCRIMINATING becomes
+# discriminating the moment the engine starts honouring the property, entering
+# the denominator — usually as a FAIL at first. A real fix can therefore LOWER
+# the ratio. An absolute floor only ever asks "are we still passing at least as
+# many real tests as before".
 #
 #   bash scripts/test_wpt_reftest_ratchet_host.sh            # gate
 #   bash scripts/test_wpt_reftest_ratchet_host.sh --regen    # bank fixes
@@ -70,12 +84,21 @@
 #   (a) the comparator stops distinguishing images, so every pair "matches";
 #   (b) the renderer becomes non-deterministic, so exact equality stops being a
 #       valid pass condition at all.
-# scripts/wpt_reftest_run.py --selftest drives synthetic positive, negative,
-# mismatch-holds, mismatch-violated, nondiscriminating and DETERMINISM controls
-# through the real pipeline and fails unless every one lands on its expected
-# verdict.
+# scripts/wpt_reftest_run.py --selftest drives twelve synthetic controls through
+# the real pipeline -- positive, negative, mismatch-holds, mismatch-violated,
+# nondiscriminating, buried-real-pass, shared-machinery, DETERMINISM, the two
+# resource-inliner controls, neutralize==delete, and the null-CSS engine -- and
+# fails unless every one lands on its expected verdict.
 #
-# ~40 s: pixel-backend compile (~21 s) + ~300 renders at ~13 ms each.
+# And then PROOF BY CONSTRUCTION on the real corpus: `--prove-null` re-runs the
+# WHOLE vendored lane through an engine mutant that strips every document's CSS
+# before rendering, i.e. exactly what an engine with no CSS support at all would
+# draw. It must score 0 PASS and 0 WEAK-PASS. A scoring model a null-CSS engine
+# can score is not measuring CSS, and this gate refuses to report a number until
+# that is demonstrated on this run, on this corpus, with this binary.
+#
+# ~45 s: pixel-backend compile (~21 s) + ~320 scoring renders + ~1,400 renders
+# for the null-CSS proof, at ~7 ms each.
 #
 # RUN SERIALLY with the other pixel gates. This gate rebuilds
 # build/host/hambrowse_gfx, the SAME artifact every test_hambrowse_*_host.sh /
@@ -125,6 +148,21 @@ if ! python3 scripts/wpt_reftest_run.py --selftest; then
     echo "$TAG   it produces is noise. Fix the harness before reading a number."
     exit 125
 fi
+
+# PROOF BY CONSTRUCTION -- see NOT SOFT-GREEN above. The mutation is applied in
+# the harness (every document CSS-stripped before it reaches the renderer), so
+# it needs no second build and cannot drift away from the binary under test.
+echo "$TAG proving a null-CSS engine cannot score under this model ..."
+python3 scripts/wpt_reftest_run.py --all --quiet --prove-null \
+    >"$OUT/wpt_reftest_null.log" 2>&1
+nrc=$?
+if [ "$nrc" != 0 ]; then
+    echo "$TAG INCONCLUSIVE: the null-CSS engine mutant SCORED."
+    echo "$TAG   The discrimination control is not doing its job, so no number"
+    echo "$TAG   this lane produces is evidence about CSS."
+    tail -20 "$OUT/wpt_reftest_null.log"; exit 125
+fi
+tail -1 "$OUT/wpt_reftest_null.log"
 
 echo "$TAG running the vendored reftest lane ..."
 python3 scripts/wpt_reftest_run.py --all --quiet --jsonl "$JSONL" \

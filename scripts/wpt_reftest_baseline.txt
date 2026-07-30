@@ -9,14 +9,28 @@
 #
 # Rows (TAB-separated):
 #   <test>\t<verdict>   did NOT pass at baseline
-#   +<test>\tPASS      DID pass at baseline (the regression set)
+#   +<test>\tPASS      PASSED at baseline (the regression set)
+#   ~<test>\tWEAK-PASS WEAK-PASSED at baseline
 #
-# Verdicts: PASS / FAIL / NONDISCRIMINATING (a null engine with no CSS
-# at all would also satisfy the relationship, so a pass there is not
-# evidence -- excluded from the scored denominator) / ERROR (a document
-# did not render).
+# VERDICTS
+#   PASS       the relationship holds, and it is load-bearing on a
+#              declaration the REFERENCE does not supply verbatim --
+#              neutralize that declaration in the test alone and the pair
+#              stops holding. The engine demonstrably applied something
+#              this test is about.
+#   WEAK-PASS  the relationship holds and CSS is load-bearing on it, but
+#              only through declarations the reference repeats IDENTICALLY.
+#              Both sides run the same code, so a shared bug cancels: real
+#              work, tracked and ratcheted, but not conflated with a PASS.
+#   FAIL       the relationship does not hold.
+#   NONDISCRIMINATING
+#              the relationship holds no matter WHICH of the test's
+#              declarations is neutralized, and with all CSS removed. The
+#              render does not depend on CSS at all, so an engine with no
+#              CSS support would satisfy it too. Not evidence.
+#   ERROR      a document, or a control, did not render.
 #
-# THE FOUR MARKERS. All are required: a baseline missing one is treated
+# THE FIVE MARKERS. All are required: a baseline missing one is treated
 # as unusable rather than defaulting to a value that guards nothing.
 #
 # #!PASS_FLOOR guards the ABSOLUTE pass count, not a ratio: the
@@ -24,16 +38,23 @@
 # becomes discriminating) or when an exclusion is lifted, so a real fix
 # can LOWER the ratio.
 #
+# #!WEAK_PASS_FLOOR -- the same guarantee for the weak class. It is a
+# FLOOR and not a ceiling on purpose: a weak pass is a pair whose holding
+# depends on CSS, so losing one is a capability loss, and the split exists
+# to keep weak evidence OUT of the headline number, not out of the ratchet.
+#
 # #!ERROR_CEILING -- every vendored document must keep RENDERING. A
 # change that makes the engine bail turns FAILs into ERRORs, which no
 # pass floor can see.
 #
-# #!ND_CEILING -- the ratchet with teeth while PASS_FLOOR is 0. A pair
-# goes NONDISCRIMINATING when a null engine with no CSS would satisfy it
-# too, so pairs MOVING INTO that bucket means the engine stopped applying
-# the CSS they are about: the pairs leave the scored denominator and both
-# other markers stay happy. That is the silent capability loss this lane
-# exists to catch, and only this ceiling catches it.
+# #!ND_CEILING -- the capability-loss detector. Under the previous
+# (global-strip) model this ceiling ALSO capped progress, because fixing a
+# test whose reference is a plain green square moved it FAIL ->
+# NONDISCRIMINATING: 57 of 67 remaining failures could not have scored at
+# all, and two genuine fixes landed in the bucket and read as nothing.
+# Under the mutation model the class is MONOTONE in the right direction --
+# a pair only enters it when the render stops depending on CSS -- so this
+# ceiling now catches loss without capping gain.
 #
 # #!TREE_SHA256 -- over REFTEST_MANIFEST.txt and every document it
 # names. Makes "never edit a vendored test or reference" enforced rather
@@ -41,18 +62,19 @@
 # launder a FAIL out of the lane. A real re-import changes it, which is
 # the point: it forces a deliberate --regen that shows in the diff.
 #
-#!PASS_FLOOR 1
+#!PASS_FLOOR 4
+#!WEAK_PASS_FLOOR 23
 #!ERROR_CEILING 0
-#!ND_CEILING 32
+#!ND_CEILING 6
 #!TREE_SHA256 b5446838262ae65818d9b4f4c5422940b96d54d372b094c0075f28f46c58683a
-css/CSS2/box-display/block-in-inline-large-margin-bottom.html	NONDISCRIMINATING
-css/CSS2/box-display/block-in-inline-margin-collapses-through-intervening-float.html	NONDISCRIMINATING
-css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html	NONDISCRIMINATING
-css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html	NONDISCRIMINATING
-css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html	NONDISCRIMINATING
-css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html	NONDISCRIMINATING
-css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html	NONDISCRIMINATING
-css/CSS2/box-display/three-block-in-inlines-cascading-margins.html	NONDISCRIMINATING
+~css/CSS2/box-display/block-in-inline-large-margin-bottom.html	WEAK-PASS
+~css/CSS2/box-display/block-in-inline-margin-collapses-through-intervening-float.html	WEAK-PASS
+~css/CSS2/box-display/block-in-inline-margin-collapses-through-multiple-floats.html	WEAK-PASS
+~css/CSS2/box-display/block-in-inline-negative-margin-bottom-with-trailing-block.html	WEAK-PASS
+~css/CSS2/box-display/block-in-inline-negative-margin-with-intervening-float.html	WEAK-PASS
+~css/CSS2/box-display/block-in-inline-negative-mb-collapses-with-positive-mt.html	WEAK-PASS
+~css/CSS2/box-display/inline-block-after-block-in-inline-with-intervening-float.html	WEAK-PASS
+~css/CSS2/box-display/three-block-in-inlines-cascading-margins.html	WEAK-PASS
 css/CSS2/floats-clear/adjoining-float-nested-forced-clearance-002.html	FAIL
 css/CSS2/floats-clear/adjoining-float-nested-forced-clearance-004.html	FAIL
 css/CSS2/floats-clear/clear-after-top-margin.html	FAIL
@@ -63,13 +85,13 @@ css/CSS2/floats-clear/clear-on-parent-with-margins-no-clearance.html	FAIL
 css/CSS2/floats-clear/clear-on-parent-with-margins.html	FAIL
 css/CSS2/floats-clear/clear-on-parent.html	FAIL
 css/CSS2/floats-clear/clear-with-top-margin-after-cleared-empty-block.html	FAIL
-css/CSS2/floats-clear/floats-clear-multicol-000.html	NONDISCRIMINATING
-css/CSS2/floats-clear/floats-clear-multicol-001.html	NONDISCRIMINATING
-css/CSS2/floats-clear/floats-clear-multicol-002.html	NONDISCRIMINATING
+~css/CSS2/floats-clear/floats-clear-multicol-000.html	WEAK-PASS
+~css/CSS2/floats-clear/floats-clear-multicol-001.html	WEAK-PASS
+~css/CSS2/floats-clear/floats-clear-multicol-002.html	WEAK-PASS
 css/CSS2/floats-clear/floats-clear-multicol-003.html	FAIL
-css/CSS2/floats-clear/floats-clear-multicol-balancing-000.html	NONDISCRIMINATING
-css/CSS2/floats-clear/floats-clear-multicol-balancing-001.html	NONDISCRIMINATING
-css/CSS2/floats-clear/floats-clear-multicol-balancing-002.html	NONDISCRIMINATING
+~css/CSS2/floats-clear/floats-clear-multicol-balancing-000.html	WEAK-PASS
+~css/CSS2/floats-clear/floats-clear-multicol-balancing-001.html	WEAK-PASS
+~css/CSS2/floats-clear/floats-clear-multicol-balancing-002.html	WEAK-PASS
 css/CSS2/floats-clear/floats-clear-multicol-balancing-003.html	FAIL
 css/CSS2/floats-clear/negative-clearance-after-bottom-margin.html	FAIL
 css/CSS2/floats-clear/nested-clearance-new-formatting-context.html	FAIL
@@ -84,7 +106,7 @@ css/CSS2/floats/float-in-nested-multicol-001.html	NONDISCRIMINATING
 +css/CSS2/floats/float-nowrap-1.html	PASS
 css/CSS2/floats/float-nowrap-2.html	FAIL
 css/CSS2/floats/float-nowrap-3.html	FAIL
-css/CSS2/floats/float-nowrap-4.html	NONDISCRIMINATING
+~css/CSS2/floats/float-nowrap-4.html	WEAK-PASS
 css/CSS2/floats/float-nowrap-5.html	FAIL
 css/CSS2/floats/float-nowrap-6.html	NONDISCRIMINATING
 css/CSS2/floats/float-nowrap-7.html	FAIL
@@ -92,7 +114,7 @@ css/CSS2/floats/float-nowrap-8.html	FAIL
 css/CSS2/floats/float-nowrap-9.html	FAIL
 css/CSS2/floats/float-nowrap-hyphen-rewind-1.html	FAIL
 css/CSS2/floats/float-root.html	NONDISCRIMINATING
-css/CSS2/floats/float-table-align-left-quirk.html	NONDISCRIMINATING
+~css/CSS2/floats/float-table-align-left-quirk.html	WEAK-PASS
 css/CSS2/floats/float-with-absolutely-positioned-child-with-static-inset.html	FAIL
 css/CSS2/floats/floated-table-wider-than-specified.html	FAIL
 css/CSS2/floats/floats-in-table-caption-001.html	FAIL
@@ -115,17 +137,17 @@ css/CSS2/floats/remove-block-between-inline-and-float.html	FAIL
 css/CSS2/floats/zero-available-space-float-positioning.html	FAIL
 css/CSS2/floats/zero-width-floats.html	FAIL
 css/CSS2/normal-flow/block-in-inline-after-block-in-inline-with-margin-collapse.html	FAIL
-css/CSS2/normal-flow/block-in-inline-align-001.html	NONDISCRIMINATING
-css/CSS2/normal-flow/block-in-inline-align-justify-001.html	NONDISCRIMINATING
+~css/CSS2/normal-flow/block-in-inline-align-001.html	WEAK-PASS
+~css/CSS2/normal-flow/block-in-inline-align-justify-001.html	WEAK-PASS
 css/CSS2/normal-flow/block-in-inline-align-last-001.html	FAIL
-css/CSS2/normal-flow/block-in-inline-baseline-001.html	NONDISCRIMINATING
+~css/CSS2/normal-flow/block-in-inline-baseline-001.html	WEAK-PASS
 css/CSS2/normal-flow/block-in-inline-first-line-001.html	NONDISCRIMINATING
 css/CSS2/normal-flow/block-in-inline-first-line-002.html	FAIL
 css/CSS2/normal-flow/block-in-inline-float-in-layer-001.html	NONDISCRIMINATING
-css/CSS2/normal-flow/block-in-inline-margins-003.html	NONDISCRIMINATING
-css/CSS2/normal-flow/block-in-inline-margins-004.html	NONDISCRIMINATING
+~css/CSS2/normal-flow/block-in-inline-margins-003.html	WEAK-PASS
+~css/CSS2/normal-flow/block-in-inline-margins-004.html	WEAK-PASS
 css/CSS2/normal-flow/block-in-inline-margins-005.html	FAIL
-css/CSS2/normal-flow/canvas-paint-order.html	NONDISCRIMINATING
+~css/CSS2/normal-flow/canvas-paint-order.html	WEAK-PASS
 css/CSS2/normal-flow/float-percentage-resolution-quirks-mode.html	FAIL
 css/CSS2/normal-flow/intrinsic-size-with-negative-margins.html	FAIL
 css/CSS2/normal-flow/margin-collapse-min-height-001.html	FAIL
@@ -137,11 +159,11 @@ css/CSS2/normal-flow/margin-collapse-through-percentage-padding.html	FAIL
 css/CSS2/normal-flow/margin-collapse-through-zero-height-block.html	FAIL
 css/CSS2/normal-flow/margin-collapsing-in-table-caption-001.html	FAIL
 css/CSS2/normal-flow/margin-collapsing-in-table-caption-002.html	FAIL
-css/CSS2/normal-flow/max-height-applies-to-018.html	NONDISCRIMINATING
-css/CSS2/normal-flow/max-height-separates-margin.html	NONDISCRIMINATING
++css/CSS2/normal-flow/max-height-applies-to-018.html	PASS
++css/CSS2/normal-flow/max-height-separates-margin.html	PASS
 css/CSS2/normal-flow/max-width-applies-to-018.html	FAIL
-css/CSS2/normal-flow/min-height-separates-margin.html	NONDISCRIMINATING
-css/CSS2/normal-flow/negative-margin-001.html	NONDISCRIMINATING
++css/CSS2/normal-flow/min-height-separates-margin.html	PASS
+~css/CSS2/normal-flow/negative-margin-001.html	WEAK-PASS
 css/CSS2/normal-flow/negative-margin-shrinking-container-size-001.html	FAIL
 css/CSS2/normal-flow/negative-margin-shrinking-container-size-002.html	FAIL
 css/CSS2/normal-flow/overflow-scroll-paint-order.html	FAIL

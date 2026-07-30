@@ -265,6 +265,170 @@ def strip_css(data):
     return LINK_RE.sub(drop_css_link, data)
 
 
+def strip_scripts(data):
+    """Remove every script. One of the mutations (see DISCRIMINATION)."""
+    data = SCRIPT_ANY_RE.sub(b"", data)
+    return SCRIPT_SELF_RE.sub(b"", data)
+
+
+# --------------------------------------------------------------------------
+# CSS DECLARATION SCANNER -- the unit the discrimination control mutates
+# --------------------------------------------------------------------------
+# Locating the PROPERTY NAME of every declaration, rather than the whole
+# declaration, is deliberate. Deleting a byte span guessed to be "the whole
+# declaration" can unbalance a brace or swallow a `;` when the value contains
+# `url(...)` or a quoted string, and a document mutated into a SYNTAX ERROR
+# renders differently for a reason that has nothing to do with the property --
+# which would read as "this declaration is load-bearing" and inflate the score.
+# Renaming the property to an unknown one cannot do that: an unknown property
+# is dropped by any conforming parser and the stylesheet stays well-formed.
+# selftest's `neutralize-equals-delete` control proves our parser treats it
+# that way rather than, say, discarding the enclosing rule.
+NEUTRAL_PREFIX = b"-hamnix-neutralized-"
+IDENT_CH = set(b"-_0123456789"
+               b"abcdefghijklmnopqrstuvwxyz"
+               b"ABCDEFGHIJKLMNOPQRSTUVWXYZ*")
+STYLE_EL_BODY_RE = re.compile(rb"<style\b[^>]*>(.*?)</style\s*>",
+                              re.IGNORECASE | re.DOTALL)
+STYLE_ATTR_VAL_RE = re.compile(
+    rb"""\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
+
+
+def _skip_ws_comments(data, i, hi):
+    while i < hi:
+        if data[i:i + 1].isspace():
+            i += 1
+        elif data[i:i + 2] == b"/*":
+            j = data.find(b"*/", i + 2, hi)
+            i = hi if j < 0 else j + 2
+        else:
+            break
+    return i
+
+
+def _scan_decls(data, lo, hi, depth, out):
+    """Record (name_start, name_end, prop, value) for [lo, hi) of CSS text."""
+    i = lo
+    while i < hi:
+        i = _skip_ws_comments(data, i, hi)
+        if i >= hi:
+            break
+        c = data[i:i + 1]
+        if c == b"{":
+            depth += 1
+            i += 1
+            continue
+        if c == b"}":
+            depth -= 1
+            i += 1
+            continue
+        if c == b";":
+            i += 1
+            continue
+        if depth <= 0:                       # selector / at-rule prelude
+            while i < hi and data[i:i + 1] not in (b"{", b"}", b";"):
+                i += 1
+            continue
+        start = i
+        while i < hi and data[i] in IDENT_CH:
+            i += 1
+        name_end = i
+        j = _skip_ws_comments(data, i, hi)
+        if name_end > start and data[j:j + 1] == b":":
+            i = j + 1
+            vstart = i
+            par = 0
+            quote = None
+            while i < hi:
+                ch = data[i:i + 1]
+                if quote:
+                    if ch == b"\\":
+                        i += 2
+                        continue
+                    if ch == quote:
+                        quote = None
+                elif ch in (b'"', b"'"):
+                    quote = ch
+                elif ch == b"(":
+                    par += 1
+                elif ch == b")":
+                    par = max(0, par - 1)
+                elif par == 0 and ch in (b";", b"}"):
+                    break
+                i += 1
+            out.append((start, name_end,
+                        data[start:name_end].lower().decode("ascii", "replace"),
+                        b" ".join(data[vstart:i].split()).lower()
+                        .decode("utf-8", "replace")))
+        else:
+            # not a declaration (a nested at-rule prelude, a stray token)
+            while i < hi and data[i:i + 1] not in (b"{", b"}", b";"):
+                i += 1
+    return depth
+
+
+def css_declarations(data):
+    """Every CSS declaration in `data`, in document order.
+
+    -> [(name_start, name_end, property, normalized_value)] as byte offsets
+    into `data`. Covers <style> element bodies and style="" attributes, which
+    is every place a declaration can live once inline_resources() has folded
+    external stylesheets in.
+    """
+    out = []
+    for m in STYLE_EL_BODY_RE.finditer(data):
+        _scan_decls(data, m.start(1), m.end(1), 0, out)
+    for m in STYLE_ATTR_VAL_RE.finditer(data):
+        g = 1 if m.group(1) is not None else 2
+        _scan_decls(data, m.start(g), m.end(g), 1, out)
+    out.sort(key=lambda d: d[0])
+    return out
+
+
+def neutralize(data, decl):
+    """`data` with declaration `decl`'s property renamed to an unknown one."""
+    s, e = decl[0], decl[1]
+    return data[:s] + NEUTRAL_PREFIX + data[s:e] + data[e:]
+
+
+def delete_decl(data, decl):
+    """`data` with declaration `decl` removed outright. selftest control only."""
+    s = decl[0]
+    e = decl[1]
+    # to the end of the value: rescan from the colon
+    hi = len(data)
+    i = data.find(b":", e)
+    if i < 0:
+        return data
+    par, quote = 0, None
+    i += 1
+    while i < hi:
+        ch = data[i:i + 1]
+        if quote:
+            if ch == b"\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in (b'"', b"'"):
+            quote = ch
+        elif ch == b"(":
+            par += 1
+        elif ch == b")":
+            par = max(0, par - 1)
+        elif par == 0 and ch in (b";", b"}"):
+            break
+        i += 1
+    if data[i:i + 1] == b";":
+        i += 1
+    return data[:s] + data[i:]
+
+
+def prop_value_set(data):
+    """{(property, normalized value)} for every declaration in `data`."""
+    return {(d[2], d[3]) for d in css_declarations(data)}
+
+
 # --------------------------------------------------------------------------
 # PPM handling
 # --------------------------------------------------------------------------
@@ -352,25 +516,57 @@ class Renderer:
         # measures the engine as if the resource did not exist, which reads as
         # an engine bug; it has to be visible, not silent.
         self.unresolved = set()
+        self.docs = {}
+        # THE NULL-CSS ENGINE MUTATION. Set true and every document is rendered
+        # with its CSS stripped first, which is precisely what an engine with no
+        # CSS support at all would draw -- a faithful mutant of the engine
+        # obtained without touching lib/web/. --prove-null runs the whole lane
+        # through it and the score must not rise. See PROOF BY CONSTRUCTION.
+        self.null_engine = False
+        # A PARTIAL capability mutation: property names the engine "does not
+        # implement". Every occurrence, in every document, is neutralized
+        # before rendering. --prove-blind runs the lane through it; a scoring
+        # model worth having can never score HIGHER with a capability removed.
+        self.blind_props = frozenset()
 
-    def render(self, doc_rel, css=True):
-        """Normalized viewport bytes for `doc_rel`, or None on failure."""
-        key = (doc_rel, css)
-        if key in self.cache:
-            return self.cache[key]
-        src = os.path.join(self.root, doc_rel)
+    def inlined(self, doc_rel):
+        """The document's bytes after resource inlining, cached."""
+        if doc_rel in self.docs:
+            return self.docs[doc_rel]
         try:
-            data = open(src, "rb").read()
+            data = open(os.path.join(self.root, doc_rel), "rb").read()
         except OSError:
-            self.cache[key] = None
+            self.docs[doc_rel] = None
             return None
         data = inline_resources(doc_rel, data, self.root)
         if UNRESOLVED_SCRIPT_RE.search(data) or any(
                 "stylesheet" in (_attrs(m.group(1)).get("rel") or "").lower()
                 for m in LINK_RE.finditer(data)):
             self.unresolved.add(doc_rel)
-        if not css:
+        self.docs[doc_rel] = data
+        return data
+
+    def render(self, doc_rel, css=True, variant=None, data=None):
+        """Normalized viewport bytes for `doc_rel`, or None on failure.
+
+        `variant` names a mutation of the document (a cache key); `data` is the
+        mutated bytes. With neither, the document renders as vendored.
+        """
+        key = (doc_rel, css, variant)
+        if key in self.cache:
+            return self.cache[key]
+        src = os.path.join(self.root, doc_rel)
+        if data is None:
+            data = self.inlined(doc_rel)
+        if data is None:
+            self.cache[key] = None
+            return None
+        if not css or self.null_engine:
             data = strip_css(data)
+        elif self.blind_props:
+            for d in reversed(css_declarations(data)):
+                if d[2] in self.blind_props:
+                    data = neutralize(data, d)
         self.n += 1
         # Keep the extension AND the directory: relative <img src> and the
         # engine's own base-URL handling must still resolve.
@@ -428,39 +624,118 @@ def run_one(rend, test, kind, refs):
         rec["verdict"] = "FAIL"
         return rec
 
-    # ---- the negative control (see DISCRIMINATION CONTROL in the docstring) --
-    # Only a PASS needs qualifying, so this runs only when the relationship
-    # already holds: would an engine with NO CSS support at all ALSO see it
-    # hold? If yes, our pass is not evidence about CSS.
+    # ---- the discrimination control (see DISCRIMINATION CONTROL, docstring) --
+    # Only a holding pair needs qualifying, so this runs only here. The question
+    # is NOT "would a null engine also see this hold" -- that question threw
+    # away every real fix whose reference is a plain green square. It is:
     #
-    # An earlier revision also recorded a second condition, `css_active` ("did
-    # our output change because of this pair's CSS"). It was not a second
-    # control: `not css_active` means the test and every reference render
-    # identically with and without CSS, which makes the null-engine comparison
-    # bit-for-bit the same comparison, so null_holds is necessarily true too.
-    # One control described as two overstates the guard, so it is gone.
+    #   which declaration IN THIS TEST is the holding load-bearing on, and is
+    #   that declaration one the reference does not itself supply verbatim?
+    #
+    # Each candidate declaration is NEUTRALIZED in the test alone (its property
+    # renamed to an unknown one) and the pair re-compared against the UNCHANGED
+    # references. If the relationship breaks, the engine demonstrably applied
+    # that declaration and the reference demonstrably depends on it.
+    data = rend.inlined(test)
+    decls = css_declarations(data) if data is not None else []
+    refprops = set()
+    for r in usable:
+        rd = rend.inlined(r)
+        if rd is not None:
+            refprops |= prop_value_set(rd)
+
+    def breaks(variant, mutated):
+        m = rend.render(test, variant=variant, data=mutated)
+        if m is None:
+            return None
+        eq = [r for r in usable if rendered[r] == m]
+        held = bool(eq) if kind == "match" else not eq
+        return not held
+
+    unrenderable = 0
+
+    # MUTANT 0 -- THE NULL-CSS ENGINE, both sides stripped. This is the ENTIRE
+    # previous control, kept verbatim and at full strength, so no pass the old
+    # model banked can be lost. It is also the only mutant that says anything
+    # about a `mismatch` pair: the two relationships degenerate in OPPOSITE
+    # directions under CSS loss. Renders collapse toward each other, so `match`
+    # degenerates toward HOLDING (the false-pass hole) while `mismatch`
+    # degenerates toward VIOLATION -- a null engine cannot pass a mismatch pair
+    # at all unless the two documents already differ for a non-CSS reason, and
+    # mutant 0 is exactly the test for that.
     t0 = rend.render(test, css=False)
     r0 = {r: rend.render(r, css=False) for r in usable}
     if t0 is None or any(v is None for v in r0.values()):
-        # Refusing to credit an unqualified pass. Falling through to PASS here
-        # would convert "the anti-soft-green control could not be run" into an
-        # unqualified success -- the exact substitution this lane exists to
-        # prevent.
-        rec.update(verdict="ERROR",
-                   detail="the CSS-stripped negative control did not render, "
-                          "so this pass could not be qualified")
-        return rec
-
-    eq0 = [r for r in usable if r0[r] == t0]
-    null_holds = bool(eq0) if kind == "match" else not eq0
+        unrenderable += 1
+        null_holds = None
+    else:
+        eq0 = [r for r in usable if r0[r] == t0]
+        null_holds = bool(eq0) if kind == "match" else not eq0
     rec["null_holds"] = null_holds
-    if null_holds:
-        rec.update(verdict="NONDISCRIMINATING",
-                   detail="an engine with no CSS support at all would also "
+    if null_holds is False:
+        rec.update(verdict="PASS", load_bearing="<null-CSS engine>",
+                   detail="an engine with no CSS support at all would NOT "
                           "satisfy this relationship")
         return rec
 
-    rec["verdict"] = "PASS"
+    # SUBJECT declarations next: a (property, value) the reference does not
+    # ALSO contain verbatim. A declaration the reference repeats identically is
+    # shared machinery -- both sides exercise the same code, so a shared bug
+    # cancels and the pass says nothing about that property.
+    subject = [d for d in decls if (d[2], d[3]) not in refprops]
+    shared = [d for d in decls if (d[2], d[3]) in refprops]
+
+    for d in subject:
+        b = breaks("neut@%d" % d[0], neutralize(data, d))
+        if b is None:
+            unrenderable += 1
+            continue
+        if b:
+            rec.update(verdict="PASS", load_bearing=d[2],
+                       subject_props=sorted({s[2] for s in subject}))
+            return rec
+
+    # No subject declaration was load-bearing. The pass may still rest on CSS --
+    # just on machinery the reference supplies identically, or on a script. That
+    # is real work and it is banked, but under a DIFFERENT name and a different
+    # floor, because it cannot tell an engine that honours this test's subject
+    # matter from one that does not.
+    weak = []
+    for d in shared:
+        weak.append(("neut@%d" % d[0], neutralize(data, d), d[2]))
+    weak.append(("nocss", strip_css(data), "<all CSS>"))
+    if SCRIPT_ANY_RE.search(data) or SCRIPT_SELF_RE.search(data):
+        weak.append(("nojs", strip_scripts(data), "<all scripts>"))
+    for variant, mutated, what in weak:
+        b = breaks(variant, mutated)
+        if b is None:
+            unrenderable += 1
+            continue
+        if b:
+            rec.update(verdict="WEAK-PASS", load_bearing=what,
+                       subject_props=sorted({s[2] for s in subject}),
+                       detail="the relationship holds and CSS is load-bearing "
+                              "on it, but only through `%s`, which the "
+                              "reference supplies identically -- so it cannot "
+                              "distinguish an engine that honours this test's "
+                              "own subject matter from one that does not"
+                              % what)
+            return rec
+
+    if unrenderable:
+        # A mutant that will not render is a control we could not run, and the
+        # remaining mutants all held. Refusing to call that either verdict.
+        rec.update(verdict="ERROR",
+                   detail="%d discrimination mutant(s) did not render, so this "
+                          "holding pair could not be qualified" % unrenderable)
+        return rec
+
+    rec.update(verdict="NONDISCRIMINATING",
+               n_decls=len(decls),
+               detail="the relationship holds no matter which of the test's %d "
+                      "declarations is removed, and with all CSS removed -- the "
+                      "render does not depend on CSS at all, so an engine with "
+                      "no CSS support would satisfy it too" % len(decls))
     return rec
 
 
@@ -550,7 +825,85 @@ SELFTEST = {
                           "<p>Test passes if this line appears.</p>",
                           "<p>Test passes if this line appears.</p>",
                           "NONDISCRIMINATING"),
+    # THE SHAPE THE OLD MODEL BURIED, AND THE REASON IT WAS REDESIGNED.
+    # Test and reference both carry the WPT boilerplate sentence and both draw
+    # a green square; the square is the whole assertion. Strip all CSS from
+    # BOTH and each collapses to the bare sentence, so the old global-strip
+    # control called this NONDISCRIMINATING -- a genuine fix scored as nothing.
+    # It is not nondiscriminating: neutralize `height` in the test and the
+    # squares differ, so the holding demonstrably depends on the engine
+    # applying a declaration the reference does not supply.
+    "buried-real-pass": ("match",
+                         "<p>Test passes if there is a filled green square.</p>"
+                         "<style>#a{width:100px;height:100px;max-height:60px;"
+                         "background:#008000}</style><div id=a></div>",
+                         "<p>Test passes if there is a filled green square.</p>"
+                         "<div style='width:100px;height:60px;"
+                         "background:#008000'></div>",
+                         "PASS"),
+    # THE HOLE THE SPLIT CLOSES. The test's SUBJECT is `float`, and this engine
+    # is being asked about a float with nothing beside it -- which lays out
+    # identically whether or not `float` is honoured. Every declaration the
+    # holding actually rests on (width/height/background) is one the reference
+    # supplies VERBATIM, so a shared bug cancels and the pair cannot tell a
+    # float-implementing engine from one that ignores `float` entirely. Real
+    # work, but not evidence about the test's own subject: WEAK-PASS, never
+    # PASS. The old model called this NONDISCRIMINATING and the split is what
+    # keeps it out of the headline number now that ND no longer excludes it.
+    "shared-machinery": ("match",
+                         "<p>boilerplate</p>"
+                         "<style>#a{float:left;width:100px;height:100px;"
+                         "background:#008000}</style><div id=a></div>",
+                         "<p>boilerplate</p>"
+                         "<div style='width:100px;height:100px;"
+                         "background:#008000'></div>",
+                         "WEAK-PASS"),
 }
+
+
+def selftest_neutralizer(root, rend):
+    """Prove renaming a property is EQUIVALENT to deleting the declaration.
+
+    The discrimination control mutates a test by renaming one property to an
+    unknown one, and reads "the render changed" as "the engine applied that
+    declaration". That inference is only sound if an unknown property is
+    DROPPED. If our CSS parser instead discarded the enclosing rule (or the
+    rest of the stylesheet) on an unknown property, every mutation would change
+    the render for the wrong reason and every holding pair would score.
+
+    So: for each declaration, the document with that property RENAMED must
+    render byte-identically to the document with that declaration DELETED. It
+    must also differ from the unmutated document for at least one declaration,
+    or the control is passing vacuously against a renderer that ignores
+    everything.
+    """
+    src = ("<style>#a{width:60px;height:30px;background:#0000ff;"
+           "margin-left:17px}</style><div id=a></div>")
+    name = "neut.html"
+    open(os.path.join(root, name), "w").write(src)
+    raw = src.encode()
+    decls = css_declarations(raw)
+    base = rend.render(name)
+    ok = bool(decls) and base is not None
+    changed = 0
+    for d in decls:
+        a = rend.render(name, variant="ren@%d" % d[0], data=neutralize(raw, d))
+        b = rend.render(name, variant="del@%d" % d[0], data=delete_decl(raw, d))
+        if a is None or b is None or a != b:
+            ok = False
+            print("[reftest-selftest]   renaming `%s` is NOT equivalent to "
+                  "deleting it" % d[2])
+        if a is not None and a != base:
+            changed += 1
+    ok = ok and changed > 0
+    print("[reftest-selftest] %-20s want=%-18s got=%-18s %s"
+          % ("neutralize==delete", "%d decls agree" % len(decls),
+             "%d agree, %d bite" % (len(decls), changed),
+             "ok" if ok else "MISMATCH"))
+    if not ok:
+        print("[reftest-selftest]   the mutation used by the discrimination "
+              "control does not mean what it is read to mean.")
+    return ok
 
 
 def selftest_inliner(root, rend):
@@ -637,6 +990,30 @@ def selftest():
                   "exact comparison is not a valid pass condition.")
 
         ok = selftest_inliner(root, Renderer(tmp, tests_root=root)) and ok
+        ok = selftest_neutralizer(root, Renderer(tmp, tests_root=root)) and ok
+
+        # THE NULL-CSS ENGINE MUTANT, on the synthetic controls. Every pair
+        # above that scores must STOP scoring when the engine is replaced by
+        # one that applies no CSS at all. This is the proof-by-construction the
+        # scoring model rests on, run every time the gate runs; --prove-null
+        # runs the same mutation over the whole vendored lane.
+        nullr = Renderer(tmp, tests_root=root)
+        nullr.null_engine = True
+        scored = []
+        for name, (kind, _t, _r, _want) in sorted(SELFTEST.items()):
+            rec = run_one(nullr, "st_%s.html" % name, kind,
+                          ["st_%s_ref.html" % name])
+            if rec["verdict"] in ("PASS", "WEAK-PASS"):
+                scored.append((name, rec["verdict"]))
+        good = not scored
+        ok = ok and good
+        print("[reftest-selftest] %-20s want=%-18s got=%-18s %s"
+              % ("null-CSS engine", "scores nothing",
+                 "scores nothing" if good else "SCORED %d" % len(scored),
+                 "ok" if good else "MISMATCH"))
+        for name, v in scored:
+            print("[reftest-selftest]   an engine applying NO CSS scored %s on "
+                  "%s -- the model is not measuring CSS." % (v, name))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return ok
@@ -649,6 +1026,12 @@ def main():
     ap.add_argument("--jsonl")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--prove-null", action="store_true",
+                    help="run the WHOLE lane through the null-CSS engine "
+                         "mutant and exit non-zero if it scores ANY pass")
+    ap.add_argument("--prove-blind", metavar="PROP[,PROP...]",
+                    help="run the lane through an engine mutant that ignores "
+                         "these properties entirely")
     args = ap.parse_args()
 
     if args.selftest:
@@ -684,6 +1067,11 @@ def main():
     records = []
     try:
         rend = Renderer(tmp)
+        rend.null_engine = args.prove_null
+        if args.prove_blind:
+            rend.blind_props = frozenset(
+                p.strip().lower() for p in args.prove_blind.split(",")
+                if p.strip())
         for test, kind, refs in rows:
             rec = run_one(rend, test, kind, refs)
             records.append(rec)
@@ -703,10 +1091,11 @@ def main():
                 f.write(json.dumps(rec, sort_keys=True) + "\n")
 
     npass = counts.get("PASS", 0)
+    nweak = counts.get("WEAK-PASS", 0)
     nfail = counts.get("FAIL", 0)
     nnd = counts.get("NONDISCRIMINATING", 0)
     nerr = counts.get("ERROR", 0)
-    scored = npass + nfail
+    scored = npass + nweak + nfail
     print("[reftest-run] %d reftests, %d renders" % (len(records), rend.n))
     if rend.unresolved:
         print("[reftest-run] WARNING: %d document(s) still reference an "
@@ -716,13 +1105,33 @@ def main():
         print("[reftest-run]   These were scored as if the resource did not "
               "exist. Fix the\n[reftest-run]   inliner or exclude them; do not "
               "read their verdict as an engine result.")
-    print("[reftest-run] PASS %d  FAIL %d  NONDISCRIMINATING %d  ERROR %d"
-          % (npass, nfail, nnd, nerr))
+    print("[reftest-run] PASS %d  WEAK-PASS %d  FAIL %d  NONDISCRIMINATING %d  "
+          "ERROR %d" % (npass, nweak, nfail, nnd, nerr))
     if scored:
-        print("[reftest-run] score %d/%d = %.1f%% of DISCRIMINATING pairs"
-              % (npass, scored, 100.0 * npass / scored))
+        print("[reftest-run] score %d/%d = %.1f%% of DISCRIMINATING pairs "
+              "(+%d weak)"
+              % (npass, scored, 100.0 * npass / scored, nweak))
     if not records:
         return 125
+
+    if args.prove_null:
+        print("\n[reftest-run] NULL-CSS ENGINE MUTATION -- the whole lane was "
+              "re-run with\n[reftest-run]   every document's CSS stripped "
+              "before rendering, i.e. exactly what\n[reftest-run]   an engine "
+              "with no CSS support at all would draw. A scoring model\n"
+              "[reftest-run]   that such an engine can score is not measuring "
+              "CSS.")
+        if npass or nweak:
+            print("[reftest-run] PROOF FAILED: the null-CSS engine scored "
+                  "%d PASS and %d WEAK-PASS." % (npass, nweak))
+            for r in records:
+                if r["verdict"] in ("PASS", "WEAK-PASS"):
+                    print("    %-10s %s  (load-bearing: %s)"
+                          % (r["verdict"], r["test"],
+                             r.get("load_bearing", "?")))
+            return 1
+        print("[reftest-run] PROOF HOLDS: the null-CSS engine scores 0 PASS "
+              "and 0 WEAK-PASS.")
     return 0
 
 
