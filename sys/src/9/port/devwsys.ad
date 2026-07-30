@@ -3192,10 +3192,7 @@ def _wsys_pending_put(pid: uint64, wid: int32):
     wsys_pending_overflow = wsys_pending_overflow + 1
     if _wsys_pending_noted == 0:
         _wsys_pending_noted = 1
-        printk1("[devwsys] CEILING per-pid wid table full (WSYS_PENDING_MAX=%d)"
-                " with every entry LIVE — this alloc falls back to the single"
-                " global result slot and MAY cross-deliver a wid.\n",
-                WSYS_PENDING_MAX)
+        printk1("[devwsys] CEILING per-pid wid table full (WSYS_PENDING_MAX=%d) with every entry LIVE — this alloc falls back to the single global result slot and MAY cross-deliver a wid.\n", WSYS_PENDING_MAX)
 
 
 def _wsys_pending_take(pid: uint64) -> int32:
@@ -14892,8 +14889,7 @@ def wsys_multitask_taskbar_selftest() -> int32:
     ovf0: uint64 = wsys_pending_overflow
     _wsys_pending_put(990999, 44)
     if wsys_pending_overflow != ovf0:
-        printk0("[MULTITASK_BAR] FAIL a table full of DEAD pids refused a"
-                " live put — the cap is still a lifetime one\n")
+        printk0("[MULTITASK_BAR] FAIL a table full of DEAD pids refused a live put — the cap is still a lifetime one\n")
         return 0
     if _wsys_pending_take(990999) != 44:
         printk0("[MULTITASK_BAR] FAIL put after prune did not read back\n")

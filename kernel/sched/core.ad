@@ -9248,21 +9248,16 @@ def _mm_census_runcheck():
                     printk3("[cens3] site %d orphan[%d] inrun-slot=%d\n",
                             i, k, sl)
                     printk_set_level(PRINTK_LEVEL_EMERG)
-                    printk3("[cens3] site %d orphan[%d] run-span=%d"
-                            " (1=img 2=interp 3=execve-ustack 4=thread-ustack)\n",
-                            i, k, sp)
+                    printk3("[cens3] site %d orphan[%d] run-span=%d (1=img 2=interp 3=execve-ustack 4=thread-ustack)\n", i, k, sp)
                 k = k + 1
             printk_set_level(PRINTK_LEVEL_EMERG)
-            printk3("[cens3] site %d: %d orphan(s) collected, %d inside a"
-                    " live task's wholesale run\n", i, n, inrun)
+            printk3("[cens3] site %d: %d orphan(s) collected, %d inside a live task's wholesale run\n", i, n, inrun)
             printk_set_level(PRINTK_LEVEL_EMERG)
             printk2("[cens3] site %d: %d UNACCOUNTED (in no live run)\n",
                     i, unacc)
             if n < tally:
                 printk_set_level(PRINTK_LEVEL_EMERG)
-                printk3("[cens3] site %d: TRUNCATED — tallied %d, collected"
-                        " only %d; this run-check covers a PREFIX and is"
-                        " INCONCLUSIVE for this site\n", i, tally, n)
+                printk3("[cens3] site %d: TRUNCATED — tallied %d, collected only %d; this run-check covered a PREFIX and is INCONCLUSIVE for this site\n", i, tally, n)
         i = i + 1
 
 
