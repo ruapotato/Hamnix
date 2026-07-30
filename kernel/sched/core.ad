@@ -2756,6 +2756,7 @@ def wklat_reset():
         g_wake_vrun[i]     = 0
         i = i + 1
     _wklat_out_clear()
+    _wklat_probe_clear()
 
 
 def wklat_enable(on: int32):
@@ -2922,6 +2923,143 @@ def wklat_out_report():
         i = i + 1
 
 
+# --- the CAUGHT-IN-THE-ACT probe --------------------------------------
+#
+# Everything above samples the two ENDPOINTS of a late dispatch. Neither
+# endpoint can answer the one question that separates "fair scheduling of a
+# task that is genuinely behind" from "a runnable task the picker could not
+# see": at the moment the task was waiting, was its vruntime the SMALLEST
+# among the ready tasks on its runqueue? If it was, _pick_next had no reason
+# to pass it over and the bug is in eligibility or list linkage; if it was not,
+# the wait is ordinary CFS queueing and the number is not a defect at all.
+#
+# So sample the MIDDLE. Once per tick, look for a wake that has been
+# outstanding longer than the outlier threshold and snapshot the machine around
+# it — the waiter's state/vruntime/throttle/on_cpu, the incumbent, the depth of
+# the runqueue, and the minimum vruntime among the tasks that were eligible at
+# that instant. Up to four snapshots per armed window; after that the scan
+# stops, so the steady-state cost of an armed instrument is one compare per
+# tick and nothing at all when disarmed.
+WKLAT_PROBE_MAX: uint64 = 4
+wkp_n:       uint64 = 0
+wkp_age:     Array[4, uint64]
+wkp_pid:     Array[4, uint64]
+wkp_state:   Array[4, uint64]
+wkp_vrun:    Array[4, uint64]
+wkp_thr:     Array[4, uint64]
+wkp_oncpu:   Array[4, uint64]
+wkp_rqcpu:   Array[4, uint64]
+wkp_curpid:  Array[4, uint64]
+wkp_curvrun: Array[4, uint64]
+wkp_nrdy:    Array[4, uint64]
+wkp_minv:    Array[4, uint64]
+wkp_ismin:   Array[4, uint64]
+
+
+def _wklat_probe_clear():
+    wkp_n = 0
+    i: uint64 = 0
+    while i < WKLAT_PROBE_MAX:
+        wkp_age[i]     = 0
+        wkp_pid[i]     = 0
+        wkp_state[i]   = 0
+        wkp_vrun[i]    = 0
+        wkp_thr[i]     = 0
+        wkp_oncpu[i]   = 0
+        wkp_rqcpu[i]   = 0
+        wkp_curpid[i]  = 0
+        wkp_curvrun[i] = 0
+        wkp_nrdy[i]    = 0
+        wkp_minv[i]    = 0
+        wkp_ismin[i]   = 0
+        i = i + 1
+
+
+def wklat_probe_stalled():
+    # Called once per tick from preempt_tick.
+    if wklat_on == 0:
+        return
+    if wkp_n >= WKLAT_PROBE_MAX:
+        return
+    if clocksource_is_selected() == 0:
+        return
+    now: uint64 = clocksource_read_ns()
+    # Find a wake that has been outstanding too long. First match wins; the
+    # scan is over the slot table rather than the intrusive run-list because
+    # this runs from the tick without the rq lock, and a stale rq_next pointer
+    # would be a wedge while a stale state word is only a stale diagnostic.
+    victim: uint64 = NTASKS
+    age:    uint64 = 0
+    i: uint64 = 0
+    while i < NTASKS:
+        st: uint64 = g_wake_stamp_ns[i]
+        if st != 0 and now > st:
+            a: uint64 = now - st
+            if a > WKLAT_OUT_THRESH_NS and a > age:
+                victim = i
+                age = a
+        i = i + 1
+    if victim >= NTASKS:
+        return
+    k: uint64 = wkp_n
+    wkp_n = wkp_n + 1
+    cpu: uint64 = task_table[victim].rq_cpu
+    wkp_age[k]   = age / 1000
+    wkp_pid[k]   = task_table[victim].pid
+    wkp_state[k] = task_table[victim].state
+    wkp_vrun[k]  = task_table[victim].vruntime
+    wkp_thr[k]   = cast[uint64](cgroup_cpu_should_throttle(victim))
+    wkp_oncpu[k] = task_table[victim].on_cpu
+    wkp_rqcpu[k] = cpu
+    cu: uint64 = current_idx_pcpu
+    wkp_curpid[k]  = task_table[cu].pid
+    wkp_curvrun[k] = task_table[cu].vruntime
+    # Depth of, and minimum vruntime on, the victim's runqueue at this instant
+    # — applying the SAME eligibility predicates _pick_next applies, so
+    # "ismin" means exactly "_pick_next would have chosen this task".
+    nr:   uint64 = 0
+    minv: uint64 = 0
+    have: uint64 = 0
+    t: uint64 = 0
+    while t < NTASKS:
+        if task_table[t].state == STATE_READY and task_table[t].rq_cpu == cpu:
+            if task_table[t].on_cpu == 0 and cgroup_cpu_should_throttle(t) == 0:
+                nr = nr + 1
+                v: uint64 = task_table[t].vruntime
+                if have == 0 or v < minv:
+                    minv = v
+                    have = 1
+        t = t + 1
+    wkp_nrdy[k] = nr
+    wkp_minv[k] = minv
+    if have != 0 and task_table[victim].vruntime <= minv:
+        wkp_ismin[k] = 1
+    else:
+        wkp_ismin[k] = 0
+
+
+def wklat_probe_report():
+    printk_set_level(PRINTK_LEVEL_EMERG)
+    printk1("[wklat] stalled_snapshots=%d\n", wkp_n)
+    i: uint64 = 0
+    while i < wkp_n:
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d age_us=%d pid=%d\n", i, wkp_age[i], wkp_pid[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d state=%d vrun=%d\n", i, wkp_state[i], wkp_vrun[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d thr=%d oncpu=%d\n", i, wkp_thr[i], wkp_oncpu[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d curpid=%d curvrun=%d\n", i, wkp_curpid[i],
+                wkp_curvrun[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d nrdy=%d minv=%d\n", i, wkp_nrdy[i], wkp_minv[i])
+        printk_set_level(PRINTK_LEVEL_EMERG)
+        printk3("[wklat] s%d ismin=%d rqcpu=%d\n", i, wkp_ismin[i],
+                wkp_rqcpu[i])
+        i = i + 1
+
+
 def wklat_report():
     # One parseable block. The gate reads n / max_us / mean_us and the bucket
     # counts; the p-values are derived host-side from the buckets so the
@@ -3065,6 +3203,7 @@ def wklat_ctl(verb: int64) -> int32:
         return 1
     if verb == 6:
         wklat_out_report()
+        wklat_probe_report()
         return 1
     if verb == 5:
         if _wklat_probe_start() == 0:
@@ -6164,6 +6303,11 @@ def _rt_rotatable_peer_ready(self_slot: uint64) -> uint64:
 
 
 def preempt_tick(from_user: uint64) -> uint64:
+    # wklat CAUGHT-IN-THE-ACT probe: snapshot the machine around a wake that
+    # has already been outstanding too long, WHILE it is still outstanding. The
+    # endpoint samples in the outlier ring cannot say whether the picker could
+    # have chosen the waiting task; this can. Disarmed cost: one compare.
+    wklat_probe_stalled()
     # Called once per 100 Hz timer tick from timer_interrupt(), AFTER
     # the timer EOI has been sent. `from_user` is non-zero when the
     # timer interrupted ring-3 (userland) code.
