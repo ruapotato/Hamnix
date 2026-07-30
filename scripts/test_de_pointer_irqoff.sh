@@ -93,7 +93,7 @@ need() {
 need arch/x86/kernel/time.ad 'def sysirq_report'  'the report this gate parses'
 need arch/x86/kernel/time.ad 'def sysirq_name'    'per-syscall NAMES'
 need sys/src/9/port/devproc.ad '"sysirq"'         'the control verb'
-need user/sysirqprobe.ad 'sysirq '                'the userland control shim'
+need sys/src/9/port/devwsys.ad '"sysirq"'         'the /dev/wsys/ctl surface this gate drives'
 [ "$struct_fail" -eq 0 ] || { verdict_fail "$VTAG" "structural seams missing"; exit 1; }
 echo "$TAG structural markers OK."
 
@@ -200,7 +200,7 @@ echo "$TAG $HOGS pure-CPU hogs confirmed running."
 
 # ARM the instrument, run the syscall-heavy storm in the FOREGROUND (one
 # execve + ELF load + virtio block read per path under /bin), then report.
-printf '/bin/sysirqprobe 1\n' >&3
+printf 'echo "sysirq 1" > /dev/wsys/ctl\n' >&3
 sleep 3
 if ! grep -aq '\[sysirq\] ack armed=1' "$LOG"; then
     verdict_inconclusive "$VTAG" \
@@ -218,9 +218,9 @@ done
 [ "$storm_ok" -eq 1 ] || verdict_inconclusive "$VTAG" \
     "the syscall storm never completed -- the measurement window did not close"
 sleep 2
-printf '/bin/sysirqprobe 2\n' >&3
+printf 'echo "sysirq 2" > /dev/wsys/ctl\n' >&3
 sleep 5
-printf '/bin/sysirqprobe 0\n' >&3
+printf 'echo "sysirq 0" > /dev/wsys/ctl\n' >&3
 sleep 2
 
 kill "$QEMU_PID" 2>/dev/null; wait "$QEMU_PID" 2>/dev/null; QEMU_PID=""

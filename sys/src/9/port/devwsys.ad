@@ -232,6 +232,7 @@ from arch.x86.kernel.time import get_jiffies, tsc_monotonic_ns
 # The `ptrlat` ctl verb below renders it; the numbers are collected in the
 # timer IRQ, which is where the cursor is actually composited.
 from arch.x86.kernel.time import (
+    sysirq_ctl,
     ptrlat_reset, ptrlat_get_n, ptrlat_get_max_us, ptrlat_get_mean_us,
     ptrlat_get_b15, ptrlat_get_b30, ptrlat_get_b60, ptrlat_get_b120,
     ptrlat_get_b250, ptrlat_get_over,
@@ -3385,6 +3386,22 @@ def devwsys_ctl_write(buf: Ptr[uint8], count: uint64) -> int64:
         if lv != 0:
             _wsys_ptrlat_report()
         ptrlat_reset()
+        return cast[int64](count)
+
+    # `sysirq <n>` — the IF-off-duration-per-syscall instrument
+    # (arch/x86/kernel/time.ad). 0 disarm, 1 arm+reset, 2 report, 3 reset.
+    # Parsed before the hostowner gate for exactly the reason `ptrlat` and
+    # `perf` are: the session that has to be measured IS the live NOBODY-uid
+    # desktop session, and /proc/self/ctl's `sysirq` verb is uid-0-or-
+    # hostowner only, so on a real DE boot it is unreachable — the first
+    # attempt at the DE measurement got "ctl write refused rc=-1" here and
+    # measured nothing. Same instrument, same verbs, reachable surface.
+    if _wsys_ctl_word_eq(buf, vs0, ve0, "sysirq") == 1:
+        siv: int64 = 2
+        if _wsys_scene_next_int(buf, &p0, count, &siv) == 0:
+            siv = 2
+        if sysirq_ctl(siv) == 0:
+            return -1
         return cast[int64](count)
 
     # `ptrsvc <0|1>` — turn the INLINE pointer service off/on at runtime
