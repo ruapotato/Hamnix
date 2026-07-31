@@ -888,6 +888,8 @@ def cg_err_text() -> Ptr[char]:
         return "unsupported decorator (only @unsafe is implemented)"
     if cg_err_reason == 14:
         return "List/Dict/Tuple/Optional type is not implemented"
+    if cg_err_reason == 15:
+        return "LLVM lane name table full (LL_NAME_MAX)"
     return "unknown"
 
 

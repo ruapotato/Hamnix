@@ -167,6 +167,8 @@ from compiler.codegen import (
     resolve_data_fixups,
     resolve_entry,
     cg_fail,
+    cg_err,
+    check_program_accepted,
     fn_count,
 )
 
@@ -1480,6 +1482,12 @@ def ssa_emit_program(prog: uint32) -> uint32:
     layout_classes(prog)
     register_enums(prog)
     layout_globals(prog)
+    # Same front-end acceptance check the -O0 lane runs (codegen.ad
+    # gen_program_with_globals): --opt/ADDER_OPT2 must not ACCEPT a program
+    # the default lane rejects.
+    check_program_accepted(prog)
+    if cg_err != 0:
+        return 0
     decls: uint32 = nd_b[prog]
     cur: uint32 = decls
     first: uint32 = 0

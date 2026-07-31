@@ -4607,3 +4607,14 @@ bash scripts/ci_run_gate.sh scripts/test_cow_deapps_origin.sh
 # .rodata blobs, and sweeps the shipped tree so a regression cannot pass on
 # the fixture alone.
 bash scripts/test_compiler_adjacent_strings.sh
+
+# Front-end error channel: the native lexer had lex_read_string()/lex_tokenize()
+# error returns that ALL 4 + ALL 7 call sites discarded, and three caps
+# (MAX_TOKENS/STRBUF_SIZE/MAX_INDENT) that dropped output and returned 0 — an
+# over-cap source compiled to a TRUNCATED program and exited 0, which is what
+# on-device self-hosting would have done to 9 files in this tree. This gate
+# also pins four SEED/NATIVE divergences that no object-level differential can
+# see, because the seed REJECTS what native silently accepted: "a\xZZ" (NUL-
+# terminated literal), a >64-bit integer literal (wrapped), @bogus decorators
+# (ignored), and List/Dict/Tuple/Optional annotations (8-byte slot).
+bash scripts/test_compiler_lexer_errors.sh
