@@ -21,6 +21,19 @@
 #
 # This is a fast, deterministic, grep+compile guard (NO QEMU boot).
 #
+# GATE HYGIENE (2026-07-31). Links 2 and 3 used to be spelled
+#     echo "$frame_body" | grep -Eq ...
+# under `set -o pipefail`. `grep -q` exits the instant it matches, closing the
+# pipe under the still-writing `echo`; `echo` then dies of SIGPIPE (141) and
+# pipefail promotes that to the pipeline's exit status, so a MATCHING
+# assertion reported FAILURE. Measured ~1.5% per grep, ~6% per gate run and
+# markedly worse under host load - it manufactured a red that no tree change
+# could explain, and could only ever hit these four `grep -q` links (link 1
+# greps a file directly; link 3's counter uses `grep -c`, which drains its
+# input and so never SIGPIPEs the writer). Every assertion now greps a
+# materialised temp FILE: no pipeline, no race. Do not reintroduce
+# `echo ... | grep -q` here.
+#
 # Pass marker:  PASS: DE focus-change titlebar repaint intact
 # Fail marker:  FAIL: <which link broke>
 
@@ -44,16 +57,29 @@ if ! grep -Eq "^EVL_LAST_FOCUS_UID[[:space:]]*:" "$UID_SRC"; then
 fi
 
 # --- Link 2: daemon_frame computes the current focus UID + reacts to change -
-frame_body=$(awk '
+# Materialise the function body to a private temp file. Concurrent sweeps in
+# the same checkout must not share these paths, hence mktemp -d.
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/de_focus_gate.XXXXXX") || {
+    echo "INCONCLUSIVE: cannot create a temp dir for the focus gate" >&2
+    exit 125
+}
+trap 'rm -rf "$WORK_DIR"' EXIT
+FRAME_BODY="$WORK_DIR/daemon_frame.body"
+
+awk '
     /^def[[:space:]]+daemon_frame[[:space:]]*\(/ { inside=1; print; next }
     /^def[[:space:]]/ { if (inside) { inside=0 } }
     inside { print }
-' "$UID_SRC")
+' "$UID_SRC" >"$FRAME_BODY"
 
-if ! echo "$frame_body" | grep -Eq "cur_focus_uid[[:space:]]*=[[:space:]]*DWIN_UID\[DWIN_COUNT - 1\]"; then
+if [ ! -s "$FRAME_BODY" ]; then
+    fail_link "link 2 (hamUId.ad): no 'def daemon_frame(' body found at all"
+fi
+
+if ! grep -Eq "cur_focus_uid[[:space:]]*=[[:space:]]*DWIN_UID\[DWIN_COUNT - 1\]" "$FRAME_BODY"; then
     fail_link "link 2 (hamUId.ad): daemon_frame no longer reads the front-most window's UID as the current focus"
 fi
-if ! echo "$frame_body" | grep -Eq "if[[:space:]]+cur_focus_uid[[:space:]]*!=[[:space:]]*EVL_LAST_FOCUS_UID"; then
+if ! grep -Eq "if[[:space:]]+cur_focus_uid[[:space:]]*!=[[:space:]]*EVL_LAST_FOCUS_UID" "$FRAME_BODY"; then
     fail_link "link 2 (hamUId.ad): daemon_frame no longer detects a focus transition"
 fi
 
@@ -61,28 +87,30 @@ fi
 # The whole point is a full-frame repaint on BOTH ends of the transition, so
 # the two damage_window() calls (over slot_for_uid of the old + new focus UID)
 # must survive.
-if ! echo "$frame_body" | grep -Eq "slot_for_uid\(EVL_LAST_FOCUS_UID\)"; then
+if ! grep -Eq "slot_for_uid\(EVL_LAST_FOCUS_UID\)" "$FRAME_BODY"; then
     fail_link "link 3 (hamUId.ad): the window that LOST focus is no longer resolved/damaged - its stale blue titlebar won't regrey"
 fi
-if ! echo "$frame_body" | grep -Eq "slot_for_uid\(cur_focus_uid\)"; then
+if ! grep -Eq "slot_for_uid\(cur_focus_uid\)" "$FRAME_BODY"; then
     fail_link "link 3 (hamUId.ad): the window that GAINED focus is no longer resolved/damaged"
 fi
-dw_focus=$(echo "$frame_body" | awk '
+awk '
     /if[[:space:]]+cur_focus_uid[[:space:]]*!=[[:space:]]*EVL_LAST_FOCUS_UID/ { inside=1; out=""; next }
     inside && /EVL_LAST_FOCUS_UID[[:space:]]*=[[:space:]]*cur_focus_uid/ { print out; exit }
     inside { out = out $0 "\n" }
-' | grep -c "damage_window(")
+' "$FRAME_BODY" >"$WORK_DIR/focus_block"
+dw_focus=$(grep -c "damage_window(" "$WORK_DIR/focus_block")
 if [ "${dw_focus:-0}" -lt 2 ]; then
     fail_link "link 3 (hamUId.ad): expected TWO damage_window() calls in the focus-transition block (losing + gaining), found ${dw_focus:-0}"
 fi
 
 # --- Link 4: the compositor still compiles with the fix in place -----------
-mkdir -p build/host
+# Output goes in the private WORK_DIR: a shared build/host/ path let two
+# concurrent sweeps clobber each other's .elf/.log and manufacture a red.
 if ! python3 -m compiler.adder compile --target=x86_64-adder-user \
-        "$UID_SRC" -o build/host/hamUId_focusgate.elf \
-        >build/host/hamUId_focusgate.log 2>&1; then
+        "$UID_SRC" -o "$WORK_DIR/hamUId_focusgate.elf" \
+        >"$WORK_DIR/hamUId_focusgate.log" 2>&1; then
     fail_link "link 4: user/hamUId.ad did not compile for x86_64-adder-user"
-    tail -20 build/host/hamUId_focusgate.log >&2
+    tail -20 "$WORK_DIR/hamUId_focusgate.log" >&2
 fi
 
 if [ "$fail" -ne 0 ]; then
