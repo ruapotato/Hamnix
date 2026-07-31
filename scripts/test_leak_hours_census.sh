@@ -99,7 +99,19 @@
 # ramp still settling (pass 17's lesson: a ramp is not a slope) does not fail
 # the gate, and any FAIL it produces is unarguable.
 #
-# Env: INSTALLER_IMG, OVMF_FD, BOOT_WAIT, OUT_DIR, GAP_S, MIN_GAP_S,
+# WHY THERE IS A SETTLE PERIOD BEFORE SAMPLE A
+# ===========================================
+# The smoke run of this gate took sample A about a minute after the DE handoff
+# and made the flaw obvious: a machine that has just booted is still ramping —
+# lazily faulted pages, first paints, page cache filling — so a two-hour delta
+# measured from minute one is dominated by the BOOT RAMP and not by steady
+# state. Pass 17's central lesson is that a ramp to a bounded high-water looks
+# exactly like a slope, and this gate would have manufactured one. SETTLE_S
+# (default 15 min) runs before the tracker is even armed, so both samples are
+# taken from the same regime and their difference is a difference in steady
+# state.
+#
+# Env: INSTALLER_IMG, OVMF_FD, BOOT_WAIT, OUT_DIR, SETTLE_S, GAP_S, MIN_GAP_S,
 #      GROWTH_FAIL_PAGES, ARMS.
 
 
@@ -114,6 +126,9 @@ BOOT_WAIT="${BOOT_WAIT:-300}"
 # residual is "one frame per hour", and one hour of separation gives that a
 # single count of signal, which is not a measurement. Two gives two.
 GAP_S="${GAP_S:-7200}"
+# Let the machine reach steady state BEFORE arming anything. See the header:
+# a delta measured from minute one of a boot is a ramp, not a slope.
+SETTLE_S="${SETTLE_S:-900}"
 # Below this, the run has not measured hours and says so. See the controls
 # section above.
 MIN_GAP_S="${MIN_GAP_S:-3600}"
@@ -150,7 +165,7 @@ echo "$TAG image age: $(installer_img_age_str "$INSTALLER_IMG")"
 
 mkdir -p "$OUT_DIR"
 echo "$TAG output dir: $OUT_DIR"
-echo "$TAG gap: ${GAP_S}s (min accepted ${MIN_GAP_S}s), arms: ${ARM_LIST[*]}"
+echo "$TAG settle: ${SETTLE_S}s, gap: ${GAP_S}s (min accepted ${MIN_GAP_S}s), arms: ${ARM_LIST[*]}"
 
 OVMF_RW=$(mktemp --tmpdir hamnix-hc.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-hc.img.XXXXXX.raw)
@@ -276,6 +291,13 @@ take_sample() {
     printf 'echo HC_SAMPLE_END %s\n' "$s" >&3
     sleep 2
 }
+
+echo "$TAG settling ${SETTLE_S}s before arming — a delta measured from"
+echo "$TAG   minute one of a boot is the boot ramp, not a steady-state slope"
+sleep "$SETTLE_S"
+printf 'echo HC_SETTLED\n' >&3
+sleep 2
+grep -aq "^HC_SETTLED\$" "$LOG" || echo "$TAG WARNING: no echo after the settle period — guest shell may be wedged" >&2
 
 send "echo track full > /proc/meminfo" HC_ARM_PAGE 60 || say_fail "track full timed out"
 send "echo kmtrack on > /proc/meminfo" HC_ARM_KM   60 || say_fail "kmtrack on timed out"
