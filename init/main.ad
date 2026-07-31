@@ -5101,6 +5101,31 @@ def arm64_a11_report_arm64(name: Ptr[uint8]) -> int64:
     return 1
 
 
+def arm64_a12_take_exit_arm64(space: uint64) -> int64:
+    # A12 (arch/arm64/llvm/a12.S): report AND CLEAR the EL0 exit latch between
+    # back-to-back runs.
+    #
+    # Up to A11 the latch was cleared as a side effect of
+    # arm64_a11_load_named_arm64 -- fine when every run was preceded by a load.
+    # A12's whole point is that programs stay RESIDENT in their own address
+    # spaces and are re-entered WITHOUT reloading, so nothing cleared it and the
+    # next program's very first syscall was misread as an exit
+    # (arm64_svc_dispatch_arm64 returns 1 while the latch is set), silently
+    # truncating the run after one syscall. That looked like a working demo in
+    # the log, which is exactly the failure mode to refuse.
+    #
+    # A run that never reached exit() is reported as a FAIL rather than cleared
+    # quietly, so a truncated run cannot pass as a completed one.
+    if arm64_llvm_el0_exit_pending == 0:
+        printk1("A12 FAIL: space %d never reached exit()\n", space)
+        return 0
+    printk2("A12: space %d program exited, status=%d\n", space,
+            cast[uint64](arm64_llvm_el0_exit_code))
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    return 1
+
+
 def start_kernel():
     start_kernel_early()
 

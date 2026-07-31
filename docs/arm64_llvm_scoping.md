@@ -1550,3 +1550,117 @@ layer (Phase A3) that mirrors the existing `arch/x86/` one-for-one.
 - No compiler source (`ssa_llvm.ad`/`ssa.ad`/`codegen.ad`) modified in this spike
   → the default x86 native path is byte-identical by construction (no
   `kobjdiff` divergence possible; nothing on the native codegen path changed).
+
+---
+
+## ELPROBE — settling "does the LLVM lane's userland actually run at EL0?"
+
+Every A9/A10/A11 claim rested on EL0 execution, and nothing in the tree tested
+it. The doubt was concrete: `head.S mmu_enable` fills `l2_pgtable` with
+descriptor low bits `0x0705`, i.e. **AP[2:1] = 00, "EL1 RW, EL0 no access"**,
+and overrides only `L2[64]` (VA `0x4800_0000`-`0x481F_FFFF`) to an AP=01 L3
+window. Yet A9's two "EL0" tasks (`sched.S arm64_el0_task_a/_b`) link into the
+**kernel's own .text** at ~`0x4008_14e4`, inside the AP=00 region, and they run.
+
+`arch/arm64/llvm/elprobe.S` asks the CPU instead of arguing. It erets a probe
+into that same AP=00 block and executes `mrs x0, CurrentEL` — defined at EL1+,
+**UNDEFINED at EL0** — then `svc #0`. Its own private vector table has a
+different handler in each of the 16 slots, so *which slot the hardware enters*
+is a discriminator nothing in software chooses.
+
+**Result (executed, `qemu-system-aarch64 -M virt -cpu cortex-a72`):**
+
+```
+ELPROBE: probe text VA = 0x0000000040082608
+stage 0: LOWER-EL AArch64 sync slot (0x400)  esr=0x02000000 ec=0x00
+         spsr=0x3C0 m=0x0  x0=0x5EED   -> EL0
+stage 1: LOWER-EL AArch64 sync slot (0x400)  esr=0x9200000E ec=0x24
+         spsr=0x3C0 m=0x0             -> AP=00 enforced for EL0 DATA
+```
+
+Stage 0: the MRS never executed (x0 still holds the sentinel), the exception
+came through the **lower-EL** slot, and `SPSR.M[3:0] = 0b0000` = EL0t. **The
+userland is genuinely at EL0.** Stage 1 demands the opposite outcome from the
+same page: an EL0 *data* load from that kernel .text takes a Data Abort from a
+lower EL (`EC=0x24`, `DFSC=0x0E` = permission fault level 2), so stage 0 is not
+"TCG checks no permissions".
+
+**The resolution of the apparent paradox:** in AArch64 stage-1 translation
+`AP[2:1]` gates **data** access only. EL0 **instruction fetch** is gated by
+`UXN` (bit 54, = 0 in the `0x0705` block) and `SCTLR_EL1.WXN`. EL0 executing
+from an EL0-no-data-access page is therefore architecturally expected, not a TCG
+liberty — and A9's tasks keep every data access (stacks `0x481E_0000` /
+`0x481C_0000`, buffers `0x4800_4000` / `0x4800_5000`) inside the AP=01 window.
+`el0.S`'s header already said this; it had simply never been tested.
+
+**No correction to A9/A10/A11 is required.** Gate:
+`scripts/test_arm64_currentel_probe.sh` (mutation-tested: switching the probe's
+SPSR to `0x3c5` = EL1h reds it, and both discriminators flip — slot `0x200`,
+`EC=0x15`, `SPSR.M=0x5`, `x0=0x4`).
+
+## A12 (first increment) — per-task TTBR0 address spaces
+
+`scripts/build_kernel_llvm_arm64.sh` stated A11's honest scope itself: "All
+members link at the SAME VA and are loaded one at a time ... not several
+concurrently resident address spaces (that needs the per-task TTBR0 work)."
+
+`arch/arm64/llvm/a12.S` builds two independent TTBR0 spaces. Each has its own
+L1, its own L2 (a copy of the kernel's, so the kernel identity map stays
+resident in every space — the syscall path runs on the task's TTBR0 and must
+still reach kernel memory), its own L3 mapping the **same** user VA window to
+its own private `.bss`-reserved 2 MiB region, and its own ASID. A switch is one
+`TTBR0_EL1` write.
+
+Proven by executing, in this order (the order *is* the proof — a shared window
+would make the first run print sum's line):
+
+```
+load 'a10' -> space 0 ; load 'sum' -> space 1, SAME VA 0x48010000
+run space 0 -> A10: P=0 / C=965649, exit 17    (after sum was already loaded)
+run space 1 -> A11: S=179190,       exit 246
+run space 0 -> A10: P=0 / C=965649, exit 17    (after space 1 also RAN)
+kernel-side compare of both backing regions by identity PA: they differ
+```
+
+Gate: `scripts/test_arm64_a12_addrspace.sh`.
+
+### The `nG=0` trap, and a mutation that survived
+
+`docs/arm64_phase50.md` root-caused the trap waiting at the end of this port: a
+**global** (`nG=0`) translation for a user VA is not evicted by `tlbi aside1is`
+and shadows every later per-ASID mapping of that VA. Its Option A is applied
+here while the window is being built — `head.S`'s EL0-RW leaves are now
+`0x0F47` (nG=1), not `0x0747` — rather than retrofitted.
+
+Mutation testing gave a split result that must not be smoothed over:
+
+- Forcing every space to **ASID 0** reds the gate loudly: space 0 runs space 1's
+  program and exits 246, and the backing-page comparison fails. **The ASID
+  tagging is load-bearing and is tested.**
+- Reverting **both** descriptors to `nG=0` leaves the gate **green**. QEMU TCG
+  flushes the whole TLB, globals included, when the ASID in `TTBR0_EL1` changes.
+  Real silicon does not — and that difference *is* the phase-50 bug. **TCG
+  cannot discriminate the nG bit at all.**
+
+So `nG=1` is correct-by-architecture and asserted by **inspection** in the gate,
+which says so in its own text. An execution-only gate here would have stayed
+green while shipping the phase-50 bug to hardware.
+
+### Where A12 stops
+
+Landed: per-task TTBR0 + ASID + private backing, concurrently resident images.
+**Not** landed, in the order the port needs them:
+
+1. A **Data-Abort demand-paging** path (the lower-EL sync vector still routes
+   only `svc`; `EC=0x24` from a task is fatal). Spaces are pre-populated.
+2. **Per-task kernel stacks + `__switch_to`** — until then a task cannot block
+   *inside* a syscall; A12's runs are still run-to-exit on the boot stack, and
+   A9's preemption still switches EL0 contexts only.
+3. **ASID recycling** (more tasks than ASIDs) — the point at which real TLB
+   invalidation becomes necessary, and the point at which the nG bit stops being
+   untestable under TCG.
+4. A broader syscall surface, then virtio-blk + a filesystem.
+
+`arch/arm64/kmain.ad` (the standalone ladder, `test_arm64_phase49.sh` green)
+already has fork/exec/wait, blocking-in-syscall, and ASID-tagged separate
+address spaces. Items 1-2 are a port from there, not an invention.
