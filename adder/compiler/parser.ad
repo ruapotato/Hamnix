@@ -1179,12 +1179,33 @@ def parse_primary() -> uint32:
         off: uint32 = tok_val_start[p_pos]
         ln: uint32 = tok_val_len[p_pos]
         advance()
-        # Adjacent string-literal concatenation: consume further STRING
-        # tokens. We keep only the first segment's strbuf reference (the
-        # segments are contiguous in strbuf, but with NUL separators, so
-        # we just record the first; the consumer can re-walk if needed).
-        while check(TOK_STRING) != 0:
-            advance()
+        # Adjacent string-literal concatenation: `"abc" "def"` is one
+        # literal "abcdef", the C/Python rule (and what the Python seed
+        # does). This USED to consume the extra tokens and throw their
+        # text away, so a multi-line printk emitted its first fragment and
+        # nothing else — including the trailing newline, which merged the
+        # next log line onto it. 35 kernel diagnostics were measured lying
+        # that way. Silently dropping source is not an option; we join.
+        #
+        # The segments are separate strbuf entries (each NUL-terminated),
+        # so a join copies them into a FRESH contiguous strbuf entry.
+        if check(TOK_STRING) != 0:
+            joined_off: uint32 = strbuf_pos
+            i: uint32 = 0
+            while i < ln:
+                strbuf_append(strbuf[off + i])
+                i = i + 1
+            while check(TOK_STRING) != 0:
+                foff: uint32 = tok_val_start[p_pos]
+                flen: uint32 = tok_val_len[p_pos]
+                j: uint32 = 0
+                while j < flen:
+                    strbuf_append(strbuf[foff + j])
+                    j = j + 1
+                advance()
+            off = joined_off
+            ln = strbuf_pos - joined_off
+            strbuf_append(cast[uint8](0))     # NUL-terminate the joined entry
         id: uint32 = node_new(ND_STRING_LIT)
         nd_line[id] = line
         nd_name_off[id] = off

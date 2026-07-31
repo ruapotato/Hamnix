@@ -4595,3 +4595,15 @@ bash scripts/test_hamsh_percmd_floor_host.sh
 # Needs a prebuilt installer image; ~30 min, one QEMU. Exits 125 INCONCLUSIVE
 # without /dev/kvm — it never reports green having asserted nothing.
 bash scripts/ci_run_gate.sh scripts/test_cow_deapps_origin.sh
+# --- adjacent string-literal concatenation (front-end silent drop) --------
+# QEMU-free, ~30 s. The native front end used to CONSUME the trailing STRING
+# tokens of `"abc" "def"` and throw their text away — silently. 35 kernel
+# printk sites emitted only their opening fragment, INCLUDING the trailing
+# newline, so log lines merged; 14 of them were a leak campaign's own
+# instrumentation. The Python seed already concatenated, so this was a
+# seed/native semantic divergence, i.e. a miscompile. It survived because the
+# feature had a fixture and NO registered gate. This pins the joined BYTES on
+# both back ends (seed -O0/-O1/-O2, native --opt off+on), compares the emitted
+# .rodata blobs, and sweeps the shipped tree so a regression cannot pass on
+# the fixture alone.
+bash scripts/test_compiler_adjacent_strings.sh
