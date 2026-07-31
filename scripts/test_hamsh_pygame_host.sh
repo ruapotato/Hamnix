@@ -21,11 +21,33 @@
 # host runtime reports fd 0 as a pipe so ed_readline skips its getty-flush, and
 # --no-echo keeps the shell from echoing input, so every asserted marker is
 # produced by the evaluator + the rasterizer, never by input echo.
+#
+# 2026-07-31 — VERDICT ON A RED: GATE DEFECT, not a product defect. Both PPM
+# dumps came back missing ("pygame: save: cannot open path") while EVERY pixel
+# read back through the shell's own pixel() function was correct.
+#
+# hamsh chdir()s into the login home at startup (_chdir_home, and $HOME is
+# resolved from /etc/passwd by uid, not from the invoking environment -- setting
+# HOME= on the command line does not move it). That is deliberate and old
+# (43d74998, 2026-05-26): on-device /init lands in /home/<user>. On the host it
+# lands in the REAL passwd home of whoever ran the gate, so `pwd` inside the
+# shell answers /home/<you> no matter where the gate cd'd. Every RELATIVE path
+# this script handed the shell therefore resolved against a directory that has
+# no build/host in it.
+#
+# So: the shell writes its PPM exactly where it was told to; the gate was
+# telling it somewhere else. The fix is in the gate -- absolute paths for the
+# dumps, and a `cd` line prepended to the shipped example (which is left
+# BYTE-UNTOUCHED, so it is still the real examples/pygame_bounce.hsh being run
+# end to end). Part (0) below now pins the chdir behaviour explicitly so the
+# next reader does not have to rediscover it from a missing file.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+PROJ_ROOT="$PWD"
 
 OUT="build/host"
+ABSOUT="$PROJ_ROOT/build/host"
 BIN="$OUT/hamsh_pygame_host"
 mkdir -p "$OUT"
 fail=0
@@ -46,11 +68,31 @@ fi
 echo "[pygame-host] PASS native hamsh still compiles (device build unaffected)"
 
 # ---------------------------------------------------------------------------
+# (0) PIN THE CWD CONTRACT. hamsh chdirs into the login home; every path this
+#     gate hands it must therefore be absolute (or preceded by an explicit cd).
+#     Asserted, not assumed: if hamsh ever stops moving, this says so out loud
+#     instead of the gate quietly depending on the old behaviour.
+# ---------------------------------------------------------------------------
+CWDP="$OUT/pygame_cwd.hsh"
+printf 'pwd\nexit\n' > "$CWDP"
+# `pwd` prints on the same physical line as the shell prompt, so the path is
+# scraped off the tail of the line rather than anchored at column 0.
+SHCWD="$(timeout 30 "$BIN" --no-echo <"$CWDP" 2>/dev/null | tr -d '\r' \
+         | sed -n 's/.*hamsh\$ \(\/[^ ]*\)$/\1/p' | head -1)"
+echo "[pygame-host] hamsh cwd after startup: ${SHCWD:-<none>}"
+case "$SHCWD" in
+    "$PROJ_ROOT"|"$PROJ_ROOT"/*)
+        echo "[pygame-host] NOTE: hamsh stayed inside the project — relative paths would also work here" ;;
+    /*) echo "[pygame-host] OK: hamsh chdir'd to $SHCWD (login home), so this gate uses ABSOLUTE paths" ;;
+    *)  echo "[pygame-host] FAIL: hamsh reported no cwd at all"; fail=1 ;;
+esac
+
+# ---------------------------------------------------------------------------
 # (1) DETERMINISTIC PRIMITIVES: draw known shapes, flip, dump a PPM, and echo
 #     framebuffer pixels via the shell's pixel() function.
 # ---------------------------------------------------------------------------
 PRIM="$OUT/pygame_prim.hsh"
-PPM="$OUT/pygame_prim.ppm"
+PPM="$ABSOUT/pygame_prim.ppm"   # ABSOLUTE: hamsh chdirs to the login home
 cat > "$PRIM" <<HSH
 pygame init 100 100
 bg  = rgb(0, 0, 0)
@@ -163,8 +205,17 @@ fi
 #     dumps a PPM. Prove it ran, moved the ball, and rendered.
 # ---------------------------------------------------------------------------
 GDUMP="$OUT/pygame_bounce.txt"
-( cd "$OUT" && timeout 30 "./$(basename "$BIN")" --no-echo \
-    <../../examples/pygame_bounce.hsh ) >"$GDUMP" 2>"$OUT/pygame_bounce.err"
+# The example is fed VERBATIM (byte-identical to examples/pygame_bounce.hsh —
+# `cmp` below proves it), preceded only by a `cd` that puts the shell where its
+# relative `pygame save bounce.ppm` is meant to land. Without it the shell is in
+# the login home and the dump goes there.
+BOUNCE_DRV="$OUT/pygame_bounce_drv.hsh"
+{ printf 'cd %s\n' "$ABSOUT"; cat examples/pygame_bounce.hsh; } > "$BOUNCE_DRV"
+if ! tail -n +2 "$BOUNCE_DRV" | cmp -s - examples/pygame_bounce.hsh; then
+    echo "[pygame-host] FAIL: the driver is not the shipped example verbatim"; fail=1
+fi
+rm -f "$ABSOUT/bounce.ppm"
+timeout 30 "$BIN" --no-echo <"$BOUNCE_DRV" >"$GDUMP" 2>"$OUT/pygame_bounce.err"
 grc=$?
 if [ "$grc" -ne 0 ]; then
     echo "[pygame-host] FAIL: bounce game exited rc=$grc"; cat "$GDUMP"; fail=1
