@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 3304
+#!PASS_FLOOR 3306
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-relative-syntax.html	> .foo in .nest,@scope created by insertRule valid
@@ -1696,6 +1696,7 @@ html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-first-valid-applies.html	Tree order decides which meta color-scheme applies.
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Initial color-scheme
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Inserted meta color-scheme applies
+html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-insert.html	Inserted meta color-scheme before existing in head applies
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-no-content-value.html	Meta color-scheme without content attribute has no effect.
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-normal-descendant-change.html	Normal should change to light from page color schemes
 html/semantics/document-metadata/the-meta-element/color-scheme/meta-color-scheme-remove-head.html	Initial value after removing head including meta color-scheme.
@@ -1990,7 +1991,6 @@ html/semantics/tabular-data/processing-model-1/rowspan-0.html	rowSpan
 html/semantics/tabular-data/the-caption-element/caption_001.html	dynamically removing caption on a table
 html/semantics/tabular-data/the-caption-element/caption_001.html	first caption element child of the first table element
 html/semantics/tabular-data/the-caption-element/caption_001.html	setting caption on a table
-html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a foreign caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a non-caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning the caption already in the table to table.caption
@@ -1999,7 +1999,6 @@ html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.cap
 html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table has two caption children
 html/semantics/tabular-data/the-table-element/caption-methods.html	Setting caption rethrows exception
 html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates a new caption and inserts it as the first node of the table element
-html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates new caption if existing caption is not in html namespace
 html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption will not copy table's prefix
 html/semantics/tabular-data/the-table-element/createTBody.html	A prefixed table creates tbody without prefix
 html/semantics/tabular-data/the-table-element/delete-caption.html	deleteCaption()
@@ -5175,8 +5174,10 @@ url/failure.html	Loading data…
 +html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1001 must be treated as 1000
 +html/semantics/tabular-data/the-caption-element/caption_001.html	caption IDL attribute is null
 +html/semantics/tabular-data/the-caption-element/caption_001.html	caption of the third table element should be null
++html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a caption to table.caption
 +html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning null to table.caption
 +html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table doesn't already have a caption
++html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates new caption if existing caption is not in html namespace
 +html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method returns the first caption element child of the table
 +html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption will not create new caption if one exists
 +html/semantics/tabular-data/the-table-element/caption-methods.html	deleteCaption method not remove caption that is not in html namespace
