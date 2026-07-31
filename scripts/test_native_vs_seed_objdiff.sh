@@ -54,8 +54,9 @@ else
     mapfile -t UNITS < <(ls user/*.ad 2>/dev/null | sort)
 fi
 
-TOTAL=0; NATIVE_OK=0; CLEAN=0; DIVERGED=0
+TOTAL=0; NATIVE_OK=0; CLEAN=0; DIVERGED=0; FELLBACK=0
 DIVLIST=()
+FBLIST=()
 
 for unit in "${UNITS[@]}"; do
     [ -f "$unit" ] || continue
@@ -78,6 +79,34 @@ for unit in "${UNITS[@]}"; do
         echo "[objdiff] $base: native REJECT (acceptance gap, not a divergence)"
         continue
     fi
+    # SILENT SEED FALLBACK — the differential's blind spot. adder_cc_compile
+    # (scripts/_adder_cc.sh) does NOT propagate a host_ac.elf failure: it prints
+    # "native compile failed -> Python seed fallback" and re-runs the PYTHON
+    # SEED into the same output, then exits 0. The gate then compared the seed
+    # image against ITSELF and counted the unit as native-accepted.
+    #
+    # That is worse than a plain miss: a self-comparison is not automatically
+    # clean, because the two sides are read by different code paths (symtab
+    # function boundaries vs endbr64 block splitting). A seed image carries its
+    # runtime wrapper run at the FRONT and its .data inside the single PT_LOAD,
+    # so the block splitter produced one extra leading block and fused `main`
+    # with the data section — hambrowse reported 6 PHANTOM diverged functions
+    # from a file compared with itself, while its REAL status (host_ac rejects
+    # it: "ELF emit error (overflow)", its .text has outgrown the 2 MiB
+    # DATA_BASE budget) went unreported.
+    #
+    # Detect it two ways: the wrapper's own stderr marker, and byte-identity
+    # with the seed output (which no genuine native compile can produce — the
+    # native emitter writes no section headers and splits code/data into two
+    # PT_LOADs).
+    if grep -q "seed fallback" "$OUT/$base.native.err" 2>/dev/null \
+            || cmp -s "$seed_elf" "$nat_elf"; then
+        echo "[objdiff] $base: native REJECT via SEED FALLBACK (acceptance gap, not a divergence)"
+        sed -n 's/^\[host_ac\] /[objdiff]     host_ac: /p' "$OUT/$base.native.err" | head -3
+        FELLBACK=$((FELLBACK+1))
+        FBLIST+=("$base")
+        continue
+    fi
     NATIVE_OK=$((NATIVE_OK+1))
 
     # The differential normalizer does the heavy lifting.
@@ -92,6 +121,9 @@ done
 
 echo "============================================================"
 echo "[objdiff] units total=$TOTAL  native-accepted=$NATIVE_OK"
+if [ "$FELLBACK" -gt 0 ]; then
+    echo "[objdiff]   native REJECT via seed fallback=$FELLBACK: ${FBLIST[*]}"
+fi
 echo "[objdiff]   semantically CLEAN=$CLEAN  DIVERGED=$DIVERGED"
 if [ "$DIVERGED" -gt 0 ]; then
     echo "[objdiff] DIVERGED units: ${DIVLIST[*]}"
