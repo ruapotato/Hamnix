@@ -150,7 +150,96 @@ as growth. The comparison is now gated on both plants being identifiable.
 
 ## 3. THE HOURS-APART RESULT
 
-*(filled in from the real run — see section 3 of the run summary)*
+One boot, 15-minute settle, **two samples 7268 s = 2.02 h apart**, nothing
+launched and nothing closed in between.
+
+### The census, both sweeps
+
+```
+sample A: positive=OK negative=OK orphans=1 plant=0x15923000 UNACCOUNTED=1 (0 after discounting the plant)
+sample B: positive=OK negative=OK orphans=1 plant=0x1593d000 UNACCOUNTED=1 (0 after discounting the plant)
+```
+
+Both controls green in **both** sweeps. The plant landed at a different
+physical frame each time and was identified and discounted by address in each.
+**The only unreachable frame in the machine, at both ends of two hours, is the
+one the gate planted** — and the count did not move.
+
+### The per-site difference, with the plant discounted
+
+```
+  site 0   unknown       A=5964    B=5813    delta -151
+  site 6   vma_anon      A=1       B=32      delta  +31
+  site 9   pgtable       A=0       B=2       delta   +2
+  site 11  cow_resolve   A=0       B=2       delta   +2
+  TOTAL live pages       A=5965    B=5849    delta -116     (-57.5 pages/hour)
+```
+
+The machine finished two idle hours holding **116 pages FEWER** than it started
+them with. Site 0 (`unknown`) is the population that was already live when the
+tracker was armed and therefore carries no recorded site; its −151 and the
++31/+2/+2 at the attributed sites are the same frames being returned and
+re-allocated with attribution. **Stated as a limitation rather than glossed:**
+because the tracker is armed at sample A, most of the live population is
+un-attributed for this run, so the per-site table is thin. The *difference* is
+unaffected — both samples are read the same way — but a per-site attribution of
+the whole resident set would need the tracker armed at boot.
+
+### The long-lived processes — the thing nothing had ever measured
+
+18 processes were alive at both samples. **17 of the 18 are byte-identical
+across two hours:**
+
+```
+  hamdesktop     18 -> 18      hampanelscene  14 -> 14      sshd    3 -> 3
+  __rfork_       68 -> 68      __rfork_       68 -> 68      __rfork_ 68 -> 68
+  __rfork_       73 -> 73      __rfork_       79 -> 79      __rfork_ 79 -> 79
+  hamsh (x3)     13 -> 13      kworker/ksoftirq  0 -> 0
+```
+
+The eighteenth is **pid 6, the interactive `hamsh` on the serial line** — the
+one process that was *not* idle, since the gate drives it with a heartbeat
+every five minutes. It grew **+23 pages**.
+
+And that number is the interesting one, because the smoke run of the same gate
+measured the same process over a **376-second** gap:
+
+| gap | hamsh pid 6 resident, A -> B | growth |
+|---|---|---|
+| 376 s (0.10 h) | 100 -> 120 | +20 |
+| 7268 s (2.02 h) | 100 -> 123 | +23 |
+
+Both runs start at exactly 100 pages after the settle. Nineteen times the
+elapsed time bought three extra pages. A per-hour leak would have shown ~400
+pages over the long gap. **That is a bounded high-water, not a slope** — pass
+17's `hamsh` finding, reproduced independently here by a different instrument
+at a nineteen-fold longer timescale.
+
+### The COW origin arms
+
+```
+  arm 5   born +40 died +40 net  +0   TOTAL=2  owner-dead=0 owner-unrecorded=0 owner-stray=0
+  arm 23  born +18 died  +0 net +18   TOTAL=29 owner-dead=0 owner-unrecorded=9 owner-stray=0
+```
+
+Arm 5 is exactly balanced over the gap. Arm 23's `+18` is adjudicated
+**RESIDENCY** by the discriminator rather than by its sign: every one of its 29
+survivors is still mapped by the live task that allocated it. Arms 1, 2, 19, 21
+and 24 took no births at all in an idle interval and are not reported as clean —
+their zeros are about a path that never ran.
+
+### The verdict
+
+> **VERDICT: PASS — no measurable leak at hours scale**
+
+Over 2.02 hours of one boot: no site accumulated an unaccounted frame, the
+unaccounted count did not move, the total live page count went **down**, and
+every process that ran for the whole interval without being driven held exactly
+the same resident set at the end as at the beginning.
+
+**What this does NOT establish, stated rather than implied.** Two hours is not
+months, and the interval was IDLE by design. It is a real answer to the
+question pass 18 could not reach, and it is not the last one — see §6.
 
 ---
 
@@ -246,6 +335,14 @@ because it means a 6-14 minute rebuild on every gate invocation.
                     hours gate exits 125 INCONCLUSIVE without /dev/kvm, so it
                     is not a dark green)
 [artifact_freshness] rebuilt, then PASS
+[kobjdiff]          PASS  — zero semantic divergences across 11383 matched
+                    kernel functions
+[test_cow_fork]     PASS  — COW fork keeps parent/child private
+[test_mmap_fork]    PASS  — COW fork over an mmap VMA keeps parent/child private
+[mm-zap]            PASS  — task_free_owner_regions + task_reap return the user
+                    stack COW-safely (no raw free_pages)
+[installed-pkg-repo] PASS
+[hourscens]         PASS  — the 2.02 h run above
 ```
 
 ### A self-inflicted lesson worth recording
