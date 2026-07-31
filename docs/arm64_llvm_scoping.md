@@ -1,6 +1,6 @@
 # ARM64 (AArch64) LLVM Retarget — Scoping Spike
 
-Status: **A1..A9 DONE + A10 RUNS A REAL COMPILED EL0 PROGRAM + A11 EMBEDDED IMAGE ARCHIVE LOADED BY NAME + REAL read(2) ON THE PL011**
+Status: **A1..A9 DONE + A10 RUNS A REAL COMPILED EL0 PROGRAM + A11 EMBEDDED IMAGE ARCHIVE LOADED BY NAME + REAL read(2) ON THE PL011 + ZERO LLVM BAILS (11383/11383)**
 
 USER ruling 2026-07-30: **ARM64 ships on the LLVM path only.** The hand-written
 AArch64 seed backend (`adder/compiler/codegen_arm64.py`) is NOT being extended;
@@ -19,6 +19,242 @@ A5 boundary; see the A4 box below). The original scoping spike
 (main @ 731f39b9, no compiler code changed) is preserved below as the feasibility
 evidence; the **phase-status delta from the implementation work is recorded in the
 "Implementation status" box immediately below** and inline in §3.
+
+---
+
+## Implementation status (2026-07-30, later) — EVERYTHING BUILDS VIA LLVM: 0 bails
+
+**The whole-kernel aarch64 emit is now `funcs=11383 emitted=11383 bailed=0`** (was
+11380/3). This is the USER's "make sure everything builds via LLVM", literally.
+
+### Why bails are an ARM64 correctness problem, not a coverage statistic
+
+On x86 a bailed function falls back to native codegen.ad and nothing is visibly
+wrong. On aarch64 there is no fallback. Before the auto-stubber (build step 3c) a
+bailed callee with an emitted caller was a hard `R_AARCH64_CALL26` link failure —
+loud, at least. **Since the auto-stubber, it is a generated `u64 f(void){return
+0;}` — the image LINKS and the function silently returns 0.** That is strictly
+worse, and it was already happening: of the three remaining bails, TWO had live
+callers in the emitted kernel IR.
+
+| bailed function | callers in the emitted IR | status before |
+|---|---|---|
+| `tests_core_smoke__list_walk_and_sum` | 6 | called a `return 0` stub |
+| `init_main__try_parse_hamnix_roots` | 2 | called a `return 0` stub — the `.hamnix-roots` sentinel parser |
+| `start_kernel` | 0 | LATENT only (head.S calls the three `start_kernel_*_arm64` slices, not `start_kernel`) |
+
+### The three fixes
+
+1. **`container_of`** (`NONSUBSET_EXPR` site 48). `ND_CONTAINER_OF` had no SSA
+   arm at all and fell through to the catch-all bail. codegen.ad has emitted it
+   forever as `gen_expr(inner); subq $off,%rax`; the SSA lowerer now does the
+   same as `pv - foff` typed `SVT_PTR`. LLVM path only.
+
+2. **2-D LOCAL arrays** (`SBR_MEMORY` site 57). `Array[N, Array[M, T]]` bailed at
+   the DECLARATION, which took the whole enclosing function out of the lane.
+   `ssa_array2d_base` already computed row-major addresses for 2-D GLOBALS and
+   2-D struct MEMBER fields, so the local case needed only a flat `N*M*esz` slot
+   plus a recorded row stride (`ssa_mem_rowstride`, new, name-indexed);
+   `a[i][j]` then reuses the existing `ssa_region_base` ND_INDEX path unchanged.
+   3-D+ still bails — there is no third stride to record. Every 1-D consumer of
+   `ssa_mem_isarr` is guarded with `rowstride == 0`, and 2-D is its own
+   redeclaration category.
+
+3. **`NM_MAX` 1024 -> 2048** (`start_kernel`, `nm=1024 == NM_MAX`). **Measured
+   before raising.** Instrumenting the emitter to print `nm_count` per function
+   over the whole-kernel closure with the cap temporarily at 4096 gives exactly
+   four functions above 400 distinct names:
+
+   | function | distinct names | basic blocks |
+   |---|---|---|
+   | `start_kernel` | **1492** | 2605 |
+   | `block_smoke_test` | 596 | 998 |
+   | `linux_u_syscall_dispatch_inner` | 539 | 538 |
+   | `do_syscall_dispatch` | 471 | 1066 |
+
+   So 1024 was binding on `start_kernel` **alone**. 2048 clears it with 37%
+   headroom and leaves the runner-up 3.4x under. Cost on the same whole-kernel
+   emit: **45.1 s at 1024, 60.6 s at 4096 (+34%)**, so 2048 is ~+11% (measured
+   54.0 s with all three fixes in); `.bss` grows 32 -> 64 MiB (`ssa_curdef` +
+   `ssa_incphi`, each `SSA_BB_MAX * NM_MAX`).
+
+   **RAISE, not split.** Splitting `start_kernel` means refactoring the SHARED
+   boot sequence — 2605 basic blocks, x86's primary entry point, the one
+   function the whole tree's correctness rests on — to buy an 11% host-compile
+   win nobody asked for. `concat_compiler_source.py`'s `SSA_BB_MAX` lockstep
+   guard was EXTENDED (`_check_nm_lockstep`), not duplicated: it fails the concat
+   BY NAME on any name-indexed array left unscaled across
+   cfg.ad/regalloc.ad/ssa.ad, and on the two sibling CONSTANTS (`LV_WORDS`,
+   `RA_MAXNAMES`) whose staleness does not crash but silently truncates the
+   liveness/allocation domain.
+
+### Predicted-class fallout, found by building
+
+With `start_kernel` emitting, it referenced `user_demo_entry` — the x86 ring-3
+payload from `arch/x86/kernel/syscall_64.S` that it takes the ADDRESS of as the
+baked init fallback — which was invisible while `start_kernel` was itself a
+stub. The auto-stubber correctly REFUSED it (its scope is BAILED symbols only,
+and this is a genuine missing arch mechanism), so the link hard-failed instead of
+papering over it. Added to `arch/arm64/llvm/stubs.c` alongside the same-class
+`syscall_entry` / `smp_user_probe_entry` / `pf_race_probe_entry`.
+
+### Evidence: EXECUTED, not inspected
+
+`scripts/test_llvm_container_of_2d_exec.sh` (new, registered) runs
+`tests/fuzz/regress_container_of_2d_local.ad` through THREE lanes and requires
+all three to agree on stdout AND exit status with zero bails:
+
+* **native codegen.ad x86_64** — the ORACLE. A shared-nothing second
+  implementation, RECOMPUTED from source every run (a baked expected constant is
+  a gate that goes stale and then gets "fixed").
+* LLVM lane x86_64, run natively.
+* LLVM lane aarch64, **EXECUTED under qemu-aarch64**.
+
+All three: `1021071`, exit 143. The `container_of` arm is the verbatim body of
+`_list_walk_and_sum`; the 16x32 uint8 grid is the verbatim shape of
+`_try_parse_hamnix_roots`'s `done_words`.
+
+Mutation-proven, and one mutation reshaped the gate:
+
+| mutation | verdict |
+|---|---|
+| `container_of` drops the field-offset subtraction | FAIL — all three legs diverge (EXECUTION) |
+| 2-D row stride = element stride (rows alias row 0) | FAIL (EXECUTION) |
+| 2-D slot sized as if 1-D | **initially PASSED, twice** |
+
+The third is worth recording. An under-sized 2-D slot is **invisible to
+execution**: the writes and the reads use the SAME address arithmetic, so every
+element still round-trips; the slot size only decides whose frame memory gets
+stomped. A scalar guard promotes to a register and never touches the frame; a
+neighbouring array local did not help either, because LLVM lays allocas out as it
+pleases. So gate step 3b asserts the emitted alloca byte counts per function
+against the hand-computed `N*M*esz` — and says in the gate text that it is
+INSPECTION, not execution, because the difference is the whole point. (Mutating
+ONE of the two slot sizers is a genuine no-op: `ssa_ensure_slot` takes the max of
+the prealloc-scan size and the decl size, so they are redundant by construction.
+Mutating BOTH reds at 3b.)
+
+### Full verification run
+
+| gate | result |
+|---|---|
+| `test_arm64_build_integrity.sh` | PASS — 11383/11383, 0 undefined, 0 auto-stubs |
+| `test_arm64_usermode.sh` | PASS — byte-identical x86/aarch64, both EXECUTED |
+| `test_arm64_llvm_lane_diff.sh` (200) | PASS — 200 EXECUTED on aarch64, 0 miscompiles |
+| `test_arm64_a10_userland.sh` | PASS — checksum 965649 vs a fresh native oracle |
+| `test_arm64_a11_archive.sh` | PASS — 3 members by name, random line through `read(2)` |
+| `test_arm64_phase49.sh` | PASS — whole standalone ladder |
+| `test_llvm_container_of_2d_exec.sh` | PASS (new) |
+| `test_native_vs_seed_kobjdiff.sh` | PASS — 11383 functions, 0 divergences |
+| `fuzz_adder_diff.sh 7` / `+ADDER_OPT2=1` | PASS — 500/500 each, 0 miscompiles |
+| `test_llvm_lane_diff.sh` (200) | PASS — 0 miscompiles |
+| `test_llvm_ir_verify_host.sh` | PASS |
+| `build_user.sh` | 278 compiled, 276 LLVM / 2 native (the unrelated lane pins, unchanged) |
+| `test_gate_registration/softgreen/kvmdark` | PASS (dark set still 20) |
+
+### What is left, and it is NOT the compiler
+
+`start_kernel` emitting does not mean the aarch64 kernel RUNS it: `head.S` still
+calls the three `start_kernel_*_arm64` slices, and `arch/arm64/llvm/stubs.c`
+still supplies 100-odd genuine x86 arch mechanisms (CR/MSR/EFI/IDT/TSS/AP/FPU).
+Zero bails means the COMPILER is no longer the constraint on any aarch64
+function. Everything remaining is arch layer.
+
+---
+
+## A12 — where it stops, and what the next person needs to know first
+
+A12 was **scoped and not implemented** in this round; the bail work above
+consumed the budget and A12 needs its own build-and-boot debug loop (a kernel
+rebuild plus a QEMU boot is ~5 min per iteration, and MMU bring-up is iterative
+by nature). What follows is the reconnaissance, so the next person starts from
+evidence rather than from the plan.
+
+### 1) A12 is a PORT, not an invention — the ladder already has all of it
+
+`scripts/test_arm64_phase49.sh` passes on this tree, and its own output shows the
+STANDALONE ladder (`arch/arm64/kmain.ad`, phases 1..49) already doing every item
+on the A12 list:
+
+```
+Phase 49: consumer C read on EMPTY ring -> SLEEPING (parked, sleep #1)
+Phase 49: parent wait(pid=0x51) -> child still running -> parent BLOCKED (descheduled, state WAITING)
+Phase 49 PASS: EL0 fan-in reducer (THREE producer children ... each across separate address spaces ...)
+```
+
+fork/exec/wait, blocking in a syscall, per-task kernel stacks, **separate address
+spaces**, ASID tagging (`kmain.ad:7048`) — all present, all EL0, all booting.
+The A12 gap is that NONE of it exists in the **LLVM whole-kernel lane**
+(`arch/arm64/llvm/`), which is 2023 lines of boot layer with ONE shared 2 MiB
+EL0 window. So A12 rung 1 is: lift the ladder's per-task TTBR0/ASID machinery
+into `arch/arm64/llvm/`, not design it.
+
+### 2) There is a TLB trap already root-caused, waiting at the end of that port
+
+`docs/arm64_phase50.md` (SHELVED) is the ladder's next rung and it is stuck on
+exactly the mechanism A12 introduces: `arm64_mmu_init` maps RAM as **global**
+(`nG=0`) 2 MiB blocks, `tlbi aside1is` only evicts per-ASID NON-global entries,
+so a stale global identity translation shadows the per-ASID mapping under TCG.
+Read that doc BEFORE building per-task spaces here, or the LLVM lane will
+reproduce the same bug from scratch. Its Option A (carve a hole in the identity
+map at the user window) applies verbatim to `arch/arm64/llvm/head.S`
+`mmu_enable`, and is much cheaper to do while the window is being built per-task
+anyway than to retrofit.
+
+### 3) RESOLVE THIS FIRST — an EL0-permission discrepancy in the CURRENT lane
+
+This is an observation with evidence, not a diagnosed bug, and it is load-bearing
+for the A12 design because it decides whether per-task EL0 tasks can keep living
+in kernel `.text`.
+
+`head.S` `mmu_enable` fills `l2_pgtable` with `movz x1, #0x0705`. Decoding that
+stage-1 block descriptor: bit0=1/bit1=0 = block, AttrIndx=1 (Normal-WB),
+SH=inner, AF=1, and **AP[7:6] = 00 — EL1 R/W, EL0 NO ACCESS**. Only the one
+overridden L2 slot (index 64, VA `0x4800_0000`) points at `l3_user_pgtable`,
+whose leaves are `0x0747` (AP=01, EL0-RW, UXN=0).
+
+But A9's two EL0 tasks link INSIDE the AP=00 region, not inside the window:
+
+```
+$ aarch64-linux-gnu-nm build/kllvm_arm64/hamnix_kernel_llvm_arm64.elf | grep arm64_el0_task
+00000000400814e4 T arm64_el0_task_a
+00000000400814f0 T arm64_el0_task_b
+```
+
+`0x400814e4` is kernel `.text`, covered by an AP=00 identity block — and A9 erets
+to it with `SPSR = 0x340` (M[3:0]=0 => EL0t, I unmasked), then those tasks
+demonstrably execute and issue `svc #0` writes. An EL0 instruction fetch from an
+AP=00 page should take a permission abort.
+
+Something in that chain is not what the comments say. Possibilities, in the order
+worth testing:
+
+* the descriptor is not what is read back at runtime (dump `l2_pgtable[64..]` and
+  the actual entry covering `0x4008_0000` from EL1 after `mmu_enable`);
+* `-cpu cortex-a72` under TCG is permissive here (compare against `-cpu max`, and
+  against `-M virt,accel=kvm` on real ARM when the Pinebook lands);
+* the tasks are not actually running at EL0 (read `CurrentEL` from the task and
+  print it — cheapest decisive test, and worth doing FIRST).
+
+Whichever it is, A12 must not build per-task address spaces on top of an
+unexplained permission result. If the third bullet is the answer, the A9/A10/A11
+"EL0" claims need re-reading too, and that is exactly the kind of thing this lane
+has been burned by before.
+
+### 4) Recommended A12 rung 1, once (3) is settled
+
+Per-task TTBR0 with TWO concurrently-resident address spaces, proven by
+*aliasing*: give each task its own L1/L2/L3 triple (3 pages of `.bss` each),
+identical except that L2[64] points at a per-task L3 backing the SAME VA
+`0x4800_0000` with DIFFERENT physical pages. Add slot 34 (TTBR0 = table PA |
+ASID<<48) to the 36-slot context block — A9's blocks zero it, so `msr ttbr0_el1`
+is skipped for them and the change is backward compatible with A8/A9/A10/A11.
+Have the kernel write DIFFERENT content into each task's backing page *through
+the identity map* (by PA, EL1) and have both tasks read the SAME VA: if the
+spaces are genuinely separate they print different strings, and if TTBR0 is not
+actually being switched they print the same one. That is a proof that fails
+loudly rather than a proof that merely runs, and it is what the existing
+`test_arm64_a11_archive.sh` oracle style should be extended to assert.
 
 ---
 
