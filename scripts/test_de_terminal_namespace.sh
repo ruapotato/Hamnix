@@ -122,7 +122,14 @@ for bind in \
     "bind '#/' /n" \
     "bind '#I' /net" \
     "bind '#w' /dev/win"; do
-    printf '%s\n' "$RC_USER_AMBIENT" | grep -qF "$bind" \
+    # GATE HYGIENE (2026-07-31): a here-string, NOT `printf ... | grep -qF`.
+    # Under `set -o pipefail`, `grep -q` exits on match and closes the pipe
+    # under the still-writing printf ($RC_USER_AMBIENT is ~11.7 KB, emitted in
+    # ~130-byte write() chunks); printf takes SIGPIPE (141), pipefail promotes
+    # it, and `|| fail` fires on a bind that IS present. Measured 26/400 false
+    # failures of this gate before the change, 0/400 after. `<<<` is a
+    # redirection, not a pipeline, so there is no writer to kill.
+    grep -qF "$bind" <<<"$RC_USER_AMBIENT" \
         || fail "$RC_USER missing required AMBIENT bind: $bind"
 done
 ok "rc.de-user has all required regular-user binds, in the ambient namespace"
@@ -132,8 +139,14 @@ ok "rc.de-user has all required regular-user binds, in the ambient namespace"
 # excluded by requiring an actual `bind` statement (optional flags, e.g. -r).
 for rcf in etc/rc.de-user etc/rc.de-hostowner etc/rc.de-wayland; do
     [ -f "$rcf" ] || continue
-    if ambient_lines "$rcf" \
-            | grep -qE "^[[:space:]]*bind([[:space:]]+-[a-zA-Z]+)*[[:space:]]+'#distro'"; then
+    # GATE HYGIENE (2026-07-31): here-string, not a pipeline. This is an
+    # ABSENT-assertion — a MATCH is the regression and must take the `then`
+    # branch — so the pipefail+SIGPIPE race here does not merely flake, it
+    # BLINDS the guard: `grep -q` matching would kill the writing
+    # ambient_lines, pipefail would surface 141, the `if` would be FALSE and
+    # the ambient '#distro' bind would sail through unreported.
+    if grep -qE "^[[:space:]]*bind([[:space:]]+-[a-zA-Z]+)*[[:space:]]+'#distro'" \
+            <<<"$(ambient_lines "$rcf")"; then
         fail "$rcf binds '#distro' into the AMBIENT namespace — the distro subtree" \
              "must be reachable ONLY through a captured 'ns clean { … }' template" \
              "(docs/rootfs_partition.md, etc/rc.boot.full)"
