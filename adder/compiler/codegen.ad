@@ -973,8 +973,37 @@ loc_struct_is_ptr: Array[256, uint32]
 # `Array[N, Array[M, T]]` is indexed level by level (the outer index scales by
 # the row stride). 0 for non-array locals / 1-D where loc_elem_size suffices.
 loc_type_node: Array[256, uint32]
+# Per-local OWNING DECLARATION node — the ND_VAR_DECL that reserved this slot
+# (0 for parameters, for-loop induction slots and synthesised temps).
+#
+# WHY: Adder has NO block scoping, so a second `x: T2` in a sibling branch is a
+# FRESH binding of the same name. codegen_x86.alloc_local mirrors that exactly:
+# it unconditionally allocates a new slot and REBINDS self.locals[name]. The
+# native table used to keep the FIRST slot forever and only re-tag its scalar
+# metadata (refresh_local_meta), which is fine while both declarations are
+# 8-byte scalars but silently WRONG when the storage SHAPES differ:
+#
+#     tk: int32 = 0                 # branch A: an 8-byte scalar slot
+#     ...
+#     tk: Array[128, uint8]         # branch B: 128 reserved bytes
+#     tn: int32 = _arg_bytes(0, &tk[0], 128)
+#
+# `&tk[0]` then resolved to branch A's SCALAR slot, so codegen emitted
+# `mov -off(%rbp),%rax` (load the slot's VALUE as a base address) + `shl $3`
+# (unknown pointee -> default 8-byte stride) where the seed emits
+# `lea -off(%rbp),%rax` (the array's address) with a 1-byte stride. The callee
+# then wrote 128 bytes through whatever integer branch A last left in that slot.
+#
+# So a shape-changing re-declaration now reserves its OWN slot in the prescan,
+# shadowed by the earlier binding until gen reaches the declaration; this node
+# id is how the gen pass finds the slot the prescan reserved for THIS decl.
+loc_decl_node: Array[256, uint32]
 loc_count: uint32 = 0
 cg_stack_size: uint32 = 0
+# The ND_VAR_DECL declare_local is currently reserving a slot for (prescan
+# only); 0 for every other allocation path, which keeps their behaviour
+# byte-identical.
+cg_declaring_node: uint32 = 0
 
 # -----------------------------------------------------------------------
 # Function symbol table + call-fixup list.
@@ -1646,6 +1675,7 @@ def alloc_local(name_off: uint32, name_len: uint32) -> int32:
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     return off
 
@@ -1671,6 +1701,7 @@ def alloc_ptr_local(name_off: uint32, name_len: uint32, ptr_size: uint32) -> int
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     return off
 
@@ -1700,6 +1731,7 @@ def alloc_array_local(name_off: uint32, name_len: uint32, count: uint32, elem_si
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     return off
 
@@ -1726,6 +1758,7 @@ def alloc_struct_local(name_off: uint32, name_len: uint32, total: uint32, sidx1:
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     return off
 
@@ -1751,6 +1784,7 @@ def alloc_slice_local(name_off: uint32, name_len: uint32) -> int32:
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     return off
 
@@ -13939,6 +13973,78 @@ def ptr_pointee_size(tnode: uint32) -> uint32:
 # from the type live at that point. Without this, the second (uint64) `n` kept
 # the first (int64) `n`'s SIGNED tag and `n > 0` emitted `setg` instead of the
 # unsigned `seta` — a real signedness miscompile on the kernel read path.
+# Storage-SHAPE class of a declared type: 0 = plain scalar slot, 1 = Array
+# (the slot IS the reserved element block), 2 = Ptr[T] (the slot holds an
+# address), 3 = Slice[T]/String (a 16-byte {ptr,len} cell), 4 = in-place
+# struct value. Two declarations of one name can share a slot only when their
+# classes agree; see loc_decl_node.
+def decl_shape_of_type(tnode: uint32) -> uint32:
+    if tnode == 0:
+        return 0
+    if nd_kind[tnode] == ND_ARRAY_TYPE:
+        return 1
+    if nd_kind[tnode] == ND_PTR_TYPE:
+        return 2
+    if nd_kind[tnode] == ND_SLICE_TYPE:
+        return 3
+    if struct_lookup_by_node(tnode) != 0:
+        return 4
+    return 0
+
+
+# The same shape class, read back off an already-reserved slot.
+def decl_shape_of_slot(i: uint32) -> uint32:
+    if loc_elem_size[i] != 0:
+        return 1
+    if loc_ptr_size[i] != 0:
+        return 2
+    if loc_struct_idx[i] != 0:
+        if loc_struct_is_ptr[i] != 0:
+            return 2
+        return 4
+    if loc_type_node[i] != 0 and nd_kind[loc_type_node[i]] == ND_SLICE_TYPE:
+        return 3
+    return 0
+
+
+# Index+1 of the slot reserved for declaration node `node`, or 0.
+def local_slot_of_decl(node: uint32) -> uint32:
+    if node == 0:
+        return 0
+    i: uint32 = 0
+    while i < loc_count:
+        if loc_decl_node[i] == node:
+            return i + 1
+        i = i + 1
+    return 0
+
+
+# Make the slot the prescan reserved for ND_VAR_DECL `node` the LIVE binding
+# of its name, by retiring every EARLIER slot that carries the same name.
+#
+# Retirement sets the old slot's name LENGTH to 0, which no real identifier can
+# match (a zero-length name is already the marker for the anonymous for-loop
+# index slot), so the forward-first lookups then land on this declaration's
+# slot. The AST is walked once, in source order, by both the prescan and the
+# gen pass, so a retired binding is never referenced again — this is exactly
+# codegen_x86.alloc_local's `self.locals[name] = var` rebinding.
+#
+# Byte-inert for every name declared once: its slot is already the first match.
+def rebind_local_decl(node: uint32):
+    s1: uint32 = local_slot_of_decl(node)
+    if s1 == 0:
+        return
+    idx: uint32 = s1 - 1
+    if loc_name_len[idx] == 0:
+        return
+    i: uint32 = 0
+    while i < idx:
+        if name_match(loc_name_off[i], loc_name_len[i],
+                      loc_name_off[idx], loc_name_len[idx]) != 0:
+            loc_name_len[i] = 0
+        i = i + 1
+
+
 def refresh_local_meta(name_off: uint32, name_len: uint32, tnode: uint32):
     # Only scalar int/float locals carry signedness/width metadata; array /
     # ptr / struct slots keep their prescan tagging (their type is fixed by the
@@ -13975,10 +14081,31 @@ def declare_local(name_off: uint32, name_len: uint32, tnode: uint32):
     off: int32 = 0
     if lookup_local(name_off, name_len, &off) != 0:
         # Already reserved (by the prescan, or an earlier same-name decl).
-        # Refresh the scalar type metadata so a re-declaration with a
-        # different type re-tags the binding (see refresh_local_meta).
-        refresh_local_meta(name_off, name_len, tnode)
-        return
+        # A re-declaration whose storage SHAPE differs from the live binding
+        # (scalar vs Array/Ptr/Slice/struct) CANNOT reuse that slot — the seed
+        # gives every VarDecl a fresh slot and rebinds the name. Reserve a
+        # second slot here, tagged with this declaration's node; it stays
+        # shadowed by the earlier binding until gen reaches the declaration and
+        # calls rebind_local_decl. Falls through to the allocation below.
+        # (cg_declaring_node is non-zero only on the prescan's ND_VAR_DECL
+        # path, so no other caller can take this branch.)
+        redecl: uint32 = 0
+        if cg_declaring_node != 0 and local_slot_of_decl(cg_declaring_node) == 0:
+            li: uint32 = 0
+            while li < loc_count:
+                if name_match(loc_name_off[li], loc_name_len[li],
+                              name_off, name_len) != 0:
+                    if decl_shape_of_slot(li) != decl_shape_of_type(tnode):
+                        redecl = 1
+                    li = loc_count
+                else:
+                    li = li + 1
+        if redecl == 0:
+            # Same shape: keep the slot and refresh the scalar type metadata
+            # so a re-declaration with a different scalar type re-tags the
+            # binding (see refresh_local_meta).
+            refresh_local_meta(name_off, name_len, tnode)
+            return
     if tnode != 0 and nd_kind[tnode] == ND_ARRAY_TYPE:
         count: uint32 = cast[uint32](nd_num[tnode])
         # Element STRIDE = type_size_of(element type), so a MULTI-DIMENSIONAL
@@ -14105,6 +14232,11 @@ def gen_stmt(node: uint32):
         return
 
     if k == ND_VAR_DECL:
+        # Make THIS declaration's slot the live binding of its name. No-op for
+        # every name declared once; for a shape-changing re-declaration it
+        # retires the earlier binding at exactly this source position, matching
+        # codegen_x86.alloc_local's per-VarDecl rebinding.
+        rebind_local_decl(node)
         # name = nd_name_off/len, a = type, b = optional initialiser value.
         # The prescan already reserved the slot (scalar or Array). An Array
         # decl never carries a scalar initialiser in this subset; a scalar
@@ -16793,6 +16925,7 @@ def for_idx_reserve(node: uint32):
     loc_struct_is_ptr[loc_count] = 0
     loc_is_float[loc_count] = 0
     loc_type_node[loc_count] = 0
+    loc_decl_node[loc_count] = cg_declaring_node
     loc_count = loc_count + 1
     fi_node[fi_count] = node
     fi_offset[fi_count] = off
@@ -17643,7 +17776,12 @@ def prescan_block(head: uint32):
     while s != 0:
         k: uint32 = nd_kind[s]
         if k == ND_VAR_DECL:
+            # Tag the reservation with its declaration node so a shape-changing
+            # re-declaration of a live name gets its OWN slot (see
+            # loc_decl_node / rebind_local_decl).
+            cg_declaring_node = s
             declare_local(nd_name_off[s], nd_name_len[s], nd_a[s])
+            cg_declaring_node = 0
             # A `?` in the initialiser reserves its temp AFTER the local, matching
             # the seed's alloc-local-then-eval-RHS order. Byte-inert when unused.
             if en_count != 0:
