@@ -1664,6 +1664,44 @@ def _idbuf_push_cstr(s: Ptr[uint8]):
         i = i + 1
 
 
+# Is the CURRENT element's `type` attribute value (src[g_attr_start,g_attr_end))
+# the ASCII-case-insensitive keyword `lit`?
+def _attrval_ci_is(lit: Ptr[uint8]) -> int32:
+    n: uint64 = 0
+    while lit[n] != 0:
+        n = n + 1
+    if g_attr_end - g_attr_start != n:
+        return 0
+    i: uint64 = 0
+    while i < n:
+        if _hx_lower(src_ptr[g_attr_start + i]) != lit[i]:
+            return 0
+        i = i + 1
+    return 1
+
+
+# Append HTMLButtonElement.type's resolved state to dom_idbuf and return its
+# length. See the call site for the spec rule and the chromium cross-check.
+def _button_type_bytes(te: uint64) -> int32:
+    if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("type")) != 0:
+        if _attrval_ci_is(cast[Ptr[uint8]]("submit")) != 0:
+            _idbuf_push_cstr(cast[Ptr[uint8]]("submit"))
+            return 6
+        if _attrval_ci_is(cast[Ptr[uint8]]("reset")) != 0:
+            _idbuf_push_cstr(cast[Ptr[uint8]]("reset"))
+            return 5
+        if _attrval_ci_is(cast[Ptr[uint8]]("button")) != 0:
+            _idbuf_push_cstr(cast[Ptr[uint8]]("button"))
+            return 6
+    # missing or invalid value: a command button defaults to "button".
+    if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("command")) != 0 or \
+       _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("commandfor")) != 0:
+        _idbuf_push_cstr(cast[Ptr[uint8]]("button"))
+        return 6
+    _idbuf_push_cstr(cast[Ptr[uint8]]("submit"))
+    return 6
+
+
 def _capture_inline(te: uint64, name: Ptr[uint8]):
     g_ih_off = -1
     g_ih_len = 0
@@ -2150,6 +2188,32 @@ def _dom_register_el() -> int32:
             else:
                 _idbuf_push_cstr(cast[Ptr[uint8]]("text"))
                 tyl = 4
+        elif kind == 2:
+            # HTMLTextAreaElement.type is the constant "textarea".
+            _idbuf_push_cstr(cast[Ptr[uint8]]("textarea"))
+            tyl = 8
+        elif kind == 3:
+            # HTMLSelectElement.type: "select-multiple" when the `multiple`
+            # content attribute is present, "select-one" otherwise.
+            if _hx_find_attr(g_el_ns, te, cast[Ptr[uint8]]("multiple")) != 0:
+                _idbuf_push_cstr(cast[Ptr[uint8]]("select-multiple"))
+                tyl = 15
+            else:
+                _idbuf_push_cstr(cast[Ptr[uint8]]("select-one"))
+                tyl = 10
+        elif kind == 4:
+            # HTMLButtonElement.type is a LIMITED-VALUE reflection: only
+            # submit / reset / button (ASCII case-insensitive) are states, and
+            # the missing/invalid default is NOT constant — it is "button" when
+            # the element carries a `command` or `commandfor` attribute and
+            # "submit" otherwise, because such a button activates a command
+            # rather than the form. Reflecting nothing at all made every
+            # button's .type read "" (not even a valid state), so a page
+            # branching on button.type — the ordinary way to tell a submit
+            # button from a plain one — took the wrong branch every time.
+            # Values verified against chromium --headless: type=BOGUS ->
+            # "submit", type=SUBMIT -> "submit", command= present -> "button".
+            tyl = _button_type_bytes(te)
         js_set_prop(o, cast[Ptr[uint8]]("type"), 4, \
                     js_new_string(&dom_idbuf[tyo], cast[uint64](tyl)))
         if dom_origchecked[idx] >= 0:
