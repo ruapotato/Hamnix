@@ -166,3 +166,97 @@ work, banked under its own floor, kept out of the headline number"). Whether
 blank-at-rest deserves a third class is a ratchet-design decision, to be taken
 deliberately rather than discovered again by the next regression. Recorded here
 so it is not lost.
+
+## MEASURED 2026-07-31 (second pass) — background-clip and the viewport canvas
+
+Continuing the bundle. Measured on `hold/oof-painting` (`eb415bc8`, itself
+PASS 45 / WEAK 207 / ND 110 against the `#!PASS_FLOOR 47` / `#!WEAK_PASS_FLOOR
+208` baseline), landing two of the three named blockers:
+
+    PASS 45 -> 48     WEAK-PASS 207 -> 205     ND 110 (unchanged)   ERROR 0
+
+The ledger against `hold/oof-painting`, every pair that changed class, both
+directions:
+
+| was | now | test | why |
+|---|---|---|---|
+| FAIL | **PASS** | `css-backgrounds/background-rounded-image-clip-001` | the pass out-of-flow painting cost, EARNED BACK. It needed both the viewport canvas background and `background-clip: content-box`; the box geometry was never the blocker, the size of the green field was. |
+| WEAK | **PASS** | `css-backgrounds/background-color-clip` | promoted. Honouring the property is what makes the pair discriminating. |
+| FAIL | **PASS** | `css-backgrounds/border-width-pixel-snapping-001-a` | fallout of routing wide `border` shorthands to the real per-side painter |
+| WEAK | FAIL | `css-backgrounds/background-clip/clip-rounded-corner` | both sides now paint an IDENTICAL 5,920px blue ring where before each had a hairline; the residual 512px is the fill rect and the border rect not being the same rectangle. Box-model geometry. |
+
+### What landed
+
+1. **The canvas background covers the VIEWPORT** (css-backgrounds-3 §2.11.2).
+   The canvas is never smaller than the viewport; this engine sized it to
+   CONTENT, so `html{background-color:green}` painted a band as tall as the text.
+   Chromium fills all 800x600; we filled 800x62. Alone it moves NOTHING on the
+   lane (the harness composites onto a white 800x600 anyway) — it is only
+   load-bearing in combination, which is the whole thesis of this document.
+2. **`background-clip` / `background-origin` are parsed**, and the clip is a
+   per-side pixel inset of the fill rect. On `background-clip-content-box-001`
+   the test side now paints orange 32,400 px and blue 7,600 px — *identical to
+   Chromium*.
+3. **`background-clip` is a LAYER LIST.** The colour is painted in the
+   bottom-most layer, so it takes the LAST entry after truncation to the layer
+   count. `background-color-clip` turns on exactly that: three clip entries, two
+   layers, so the colour clips to the MIDDLE one — reachable neither as "the
+   first" nor as "the last".
+4. **`border: 20px solid` painted a HAIRLINE.** The shorthand left the per-side
+   packed widths at 0, so every uniform solid border at any width fell to the
+   legacy 1px stroke, while the per-side spelling of the same border drew a real
+   ring. Chromium 8,800 blue px; we painted 384. 1px solid borders deliberately
+   stay on the legacy path — the two agree there, and it keeps every 1px-bordered
+   card byte-identical.
+
+### A third experiment that scored WORSE and was reverted
+
+**`transparent` border colours, and `border: solid 15px transparent`.** Both are
+real bugs: `_color_value` does not know `transparent`, so the painter fell back
+to BLACK and drew a hard frame where the author asked for an invisible one; and
+`_style_len` reads only the LEADING token, so a style-first value lost its width
+entirely. Fixing them removed a 332px black frame that was the ENTIRE pixel
+difference between `css3-background-clip-{border,padding,content}-box` and their
+references — all three sat at exactly 332 diff px, and all three then held.
+
+It still scored worse: **PASS 45, WEAK 199, ND 110 -> 122**, over the ceiling.
+
+The cost is the `border-image` cluster, and it is the same mechanism this
+document describes. Nine pairs — `border-image-repeat-space-1/2/3` (three of
+the thirteen), `-space-4/5`, `-repeat-round-1/2`, and
+`clip-border-area-{background-geometry,border-image}` — were resting on the
+engine painting that WRONG black frame. Remove it and their renders stop
+depending on CSS at all, so they leave the denominator as NONDISCRIMINATING.
+The three tests it fixes land as NONDISCRIMINATING too, because this engine does
+not size an absolutely positioned box from opposite insets (`top/left/right/
+bottom: 0`), so neither side paints the box.
+
+So this is now the third measurement agreeing on the same finding: **on this
+corpus a new painting capability costs more than it earns until its companion
+capability lands.** `transparent` borders land with **`border-image`**, exactly
+as out-of-flow border painting does.
+
+### Where the bundle stands
+
+PASS 48 clears `#!PASS_FLOOR 47`. **WEAK-PASS 205 does not clear 208.** The four
+WEAK-PASSes still owed, and what each waits on:
+
+| test | blocked on |
+|---|---|
+| `css-backgrounds/background-clip-content-box-001` | out-of-flow BORDER painting — its reference is a `position:absolute` box with `border:10px solid blue`, and an abspos box registers no border at all. Its own test side is already pixel-identical to Chromium. |
+| `css-backgrounds/background-clip/clip-rounded-corner` | the fill rect and the border rect being the same rectangle (512px) |
+| `css-backgrounds/border-image-space-001` | `border-image` |
+| `css-position/hypothetical-dynamic-change-001` | CSSOM `style.left =` triggering re-layout |
+
+and one PASS, `css-position/hypothetical-dynamic-change-002`, on that same
+CSSOM re-layout.
+
+The bordered-box fill rect is worth naming precisely, because two of those four
+run through it. Measured on `div{position:absolute;border:5px solid;padding:25px;
+width:100px;height:100px}`: the border box should be 160x160 at the static
+position x=8; we paint the fill at x=33 (border-box left PLUS the padding) and
+116x150 in size. That is the box-model keystone this document's predecessor
+already names — it is not something `background-origin` can be calibrated
+around, which is why the five `background-origin-002/003/004/005/008` near-misses
+(all pure X-offset errors, green already exactly 60x60) were left alone rather
+than fitted to broken geometry.
