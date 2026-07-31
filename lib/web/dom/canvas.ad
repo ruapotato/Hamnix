@@ -680,12 +680,9 @@ def _wire_sibling_links(arr: int32, parentv: int32):
             is_el = 0
         if is_el != 0:
             js_set_prop(ev, cast[Ptr[uint8]]("previousElementSibling"), 22, prev_el)
-            js_set_prop(ev, cast[Ptr[uint8]]("previousSibling"), 15, prev_el)
             js_set_prop(ev, cast[Ptr[uint8]]("nextElementSibling"), 18, js_null())
-            js_set_prop(ev, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
             if prev_el != js_null():
                 js_set_prop(prev_el, cast[Ptr[uint8]]("nextElementSibling"), 18, ev)
-                js_set_prop(prev_el, cast[Ptr[uint8]]("nextSibling"), 11, ev)
             prev_el = ev
             if firsto == js_null():
                 firsto = ev
@@ -694,9 +691,51 @@ def _wire_sibling_links(arr: int32, parentv: int32):
     if parentv != js_null():
         js_set_prop(parentv, cast[Ptr[uint8]]("firstElementChild"), 17, firsto)
         js_set_prop(parentv, cast[Ptr[uint8]]("lastElementChild"), 16, lasto)
-        # element-only child model: firstChild/lastChild alias the element ones.
-        js_set_prop(parentv, cast[Ptr[uint8]]("firstChild"), 10, firsto)
-        js_set_prop(parentv, cast[Ptr[uint8]]("lastChild"), 9, lasto)
+        # NODE-level links are wired over childNodes, which is a DIFFERENT
+        # array from `children` for a source-parsed element (children is
+        # element-only; childNodes carries its text). Deriving firstChild from
+        # the element array is what made a Text node unable to be firstChild,
+        # lastChild, previousSibling or nextSibling at all -- so
+        # `p.appendChild(document.createTextNode("x")); p.firstChild` was null,
+        # for the single most common two lines in DOM-building page code. In
+        # WPT it is the root of 676 "cannot read property 'parentNode' of
+        # null" failures: dom/common.js builds its detached paragraphs that way
+        # and every range anchored at `.firstChild` then started from null.
+        _wire_node_links(parentv)
+
+
+# previousSibling / nextSibling / firstChild / lastChild over the parent's FULL
+# child list, text and comments included.
+def _wire_node_links(parentv: int32):
+    # OWN property only. childNodes on a source element is a lazy accessor and
+    # reading it materialises the whole child list; forcing that here would
+    # turn every appendChild into a full-subtree registration (the DOM_MAX
+    # trap) and, measurably, hung css/css-cascade/scope-proximity.html for
+    # over three minutes. If the page has not asked for childNodes yet, the
+    # accessor will compute the links when it does.
+    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+        return
+    kn: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
+    if js_is_array(kn) == 0:
+        return
+    prev_any: int32 = js_null()
+    firstn: int32 = js_null()
+    lastn: int32 = js_null()
+    k: int32 = 0
+    m: int32 = js_array_len(kn)
+    while k < m:
+        nv: int32 = js_array_get(kn, k)
+        js_set_prop(nv, cast[Ptr[uint8]]("previousSibling"), 15, prev_any)
+        js_set_prop(nv, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+        if prev_any != js_null():
+            js_set_prop(prev_any, cast[Ptr[uint8]]("nextSibling"), 11, nv)
+        prev_any = nv
+        if firstn == js_null():
+            firstn = nv
+        lastn = nv
+        k = k + 1
+    js_set_prop(parentv, cast[Ptr[uint8]]("firstChild"), 10, firstn)
+    js_set_prop(parentv, cast[Ptr[uint8]]("lastChild"), 9, lastn)
 
 
 def _frag_close_top(depth: int32):
@@ -2577,6 +2616,10 @@ def _append_child_v(parentv: int32, childv: int32):
                 js_array_push(pch, childv)
                 _wire_sibling_links(pch, dom_obj[par])
             _dom_nodes_push(dom_obj[par], childv)
+            # AFTER childNodes has the new node: the node-level links are
+            # derived from childNodes, which _wire_sibling_links above could
+            # only see in its pre-push state.
+            _wire_node_links(dom_obj[par])
             js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par])
             js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par])
         else:
@@ -2591,6 +2634,7 @@ def _append_child_v(parentv: int32, childv: int32):
                     js_array_push(ccpch, childv)
                     _wire_sibling_links(ccpch, parentv)
                 _dom_nodes_push(parentv, childv)
+                _wire_node_links(parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
@@ -3730,6 +3774,13 @@ def _insert_adjacent_node(rel: int32) -> int32:
 # Returns 1 when it has THROWN (the caller must return immediately), 0 when the
 # insertion is valid.
 def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
+    # 0. `node` is a non-nullable `Node` in the IDL, so null / a primitive is a
+    #    TypeError raised by the ARGUMENT CONVERSION -- before any of the
+    #    pre-insert steps below, and therefore before the parent check. A plain
+    #    OBJECT still reaches step 4 and is a HierarchyRequestError.
+    if js_type_of(nodev) != TAG_OBJ:
+        js_throw_type_error(cast[Ptr[uint8]]("argument is not a Node"))
+        return 1
     pk: int32 = _nd_type(parentv)
     # 1. parent must be a Document, DocumentFragment or Element.
     if pk != 9 and pk != 11 and pk != 1:
@@ -3809,6 +3860,27 @@ def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
                 _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
                               cast[Ptr[uint8]]("fragment has multiple elements"), 30)
                 return 1
+        # A document accepts AT MOST ONE doctype, and a doctype may not be
+        # inserted after the document element. Both rows of
+        # pre-insertion-validation-hierarchy.js's doctype pair assert this.
+        if nk == 10:
+            dk: int32 = _nd_kids(parentv)
+            if dk != 0:
+                di: int32 = 0
+                dn: int32 = js_array_len(dk)
+                while di < dn:
+                    dt2: int32 = _nd_type(js_array_get(dk, di))
+                    if dt2 == 10:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), \
+                                      21, \
+                                      cast[Ptr[uint8]]("document already has a doctype"), 31)
+                        return 1
+                    if dt2 == 1 and js_type_of(childv) != TAG_OBJ:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), \
+                                      21, \
+                                      cast[Ptr[uint8]]("doctype after the document element"), 34)
+                        return 1
+                    di = di + 1
     return 0
 
 
@@ -4407,8 +4479,13 @@ def _tv_show_ok(w: int32, node: int32) -> int32:
 
 # 1 = FILTER_ACCEPT, 2 = FILTER_REJECT, 3 = FILTER_SKIP.
 def _tv_filter(tv: int32, node: int32) -> int32:
-    w: int32 = cast[int32](js_to_number(js_get_prop(tv, \
-                           cast[Ptr[uint8]]("whatToShow"), 10)))
+    wf: float64 = js_to_number(js_get_prop(tv, \
+                               cast[Ptr[uint8]]("whatToShow"), 10))
+    # Narrow the reflected `unsigned long` back to the int32 the mask test
+    # uses; 4294967295 does not fit an int32 and must wrap, not saturate.
+    if wf >= 2147483648.0:
+        wf = wf - 4294967296.0
+    w: int32 = cast[int32](wf)
     if _tv_show_ok(w, node) == 0:
         return 3                                           # SKIP, never REJECT
     f: int32 = js_get_prop(tv, cast[Ptr[uint8]]("filter"), 6)
@@ -4559,8 +4636,14 @@ def _rng_dispatch(rel: int32) -> int32:
         if js_arg_count() >= 3:
             filtv = js_arg(2)
         js_set_prop(tv, cast[Ptr[uint8]]("root"), 4, rootv)
-        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, \
-                    js_number(cast[float64](showv)))
+        # whatToShow is an `unsigned long` in WebIDL, so it reflects as
+        # 4294967295 for SHOW_ALL -- not the -1 that the int32 the mask is
+        # carried in reads back as. The bitmask arithmetic still uses the
+        # signed value; only the reflected property is re-widened.
+        showu: float64 = cast[float64](showv)
+        if showv < 0:
+            showu = showu + 4294967296.0
+        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, js_number(showu))
         js_set_prop(tv, cast[Ptr[uint8]]("filter"), 6, filtv)
         if rel == NID_CREATETW:
             js_set_prop(tv, cast[Ptr[uint8]]("currentNode"), 11, rootv)
@@ -5670,6 +5753,18 @@ def _js_host_dispatch(id: int32) -> int32:
                         if t == txt:
                             return js_bool(1)
                         t = tx_parent[t]
+            # Fallback: walk the LIVE parentNode chain. The tx-tree path above
+            # only knows source ELEMENTS, so contains() answered false for
+            # every Text/Comment/CDATA child and for every created node --
+            # `p.contains(p.firstChild)` on a script-built paragraph, which is
+            # the ordinary case.
+            cnv: int32 = js_arg(0)
+            cndep: int32 = 0
+            while js_type_of(cnv) == TAG_OBJ and cndep < 512:
+                if cnv == js_this():
+                    return js_bool(1)
+                cnv = js_get_prop(cnv, cast[Ptr[uint8]]("parentNode"), 10)
+                cndep = cndep + 1
         return js_bool(0)
     if rel == NID_MATCHES:
         # element.matches(selector) -> bool. Selector machinery reused from
@@ -5991,6 +6086,17 @@ def _js_host_dispatch(id: int32) -> int32:
         if cre_n >= CRE_MAX:
             return js_null()
         src_obj: int32 = js_this()
+        # A DocumentType is not in either node pool (it has no tag and cannot
+        # be rendered), so cloneNode() returned NULL for it. WPT's shared
+        # pre-insertion-validation-hierarchy.js clones `doc.childNodes[0]` --
+        # the doctype -- and inserts it, so a null clone silently turned four
+        # HierarchyRequestError rows into an argument TypeError.
+        if _nd_type(src_obj) == 10:
+            return _new_doctype_obj( \
+                js_str_bytes(js_get_prop(src_obj, cast[Ptr[uint8]]("name"), 4)), \
+                js_str_bytelen(js_get_prop(src_obj, cast[Ptr[uint8]]("name"), 4)), \
+                js_get_prop(src_obj, cast[Ptr[uint8]]("publicId"), 8), \
+                js_get_prop(src_obj, cast[Ptr[uint8]]("systemId"), 8))
         clsrc: int32 = _find_el_by_obj(src_obj)
         clcre: int32 = -1
         if clsrc < 0:
@@ -6556,6 +6662,18 @@ def _js_host_dispatch(id: int32) -> int32:
                 _wire_sibling_links(js_get_prop(js_this(), \
                                     cast[Ptr[uint8]]("children"), 8), js_this())
                 _mo_record_childlist(js_this(), -1, js_arg(0))
+            elif js_type_of(js_arg(0)) == TAG_OBJ and \
+                 _nd_type(js_arg(0)) == 3:
+                # A SOURCE text node is in neither registry (see NID_REMOVE);
+                # `while (el.firstChild) el.removeChild(el.firstChild)` is the
+                # same never-terminating loop without this.
+                _dom_children_drop(js_this(), js_arg(0))
+                _wire_node_links(js_this())
+                _mo_record_childlist(js_this(), -1, js_arg(0))
+                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
+                            js_null())
+                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentElement"), 13, \
+                            js_null())
         return js_arg(0)
     if rel == NID_REPLCHILD:
         # parent.replaceChild(newNode, oldNode) — mount newNode at oldNode's
@@ -6626,6 +6744,26 @@ def _js_host_dispatch(id: int32) -> int32:
                 js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, js_null())
                 js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), 13, \
                             js_null())
+            else:
+                # A SOURCE TEXT NODE is in neither registry -- it is a plain
+                # object minted on demand by _stx_text_node -- so remove() was
+                # a silent no-op on it. That is not a cosmetic gap: the single
+                # most common "empty this element" idiom on the web is
+                #     while (el.firstChild) el.firstChild.remove();
+                # and with firstChild now correctly naming a Text node, a
+                # no-op remove() turns it into an INFINITE LOOP. It hung
+                # css/css-cascade/scope-proximity.html for over three minutes
+                # before this.
+                stxp: int32 = js_get_prop(js_this(), \
+                                          cast[Ptr[uint8]]("parentNode"), 10)
+                if js_type_of(stxp) == 5:
+                    _dom_children_drop(stxp, js_this())
+                    _wire_node_links(stxp)
+                    _mo_record_childlist(stxp, -1, js_this())
+                    js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, \
+                                js_null())
+                    js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), \
+                                13, js_null())
         return js_undefined()
     if rel == NID_GETATTR:
         if js_arg_count() >= 1:
@@ -7068,6 +7206,40 @@ def _js_host_dispatch(id: int32) -> int32:
 
 
 # copy the page <title> text into dom_title_buf; returns its length.
+# The parsed document's DocumentType node, or null when the source carries no
+# <!DOCTYPE>. Only the NAME is modelled (an HTML doctype has an empty publicId
+# and systemId, which is what every non-legacy page has).
+dt_name_buf: Array[64, uint8]
+
+
+def _scan_doctype() -> int32:
+    i: uint64 = 0
+    while i + 9 < src_len and i < 4096:
+        if src_ptr[i] == 60 and src_ptr[i + 1] == 33 and \
+           _ascii_ci_eq(&src_ptr[i + 2], 7, cast[Ptr[uint8]]("DOCTYPE"), 7) != 0:
+            j: uint64 = i + 9
+            while j < src_len and (src_ptr[j] == 32 or src_ptr[j] == 9 or \
+                                   src_ptr[j] == 10 or src_ptr[j] == 13):
+                j = j + 1
+            n: int32 = 0
+            while j < src_len and n < 63 and src_ptr[j] != 62 and \
+                  src_ptr[j] != 32 and src_ptr[j] != 9 and src_ptr[j] != 10 and \
+                  src_ptr[j] != 13:
+                c: uint8 = src_ptr[j]
+                if c >= 65 and c <= 90:
+                    c = c + 32                             # doctype name lowercases
+                dt_name_buf[n] = c
+                n = n + 1
+                j = j + 1
+            ev: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+            dtv: int32 = _new_doctype_obj(&dt_name_buf[0], n, ev, ev)
+            js_set_prop(dtv, cast[Ptr[uint8]]("ownerDocument"), 13, js_doc)
+            js_set_prop(dtv, cast[Ptr[uint8]]("parentNode"), 10, js_doc)
+            return dtv
+        i = i + 1
+    return js_null()
+
+
 def _scan_title() -> int32:
     i: uint64 = 0
     while i < src_len:
@@ -9664,6 +9836,12 @@ def _js_build_document():
     js_define_accessor(doc, cast[Ptr[uint8]]("currentScript"), 13, \
                        js_new_native_fn(js_hbase + NID_CURSCRIPT_ACC), \
                        js_new_native_fn(js_hbase + NID_CURSCRIPT_SET))
+    # document.doctype — a real DocumentType node when the source opens with a
+    # <!DOCTYPE ...>, null otherwise. It was simply absent, so `doctype` read
+    # back as UNDEFINED: dom/common.js puts `document.doctype` in its testNodes
+    # list, so every range and every traversal test that walks that list hit an
+    # undefined node instead of a DocumentType.
+    js_set_prop(doc, cast[Ptr[uint8]]("doctype"), 7, _scan_doctype())
     _doc_set_el(doc, cast[Ptr[uint8]]("documentElement"), 15, \
                 cast[Ptr[uint8]]("html"))
     _doc_set_el(doc, cast[Ptr[uint8]]("body"), 4, cast[Ptr[uint8]]("body"))
