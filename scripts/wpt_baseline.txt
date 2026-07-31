@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 3238
+#!PASS_FLOOR 3248
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope ( is not valid
@@ -172,7 +172,16 @@ css/css-cascade/revert-rule-revert-layer.html	Combination of revert-rule and rev
 css/css-cascade/revert-rule-revert-layer.html	Combination revert-layer/revert-rule/revert-layer
 css/css-cascade/revert-rule-revert-layer.html	Combination revert-rule/revert-layer/revert-rule
 css/css-cascade/revert-rule-revert-layer.html	Combination revert-rule/revert-rule/revert-layer
-css/css-cascade/revert-rule-shadow.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/revert-rule-shadow.html	revert-rule chain across document rule and :host rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in ::part() rule falls back to earlier ::part() rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in ::part() rule falls back to shadow-internal rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in document rule falls back to ::slotted rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in document rule falls back to :host rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in document rule falls back to the winning :host rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in higher-specificity ::part() rule falls back to lower-specificity ::part() rule
+css/css-cascade/revert-rule-shadow.html	revert-rule in shadow-internal rule has no effect when ::part() rule wins
+css/css-cascade/revert-rule-shadow.html	revert-rule in third ::part() rule falls back to second ::part() rule
+css/css-cascade/revert-rule-shadow.html	revert-rule on host and ::part() rule on part are independent
 css/css-cascade/revert-val-003.html	revert works with transitions
 css/css-cascade/revert-val-004.html	The revert keyword works with the all property
 css/css-cascade/revert-val-008.html	The revert keyword works in the final frame of a web animation
@@ -976,12 +985,12 @@ dom/nodes/Node-textContent.html	For DocumentType created by parser, textContent 
 dom/nodes/NodeList-Iterable.html	NodeList has Symbol.iterator.
 dom/nodes/NodeList-Iterable.html	NodeList has entries method.
 dom/nodes/NodeList-Iterable.html	NodeList has values method.
-dom/nodes/NodeList-static-length-getter-tampered-1.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/NodeList-static-length-getter-tampered-2.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/NodeList-static-length-getter-tampered-3.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/NodeList-static-length-getter-tampered-1.html	NodeList (static collection) "length" getter tampered
+dom/nodes/NodeList-static-length-getter-tampered-2.html	NodeList (static collection) "length" getter tampered
+dom/nodes/NodeList-static-length-getter-tampered-3.html	NodeList (static collection) "length" getter tampered
+dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html	NodeList (static collection) "length" getter tampered (Array.prototype.indexOf)
+dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html	NodeList (static collection) "length" getter tampered (Array.prototype.indexOf)
+dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html	NodeList (static collection) "length" getter tampered (Array.prototype.indexOf)
 dom/nodes/ParentNode-append.html	DocumentFragment.append() with the same element twice.
 dom/nodes/ParentNode-append.html	Element.append() with the same element twice.
 dom/nodes/ParentNode-append.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
@@ -1116,18 +1125,15 @@ dom/nodes/insertion-removing-steps/Node-appendChild-script-and-button-from-div.h
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-custom-from-fragment.html	An earlier-inserted script can upgrade a later-inserted custom element, whose upgrading is synchronously observable to the script, since DOM insertion has been completed by the time it runs
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-default-style-meta-from-fragment.html	Inserting <meta> that uses alternate stylesheets, applies the style during DOM post-insertion steps
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-div-from-fragment.html	Earlier-inserted scripts can observe the parentNode of later-inserted nodes, because script runs after DOM insertion completes
-dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a DocumentFragment) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a append() with multiple arguments) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a div) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	Script inserted after an iframe in the same appendChild() call can observe the iframe's non-null contentWindow
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-source-from-fragment.html	Empty <source> immediately sets media.networkState during DOM insertion, so that an earlier-running script can observe networkState
-dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	An earlier-inserted <script> synchronously observes a later-inserted <style> (via a DocumentFragment) being applied
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	An earlier-inserted <script> synchronously observes a later-inserted <style> (via a div) being applied
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	Earlier-inserted <script> (via a DocumentFragment) synchronously observes a later-inserted <link rel=stylesheet>'s CSSStyleSheet creation
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	Earlier-inserted <script> (via a append()) synchronously observes a later-inserted <link rel=stylesheet>'s CSSStyleSheet creation
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	Earlier-inserted <script> (via a div) synchronously observes a later-inserted <link rel=stylesheet>'s CSSStyleSheet creation
 dom/nodes/insertion-removing-steps/Node-appendChild-script-in-script.html	An outer script whose preparation/execution gets triggered by the insertion of a 'nested'/'inner' script, executes *before* the inner script executes
-dom/nodes/insertion-removing-steps/Node-appendChild-script-with-mutation-observer-takeRecords.html	An inserted script should be able to observe its own mutation record with takeRecords
 dom/nodes/insertion-removing-steps/Node-appendChild-text-and-script-in-style.html	All style rules appended to a <style> element are inserted and script-observable to scripts inserted in the `<style>` element, by the time scripts execute after DOM insertions.
 dom/nodes/insertion-removing-steps/Node-appendChild-text-in-script.html	Node.appendChild: inserting two text nodes in an empty script
 dom/nodes/insertion-removing-steps/Node-appendChild-three-scripts-from-fragment.html	Node.appendChild: inserting three scripts from a document fragment
@@ -1161,7 +1167,7 @@ dom/nodes/moveBefore/continue-css-transition-left.html	<FILE PRODUCED NO RESULTS
 dom/nodes/moveBefore/continue-css-transition-transform-pseudo.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/continue-css-transition-transform.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/css-animation-commit-styles.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/css-transition-cross-document.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/moveBefore/css-transition-cross-document.html	Moving a transition across documents should reset its state
 dom/nodes/moveBefore/css-transition-cross-shadow.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/css-transition-to-disconnected-document.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/css-transition-trigger.html	Node.moveBefore should trigger CSS transition state (left) if needed
@@ -1986,7 +1992,26 @@ html/semantics/selectors/pseudo-classes/inrange-outofrange.html	':out-of-range' 
 html/semantics/selectors/pseudo-classes/link.html	Only <a>s and <area>s that have a href attribute match ':link'
 html/semantics/selectors/pseudo-classes/placeholder-shown-type-change.html	Evaluation of :placeholder-shown changes for input type change.
 html/semantics/selectors/pseudo-classes/readwrite-readonly-type-change.html	Evaluation of :read-write and :read-only changes for input type change.
-html/semantics/selectors/pseudo-classes/readwrite-readonly.html	<FILE PRODUCED NO RESULTS>
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match form-associated custom elements
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match input elements after the disabled attribute has been added
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match input elements after the readonly attribute has been added
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match input elements after the readonly attribute has been removed
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match input elements to which the readonly attribute does not apply
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match textarea elements after the readonly attribute has been added
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match textarea elements that are disabled
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must match textarea elements that have a readonly attribute, or that are disabled
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must not match elements that are editable
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must not match input elements after the disabled attribute has been removed
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must not match input elements to which the readonly attribute applies, and that are mutable
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match elements that are editable
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match elements that are editing hosts
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match elements that are inside editing hosts, but not match inputs and textareas inside that aren't
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match form-associated contenteditable custom elements
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match input elements after the disabled attribute has been removed
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match input elements to which the readonly attribute applies, and that are mutable
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match textarea elements that do not have a readonly attribute, and that are not disabled
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must not match input elements after the readonly attribute has been removed
+html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must not match textarea elements that are disabled
 html/semantics/selectors/pseudo-classes/required-optional-hidden.html	Evaluation of :required and :optional changes for input type change.
 html/semantics/selectors/pseudo-classes/required-optional.html	':optional' doesn't match elements whose required attribute has been added
 html/semantics/selectors/pseudo-classes/required-optional.html	':optional' matches elements <input>s, <select>s and <textarea>s that are not required
@@ -2219,6 +2244,8 @@ url/failure.html	Loading data…
 +css/css-cascade/presentational-hints-cascade.html	Presentational hints have lower precedence than the style attribute
 +css/css-cascade/revert-rule-important.html	revert-rule in !important declaration reverts across layers
 +css/css-cascade/revert-rule-important.html	revert-rule in !important declaration reverts to earlier normal rule if the !important rule comes later
++css/css-cascade/revert-rule-shadow.html	revert-rule in :host rule has no effect when a document rule already wins
++css/css-cascade/revert-rule-shadow.html	revert-rule with no shadow fallback falls through to unset (inherited)
 +css/css-cascade/revert-val-005.html	The revert keyword works with logical properties
 +css/css-cascade/revert-val-005.html	The revert keyword works with physical properties
 +css/css-cascade/revert-val-006.html	The revert keyword works with @keyframes
@@ -4944,6 +4971,9 @@ url/failure.html	Loading data…
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH NON-JOINER to getElementsByClassName still finds the span
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH SPACE to getElementsByClassName still finds the span
 +dom/nodes/insert-adjacent.html	invalid object argument insertAdjacentElement
++dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a DocumentFragment) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
++dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	An earlier-inserted <script> synchronously observes a later-inserted <style> (via a DocumentFragment) being applied
++dom/nodes/insertion-removing-steps/Node-appendChild-script-with-mutation-observer-takeRecords.html	An inserted script should be able to observe its own mutation record with takeRecords
 +dom/nodes/insertion-removing-steps/later-script-removed-by-earlier-script.html	A later-inserted script removed by an earlier-inserted script in the same append() call should not run
 +dom/nodes/insertion-removing-steps/later-script-removed-by-earlier-script.html	A later-inserted script removed by an earlier-inserted script in the same document fragment should not run
 +dom/nodes/moveBefore/Node-moveBefore.html	Calling moveBefore with a non-Node first argument must throw TypeError.
@@ -5108,6 +5138,11 @@ url/failure.html	Loading data…
 +html/semantics/links/links-created-by-a-and-area-elements/htmlanchorelement_getter.html	Getter for attribute of anchor element(9):username
 +html/semantics/selectors/pseudo-classes/indeterminate-radio.html	:indeterminate and input type=radio
 +html/semantics/selectors/pseudo-classes/indeterminate.html	adding a value to progress1 should put it in a determinate state
++html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-only pseudo-class must not match elements that are editing hosts
++html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must match textarea elements after the readonly attribute has been added
++html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must not match input elements after the disabled attribute has been added
++html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must not match input elements after the readonly attribute has been added
++html/semantics/selectors/pseudo-classes/readwrite-readonly.html	The :read-write pseudo-class must not match input elements to which the readonly attribute does not apply
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	':invalid' doesn't match new elements that satisfy their constraints
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	:valid/:invalid styling for <fieldset>
 +html/semantics/selectors/pseudo-classes/valid-invalid.html	:valid/:invalid styling for <form>

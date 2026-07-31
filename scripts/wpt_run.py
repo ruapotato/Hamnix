@@ -32,22 +32,31 @@ happens in a temp file, uniformly, for every test:
      (tests/wpt/hamnix_testharnessreport.js). That file is WPT's designated
      integration point.
 
-  3. SCRIPT COALESCING (mode=combined, the default for our engine).
-     ENGINE BUG, worked around here rather than hidden:
-     lib/web/dom/canvas.ad:_run_scripts() drains the timer/microtask queue
-     between consecutive <script> ELEMENTS instead of after the parse. Per HTML,
-     a setTimeout scheduled by script #1 is a task that cannot run until the
-     parser is done. Because it does run early, testharness.js's own watchdog
-     timer -- armed while testharness.js itself is evaluating -- fires before
-     the test's script block has even started. The harness declares TIMEOUT with
-     zero tests registered, and every subsequent test() call is silently
-     dropped. Measured directly (scripts/wpt_run.py --selftest): a two-script
-     page logs S1-start, S1-end, S1-TIMER, S2-runs.
+  3. SCRIPT HANDLING -- `--mode separate` (the default for BOTH engines).
+     Each <script> element keeps its own body; only src= bodies are inlined.
+     This is how chromium is measured, so the two engines share one
+     denominator and the percentage is apples-to-apples.
 
-     So we concatenate all script bodies into one block, preserving document
-     order. `--mode separate` keeps them apart and is what we hand chromium, so
-     the cross-check proves the coalescing is semantically neutral (or names the
-     tests where it is not).
+     HISTORY, because the alternative was the default for a long time and the
+     reasoning still gets re-derived. `--mode combined` concatenates every
+     script body into the FIRST <script> element. It existed to work around a
+     real engine bug: _run_scripts() drained the timer queue between
+     consecutive <script> ELEMENTS, so testharness.js's own watchdog timer --
+     armed while testharness.js itself was evaluating -- fired before the
+     test's script block had started, the harness declared TIMEOUT with zero
+     tests registered, and every later test() call was dropped.
+
+     That bug is fixed: js_set_page_parsing(1) now wraps the whole script loop,
+     so a script element ending is a microtask checkpoint and timers cannot run
+     until DOMContentLoaded. Coalescing outlived its cause and had become a
+     MEASUREMENT DISTORTION in both directions -- it hid real bugs (a script
+     inside an inert <template> was executed at page level, which is how
+     remove-next-sibling-during-replace-with "passed") and it broke real tests
+     (folding every script into the first element makes
+     `document.currentScript.previousElementSibling` name the wrong node, which
+     cost the @scope and :read-write files).
+
+     `--mode combined` is kept as a diagnostic, not as the score.
 
   Nothing here changes an assertion, an expectation, or a test's logic.
 
@@ -136,7 +145,7 @@ def resolve(rel, src):
     return path if os.path.isfile(path) else None
 
 
-def preprocess(rel, mode="combined", chromium_dump=False):
+def preprocess(rel, mode="separate", chromium_dump=False):
     """Return (html_bytes, missing_srcs). Never touches the vendored file."""
     src_path = os.path.join(TESTS, rel.replace("/", os.sep))
     doc = open(src_path, "rb").read()
@@ -210,7 +219,7 @@ def preprocess(rel, mode="combined", chromium_dump=False):
 # engines
 # ---------------------------------------------------------------------------
 
-def run_hamnix(rel, timeout, mode="combined", keep=None):
+def run_hamnix(rel, timeout, mode="separate", keep=None):
     payload, missing = preprocess(rel, mode=mode)
     fd, tmp = tempfile.mkstemp(suffix=".html", prefix="wpt_")
     os.write(fd, payload)
@@ -406,7 +415,7 @@ def main():
               "scripts/test_hambrowse_host.sh" % HOST_BIN, file=sys.stderr)
         return 125
 
-    mode = args.mode or ("combined" if args.engine == "hamnix" else "separate")
+    mode = args.mode or "separate"
 
     sel = list(args.tests)
     if args.all or args.area or not sel:
