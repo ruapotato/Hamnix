@@ -4633,3 +4633,12 @@ bash scripts/test_compiler_lexer_errors.sh
 # box on its first BSS store. This gate reads every shipped binary's ELF64 load
 # geometry and asserts none takes the demand path past ELF_MAX_LOW_BSS_DEMAND.
 bash scripts/test_elf_low_bss_window_host.sh
+
+# USER report: "the System Monitor does not release RAM in its display until
+# the app is restarted." The RAM really IS returned, so this is the monitor's
+# own view going stale. hammonscene publishes the model behind its MEMORY row
+# to /tmp/.hammonscene.mem; this gate boots the shipped image, starts the
+# monitor, applies a 192 MiB touched-page /bin/memhog pulse, and asserts the
+# monitor BOTH saw the rise (peak — the anti-false-green half) and came back
+# down in agreement with /proc/meminfo afterwards, with no restart.
+bash scripts/ci_run_gate.sh scripts/test_de_sysmon_mem_live.sh
