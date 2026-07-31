@@ -117,6 +117,47 @@ reason.
 4. **If you cannot, hold the fix on a branch and say what lands it.** That is
    what `hold/style-reveal` is.
 
+## MEASURED 2026-07-31 — out-of-flow painting landed, and what it cost
+
+Real `position:absolute`/`fixed` painting is now in (bfill_oof pixel geometry;
+the box is given the rect CSS specified instead of being resolved through a row
+grid that does not contain it). Measured on the full vendored lane against
+`7e6edc7c`, with the `hold/style-reveal` fix cherry-picked on top:
+
+    PASS 47 -> 45     WEAK-PASS 208 -> 207     ND 110 (unchanged)   ERROR 0
+
+The ledger, every pair that changed class, both directions:
+
+| was | now | test | why |
+|---|---|---|---|
+| FAIL | **PASS** | `css-backgrounds/background-origin-007` | the abspos box now paints |
+| FAIL | **WEAK-PASS** | `CSS2/abspos/static-inside-inline-block` | ditto |
+| PASS | WEAK-PASS | `css-position/position-fixed-dynamic-transformed-sibling` | **the target pair**. Both sides now render the SAME 784x50 blue bar at y 0..49 — the exact 39,200 px the mutation used to produce. It drops to WEAK because the reveal fix removes the evidence that made it a PASS: with reveal working, neutralizing `display` no longer changes the render, and every remaining declaration is repeated verbatim by the reference. |
+| PASS | FAIL | `css-position/hypothetical-dynamic-change-002` | one of the 13. Needs CSSOM `style.left =` writes to re-lay-out (they do not, today) AND fixed-child static position. |
+| WEAK | FAIL | `css-position/hypothetical-dynamic-change-001` | same two causes |
+| PASS | FAIL | `css-backgrounds/background-rounded-image-clip-001` | NOT one of the 13, same mechanism. Blocked on something else entirely: `html{background-color:green}` must cover the VIEWPORT, and hambrowse's canvas is sized to content, so the test (canvas 212px, it has a 300x200 abspos box) and the reference (canvas 62px) disagree about how much of the frame is green. Border-radius clipping alone cannot recover it — measured. |
+| WEAK | FAIL | `css-backgrounds/background-clip-content-box-001` | needs `background-clip: content-box`, which is not parsed at all |
+| WEAK | FAIL | `css-backgrounds/border-image-space-001` | needs `border-image` |
+
+Two experiments that scored WORSE and were reverted, recorded so they are not
+repeated:
+
+* **Out-of-flow BORDER painting** (the exact analogue of the fill fix, for the
+  bbox registry): **PASS 40, WEAK-PASS 204, ND 110 -> 105.** It converts the
+  four `height`-load-bearing `border-image-repeat-space-*` entries in the 13
+  above, plus `border-image-repeat-round-1/2`, `-space-4/5/6`, and three
+  `box-shadow/slice-block-fragmentation-*` (out of ND, straight into FAIL). The
+  capability is right; it needs `border-image` beside it.
+* Growing the ROW GRID rather than the canvas — this is the fifth variant of
+  the four already recorded above, and it is the same answer.
+
+So the pattern in the doc holds and is now quantified twice over: on this
+corpus each new painting capability costs more than it earns until its
+companion capabilities land. The three named blockers, in the order they would
+pay: **`background-clip`/`background-origin` box insets**, **`border-image`**,
+and **the page background covering the viewport rather than the content
+canvas**.
+
 ## Open question, owned by the orchestrator
 
 A pass whose resting render carries no information is arguably a different kind
