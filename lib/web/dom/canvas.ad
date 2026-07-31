@@ -9,6 +9,7 @@ from lib.htmlengine import _attr_decode_at, doc_url, doc_url_len, base_url, base
 from lib.htmlengine import he_media_match, _hx_attr_val_skip
 from lib.htmlengine import _cssom_reset, _cssom_new_sheet, _cssom_insert_rule, _cssom_delete_rule, _cssom_clear_sheet, _cssom_set_active
 from lib.htmlengine import _cid_sel_match, _el_tag_is
+from lib.htmlengine import _cs_srcstyle_len
 from lib.htmlengine import _attr_decode_scratch, g_attrdec
 from lib.htmlengine import _dom_node_kids, _dom_nodes_push, _alnum_at, _ap_add, _ap_find, _arg_bytes, _attach_el_methods, _attach_chardata_natives, _attach_ni_natives, _attach_range_natives, _attach_tw_natives, _attach_childnode_mixin, _attach_node_natives, _attach_parentnode_mixin, _attach_proto_methods, _attach_style_natives, _attach_clslist_natives, _attr_int, _bytes_eq, _cc_add, _cc_find, _cls_build_with, _cls_build_without, _cls_read, _cls_write, _clstr_has, _cre_collect, _cre_find_by_id, _cre_find_first, _cstr_len, _css_prop_camel, _cx_walk, _dom_build_tree_index, _dom_children_drop, _dom_children_insert, _dom_children_replace, _dom_collect_selector, _dom_find_by_id, _dom_find_selector_scoped, _dom_lookup_anchor, _dom_lookup_id, _dom_register_el, _dom_reset, _build_dataset_obj, _new_classlist_obj, _text_into_tw, _text_span_eq, _html_span_eq, _el_bbox, _emit_img_seg, _enter_skip, _find_close, _find_cre_by_obj, _find_el_by_clsobj, _find_el_by_obj, _hx_find_attr, _hx_lower, _hx_tag_end_p, _idbytes_eq, _is_name_ch, _layout, _match_chain, _new_client_rects, _new_computed_style, _new_rect_obj, _new_style_obj, _node_identity, _palette_rgb, _scan_start_tag, _sel_match_at, _sel_parse, _sel_split, _select_index, _select_optext_at, _set_el_geom_props, _set_query_scope, _strip_comments, _style_apply_csstext, _style_serialize, _tagname_is, _tagname_upper, _tx_by_anchor, _word_flush
 
@@ -9324,6 +9325,8 @@ def _dom_readback():
         dom_ov_cls_off[idx] = -1
         dom_ov_cls_len[idx] = -1
         dom_ov_hide[idx] = 0
+        dom_ov_disp_off[idx] = -1
+        dom_ov_disp_len[idx] = -1
         dom_ov_val_off[idx] = -1
         dom_ov_val_len[idx] = -1
         dom_ov_checked[idx] = -1
@@ -9430,6 +9433,35 @@ def _dom_readback():
           if _bytes_eq(dp, dn, cast[Ptr[uint8]]("none"), 4) != 0:
               dom_ov_hide[idx] = 1
               changed = 1
+          elif js_has_own(stv, cast[Ptr[uint8]]("display"), 7) != 0:
+              # SCRIPT OWNS `display` AND IT IS NOT none — the "reveal" state.
+              # An own `display` property on the style object exists only
+              # because script assigned one (`el.style.display = …`) or replaced
+              # the whole declaration (`setAttribute("style", …)` / cssText,
+              # which _style_clear resets to ""), so this cannot fire on an
+              # untouched element.
+              #
+              # It only MATTERS when the markup itself hid the element: that
+              # `style="display:none"` is copied through into the rewritten tag
+              # verbatim, and no override could outrank it, so the element
+              # stayed invisible no matter what script did. Gate on the markup
+              # actually declaring display, which keeps every other page's
+              # rewrite byte-for-byte what it was (state stays 0 there).
+              if _cs_srcstyle_len(idx, cast[Ptr[uint8]]("display"), 7) > 0:
+                  dom_ov_hide[idx] = 2
+                  changed = 1
+                  # Remember the script value so a real `display:flex` survives;
+                  # an empty one (the setAttribute("style","") reveal) records
+                  # nothing and simply lets the element's default display win.
+                  if dn > 0 and _is_undef_str(dp, dn) == 0:
+                      doff: int32 = dom_ov_len
+                      kd: int32 = 0
+                      while kd < dn and dom_ov_len < DOM_OV_CAP:
+                          dom_ovbuf[dom_ov_len] = dp[kd]
+                          dom_ov_len = dom_ov_len + 1
+                          kd = kd + 1
+                      dom_ov_disp_off[idx] = doff
+                      dom_ov_disp_len[idx] = kd
         # className
         clv: int32 = js_get_prop(o, cast[Ptr[uint8]]("className"), 9)
         clp: Ptr[uint8] = js_str_ptr(clv)
@@ -10314,15 +10346,27 @@ def _emit_created(cid: int32):
 # keeps every rendered byte unchanged.
 def _emit_merged_style(idx: int32):
     ser_disp: int32 = 0
-    if g_ser_mode != 0 and dom_ov_hide[idx] != 0:
+    if g_ser_mode != 0 and dom_ov_hide[idx] == 1:
         ser_disp = 1
+    # A REVEALED element (state 2) carries script's own display value into the
+    # rewrite, which is what outranks the markup declaration this tag's copied
+    # attributes no longer contain. An empty script value emits nothing: the
+    # element then falls back to its tag's default display, which is exactly
+    # what `setAttribute("style","")` means.
+    show_disp: int32 = 0
+    if dom_ov_hide[idx] == 2 and dom_ov_disp_len[idx] > 0:
+        show_disp = 1
     if dom_ov_col_len[idx] < 0 and dom_ov_bg_len[idx] < 0 and \
        dom_ov_wt_len[idx] < 0 and dom_ov_al_len[idx] < 0 and \
-       dom_ov_wd_len[idx] < 0 and ser_disp == 0:
+       dom_ov_wd_len[idx] < 0 and ser_disp == 0 and show_disp == 0:
         return
     _rw_cstr(cast[Ptr[uint8]](" style=\""))
     if ser_disp != 0:
         _rw_cstr(cast[Ptr[uint8]]("display:none;"))
+    if show_disp != 0:
+        _rw_cstr(cast[Ptr[uint8]]("display:"))
+        _rw_ovbuf(dom_ov_disp_off[idx], dom_ov_disp_len[idx])
+        _rw_ch(59)
     if dom_ov_col_len[idx] >= 0:
         _rw_cstr(cast[Ptr[uint8]]("color:"))
         _rw_ovbuf(dom_ov_col_off[idx], dom_ov_col_len[idx])
@@ -10348,6 +10392,88 @@ def _emit_merged_style(idx: int32):
 
 # Copy tag-body attributes [a,b) into rw_buf, dropping any attribute named
 # `s1` or `s2` (case-insensitive; both valued `name="v"` and bare `name` forms).
+# Copy the style attribute VALUE src[a..b) through, dropping every `display`
+# declaration. Everything else in the declaration block (margin, padding,
+# border, background-image — properties the override tables do not route)
+# survives verbatim, so revealing an element cannot silently discard the rest of
+# its markup styling.
+def _rw_style_val_nodisplay(a: uint64, b: uint64):
+    i: uint64 = a
+    while i < b:
+        ds: uint64 = i
+        while i < b and src_ptr[i] != 59:                 # to ';' or end
+            i = i + 1
+        de: uint64 = i
+        if i < b:
+            i = i + 1                                     # past ';'
+        ns: uint64 = ds
+        while ns < de and (src_ptr[ns] == 32 or src_ptr[ns] == 9 or \
+                           src_ptr[ns] == 10 or src_ptr[ns] == 13):
+            ns = ns + 1
+        ne: uint64 = ns
+        while ne < de and src_ptr[ne] != 58:              # to ':'
+            ne = ne + 1
+        pe: uint64 = ne
+        while pe > ns and (src_ptr[pe - 1] == 32 or src_ptr[pe - 1] == 9):
+            pe = pe - 1
+        if _idbytes_eq(ns, pe, cast[Ptr[uint8]]("display"), 7) != 0:
+            continue                                      # drop this one
+        if de > ds:
+            _rw_range(ds, de)
+            if i <= b:
+                _rw_ch(59)
+
+
+# Copy src[a..b) (a start tag's attribute region) with the `style` attribute's
+# `display` declaration removed. Used for the reveal state (dom_ov_hide == 2).
+def _rw_attrs_nodisplay(a: uint64, b: uint64):
+    i: uint64 = a
+    while i < b:
+        c: uint8 = src_ptr[i]
+        if c == 32 or c == 9 or c == 10 or c == 13:
+            _rw_ch(c)
+            i = i + 1
+            continue
+        ns: uint64 = i
+        while i < b and _is_name_ch(src_ptr[i]) != 0:
+            i = i + 1
+        ne2: uint64 = i
+        k: uint64 = i
+        while k < b and (src_ptr[k] == 32 or src_ptr[k] == 9):
+            k = k + 1
+        attr_end: uint64 = ne2
+        vs: uint64 = 0
+        ve: uint64 = 0
+        quoted: uint8 = 0
+        if k < b and src_ptr[k] == 61:                    # '='
+            k = k + 1
+            while k < b and (src_ptr[k] == 32 or src_ptr[k] == 9):
+                k = k + 1
+            if k < b and (src_ptr[k] == 34 or src_ptr[k] == 39):
+                quoted = src_ptr[k]
+                k = k + 1
+                vs = k
+                while k < b and src_ptr[k] != quoted:
+                    k = k + 1
+                ve = k
+                if k < b:
+                    k = k + 1
+            else:
+                vs = k
+                while k < b and src_ptr[k] != 32 and src_ptr[k] != 9:
+                    k = k + 1
+                ve = k
+            attr_end = k
+        if quoted != 0 and _idbytes_eq(ns, ne2, cast[Ptr[uint8]]("style"), 5) != 0:
+            _rw_cstr(cast[Ptr[uint8]](" style="))
+            _rw_ch(quoted)
+            _rw_style_val_nodisplay(vs, ve)
+            _rw_ch(quoted)
+        else:
+            _rw_range(ns, attr_end)
+        i = attr_end
+
+
 def _rw_copy_attrs_except(a: uint64, b: uint64, s1: Ptr[uint8], s2: Ptr[uint8]):
     l1: int32 = _cstr_len(s1)
     l2: int32 = _cstr_len(s2)
@@ -10565,7 +10691,7 @@ def _rewrite_range(lo: uint64, hi: uint64):
                 # only what was really removed from the tree (a display:none
                 # element is still in a browser's innerHTML).
                 if dom_detached[idx] != 0 or \
-                   (g_ser_mode == 0 and dom_ov_hide[idx] != 0):
+                   (g_ser_mode == 0 and dom_ov_hide[idx] == 1):
                     i = cend
                     continue
                 # rebuild the start tag: <name [class] [style] original-attrs>
@@ -10593,6 +10719,13 @@ def _rewrite_range(lo: uint64, hi: uint64):
                         _rw_ch(34)
                     if dom_ov_checked[idx] == 1:
                         _rw_cstr(cast[Ptr[uint8]](" checked"))
+                elif dom_ov_hide[idx] == 2:
+                    # REVEALED: copy the original attributes but strip the
+                    # markup style's own `display` declaration — script replaced
+                    # that property, and leaving it in would re-hide the element
+                    # (the copied attribute sits AFTER the merged style, and its
+                    # declaration would be the only `display` in the tag).
+                    _rw_attrs_nodisplay(ne, je)
                 else:
                     _rw_range(ne, je)                     # original attributes
                 _rw_ch(62)

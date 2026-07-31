@@ -433,7 +433,24 @@ dom_ov_wd_off:   Array[8192, int32]    # width (CSS length string, e.g. "100px")
 dom_ov_wd_len:   Array[8192, int32]
 dom_ov_cls_off:  Array[8192, int32]    # className
 dom_ov_cls_len:  Array[8192, int32]
-dom_ov_hide:     Array[8192, int32]    # 1 = display:none (drop the element)
+# INLINE `display` override — a THREE-state, not a flag:
+#   0 = script has no opinion; the markup's own style="" decides (as before)
+#   1 = script set display:none -> drop the element from the render
+#   2 = script OWNS display and it is NOT none -> the element RENDERS even when
+#       the markup's style="" says display:none, and the markup's `display`
+#       declaration is filtered out of the rewritten tag.
+# State 2 is the "reveal" pattern every real page uses to un-hide server-sent
+# markup: `el.setAttribute("style","")` / `el.style.display=""` / `="block"`
+# over `<div style="display:none">`. With only 0/1 there was no way to say
+# "shown" — clearing the property just went back to 0, the original
+# style="display:none" attribute was copied through verbatim, and the element
+# stayed invisible forever. google.com's search page is exactly this: its whole
+# visible body is one `<div id=… style="display:none">` that a setTimeout
+# reveals with setAttribute("style",""), so hambrowse rendered it EMPTY
+# (segs=0) where Chromium renders the text and its two links.
+dom_ov_hide:     Array[8192, int32]
+dom_ov_disp_off: Array[8192, int32]    # script's display value (state 2), or -1
+dom_ov_disp_len: Array[8192, int32]
 # DETACHED source elements. removeChild()/replaceChild() used to handle CREATED
 # children only, so `parent.removeChild(sourceEl)` was a silent no-op: the node
 # stayed on screen AND stayed in the parent's innerHTML. This is the real

@@ -4694,3 +4694,11 @@ bash scripts/test_installer_img_stamp.sh
 # 300,000-scope Function.prototype.call loop that completes only because the
 # arena is swept and refilled.
 bash scripts/test_hambrowse_rawtext_layout_host.sh
+# The inline-style REVEAL (dom_ov_hide tri-state). HELD OFF MAIN with its fix:
+# it is correct and it fixes google.com's search page, but it converts
+# css/css-position/position-fixed-dynamic-transformed-sibling.html from a
+# blank == blank PASS into an honest FAIL, taking the reftest lane to PASS 46
+# against #!PASS_FLOOR 47. See docs/browser_blank_at_rest_reftests.md. This
+# line and its gate land WITH real position:fixed/absolute painting, which
+# earns the pair back instead of moving a floor.
+bash scripts/test_hambrowse_style_reveal_host.sh
