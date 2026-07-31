@@ -3694,8 +3694,31 @@ def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
                       cast[Ptr[uint8]]("node is an ancestor of parent"), 29)
         return 1
     # 3. a non-null reference child must actually be a child of parent.
+    #
+    # The SPEC test is on the PARENT LINK -- "If child is non-null and its
+    # parent is not parent, then throw a NotFoundError"
+    # (https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity)
+    # -- NOT a membership search of the parent's childNodes.
+    #
+    # 2026-07-31: it was a membership search (_nd_child_index -> _nd_kids ->
+    # the JS `childNodes` array), and that broke every framework re-render onto
+    # a SOURCE-ANCHORED container. A parsed element's childNodes array is built
+    # lazily FROM THE tx TREE (_dom_node_kids); script-appended children live in
+    # the ap_/cc_ tables and are only pushed into that array when it has already
+    # been materialised. So `#root` in the markup, filled by createElement +
+    # appendChild, answers childNodes.length == 0 while every child's
+    # .parentNode correctly === #root, and any later insertBefore(new, existing)
+    # threw NotFoundError.
+    #
+    # Real React 18 hits this on its FIRST state update (it inserts the
+    # conditional subtree before an existing sibling of the root container), so
+    # the throw escaped mid-commit, the update was abandoned and the post-click
+    # timer drain never ran -- test_react18_host's whole click half. Insertion
+    # POSITION never depended on this array: _insert_before_v resolves the
+    # reference through _ap_find/_cc_find on the ap_/cc_ tables, which are
+    # complete.
     if js_type_of(childv) == TAG_OBJ:
-        if _nd_child_index(parentv, childv) < 0:
+        if _nd_parent(childv) != parentv:
             _throw_domexc(cast[Ptr[uint8]]("NotFoundError"), 13, \
                           cast[Ptr[uint8]]("reference node is not a child"), 29)
             return 1

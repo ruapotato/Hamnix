@@ -19,6 +19,26 @@
 # you unify a signature, delete its line (the gate prints "RESOLVED" for
 # baselined names that no longer conflict).
 #
+# 2026-07-31 — +10 LANDMINE names. The baseline was last regenerated on
+# 2026-07-25 (1cc93344); every one of these came in with a file that landed
+# AFTER that date, and none is LIVE:
+#
+#   ctl        lib/web/js/state.ad var vs user/sysirqprobe.ad + wakelat.ad fn
+#   cyc_to_ns  kernel/time/clocksource.ad (2 args) vs tests/checkarith/* (3)
+#   dig_buf    lib/hamclockcore.ad Array[12] vs user/ed25519_selftest.ad [64]
+#   msg_buf    tests/test_ed25519_verify.ad [1 MiB] vs ed25519_selftest [256 K]
+#   out        tests/homedir_host.ad [128] vs user/dircolors.ad [16384]
+#   prev_btn   lib/hamui.ad int32 vs user/htermsel_evt_host.ad int64
+#   put_hex    user/ed25519_selftest.ad (3 args) vs user/umdf_host.ad (1)
+#   put_u64    user/inflate_host.ad (fd, v) vs lex_selftest/factor (v)
+#   read_exact user/x11/* -> int32 vs user/wakelat_echo.ad -> uint64
+#   slen       tests/test_compiler_adjacent_strings.ad -> int64 vs -> uint64
+#
+# These are the usual single-TU-program collisions on generic names (Adder has
+# no module privacy, so every top-level name is public). They went unnoticed
+# for six days only because scripts/list_host_gates.sh returned 283 of 645
+# gates and this one was never in a sweep. Nothing to unify: no link unit
+# imports both spellings of any of them.
 LANDMINE A
 LANDMINE A
 LANDMINE APPS_BTN_W
@@ -124,11 +144,14 @@ LANDMINE code
 LANDMINE color_img
 LANDMINE contains
 LANDMINE cstr_len
+LANDMINE ctl
 LANDMINE ctl_line
 LANDMINE cur
 LANDMINE cur_col
+LANDMINE cyc_to_ns
 LANDMINE data
 LANDMINE dbuf
+LANDMINE dig_buf
 LANDMINE disp
 LANDMINE disp_buf
 LANDMINE do_bind
@@ -219,6 +242,7 @@ LANDMINE mask_buf
 LANDMINE mem_line
 LANDMINE module_load
 LANDMINE mount_path
+LANDMINE msg_buf
 LANDMINE msg_key
 LANDMINE name_buf
 LANDMINE name_eq
@@ -239,6 +263,7 @@ LANDMINE ns_buf
 LANDMINE num_buf
 LANDMINE obuf
 LANDMINE order
+LANDMINE out
 LANDMINE out_buf
 LANDMINE outbuf
 LANDMINE page_len
@@ -280,16 +305,20 @@ LANDMINE poll_pointer
 LANDMINE ppm_buf
 LANDMINE ppm_hdr
 LANDMINE prefix
+LANDMINE prev_btn
 LANDMINE probe_path
 LANDMINE proc_buf
 LANDMINE process
 LANDMINE pubkey
 LANDMINE put_dec
+LANDMINE put_hex
+LANDMINE put_u64
 LANDMINE pw_buf
 LANDMINE raw_buf
 LANDMINE read_all
 LANDMINE read_all_fd
 LANDMINE read_buf
+LANDMINE read_exact
 LANDMINE read_fd
 LANDMINE read_source
 LANDMINE rep_buf
@@ -319,6 +348,7 @@ LANDMINE sha_hex
 LANDMINE sha_state
 LANDMINE sha_w
 LANDMINE skip_ws
+LANDMINE slen
 LANDMINE slurp
 LANDMINE snake_x
 LANDMINE snake_y
