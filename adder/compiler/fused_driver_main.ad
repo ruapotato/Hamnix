@@ -130,7 +130,13 @@ def main() -> int32:
     drv_emit("\n")
 
     lex_init(&drv_src[0], n)
-    lex_tokenize()
+    if lex_tokenize() < 0:
+        drv_emit("[hamnix_ac_emit] FAIL: lex error at line ")
+        drv_put_u32(lex_err_line)
+        drv_emit(": ")
+        drv_emit(cast[Ptr[uint8]](lex_err_text()))
+        drv_emit("\n")
+        __syscall1(1, 8)
     drv_emit("[hamnix_ac_emit] tokens=")
     drv_put_u32(tok_count)
     drv_emit("\n")

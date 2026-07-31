@@ -1508,7 +1508,13 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             __syscall1(3, cast[uint64](dfd))
 
     lex_init(&drv_src[0], n)
-    lex_tokenize()
+    if lex_tokenize() < 0:
+        drv_err("[host_ac] FAIL: lex error at line ")
+        drv_err_u32(lex_err_line)
+        drv_err(": ")
+        drv_err(cast[Ptr[uint8]](lex_err_text()))
+        drv_err("\n")
+        return 8
 
     parser_init()
     prog: uint32 = parse_program()
