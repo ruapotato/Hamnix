@@ -31,6 +31,13 @@
 #     scalar_to_ptr     scalar -> Ptr[uint8]        (canvas.ad cq)
 #     ptr_to_scalar     Ptr[uint8] -> uint64        (syscall.ad cur)
 #
+# MEASURED pre-fix (compiler at ef04d30b): the first THREE diverge; the fourth
+# does NOT. Ptr[uint8] -> uint64 is byte-inert under the old single-slot
+# behaviour because the stale Ptr tagging (8-byte slot, unsigned, never
+# indexed again) happens to describe a uint64 exactly — which is precisely why
+# kobjdiff stayed clean while the userland gate was red. It is kept as a
+# guard: if the rebinding ever mis-tags the new scalar it will diverge here.
+#
 # Host-only (no QEMU); seconds.
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
