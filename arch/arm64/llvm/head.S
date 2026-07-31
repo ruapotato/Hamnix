@@ -160,6 +160,9 @@ at_el1:
      * answer. It installs and restores its own VBAR_EL1, so nothing below is
      * perturbed. */
     bl      arm64_elprobe_run
+    /* And the converse: AP=00 IS enforced for EL0 DATA on that same page, so
+     * the stage-0 pass is not "TCG checks nothing". */
+    bl      arm64_elprobe_run_data
 
     ldr     x0, =msg_a8
     bl      uart_puts

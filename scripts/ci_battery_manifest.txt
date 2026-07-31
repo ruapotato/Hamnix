@@ -4676,3 +4676,14 @@ bash scripts/test_leak_hours_report_mutations.sh
 # because a stamp that always says stale means a 6-minute rebuild per gate and
 # gets the guard disabled.
 bash scripts/test_installer_img_stamp.sh
+
+# test_arm64_currentel_probe: settles, by ASKING THE CPU, whether the aarch64
+# LLVM lane's "EL0 userland" really runs at EL0. head.S maps all kernel RAM
+# AP[2:1]=00 (EL0 no access) yet A9's "EL0" tasks live in kernel .text and run;
+# every A9/A10/A11 userland claim depends on that being real EL0. The probe
+# executes `mrs CurrentEL` (UNDEFINED at EL0, defined at EL1) from that same
+# AP=00 page and reads the verdict off the vector SLOT the hardware picked,
+# ESR.EC, SPSR.M and x0; a second stage requires the OPPOSITE outcome for an EL0
+# DATA load from the same page, so neither a permissive nor a restrictive model
+# passes both.
+bash scripts/ci_run_gate.sh scripts/test_arm64_currentel_probe.sh

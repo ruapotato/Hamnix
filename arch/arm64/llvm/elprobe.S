@@ -92,9 +92,72 @@ arm64_elprobe_run:
     mov     x0, #SPSR_EL0T_DAIF
     msr     spsr_el1, x0
     movz    x0, #PROBE_SENTINEL
+    ldr     x1, =arm64_elprobe_stage
+    str     xzr, [x1]                   /* stage 0: the CurrentEL question */
     isb
     eret
     .size arm64_elprobe_run, .-arm64_elprobe_run
+
+/* ------------------------------------------------------------------------ *
+ * arm64_elprobe_run_data — STAGE 1, the other half of the answer.
+ *
+ * Stage 0 establishes that the program IS at EL0 while executing out of an
+ * AP=00 page. That is only paradoxical if one believes AP[2:1] gates
+ * instruction fetch. It does not: in AArch64 stage-1 translation AP[2:1]
+ * gates DATA access, and EL0 instruction fetch is gated by UXN (bit 54, = 0 in
+ * head.S's 0x0705 block) plus SCTLR_EL1.WXN. So "EL0 executing from an
+ * EL0-no-data-access page" is architecturally expected, not a TCG liberty.
+ *
+ * This stage EXECUTES that claim rather than asserting it: the same EL0 probe
+ * performs a DATA LOAD from the very kernel .text it is executing out of. If
+ * AP=00 is genuinely enforced for data, that load must take a Data Abort from
+ * a lower EL (ESR.EC = 0x24) — which also proves stage 0's pass was not simply
+ * "TCG checks no permissions at all".
+ * ------------------------------------------------------------------------ */
+    .globl arm64_elprobe_run_data
+    .type arm64_elprobe_run_data, %function
+arm64_elprobe_run_data:
+    ldr     x1, =arm64_elprobe_saved_sp
+    mov     x0, sp
+    str     x0, [x1]
+    ldr     x1, =arm64_elprobe_saved_lr
+    str     x30, [x1]
+    mrs     x0, vbar_el1
+    ldr     x1, =arm64_elprobe_saved_vbar
+    str     x0, [x1]
+
+    ldr     x0, =msg_data_hdr
+    bl      uart_puts
+
+    ldr     x0, =arm64_elprobe_vectors
+    msr     vbar_el1, x0
+    isb
+
+    ldr     x0, =arm64_elprobe_data_entry
+    msr     elr_el1, x0
+    movz    x0, #(PROBE_SP_EL0 >> 16), lsl #16
+    msr     sp_el0, x0
+    mov     x0, #SPSR_EL0T_DAIF
+    msr     spsr_el1, x0
+    movz    x0, #PROBE_SENTINEL
+    ldr     x1, =arm64_elprobe_stage
+    mov     x2, #1
+    str     x2, [x1]                    /* stage 1: the AP=00 data question */
+    isb
+    eret
+    .size arm64_elprobe_run_data, .-arm64_elprobe_run_data
+
+/* The stage-1 EL0 program: load from its OWN instruction stream (AP=00). */
+    .globl arm64_elprobe_data_entry
+    .type arm64_elprobe_data_entry, %function
+arm64_elprobe_data_entry:
+    adr     x1, arm64_elprobe_data_entry    /* a kernel .text VA, AP=00 */
+    ldr     x0, [x1]                        /* EL0 DATA read -> must fault */
+    /* Only reached if AP=00 was NOT enforced for data. */
+    mov     x8, #0
+    svc     #0
+1:  b       1b
+    .size arm64_elprobe_data_entry, .-arm64_elprobe_data_entry
 
 /* ------------------------------------------------------------------------ *
  * The probe program. Deliberately linked into the kernel's .text — the SAME
@@ -171,6 +234,10 @@ arm64_elprobe_other:
     mov     x0, #10
     bl      uart_putc
 
+    ldr     x1, =arm64_elprobe_stage
+    ldr     x1, [x1]
+    cbnz    x1, .Lverdict_data
+
     /* Machine-readable one-liner for the gate. EC 0x00 from the LOWER-EL slot
      * with x0 == the sentinel is the EL0 verdict; anything else is not. */
     lsr     x0, x22, #26
@@ -188,6 +255,27 @@ arm64_elprobe_other:
     b       .Lfinish
 .Lnot_el0:
     ldr     x0, =msg_final_notel0
+    b       .Lfinish
+
+    /* STAGE 1: the EL0 data load from the AP=00 kernel .text must have taken a
+     * Data Abort from a lower EL (ESR.EC = 0x24) through the LOWER-EL sync
+     * slot. If instead the load SUCCEEDED we would be here via the `svc #0`
+     * with EC = 0x15 — which would mean AP=00 is not enforced for data at all,
+     * and stage 0's result would have to be re-read in that light. */
+.Lverdict_data:
+    ldr     x1, =msg_v_lower
+    cmp     x21, x1
+    b.ne    .Lnot_dabt
+    lsr     x0, x22, #26
+    and     x0, x0, #0x3f
+    cmp     x0, #0x24                   /* EC 0b100100: Data Abort, lower EL */
+    b.ne    .Lnot_dabt
+    and     x1, x23, #0xf
+    cbnz    x1, .Lnot_dabt              /* came from EL0t */
+    ldr     x0, =msg_final_dabt
+    b       .Lfinish
+.Lnot_dabt:
+    ldr     x0, =msg_final_nodabt
 .Lfinish:
     bl      uart_puts
 
@@ -286,6 +374,12 @@ msg_final_el0:
     .asciz  "ELPROBE-VERDICT: EL0 (MRS CurrentEL was UNDEFINED; SPSR.M=EL0t)\n"
 msg_final_notel0:
     .asciz  "ELPROBE-VERDICT: NOT-EL0 (MRS CurrentEL executed, or wrong slot/mode)\n"
+msg_data_hdr:
+    .asciz  "ELPROBE: asking whether AP=00 is enforced for EL0 DATA on that same page\n"
+msg_final_dabt:
+    .asciz  "ELPROBE-VERDICT: AP00-DATA-ENFORCED (EL0 load from kernel .text took a Data Abort, EC=0x24)\n"
+msg_final_nodabt:
+    .asciz  "ELPROBE-VERDICT: AP00-DATA-NOT-ENFORCED (EL0 read kernel .text, or wrong slot/mode)\n"
 
 /* ------------------------------------------------------------------------ */
     .section .bss
@@ -297,6 +391,8 @@ arm64_elprobe_saved_lr:
 arm64_elprobe_saved_vbar:
     .space  8
 arm64_elprobe_x0:
+    .space  8
+arm64_elprobe_stage:
     .space  8
 
     .section .note.GNU-stack,"",%progbits
