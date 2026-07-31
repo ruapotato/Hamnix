@@ -519,6 +519,21 @@ if [ "$NPARTS" -ne 1 ]; then
 fi
 echo "[build_installer_img]   ESP-ONLY layout confirmed (1 partition; no ext4 to read)."
 
+# STAMP THE CONFIGURATION THAT PRODUCED THIS IMAGE. The consumer-side guard
+# (scripts/_installer_img.sh) treats an image whose stamp is absent or
+# different as STALE, which is what makes ADDER_FORCE_NATIVE_APPS and friends
+# visible to it at all — they change these bytes with the tree byte-for-byte
+# identical, and that cost an agent seven consecutive false passes on
+# 2026-07-30. Stamping HERE, in the producer, is what stops a direct
+# `bash scripts/build_installer_img.sh` from leaving an unstamped image that
+# the next gate then rebuilds for another 14 minutes.
+if [ -f "$PROJ_ROOT/scripts/_installer_img.sh" ]; then
+    # shellcheck source=_installer_img.sh
+    . "$PROJ_ROOT/scripts/_installer_img.sh"
+    installer_img_write_stamp "$OUT" \
+        && echo "[build_installer_img]   config stamp : $(cat "$OUT.stamp")"
+fi
+
 IMG_BYTES=$(stat -c%s "$OUT")
 echo "[build_installer_img] DONE: $OUT"
 echo "[build_installer_img]   total image  : ${IMG_BYTES} bytes ($(( IMG_BYTES / 1024 / 1024 )) MiB)"
