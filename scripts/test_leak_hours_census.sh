@@ -305,26 +305,140 @@ send "echo kmtrack on > /proc/meminfo" HC_ARM_KM   60 || say_fail "kmtrack on ti
 take_sample A
 
 # ---------------------------------------------------------------------------
-# THE GAP. Nothing is launched, nothing is closed. The DE's own long-lived
-# processes keep running — the panel repaints its clock, the compositor
-# services damage — which is exactly the workload "months of uptime" means and
-# exactly the one every previous gate's open/close shape cannot see.
+# THE GAP. By default nothing is launched, nothing is closed. The DE's own
+# long-lived processes keep running — the panel repaints its clock, the
+# compositor services damage — which is exactly the workload "months of uptime"
+# means and exactly the one every previous gate's open/close shape cannot see.
 #
 # A heartbeat every 5 minutes so a guest that died at minute 12 is discovered
 # then rather than at hour 2, and so the serial path is proven alive at the
 # moment sample B is taken.
+#
+# GAP_LOAD=1 — A LOADED GAP, AND WHY IT DOES NOT COST ATTRIBUTION
+# ==============================================================
+# Pass 19 chose a quiet gap deliberately: a quiet interval is one where a
+# non-zero delta has an unambiguous owner. The cost is that an idle gap
+# measures almost nothing — a four-hour soak that idled for four hours has
+# exercised the compositor's repaint path and little else, and the campaign's
+# whole open question is whether work leaves residue.
+#
+# The resolution is that attribution is a property of the SAMPLE POINTS, not of
+# the gap. Both samples are still taken with the machine quiet and — this is
+# the load-bearing part — with the SAME LIVE TASK SET, because every app opened
+# during the gap is closed during the gap and its exit is confirmed before the
+# next one opens. GAP_LOAD_QUIESCE_S of strict idle then runs before sample B
+# so nothing is mid-teardown when the census walks.
+#
+# Under that shape the adjudicator's rules all keep their meaning, and one of
+# them gets STRONGER:
+#
+#   * the growth bar is only condemned on an UNCHANGED task set
+#     (leak_hours_census_report.py). A load phase that fully closes leaves the
+#     set unchanged, so the bar still bites. If an app FAILS to exit, the set
+#     differs, the report sees a `born` process and downgrades to "reported,
+#     not condemned" — the honest outcome, reached automatically.
+#   * `owner-dead` STOPS BEING VACUOUS. In an idle gap no owner ever dies, so
+#     owner-dead is 0 by construction and the discriminator that separates a
+#     leak from mere residency never fires. In a loaded gap every app that ran
+#     is a dead owner, so a survivor frame still tagged to one is a LEAK the
+#     adjudicator will actually convict on. This is the arm rule at line
+#     "arm %d: LEAK" finally having a population to rule over.
+#
+# So: quiet at the endpoints, loaded in between, and every launch matched by a
+# confirmed exit. Survivors of a failed close are counted and reported, because
+# a load phase that silently stopped launching is the "silent cap" failure this
+# campaign is also hunting.
 # ---------------------------------------------------------------------------
-echo "$TAG idling ${GAP_S}s between samples (nothing launched, nothing closed)"
+GAP_LOAD="${GAP_LOAD:-0}"
+GAP_LOAD_QUIESCE_S="${GAP_LOAD_QUIESCE_S:-600}"
+GAP_LOAD_PER_CYCLE="${GAP_LOAD_PER_CYCLE:-4}"
+read -r -a GAP_APP_POOL <<< "${GAP_LOAD_APPS:-hamwrite hamsheet hamslides hamfmscene hammonscene hamcalcscene hamtermscene}"
+gl_pool_i=0
+gl_launched=0
+gl_closed=0
+gl_survivors=0
+gl_cycles=0
+gl_nowindow=0
+
+mapped_count() { grep -ac '\[devwsys\] window .* mapped' "$LOG" 2>/dev/null || echo 0; }
+
+# gap_load_cycle — open GAP_LOAD_PER_CYCLE apps, then close every one of them
+# and CONFIRM the exit. Returns non-zero only if the guest died.
+gap_load_cycle() {
+    local n=0 app before line pid open_pids="" exit_base d
+    gl_cycles=$(( gl_cycles + 1 ))
+    while [ "$n" -lt "$GAP_LOAD_PER_CYCLE" ]; do
+        app="${GAP_APP_POOL[$(( gl_pool_i % ${#GAP_APP_POOL[@]} ))]}"
+        gl_pool_i=$(( gl_pool_i + 1 ))
+        n=$(( n + 1 ))
+        before=$(mapped_count)
+        printf '/bin/%s &\n' "$app" >&3
+        gl_launched=$(( gl_launched + 1 ))
+        d=$(( SECONDS + 30 ))
+        while [ "$SECONDS" -lt "$d" ]; do
+            [ "$(mapped_count)" -gt "$before" ] && break
+            kill -0 "$QEMU_PID" 2>/dev/null || return 1
+            sleep 1
+        done
+        if [ "$(mapped_count)" -le "$before" ]; then
+            # A launch that maps no window is exactly the silent-cap shape
+            # (devwsys's per-pid table was a LIFETIME cap, not a concurrency
+            # cap). Count it loudly; it is a finding, not noise.
+            gl_nowindow=$(( gl_nowindow + 1 ))
+            echo "$TAG   LOAD: cycle $gl_cycles: $app mapped NO window in 30s (launch #$gl_launched)" >&2
+            continue
+        fi
+        line=$(grep -a '\[devwsys\] window .* mapped' "$LOG" | tail -1)
+        pid=$(echo "$line" | sed -n 's/.*mapped pid=\([0-9]*\).*/\1/p')
+        [ -n "$pid" ] && open_pids="$open_pids $pid"
+        sleep 1
+    done
+    sleep 2
+    for pid in $open_pids; do
+        exit_base=$(grep -ac "task: pid $pid exited" "$LOG")
+        printf '/bin/kill %s\n' "$pid" >&3
+        d=$(( SECONDS + 20 ))
+        while [ "$SECONDS" -lt "$d" ]; do
+            [ "$(grep -ac "task: pid $pid exited" "$LOG")" -gt "$exit_base" ] && break
+            kill -0 "$QEMU_PID" 2>/dev/null || return 1
+            sleep 1
+        done
+        if [ "$(grep -ac "task: pid $pid exited" "$LOG")" -gt "$exit_base" ]; then
+            gl_closed=$(( gl_closed + 1 ))
+        else
+            gl_survivors=$(( gl_survivors + 1 ))
+            echo "$TAG   LOAD: pid $pid survived its terminate note — the task set at B will DIFFER from A" >&2
+        fi
+    done
+    sleep 3
+    return 0
+}
+
+if [ "$GAP_LOAD" = "1" ]; then
+    echo "$TAG LOADED gap: ${GAP_S}s total, launch/close cycles of ${GAP_LOAD_PER_CYCLE}"
+    echo "$TAG   apps from: ${GAP_APP_POOL[*]}"
+    echo "$TAG   with the last ${GAP_LOAD_QUIESCE_S}s strictly idle so both samples"
+    echo "$TAG   are taken quiet and on the SAME live task set"
+else
+    echo "$TAG idling ${GAP_S}s between samples (nothing launched, nothing closed)"
+fi
 hb=0
 gap_end=$(( SECONDS + GAP_S ))
+load_end=$(( gap_end - GAP_LOAD_QUIESCE_S ))
 while [ "$SECONDS" -lt "$gap_end" ]; do
-    # Sleep only as far as the deadline, never past it. A flat `sleep 300`
-    # overshoots GAP_S by up to five minutes; the gap the verdict uses is the
-    # MEASURED one from the timestamps either way, so this is about the gate
-    # doing what its knob says, not about honesty of the number.
-    left=$(( gap_end - SECONDS ))
-    [ "$left" -gt 300 ] && left=300
-    [ "$left" -gt 0 ] && sleep "$left"
+    if [ "$GAP_LOAD" = "1" ] && [ "$SECONDS" -lt "$load_end" ]; then
+        # One load cycle, then heartbeat. The cycle is self-timing (it waits on
+        # windows and exits), so it replaces the sleep rather than adding to it.
+        gap_load_cycle || { echo "$TAG guest died during a load cycle" >&2; break; }
+    else
+        # Sleep only as far as the deadline, never past it. A flat `sleep 300`
+        # overshoots GAP_S by up to five minutes; the gap the verdict uses is the
+        # MEASURED one from the timestamps either way, so this is about the gate
+        # doing what its knob says, not about honesty of the number.
+        left=$(( gap_end - SECONDS ))
+        [ "$left" -gt 300 ] && left=300
+        [ "$left" -gt 0 ] && sleep "$left"
+    fi
     hb=$(( hb + 1 ))
     printf 'echo HC_ALIVE %d\n' "$hb" >&3
     sleep 2
@@ -335,8 +449,20 @@ while [ "$SECONDS" -lt "$gap_end" ]; do
     if ! grep -aq "^HC_ALIVE $hb\$" "$LOG"; then
         echo "$TAG WARNING: heartbeat $hb produced no echo — guest shell may be wedged" >&2
     fi
-    echo "$TAG   heartbeat $hb ($(( gap_end - SECONDS ))s to sample B)"
+    echo "$TAG   heartbeat $hb ($(( gap_end - SECONDS ))s to sample B)" \
+         "${GAP_LOAD:+[load: ${gl_launched} launched, ${gl_closed} closed, ${gl_survivors} survivors, ${gl_nowindow} no-window]}"
 done
+if [ "$GAP_LOAD" = "1" ]; then
+    echo "$TAG LOAD PHASE TOTALS: cycles=$gl_cycles launched=$gl_launched closed=$gl_closed survivors=$gl_survivors no-window=$gl_nowindow"
+    echo "$gl_cycles $gl_launched $gl_closed $gl_survivors $gl_nowindow" > "$OUT_DIR/gap_load_totals.txt"
+    if [ "$gl_nowindow" -gt 0 ]; then
+        say_fail "the gap's load phase had $gl_nowindow launch(es) map NO window — a launch path that stops working over hours is a silent cap, which is fatal to months of uptime whether or not a frame leaked"
+    fi
+    if [ "$gl_survivors" -gt 0 ]; then
+        echo "$TAG WARNING: $gl_survivors app(s) survived their terminate note; the" >&2
+        echo "$TAG   task set at B differs from A and the growth bar will self-downgrade" >&2
+    fi
+fi
 
 take_sample B
 

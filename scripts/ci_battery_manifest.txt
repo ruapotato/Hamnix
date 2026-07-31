@@ -4763,3 +4763,11 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_a13_demand.sh
 # cross-checked against init/main.ad's, so neither side is its own oracle. A14
 # adds no mapping, no TTBR0 write and no tlbi, so it is NOT evidence about nG.
 bash scripts/ci_run_gate.sh scripts/test_arm64_a14_kstack.sh
+
+# Leak pass 20 (2026-07-31): the pid->slot hash must not accumulate tombstones.
+# It used to remove by tombstoning with nothing ever reclaiming one, so after
+# ~1024 cumulative exits every hash MISS walked all 1024 buckets and then fell
+# back to the O(NTASKS) linear scan — permanently, on the signal/waitpid/proc
+# paths. Measured at 811x the mean miss cost. QEMU-free; carries its own
+# positive control (the old algorithm must still degrade under the harness).
+bash scripts/test_pidh_no_tombstone.sh

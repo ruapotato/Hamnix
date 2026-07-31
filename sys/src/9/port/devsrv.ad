@@ -36,7 +36,9 @@
 #   * No string concat: every helper hand-writes byte-by-byte copies.
 
 from kernel.printk.printk import printk0, printk1
-from kernel.sched.core import current_task_uid
+from kernel.sched.core import (
+    current_task_uid, current_task_pid, task_lookup_by_pid,
+)
 
 # Table cap. V3 ships 16 entries — enough for hamwd + a handful of
 # named-pipe-style mounts. Raise (or move to slab) when V4 lands real
@@ -61,6 +63,24 @@ class SrvEntry:
     # the poster's end will tear the pipe down even while a posted
     # name lives — Phase D's refcount work fixes that).
     poster_slot: int32                  # task_table slot index of poster
+    # Leak pass 20 (2026-07-31): the poster's PID, so a RECYCLED slot cannot
+    # be mistaken for the poster.
+    #
+    # A task_table slot index is not an identity — it is a reusable index —
+    # and devsrv_unpost has NO callers anywhere in the tree, so a posted name
+    # outlives its poster by default. Once the poster exited and its slot was
+    # handed to an unrelated task, sys_srv_open's only liveness check was
+    # `task_struct_at(src_slot) != 0`, which a recycled slot passes. It then
+    # ran vfs_srv_dup_into_current(src_task, src_fd) and dup'd fd number
+    # `src_fd` out of WHOEVER now occupies that slot, so the opener silently
+    # got a stranger's open file. The longer the machine is up, the more slot
+    # recycling has happened and the likelier this becomes.
+    #
+    # devwsys already hardened the identical hazard: _wsys_pending_take
+    # re-resolves the pid and drops the entry when
+    # `wsys_pending_slot[i] != task_lookup_by_pid(pid)`. This field lets
+    # devsrv_lookup_full apply the same check.
+    poster_pid: uint64                  # pid of poster (0 for kernel posts)
     # arch audit §2.2: the uid of the task that posted this name. Set on
     # devsrv_post_from from current_task_uid() at post time so the
     # server-boundary perm gate (devsrv_perm_check) can deny writes from
@@ -156,6 +176,7 @@ def devsrv_init():
         srv_table[i].in_use = 0
         srv_table[i].srvfd  = -1
         srv_table[i].poster_slot = -1
+        srv_table[i].poster_pid  = 0
         srv_table[i].posted_uid  = 0
         srv_table[i].name[0] = 0
         i = i + 1
@@ -248,8 +269,12 @@ def devsrv_post_from(name: Ptr[char], srvfd: int32,
     # we record uid 0 and let the hostowner-bypass arm cover it.
     if poster_slot < 0:
         srv_table[su].posted_uid = 0
+        srv_table[su].poster_pid = 0
     else:
         srv_table[su].posted_uid = current_task_uid()
+        # Stamp the poster's PID so devsrv_lookup_full can tell the poster
+        # from a later tenant of the same recycled task slot.
+        srv_table[su].poster_pid = current_task_pid()
     srv_table[su].in_use      = 1
     return 0
 
@@ -284,7 +309,21 @@ def devsrv_lookup_full(name: Ptr[char], out_slot: Ptr[int32],
     if slot < 0:
         return -1
     su: uint64 = cast[uint64](slot)
-    out_slot[0] = srv_table[su].poster_slot
+    ps: int32 = srv_table[su].poster_slot
+    # SLOT-RECYCLE GUARD (leak pass 20). A task slot is a reusable index, not
+    # an identity, and nothing unposts a name when its poster dies. Re-resolve
+    # the recorded pid: if it no longer maps to the recorded slot, the poster
+    # is gone and that slot now belongs to somebody else, so the entry must
+    # report a miss rather than let sys_srv_open dup a stranger's fd. Same
+    # check devwsys's _wsys_pending_take makes. Kernel posts (slot < 0) carry
+    # no pid and are exempt.
+    if ps >= 0:
+        pp: uint64 = srv_table[su].poster_pid
+        if pp == 0:
+            return -1
+        if task_lookup_by_pid(pp) != ps:
+            return -1
+    out_slot[0] = ps
     out_fd[0]   = srv_table[su].srvfd
     return 0
 
@@ -303,6 +342,7 @@ def devsrv_unpost(name: Ptr[char]) -> int32:
     srv_table[su].in_use      = 0
     srv_table[su].srvfd       = -1
     srv_table[su].poster_slot = -1
+    srv_table[su].poster_pid  = 0
     srv_table[su].posted_uid  = 0
     srv_table[su].name[0]     = 0
     return 0
