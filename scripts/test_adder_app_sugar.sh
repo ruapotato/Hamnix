@@ -60,19 +60,28 @@ echo "[sugar]   nested exit = $rc (expect 26)"
 [ "$rc" -eq 26 ] || fail "nested returned $rc, expected 26"
 
 echo "[sugar] (2) invalid uses must be COMPILE ERRORS"
+# 2026-07-31: these are EXTENDED-REGEX patterns, not fixed strings, and they are
+# deliberately phase-agnostic. Each of these four mistakes used to be caught by
+# the x86 codegen call-normalizer ("x86: missing argument 'x' in call ...").
+# a37d8f42 added a real sema pass that rejects the same programs EARLIER, with
+# its own wording ("too few arguments to 'f': 1 given, 2 expected (missing
+# 'x')"), so compilation now stops before codegen ever runs and the old fixed
+# string never appears. The gate was pinning the phase, not the rule. What the
+# gate actually guards is that the bad call is REJECTED and that the diagnostic
+# names the offending parameter -- so match that, from either phase.
 declare -A want=(
-    [err_unknown_kw]="no parameter named"
-    [err_missing_arg]="missing argument"
-    [err_dup_arg]="given twice"
+    [err_unknown_kw]="(no parameter named|unexpected keyword argument) 'z'"
+    [err_missing_arg]="missing (argument )?'x'"
+    [err_dup_arg]="'x'.*(given twice|multiple values)|(given twice|multiple values).*'x'"
     [err_default_before_required]="non-default parameter"
 )
 for e in err_unknown_kw err_missing_arg err_dup_arg err_default_before_required; do
     if seedc "$FIX/$e.ad" "$WORK/$e"; then
         fail "$e compiled clean (should be rejected)"
     fi
-    grep -q "${want[$e]}" "$WORK/cerr" \
+    grep -Eq "${want[$e]}" "$WORK/cerr" \
         || { cat "$WORK/cerr"; fail "$e rejected without the expected diagnostic '${want[$e]}'"; }
-    echo "[sugar]   rejected $e: $(grep -m1 'x86:' "$WORK/cerr" | sed 's/^Error: //')"
+    echo "[sugar]   rejected $e: $(grep -m1 -E '(^|: )error:|^x86:' "$WORK/cerr" | sed 's/^Error: //')"
 done
 
 echo "[sugar] (3) seed<->native byte-lockstep (objdiff) on sugar_ok + nested"
