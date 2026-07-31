@@ -136,6 +136,7 @@ def _reset_layout():
     skip_active = 0
     skip_depth = 0
     skip_nlen = 0
+    skip_rawtext = 0
     word_len = 0
     top_line = 0
     color_sp = 0
@@ -609,6 +610,21 @@ def _layout():
     while i < src_len:
         c: uint8 = src_ptr[i]
         if skip_active != 0:
+            # RAWTEXT / RCDATA (<script>/<style>/<title>/<textarea>): the ONLY
+            # markup the tokenizer recognises is the matching end tag. Every
+            # other '<' is a plain character — walking it as a tag is what let a
+            # bare `1<0` in a script consume the following start tag and, with
+            # the </script> then unreachable, drop the rest of the page.
+            if skip_rawtext != 0:
+                if c == 60 and i + 1 < src_len and src_ptr[i + 1] == 47 and \
+                   _hx_name_eq(i + 2, skip_nlen, &skip_name[0]) != 0:
+                    skip_active = 0
+                    i = _hx_tag_end_p(src_ptr, src_len, i)
+                    if i < src_len:
+                        i = i + 1
+                    continue
+                i = i + 1
+                continue
             if c == 60:                              # '<'
                 if i + 1 < src_len and src_ptr[i + 1] == 47:     # '</'
                     if _hx_name_eq(i + 2, skip_nlen, &skip_name[0]) != 0:

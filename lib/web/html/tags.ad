@@ -155,6 +155,15 @@ def _enter_skip(np: uint64, nlen: uint64):
     skip_active = 1
     skip_depth = 1
     skip_nlen = nlen
+    # RAWTEXT / RCDATA elements tokenize '<' as plain text (see skip_rawtext).
+    # <head>/<noscript>/<template>/<canvas> hold real markup and keep the
+    # existing tag-walking skip.
+    skip_rawtext = 0
+    if _hx_name_eq(np, nlen, cast[Ptr[uint8]]("script")) != 0 or \
+       _hx_name_eq(np, nlen, cast[Ptr[uint8]]("style")) != 0 or \
+       _hx_name_eq(np, nlen, cast[Ptr[uint8]]("title")) != 0 or \
+       _hx_name_eq(np, nlen, cast[Ptr[uint8]]("textarea")) != 0:
+        skip_rawtext = 1
     i: uint64 = 0
     while i < nlen and i < 16:
         skip_name[i] = _hx_lower(src_ptr[np + i])

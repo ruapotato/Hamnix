@@ -741,7 +741,22 @@ def eval_binop(op: int32, a: int32, b: int32) -> int32:
         return v_number(cast[float64](to_int32(a) ^ to_int32(b)))
     if op == OP_SHL:
         sh: int32 = to_int32(b) & 31
-        return v_number(cast[float64](to_int32(a) << sh))
+        # The RESULT of `<<` is an Int32 (ES2024 §13.10.1 / §6.1.6.1.9): the
+        # shifted-out high bits are DISCARDED and bit 31 is the sign. Adder
+        # evaluates every integer expression in a 64-bit register and only
+        # truncates on a store to a 32-bit slot, so `to_int32(a) << sh` handed
+        # straight to cast[float64] kept up to 31 bits that JS must drop:
+        #   45<<29  -> 24159191040 (want -1610612736)
+        #   11<<31  -> 23622320128 (want -2147483648)
+        #   1<<31   ->  2147483648 (want -2147483648)
+        # Only `<<` can leave the int32 range this way — `>>`/`&`/`|`/`^` of two
+        # in-range int32s are themselves in range, and `>>>` already goes through
+        # uint32. The explicit cast[int32] is the ToInt32 the spec asks for.
+        # NOT cosmetic: obfuscated real-world code (google.com's Closure output
+        # is a `switch`-free state machine of `<<`/`>>`/`&`/`^` guards) takes a
+        # DIFFERENT BRANCH on an untruncated shift, which is how the live
+        # google.com bundle died with "J1 is not a function".
+        return v_number(cast[float64](cast[int32](to_int32(a) << sh)))
     if op == OP_SHR:
         sh2: int32 = to_int32(b) & 31
         return v_number(cast[float64](to_int32(a) >> sh2))
