@@ -1324,6 +1324,19 @@ tbl_padx_st:      Array[8, int32]
 skip_active: int32 = 0
 skip_name: Array[16, uint8]
 skip_nlen: uint64 = 0
+# 1 while the skipped element is RAW TEXT / RCDATA (<script>, <style>, <title>,
+# <textarea>). Inside those the HTML tokenizer is in the script-data / RAWTEXT
+# state: '<' is an ORDINARY CHARACTER and only the matching "</name" ends the
+# element (and they never nest). The skip loop used to tokenize every '<' the
+# same way it does in markup, so an everyday JS comparison
+#     <script>var b = 1<0;</script><div id=z>ZZZ</div>
+# made the scanner read "<0;</script><div id=z>" as ONE tag (it ran to the next
+# '>'), which ate the div's start tag; the skip then hunted a </script> that was
+# already gone and swallowed the ENTIRE REST OF THE DOCUMENT. Any page with a
+# `a < b` or a "<" in a string inside an inline script rendered blank from that
+# point on — which is most of the web, and is what left google.com "loading but
+# unusable" with nothing under the header.
+skip_rawtext: int32 = 0
 # NESTING DEPTH of the display:none / hidden subtree currently being skipped.
 # The skip name alone is not enough: a hidden <div> whose subtree contains OTHER
 # <div>s (google's `display:none` tools popup wraps a menu of nested <div>s)

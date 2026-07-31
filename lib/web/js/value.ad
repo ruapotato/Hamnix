@@ -1933,6 +1933,15 @@ def env_new(parent: int32, is_func: int32) -> int32:
             else:
                 env_is_func[fe2] = 0
             return fe2
+        # LOUD, with the NUMBER. Reaching here after an unconditional collection
+        # means the live set genuinely does not fit — a CAPACITY fact, not the
+        # lifetime bug this message used to mean — and the only way to tell the
+        # two apart is the ceiling and the occupancy beside it. (Measured on the
+        # real pages this was reported from: google.com's home page peaks at
+        # 1400 of 80000 envs and its search page at 319; a 300,000-scope
+        # Function.prototype.call loop runs to completion with 9 collections and
+        # 65,921 envs reclaimed. HAMNIX_JS_ARENA_STATS=1 prints the series.)
+        js_out_note(cast[Ptr[uint8]]("[engine] CEILING env arena exhausted after a full collection; the LIVE scope set does not fit. MAX_ENV="), MAX_ENV)
         set_error(cast[Ptr[uint8]]("environment pool exhausted"))
         return MAX_ENV - 1
     e: int32 = n_envs
