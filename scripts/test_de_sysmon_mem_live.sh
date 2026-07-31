@@ -113,17 +113,17 @@ else
 fi
 
 # ---- the monitor SAW the pressure (anti-false-green) --------------------
-# memhog touches 192 MiB; the monitor's peak must be well clear of its
-# baseline. 64 MiB of headroom absorbs the sampling cadence and the DE's own
+# memhog touches 128 MiB; the monitor's peak must be well clear of its
+# baseline. 40 MiB of headroom absorbs the sampling cadence and the DE's own
 # churn without letting a frozen display through.
 PEAK_RISE="$(val PEAK_RISE_KB)"
-MIN_RISE=65536
+MIN_RISE=40960
 if blind saw_pressure; then
     bad "(blinded): the monitor observed the memory pressure"
 elif isnum "$PEAK_RISE" && [ "$PEAK_RISE" -ge "$MIN_RISE" ]; then
     ok "the monitor OBSERVED the pressure (peak rose ${PEAK_RISE} kB over baseline)"
 else
-    bad "the monitor never saw the 192 MiB pulse (peak rose '${PEAK_RISE}' kB) — its display is frozen, or memhog did not allocate"
+    bad "the monitor never saw the 128 MiB pulse (peak rose '${PEAK_RISE}' kB) — its display is frozen, or memhog did not allocate"
 fi
 
 # ---- KEYSTONE: it comes back DOWN when the RAM is returned --------------

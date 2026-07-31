@@ -4638,7 +4638,7 @@ bash scripts/test_elf_low_bss_window_host.sh
 # the app is restarted." The RAM really IS returned, so this is the monitor's
 # own view going stale. hammonscene publishes the model behind its MEMORY row
 # to /tmp/.hammonscene.mem; this gate boots the shipped image, starts the
-# monitor, applies a 192 MiB touched-page /bin/memhog pulse, and asserts the
+# monitor, applies a 128 MiB touched-page /bin/memhog pulse, and asserts the
 # monitor BOTH saw the rise (peak — the anti-false-green half) and came back
 # down in agreement with /proc/meminfo afterwards, with no restart.
 bash scripts/ci_run_gate.sh scripts/test_de_sysmon_mem_live.sh

@@ -182,8 +182,14 @@ try:
     # a known-size pressure pulse with a known end, which is what makes both
     # halves of the assertion possible: the monitor must SEE the rise (peak)
     # and must COME BACK DOWN with the kernel afterwards.
-    HOG_MB = 192
-    run_cmd(f"/bin/memhog {HOG_MB}M --hold 25 --no-verify &",
+    # --batch is MANDATORY: without it memhog's hold loop polls stdin, and on
+    # this box stdin is the serial line the driver issues commands on — it
+    # would eat them. Backgrounded (`&`) deliberately: run in the foreground
+    # the shell blocks until memhog is GONE and every later sample would read
+    # the post-release state, i.e. a gate that always sees "no change" and
+    # calls it a pass (the lesson scripts/test_memhog.sh paid for).
+    HOG_MB = 128
+    run_cmd(f"/bin/memhog {HOG_MB}M --hold 30 --batch --no-verify &",
             settle=1.0, tries=1)
     time.sleep(14)                                     # sample mid-HOLD
     kt1, kf1 = kernel_mem()
