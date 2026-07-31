@@ -260,3 +260,113 @@ already names — it is not something `background-origin` can be calibrated
 around, which is why the five `background-origin-002/003/004/005/008` near-misses
 (all pure X-offset errors, green already exactly 60x60) were left alone rather
 than fitted to broken geometry.
+
+## MEASURED 2026-07-31 (third pass) — two of this document's own blockers were
+## MISATTRIBUTED, and one of the remaining PASSes is anti-evidence
+
+Continuing the bundle from `hold/bg-clip-viewport` (`29f9c963` — PASS 48 /
+WEAK-PASS 205 / ND 110 / ERROR 0 against `#!PASS_FLOOR 47` /
+`#!WEAK_PASS_FLOOR 208` / `#!ND_CEILING 110`):
+
+    PASS 48 -> 49     WEAK-PASS 205 -> 206     ND 110 (unchanged)   ERROR 0
+
+The ledger, every pair that changed class, both directions — only two moved:
+
+| was | now | test | why |
+|---|---|---|---|
+| FAIL | **WEAK-PASS** | `css-backgrounds/border-image-space-001` | `bottom:` anchoring, below |
+| FAIL | **PASS** | `css-values/ex-calc-expression-001` | the `ex` unit, below |
+
+### 1. `border-image-space-001` is NOT blocked on `border-image`
+
+The bundle's ledger named it as the pair that `border-image` would recover.
+Measured against Chromium, it is not: **`support/border.png` is not vendored**,
+so neither side loads an image and Chromium renders BOTH sides as a plain
+108x108 green box (11,664 green px, byte-identical screenshots).
+
+Our test side already matched that. The whole difference was on the REFERENCE
+side, whose sixteen `position:absolute` children include five spelled
+`bottom: 0px` — and those five landed in a band flush BELOW the container,
+contributing exactly the 2,000 px that were the pair's entire diff.
+
+The cause is that an out-of-flow box contributes no flow rows, so its fill's row
+span is DEGENERATE (`bfill_top == bfill_bot`). `_apply_positioned` resolves
+`bottom:` on the row grid as `trow = minrow + (cb_bot - bottom/LINE_H -
+box_bot)`, and with `box_bot == minrow` the height it subtracts is ZERO: the
+box's TOP is pinned where its BOTTOM belongs. It cannot be repaired in rows —
+the grid is 12px-quantised and the box's height lives in a pixel pin — and
+layout cannot finish it in pixels either, because row pixel heights are not
+resolved until the paint pass. So the sum is now split (`bfill_pxbrow` /
+`bfill_pxboff`; see layout/box.ad). Test and reference are now byte-identical.
+
+### 2. The `ex` unit was absent from the length table entirely
+
+Not wrong — ABSENT. `_len_apply_unit` has no `ex` case, so the unit fell through
+to the px/unitless return WITHOUT advancing the cursor past it, leaving the two
+letters in the buffer to derail any enclosing calc(). `calc(1ex + 1ex)` did not
+evaluate at all while its reference's `2ex` did. Exactly 8 vendored documents in
+the lane use an `ex` length, all checked individually.
+
+### 3. Out-of-flow BORDER painting cannot land — and `border-image` is not what
+### unblocks it either
+
+This document records the experiment as costing `PASS 45 -> 40`, and predicts
+that `border-image` beside it would repay that. **Both halves are wrong, and the
+correction matters more than the experiment.**
+
+The companion is not `border-image`, it is the `transparent`-border fix: the
+four `border-image-repeat-space-*` PASSes are `border: 27px solid transparent`
+boxes, and what breaks them is the engine painting that transparent border
+BLACK. So the two reverted patches were re-landed TOGETHER (out-of-flow border
+geometry mirroring `bfill_oof/pxy/pxh` onto the bbox registry, plus
+`53d46a26`). The abspos reference of `background-clip-content-box-001` did start
+painting its border — 7,040 blue px where it had painted none.
+
+It still does not land, and now there is a reason rather than a number:
+
+    border-image-repeat-space-1/2/3   PASS -> NONDISCRIMINATING
+    border-image-repeat-space-7       PASS -> FAIL
+
+**Chromium renders `border-image-repeat-space-1` and its reference as 480,000
+white pixels — both sides, completely blank.** With `support/border.png`
+unvendored there is no image to draw and the transparent border is invisible, so
+the pair is genuinely nondiscriminating on this corpus. Its PASS was banked
+entirely on our black frame. And Chromium's `border-image-repeat-space-7` paints
+11,340 BLACK px against a blank reference — **Chromium itself fails that pair**
+here.
+
+So those four PASSes are ANTI-EVIDENCE: the lane is rewarding the engine for a
+bug, and any correct engine loses them. No capability recovers them, because the
+asset the tests need is not in the tree. `border-image` would not have helped;
+it cannot raster an image that does not exist. Both patches were reverted again
+and the tree left at the two clean fixes above — because the alternative is
+lowering a floor, and a floor that moves when the engine is right is not a
+floor.
+
+### Where the bundle stands
+
+PASS 49 clears 47. **WEAK-PASS 206 does not clear 208 — short by exactly 2.**
+The owed set is down from four to three:
+
+| test | blocked on |
+|---|---|
+| `css-backgrounds/background-clip-content-box-001` | out-of-flow BORDER painting, which costs 4 PASS to the anti-evidence above (49 -> 45, under the floor). Blocked on the LANE, not the engine. |
+| `css-backgrounds/background-clip/clip-rounded-corner` | the box-model keystone: the fill rect and the border rect are not the same rectangle (512 px). Measured here: fill x 8..124 y 12..86, border x 10..121 y 12..88, where the box is 140x120. |
+| `css-position/hypothetical-dynamic-change-001` | CSSOM `style.left =` triggering re-layout (lib/web/dom, not this scope) |
+
+### The next capability, measured rather than guessed
+
+A near-miss scan (every FAIL pair rendered and ranked by pixel diff) puts the
+answer beyond argument. The largest tractable cluster by far is **CSS counters +
+generated content**: ~25 pairs in `css/css-lists` sitting at 38-250 diff px,
+whose references are as simple as `counter-7-ref.html` printing the number 7.
+`_pseudo_is_element` currently reports `::before`/`::after` and returns inert —
+"generated content we do not synthesise" — and `counter-reset` /
+`counter-increment` / `counter()` appear nowhere in `lib/web/`. That single
+capability is worth an order of magnitude more than either remaining blocker,
+and unlike them it is not gated on an unvendored asset or on a box-model
+rewrite.
+
+Second is `display: contents` (~8 pairs, 220-235 px). The
+`background-size/vector` cluster (12 pairs at 248 px) is NOT a candidate: its
+SVGs are unvendored too, the same trap as `border.png`.
