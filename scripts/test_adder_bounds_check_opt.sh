@@ -17,7 +17,28 @@
 #   (2) SEED  bare-metal --opt --check-bounds: NO ud2 (kernel never instrumented).
 #   (3) NATIVE codegen.ad --opt --check-bounds (via the dump-driver host harness):
 #       OOB traps (132), in-range runs (40), `unsafe:` suppresses (0); asserts the
-#       isel path (idxreg / idxsel stat) actually fired for the shape under test.
+#       program went through the SSA emission lane, and PINS the currently-known
+#       per-function fallback (see the 2026-07-31 note in step (3) below).
+#
+# 2026-07-31 -- WHAT CHANGED UNDER THIS GATE. Steps (3) used to assert
+# `idxreg > 0` / `idxsel > 0`: counters published by the opt1 AST optimizer's
+# instruction selector (the DIRECT-SIB coalesce and try_sel_index_into_rcx).
+# **opt1 has since been RETIRED and adder/compiler/opt.ad deleted** --
+# fused_driver_host_main.ad now says so in as many words: "--opt now simply arms
+# the SSA gate, identical to ADDER_OPT2=1". Those two counters are therefore
+# structurally pinned at 0 and can never rise again. The gate was asserting the
+# presence of machinery that no longer exists: gate rot, not a defect. Every
+# BEHAVIOURAL assertion in this file (OOB traps 132, in-range 40, `unsafe:`
+# suppresses, kernel exempt, byte-inert with the flag off, ud2 present with it
+# on) passed throughout.
+#
+# Removing the witness outright would have been the wrong repair, because it was
+# guarding something real, and that something is now TRUE: with opt1 gone, the
+# SSA emitter does not yet cover array indexing, so every fixture here falls back
+# to plain -O0 gen_function (SSAEMIT_EMITTED=0, SSAEMIT_FALLBACK=1 on a
+# single-function reduction). Steps (3)-(5) are, today, re-testing the -O0
+# emitter with a --opt flag attached. So the witness is replaced by a TRIPWIRE on
+# that exact fact -- see step (3).
 #   (4) NATIVE --opt WITHOUT the flag: the SAME OOB index does NOT trap and the
 #       emitted code carries NO ud2 (0F 0B) — byte-inert when off.
 #   (5) NATIVE --opt WITH the flag: the emitted code DOES carry a ud2.
@@ -96,12 +117,39 @@ def check(cond, msg):
     else:
         print(f"[bounds-opt]   ok: {msg}")
 
-# (3) checks ON: both isel shapes trap OOB, run in-range, unsafe suppresses.
-for shape, stat in (("idxreg", "idxreg"), ("idxsel", "idxsel")):
+# (3) checks ON: both index shapes trap OOB, run in-range, unsafe suppresses.
+#
+# The coverage witness. `idxreg`/`idxsel` were opt1 isel counters; opt1 is gone
+# and they are pinned at 0 forever, so asserting them was asserting a deleted
+# optimizer. What matters now is which lane compiled the indexing function, and
+# the honest answer today is: NEITHER of these fixtures is optimized. --opt arms
+# the SSA gate, the SSA emitter has no memory-op support yet, and the function
+# containing `a[i]` takes the per-function escape hatch back to plain -O0
+# gen_function.
+#
+# Rather than drop the witness (which would let the gate claim --opt coverage it
+# does not have) or soft-pass it, pin the fallback. `expect_fallback` is a
+# TRIPWIRE: when the SSA subset grows to cover memory ops, THIS GOES RED. That
+# is the intended alarm. Do not silence it -- at that point the index lowering is
+# genuinely new code, and the whole reason this gate exists is that the last time
+# an optimizer changed how an index reaches a register, the bounds check was
+# silently dropped. Re-verify the check fires on the SSA index lane, then flip
+# these two lines to expect emission.
+for shape in ("idxreg", "idxsel"):
     rc, d = run(f"opt_{shape}_oob", True)
-    fired = getattr(d, stat, 0)
     check(rc == 132, f"{shape} OOB traps (132) got {rc}")
-    check(fired > 0, f"{shape} isel path fired ({stat}={fired})")
+    check(d.ssaemit_funcs > 0,
+          f"{shape} went through the SSA emission lane "
+          f"(SSAEMIT_FUNCS={d.ssaemit_funcs})")
+    check(d.ssaemit_overlapviol == 0,
+          f"{shape} no SSA overlap violation "
+          f"(SSAEMIT_OVERLAPVIOL={d.ssaemit_overlapviol})")
+    check(d.ssaemit_memop == 0 and d.ssaemit_fallback > 0,
+          f"{shape} TRIPWIRE: indexing still falls back to -O0 "
+          f"(emitted={d.ssaemit_emitted} fallback={d.ssaemit_fallback} "
+          f"memop={d.ssaemit_memop}) -- if this is RED the SSA emitter now "
+          f"compiles array indexing; re-verify --check-bounds fires on the SSA "
+          f"index lane, then update this assertion")
     rc, d = run(f"opt_{shape}_inrange", True)
     check(rc == 40, f"{shape} in-range runs (40) got {rc}")
 rc, d = run("opt_unsafe", True)

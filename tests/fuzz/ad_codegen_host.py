@@ -321,7 +321,21 @@ def run_dump(src_path: Path, timeout=30, opt=False, split_break=False,
                       immfold=meta.get("IMMFOLD", 0),
                       immalu=meta.get("IMMALU", 0),
                       imulimm=meta.get("IMULIMM", 0),
-                      cmpjcc=meta.get("CMPJCC", 0))
+                      cmpjcc=meta.get("CMPJCC", 0),
+                      # SSA-emission coverage counters. The dump driver has
+                      # emitted these since the opt1 retirement (--opt now arms
+                      # the SSA gate, so SSAEMIT_* is the ONLY way to tell
+                      # whether a function was actually compiled through the
+                      # optimizer or silently fell back to plain -O0
+                      # gen_function). Parsed but previously dropped on the
+                      # floor, which let test_adder_bounds_check_opt.sh believe
+                      # it was testing an optimized code path when every one of
+                      # its fixtures was falling back.
+                      ssaemit_funcs=meta.get("SSAEMIT_FUNCS", 0),
+                      ssaemit_emitted=meta.get("SSAEMIT_EMITTED", 0),
+                      ssaemit_fallback=meta.get("SSAEMIT_FALLBACK", 0),
+                      ssaemit_memop=meta.get("SSAEMIT_MEMOP", 0),
+                      ssaemit_overlapviol=meta.get("SSAEMIT_OVERLAPVIOL", 0))
 
 
 # --------------------------------------------------------------------------
@@ -709,6 +723,11 @@ class CodegenRun:
         self.storeimm = kw.get("storeimm", 0)
         self.imulimm = kw.get("imulimm", 0)
         self.cmpjcc = kw.get("cmpjcc", 0)
+        self.ssaemit_funcs = kw.get("ssaemit_funcs", 0)
+        self.ssaemit_emitted = kw.get("ssaemit_emitted", 0)
+        self.ssaemit_fallback = kw.get("ssaemit_fallback", 0)
+        self.ssaemit_memop = kw.get("ssaemit_memop", 0)
+        self.ssaemit_overlapviol = kw.get("ssaemit_overlapviol", 0)
 
 
 def run_through_codegen_ad(seed, body, work_dir: Path, keep=False, opt=False,
