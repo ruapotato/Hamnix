@@ -74,13 +74,26 @@ for f in "${pats[@]}"; do
     # A gate that launches QEMU -- directly, via the shared runners, or by
     # demanding an installer image -- is not a host gate.
     #
-    # 2026-07-31: `_installed_boot.sh` / `installed_boot_start` was MISSING from
-    # this list, so five gates that boot the installed NVMe disk under OVMF were
-    # classified QEMU-free and swept as host gates: test_auth, test_useradd,
-    # test_user_home_mount, test_himem_above_4g, test_bios_boot. That is how
-    # test_auth turned up in a "host gate" sweep -- it boots a VM, it just does
-    # it through a helper whose name contains neither "qemu" nor "img". The
-    # exclusion is a capability test, so it has to name every route to a VM.
-    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|_installed_boot\.sh|installed_boot_start|ensure_installer_img|installer_img_or_verdict' "$f" && continue
+    # 2026-07-31: this list named exactly ONE of the SEVEN helpers under
+    # scripts/ that reach qemu-system-x86_64. Gates route to a VM through a
+    # helper whose name contains neither "qemu" nor "img", so they were
+    # classified QEMU-free and swept as host gates -- 63 of them, including the
+    # whole 9P suite (test_9p_codec boots QEMU + hamsh) and test_auth, which is
+    # how test_auth came back red from a "host gate sweep".
+    #
+    # Enumerated by grepping scripts/_*.sh for qemu-system-x86_64:
+    #   _hamsh_drive.sh          hamsh_boot() -> qemu-system-x86_64
+    #   _installed_boot.sh       installed_boot_start(), the OVMF/NVMe harness
+    #   _kernel_iso.sh           installs the build/binshim qemu-system-x86_64
+    #                            wrapper the other drivers invoke
+    #   _kvm_coreutils_repro.sh  timeout 1100s qemu-system-x86_64
+    #   _kvm_wc_repro.sh         timeout 900s qemu-system-x86_64
+    #   _qemu_drive.sh           the original, the only one listed before
+    # _build_lock.sh is NOT in the list: it only MENTIONS qemu in a comment
+    # about _kernel_iso.sh's shim, and 4 genuinely QEMU-free gates source it.
+    #
+    # If you add a helper that can start a VM, add it here. This is a
+    # CAPABILITY test, and it has to name every route to a VM or it lies.
+    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|_hamsh_drive\.sh|hamsh_boot|_installed_boot\.sh|installed_boot_start|_kernel_iso\.sh|_kvm_coreutils_repro\.sh|_kvm_wc_repro\.sh|ensure_installer_img|installer_img_or_verdict' "$f" && continue
     echo "$f"
 done
