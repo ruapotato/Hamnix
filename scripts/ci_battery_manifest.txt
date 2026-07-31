@@ -4676,3 +4676,21 @@ bash scripts/test_leak_hours_report_mutations.sh
 # because a stamp that always says stale means a 6-minute rebuild per gate and
 # gets the guard disabled.
 bash scripts/test_installer_img_stamp.sh
+# From the USER-REPORTED "a Google search fails / google.com loads unusable".
+# Two host-side defects, both reproduced against the captured
+# tests/fixtures/realsites/ pages with chromium --dump-dom as the oracle:
+# (A) the LAYOUT scanner now honours RAWTEXT, so a bare `a<0` in an inline
+# script no longer eats the following start tag and swallows the REST OF THE
+# DOCUMENT — that one is most of the web, not a google quirk. Its sibling
+# test_hambrowse_rawtext_host.sh pins the same rule for the DOM scanners and
+# passed throughout, which is exactly how this stayed hidden: getElementById
+# kept finding the element layout had swallowed. (C) the result of JS `<<` is
+# an Int32, pinned against node v20. The third defect (the inline-style reveal
+# tri-state) is HELD off main on branch hold/style-reveal with its own gate —
+# see docs/browser_blank_at_rest_reftests.md — so nothing here asserts
+# behaviour main does not have. PART E measures the env arena on the two google
+# pages so "environment pool exhausted" stays answerable as capacity-vs-
+# lifetime by MEASUREMENT: 319 and 1400 envs against a ceiling of 80000, and a
+# 300,000-scope Function.prototype.call loop that completes only because the
+# arena is swept and refilled.
+bash scripts/test_hambrowse_rawtext_layout_host.sh
