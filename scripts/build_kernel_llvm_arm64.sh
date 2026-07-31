@@ -36,14 +36,16 @@ command -v "$CLANG"   >/dev/null || { echo "[kllvm-arm64] ERROR: $CLANG not foun
 command -v "$AS_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $AS_CMD not found (apt install binutils-aarch64-linux-gnu)" >&2; exit 1; }
 command -v "$LD_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $LD_CMD not found" >&2; exit 1; }
 [ -x "$HOST_AC" ] || { echo "[kllvm-arm64] ERROR: no host_ac.elf at $HOST_AC (source scripts/_adder_cc.sh; adder_cc_bootstrap)" >&2; exit 1; }
-for f in head.S vectors.S gic.S el0.S sched.S a10.S a12.S elprobe.S intrinsics.S stubs.c kernel.lds \
+for f in head.S vectors.S gic.S el0.S sched.S a10.S a12.S a13.S elprobe.S intrinsics.S stubs.c kernel.lds \
          user_rt.S user.lds user_blob.S; do
     [ -f "$ARM/$f" ] || { echo "[kllvm-arm64] ERROR: missing $ARM/$f" >&2; exit 1; }
 done
 A10_SRC="${A10_SRC:-user/arm64_a10_el0.ad}"
 A11_ECHO_SRC="${A11_ECHO_SRC:-user/arm64_a11_echo.ad}"
 A11_SUM_SRC="${A11_SUM_SRC:-user/arm64_a11_sum.ad}"
-for f in "$A10_SRC" "$A11_ECHO_SRC" "$A11_SUM_SRC"; do
+A13_DEMAND_SRC="${A13_DEMAND_SRC:-user/arm64_a13_demand.ad}"
+A13_SEGV_SRC="${A13_SEGV_SRC:-user/arm64_a13_segv.ad}"
+for f in "$A10_SRC" "$A11_ECHO_SRC" "$A11_SUM_SRC" "$A13_DEMAND_SRC" "$A13_SEGV_SRC"; do
     [ -f "$f" ] || { echo "[kllvm-arm64] ERROR: missing $f" >&2; exit 1; }
 done
 
@@ -136,6 +138,9 @@ echo "[kllvm-arm64] 3a) build the EL0 user programs via the SAME backend"
 build_el0_image a10_user  "$A10_SRC"
 build_el0_image a11_echo  "$A11_ECHO_SRC"
 build_el0_image a11_sum   "$A11_SUM_SRC"
+# A13's two members: the demand-paging program and its negative control.
+build_el0_image a13_demand "$A13_DEMAND_SRC"
+build_el0_image a13_segv   "$A13_SEGV_SRC"
 # The A10 line the A10 gate greps for, kept verbatim.
 A10_SZ="$(stat -c %s "$WORK/a10_user.bin")"
 echo "[kllvm-arm64]    A10 user image: $A10_SZ bytes, entry 0x48010000, 0 undefined, 0 bails"
@@ -143,6 +148,7 @@ echo "[kllvm-arm64]    A10 user image: $A10_SZ bytes, entry 0x48010000, 0 undefi
 echo "[kllvm-arm64] 3a2) pack the EL0 images into the named archive (A11)"
 python3 scripts/pack_arm64_user_archive.py "$WORK/user_archive.bin" \
     "a10=$WORK/a10_user.bin" "echo=$WORK/a11_echo.bin" "sum=$WORK/a11_sum.bin" \
+    "dpage=$WORK/a13_demand.bin" "segv=$WORK/a13_segv.bin" \
     | sed 's/^/[kllvm-arm64]    /' \
     || { echo "[kllvm-arm64] ERROR: packing the EL0 user archive failed" >&2; exit 1; }
 
@@ -154,6 +160,7 @@ echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile s
 "$AS_CMD" -o "$WORK/sched.o"      "$ARM/sched.S"      || { echo "[kllvm-arm64] ERROR: as sched.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/a10.o"        "$ARM/a10.S"        || { echo "[kllvm-arm64] ERROR: as a10.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/a12.o"        "$ARM/a12.S"        || { echo "[kllvm-arm64] ERROR: as a12.S" >&2; exit 1; }
+"$AS_CMD" -o "$WORK/a13.o"        "$ARM/a13.S"        || { echo "[kllvm-arm64] ERROR: as a13.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/elprobe.o"    "$ARM/elprobe.S"    || { echo "[kllvm-arm64] ERROR: as elprobe.S" >&2; exit 1; }
 # -I "$WORK" so user_blob.S's `.incbin "a10_user.bin"` picks up the image just
 # built in 3a — never a checked-in or stale copy.
@@ -212,7 +219,7 @@ fi
 echo "[kllvm-arm64] 3c) auto-stub LLVM bails not defined by any object"
 grep -oP '^; BAILED @\K[A-Za-z0-9_.$]+' "$WORK/kernel_arm64.ll" | sort -u >"$WORK/bailed.txt"
 : >"$WORK/all_defined.txt"
-for o in head vectors gic el0 sched a10 user_blob kernel_arm64 intrinsics stubs; do
+for o in head vectors gic el0 sched a10 a12 a13 user_blob kernel_arm64 intrinsics stubs; do
     "${CROSS}nm" --defined-only -g "$WORK/$o.o" 2>/dev/null | awk '{print $NF}'
 done | sort -u >"$WORK/all_defined.txt"
 comm -23 "$WORK/bailed.txt" "$WORK/all_defined.txt" >"$WORK/bailed_undefined.txt"
@@ -240,7 +247,7 @@ echo "[kllvm-arm64] 4) link bootable aarch64 kernel ELF (kernel.lds, -nostdlib -
 "$LD_CMD" -nostdlib -static -z noexecstack -z max-page-size=4096 \
     -T "$ARM/kernel.lds" -o "$OUT_ELF" \
     "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/el0.o" "$WORK/sched.o" \
-    "$WORK/a10.o" "$WORK/a12.o" "$WORK/elprobe.o" "$WORK/user_blob.o" "$WORK/kernel_arm64.o" \
+    "$WORK/a10.o" "$WORK/a12.o" "$WORK/a13.o" "$WORK/elprobe.o" "$WORK/user_blob.o" "$WORK/kernel_arm64.o" \
     "$WORK/intrinsics.o" "$WORK/stubs.o" "$WORK/autostub_bails.o" \
     || { echo "[kllvm-arm64] ERROR: ld link failed" >&2; exit 1; }
 

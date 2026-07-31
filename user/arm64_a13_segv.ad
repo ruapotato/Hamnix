@@ -1,0 +1,60 @@
+# user/arm64_a13_segv.ad — the NEGATIVE CONTROL for ARM64 demand paging (A13).
+#
+# A demand pager that maps ANY faulting address is not a pager, it is a hole: it
+# converts every wild pointer into a silently-working access. So the claim "the
+# kernel services demand faults" is only worth anything alongside "and it refuses
+# the ones it should".
+#
+# This program stores to 0x4900_0000. That VA is OUTSIDE the demand window and
+# outside the user window entirely — it lands in the kernel's identity RAM map,
+# whose 2 MiB blocks are AP=00 (EL1 RW, EL0 no data access). An EL0 store there
+# is an abort the kernel must NOT service.
+#
+# It announces itself over write(2) FIRST, so the log distinguishes "the program
+# ran and then faulted" from "the program never started". The exit() after the
+# store must be UNREACHABLE: reaching it would mean the kernel resumed a task it
+# should have killed, and the gate asserts the status is the kernel's 139
+# (128+SIGSEGV), not this program's 0.
+#
+# 100% Adder; only _start is assembly (arch/arm64/llvm/user_rt.S).
+
+A13_SEGV_VA: int64 = 0x49000000    # EL1-only identity RAM: EL0 must not touch it
+
+a13_segv_out: Array[32, uint8]
+
+
+def a13_segv_write(fd: int64, buf: Ptr[uint8], len_: uint64) -> int64:
+    return cast[int64](__syscall3(cast[int64](1), fd, buf, len_))
+
+
+def a13_segv_exit(status: int64) -> int64:
+    return cast[int64](__syscall1(cast[int64](60), status))
+
+
+def a13_segv_put(at: int64, c: int64) -> int64:
+    if at < 32:
+        a13_segv_out[at] = cast[uint8](c)
+        return at + 1
+    return at
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    at: int64 = 0
+    at = a13_segv_put(at, 65)   # 'A'
+    at = a13_segv_put(at, 49)   # '1'
+    at = a13_segv_put(at, 51)   # '3'
+    at = a13_segv_put(at, 58)   # ':'
+    at = a13_segv_put(at, 32)   # ' '
+    at = a13_segv_put(at, 87)   # 'W'
+    at = a13_segv_put(at, 73)   # 'I'
+    at = a13_segv_put(at, 76)   # 'L'
+    at = a13_segv_put(at, 68)   # 'D'
+    at = a13_segv_put(at, 10)   # '\n'
+    a13_segv_write(1, &a13_segv_out[0], cast[uint64](at))
+    # The wild store. Control must never come back from this.
+    p: Ptr[uint64] = cast[Ptr[uint64]](cast[uint64](A13_SEGV_VA))
+    p[0] = cast[uint64](1)
+    # UNREACHABLE if the kernel behaves. Deliberately exit(0) so a kernel that
+    # wrongly resumed the task would report 0 and be caught by the status check.
+    a13_segv_exit(0)
+    return cast[int32](0)

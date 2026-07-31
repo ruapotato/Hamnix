@@ -5126,6 +5126,205 @@ def arm64_a12_take_exit_arm64(space: uint64) -> int64:
     return 1
 
 
+# ---------------------------------------------------------------------------
+# A13 (arch/arm64/llvm/a13.S): DEMAND PAGING — a serviceable Data Abort from EL0.
+#
+# Through A12 every leaf of every address space was stamped VALID before a task
+# ran, so an address space had to be fully pre-populated and an EC=0x24 from EL0
+# was fatal. Worse, it was not even RECOGNISED: el0.S's Lower-EL synchronous stub
+# fed every synchronous exception from EL0 to arm64_svc_dispatch_arm64() without
+# reading ESR_EL1.EC, so a data abort was decoded as a syscall numbered by
+# whatever the faulting program had in x8, got a return value written into x0,
+# and was eret'd back to resume. That is the failure shape this lane has already
+# been bitten by once (see arm64_a12_take_exit_arm64 above): a broken path that
+# keeps printing a plausible log. el0.S now decodes EC and routes aborts here.
+#
+# THE POLICY IS HERE, IN EMITTED ADDER — the assembly only reads FAR/ESR/TTBR0
+# and issues `tlbi`, which Adder cannot express. This function does the real
+# work: fault-class check, region check, a WALK OF THE LIVE TTBR0 TABLES (not a
+# remembered pointer — whatever the CPU is actually using), frame allocation,
+# zero-fill, and leaf stamping. Same split as A8's syscall dispatcher and A9's
+# scheduler.
+#
+# EVERY REFUSAL KILLS THE TASK RATHER THAN THE KERNEL. A fault outside the demand
+# region, on an already-valid leaf, of a class that is not a translation fault, or
+# with the frame pool exhausted, latches exit status 139 (128 + SIGSEGV) and lets
+# the stub unwind to head.S exactly as exit() does. That is both the correct
+# kernel behaviour and what makes the negative control an EXECUTED path: the
+# 'segv' EL0 program touches an EL1-only VA, is killed, and the boot continues.
+#
+# ADDITIVE + aarch64-only: reached only from arch/arm64/llvm/a13.S, and no symbol
+# from that file is declared here (see the A10 block on why an `extern def` in
+# this SHARED root breaks the x86_64 LINK). All arch addresses arrive as
+# ordinary AAPCS64 arguments.
+# ---------------------------------------------------------------------------
+ARM64_A13_DEMAND_BASE: uint64 = 0x48140000  # must equal a13.S's A13_DEMAND_L3
+ARM64_A13_DEMAND_END: uint64 = 0x48150000   # 16 pages
+ARM64_A13_PTE_FLAGS: uint64 = 0x0F47        # VALID|AttrIndx1|AP=01|SH|AF|nG=1
+ARM64_A13_TBL_MASK: uint64 = 0xFFFFFFFFF000 # descriptor -> next-level table PA
+ARM64_A13_KILL_STATUS: int64 = 139          # 128 + SIGSEGV
+ARM64_A13_PAGE: uint64 = 4096
+
+arm64_a13_faults: uint64 = 0        # demand faults SERVICED
+arm64_a13_refusals: uint64 = 0      # faults refused (task killed)
+arm64_a13_next_frame: uint64 = 0    # bump allocator over the a13.S frame pool
+
+
+def arm64_a13_kill_arm64(why: Ptr[char], far: uint64) -> int64:
+    # Refuse to service this fault: latch a SIGSEGV-shaped exit so el0.S's stub
+    # unwinds to head.S like a normal exit(). Never halts the kernel.
+    arm64_a13_refusals = arm64_a13_refusals + cast[uint64](1)
+    printk1(why, far)
+    arm64_llvm_el0_exit_code = ARM64_A13_KILL_STATUS
+    arm64_llvm_el0_exit_pending = 1
+    return 0
+
+
+def arm64_a13_demand_fault_arm64(far: uint64, esr: uint64, ttbr0: uint64,
+                                 pool: uint64, pool_pages: uint64) -> int64:
+    # Returns 1 = page installed, retry the faulting instruction (el0.S erets
+    # with ELR_EL1 untouched); 0 = refused, the task has been killed.
+    dfsc: uint64 = esr & cast[uint64](0x3F)
+    # Region check FIRST: only the carved demand window is demand-pageable. A
+    # handler that mapped any faulting VA would turn every wild pointer into a
+    # silently-working access, which is precisely the bug class this lane keeps
+    # finding.
+    if far < ARM64_A13_DEMAND_BASE or far >= ARM64_A13_DEMAND_END:
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — outside the demand region (task killed)\n", far)
+    # Fault class: DFSC 0b0001xx == translation fault, levels 0..3. A PERMISSION
+    # fault (0b0011xx) inside the same window must NOT be papered over by
+    # stamping a fresh leaf — that would hide a genuine access-rights bug.
+    if (dfsc & cast[uint64](0x3C)) != cast[uint64](0x04):
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — not a translation fault (task killed)\n", far)
+    # WALK THE LIVE TABLES. The base comes from the TTBR0_EL1 the CPU is using,
+    # read by a13.S at fault time — not from a pointer the kernel remembered,
+    # which could agree with a stale idea of the address space.
+    l1: Ptr[uint64] = cast[Ptr[uint64]](ttbr0 & ARM64_A13_TBL_MASK)
+    d1: uint64 = l1[(far >> 30) & 0x1FF]
+    if (d1 & cast[uint64](0x3)) != cast[uint64](0x3):
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — no L1 table descriptor (task killed)\n", far)
+    l2: Ptr[uint64] = cast[Ptr[uint64]](d1 & ARM64_A13_TBL_MASK)
+    d2: uint64 = l2[(far >> 21) & 0x1FF]
+    if (d2 & cast[uint64](0x3)) != cast[uint64](0x3):
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — no L2 table descriptor (task killed)\n", far)
+    l3: Ptr[uint64] = cast[Ptr[uint64]](d2 & ARM64_A13_TBL_MASK)
+    i3: uint64 = (far >> 12) & 0x1FF
+    if (l3[i3] & cast[uint64](0x1)) != cast[uint64](0):
+        # Already valid. The CPU faulted anyway, so something other than "this
+        # page is absent" is wrong; installing a second mapping would hide it.
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — leaf is already valid (task killed)\n", far)
+    if arm64_a13_next_frame >= pool_pages:
+        return arm64_a13_kill_arm64(
+            "A13: REFUSED fault at 0x%x — frame pool exhausted (task killed)\n", far)
+    pa: uint64 = pool + arm64_a13_next_frame * ARM64_A13_PAGE
+    arm64_a13_next_frame = arm64_a13_next_frame + cast[uint64](1)
+    # Zero the frame before it becomes user-visible: a demand-paged anonymous
+    # page must not leak whatever the kernel left in that .bss.
+    z: Ptr[uint64] = cast[Ptr[uint64]](pa)
+    zi: uint64 = cast[uint64](0)
+    while zi < cast[uint64](512):
+        z[zi] = cast[uint64](0)
+        zi = zi + cast[uint64](1)
+    l3[i3] = pa | ARM64_A13_PTE_FLAGS
+    arm64_a13_faults = arm64_a13_faults + cast[uint64](1)
+    printk3("A13: demand fault #%d: VA 0x%x -> fresh frame PA 0x%x, retrying\n",
+            arm64_a13_faults, far, pa)
+    return 1
+
+
+def arm64_a13_precheck_arm64(l3_base: uint64, npages: uint64) -> int64:
+    # Called from head.S BEFORE the demand program runs. Asserts, from the actual
+    # descriptors, that the whole demand window is INVALID. Without this the run
+    # could pass vacuously against a fully-mapped window that never faulted, and
+    # the fault-count check below would be the only thing standing in the way.
+    l3: Ptr[uint64] = cast[Ptr[uint64]](l3_base)
+    base: uint64 = (ARM64_A13_DEMAND_BASE >> 12) & 0x1FF
+    k: uint64 = cast[uint64](0)
+    while k < npages:
+        if (l3[base + k] & cast[uint64](0x1)) != cast[uint64](0):
+            printk1("A13 FAIL: demand leaf %d is already valid before the run\n", k)
+            return 0
+        k = k + cast[uint64](1)
+    arm64_a13_faults = cast[uint64](0)
+    arm64_a13_refusals = cast[uint64](0)
+    arm64_a13_next_frame = cast[uint64](0)
+    printk1("A13: %d demand leaves are INVALID before the EL0 program runs\n", npages)
+    return 1
+
+
+def arm64_a13_report_arm64(l3_base: uint64, npages: uint64) -> int64:
+    # Called from head.S AFTER the demand program exits. Three independent things
+    # must hold, and none of them can be satisfied by a pre-populated window:
+    #   1. exactly npages faults were serviced (one per page, so the retry really
+    #      did install the mapping — a retry that did not would fault forever);
+    #   2. every demand leaf is now VALID and points into a DISTINCT frame;
+    #   3. the bytes the EL0 program stored are readable at the frame's IDENTITY
+    #      PA — i.e. read WITHOUT going through the task's mapping, so no TLB
+    #      alias can fake it (the discipline arm64_a12_window_differs uses).
+    if arm64_a13_faults != npages:
+        printk2("A13 FAIL: serviced %d demand faults, expected %d\n",
+                arm64_a13_faults, npages)
+        return 0
+    l3: Ptr[uint64] = cast[Ptr[uint64]](l3_base)
+    base: uint64 = (ARM64_A13_DEMAND_BASE >> 12) & 0x1FF
+    prev: uint64 = cast[uint64](0)
+    k: uint64 = cast[uint64](0)
+    while k < npages:
+        d: uint64 = l3[base + k]
+        if (d & cast[uint64](0x1)) == cast[uint64](0):
+            printk1("A13 FAIL: demand leaf %d is still invalid after the run\n", k)
+            return 0
+        pa: uint64 = d & ARM64_A13_TBL_MASK
+        if k != cast[uint64](0):
+            if pa == prev:
+                printk1("A13 FAIL: demand leaf %d reuses the previous frame\n", k)
+                return 0
+        prev = pa
+        # The contract with user/arm64_a13_demand.ad: word 0 = 0x5A5A0000 +
+        # (k+1)*1111, word 1 = k. Read at the frame's identity PA.
+        f: Ptr[uint64] = cast[Ptr[uint64]](pa)
+        want: uint64 = cast[uint64](0x5A5A0000) + (k + cast[uint64](1)) * cast[uint64](1111)
+        if f[0] != want or f[1] != k:
+            printk3("A13 FAIL: frame %d holds 0x%x/%d, not what EL0 stored\n",
+                    k, f[0], f[1])
+            return 0
+        k = k + cast[uint64](1)
+    if arm64_llvm_el0_exit_pending == 0:
+        printk0("A13 FAIL: the demand program never reached exit()\n")
+        return 0
+    printk2("A13 PASS: %d demand faults serviced; EL0 stores verified at the frames' identity PAs (status=%d)\n",
+            arm64_a13_faults, cast[uint64](arm64_llvm_el0_exit_code))
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    return 1
+
+
+def arm64_a13_take_kill_arm64() -> int64:
+    # NEGATIVE CONTROL. The 'segv' program touches an EL1-only VA outside the
+    # demand region. The kernel must REFUSE it and kill the task -- not map it,
+    # not halt, not resume it with a plausible value in x0.
+    if arm64_a13_refusals == cast[uint64](0):
+        printk0("A13 FAIL: the out-of-region fault was not refused\n")
+        return 0
+    if arm64_llvm_el0_exit_pending == 0:
+        printk0("A13 FAIL: the faulting task was never terminated\n")
+        return 0
+    if arm64_llvm_el0_exit_code != ARM64_A13_KILL_STATUS:
+        printk1("A13 FAIL: faulting task exited %d, expected 139\n",
+                cast[uint64](arm64_llvm_el0_exit_code))
+        return 0
+    printk2("A13 PASS: %d refused fault(s); the faulting EL0 task was killed with status %d and the kernel survived\n",
+            arm64_a13_refusals, cast[uint64](arm64_llvm_el0_exit_code))
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    return 1
+
+
 def start_kernel():
     start_kernel_early()
 

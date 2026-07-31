@@ -1,0 +1,92 @@
+# user/arm64_a13_demand.ad — the EL0 program that PROVES demand paging on the
+# ARM64 LLVM lane (A13; kernel side: arch/arm64/llvm/a13.S + init/main.ad).
+#
+# Every EL0 program before this one only ever touched memory the kernel had
+# already mapped. This one touches memory that is DELIBERATELY NOT MAPPED: the
+# A13 address space leaves VA 0x4814_0000..0x4814_FFFF as invalid descriptors, so
+# the very first store below is a translation fault. The program is written as if
+# nothing unusual happens — no fault handling, no retry, no syscall — because the
+# whole claim of demand paging is that the task cannot tell. If the kernel's
+# handler failed to install the page, this program does not get a wrong answer:
+# it faults forever, or it is killed.
+#
+# The contract with the kernel's verifier (init/main.ad arm64_a13_report_arm64):
+# page k gets word 0 = 0x5A5A0000 + (k+1)*1111 and word 1 = k. The kernel reads
+# those back at each frame's IDENTITY PA — not through this task's mapping — so a
+# TLB alias cannot make the check pass.
+#
+# The second loop reads every page back. Those pages are mapped by then, so they
+# must NOT fault: the kernel requires EXACTLY one fault per page, which is how a
+# retry that silently did not install anything gets caught.
+#
+# 100% Adder; only _start is assembly (arch/arm64/llvm/user_rt.S).
+
+A13_BASE: int64 = 0x48140000       # must equal a13.S's demand window base
+A13_PAGES: int64 = 8               # <= a13.S's A13_DEMAND_PAGES
+
+a13_out: Array[64, uint8]
+
+
+def a13_write(fd: int64, buf: Ptr[uint8], len_: uint64) -> int64:
+    return cast[int64](__syscall3(cast[int64](1), fd, buf, len_))
+
+
+def a13_exit(status: int64) -> int64:
+    return cast[int64](__syscall1(cast[int64](60), status))
+
+
+def a13_put(at: int64, c: int64) -> int64:
+    if at < 64:
+        a13_out[at] = cast[uint8](c)
+        return at + 1
+    return at
+
+
+def a13_put_u64(at: int64, v: int64) -> int64:
+    if v == 0:
+        return a13_put(at, 48)
+    digits: Array[24, uint8]
+    n: int64 = 0
+    t: int64 = v
+    while t > 0:
+        digits[n] = cast[uint8](48 + t % 10)
+        t = t / 10
+        n = n + 1
+    k: int64 = at
+    while n > 0:
+        n = n - 1
+        k = a13_put(k, cast[int64](digits[n]))
+    return k
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    # 1) STORE into unmapped pages. Each first touch is a Data Abort the kernel
+    #    services by allocating a frame and retrying the instruction.
+    i: int64 = 0
+    while i < A13_PAGES:
+        p: Ptr[uint64] = cast[Ptr[uint64]](cast[uint64](A13_BASE + i * 4096))
+        p[0] = cast[uint64](0x5A5A0000 + (i + 1) * 1111)
+        p[1] = cast[uint64](i)
+        i = i + 1
+    # 2) READ them all back. By now they are mapped, so none of these may fault.
+    #    Distinct local name from the loop above on purpose: two same-named
+    #    locals in one function is a known SSA slot-sharing miscompile shape.
+    acc: int64 = 0
+    j: int64 = 0
+    while j < A13_PAGES:
+        q: Ptr[uint64] = cast[Ptr[uint64]](cast[uint64](A13_BASE + j * 4096))
+        acc = acc + cast[int64](q[0]) + cast[int64](q[1])
+        j = j + 1
+    at: int64 = 0
+    at = a13_put(at, 65)        # 'A'
+    at = a13_put(at, 49)        # '1'
+    at = a13_put(at, 51)        # '3'
+    at = a13_put(at, 58)        # ':'
+    at = a13_put(at, 32)        # ' '
+    at = a13_put(at, 68)        # 'D'
+    at = a13_put(at, 61)        # '='
+    at = a13_put_u64(at, acc)
+    at = a13_put(at, 10)        # '\n'
+    a13_write(1, &a13_out[0], cast[uint64](at))
+    a13_exit(acc % 256)
+    return cast[int32](acc % 256)
