@@ -163,7 +163,13 @@ want = {'a10': open(sys.argv[2], 'rb').read(),
         'sum': open(sys.argv[4], 'rb').read()}
 magic, count = struct.unpack_from('<QQ', blob, 0)
 assert magic == 0x5648435241313141, 'bad magic %#x' % magic
-assert count == 3, 'expected 3 members, got %d' % count
+# A11 depends on THREE members; later phases add their own (A13 packs 'dpage'
+# and 'segv'). Pinning the exact count made this gate red on an archive that was
+# merely EXTENDED, which is gate rot, not a defect. What A11 actually needs is
+# asserted below and is unweakened: its three members are present, byte-identical
+# to the images just built, all members are pairwise distinct, and 'sum' is not
+# member 0.
+assert count >= 3, 'expected at least 3 members, got %d' % count
 seen = {}
 order = []
 for i in range(count):
@@ -177,7 +183,7 @@ for name, data in want.items():
     assert name in seen, 'member %r missing' % name
     assert seen[name] == data, 'member %r payload differs from the built image' % name
 # The by-name assertions are only meaningful if the members DIFFER.
-assert len(set(seen.values())) == 3, 'archive members are not distinct'
+assert len(set(seen.values())) == count, 'archive members are not distinct'
 # And only if the kernel does not get the right answer by asking for member 0:
 # head.S requests "sum" first, so "sum" must NOT be member 0.
 assert order[0] != 'sum', 'sum is member 0 — the by-name test would be vacuous'
