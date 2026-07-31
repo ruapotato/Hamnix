@@ -158,16 +158,57 @@ trap 'rm -rf "$_FAILDIR" "$_LANEDIR"' EXIT
 # because nothing on-device exercises it independently, and 276/2 is the split
 # that is known-good end to end. A correct 276/2 beats a broken 278/0.
 #
-# The fault is NOT the pointer-redeclaration hoist: re-running with the hoist
-# reverted (and the canvas.ad `cq` name collision dodged by hand so nothing
-# bailed) still failed. It is also not reproducible on the HOST lane — the same
-# engine built through scripts/adder_cc_llvm.sh from user/hambrowse_host.ad
-# matches the seed build byte-for-byte on all 286 corpus pages. That points at
-# hambrowse.ad's device-only code (graphics/wsys/scene/net/fonts, ~700 functions
-# absent from hambrowse_host.ad), not at the shared parse/layout engine.
+# ROOT CAUSE (2026-07-30, device-bisected). It is NOT a codegen bug. Not the
+# pointer-redeclaration hoist (re-running with the hoist reverted, and the
+# canvas.ad `cq` collision dodged by hand so nothing bailed, still failed), and
+# not the shared parse/layout engine (the host lane built from
+# user/hambrowse_host.ad matches the seed build byte-for-byte on all 286 corpus
+# pages). It is an ADDRESS-SPACE LAYOUT collision between the LLVM lane's ELF64
+# output and the kernel's low identity direct map:
 #
-# TO LIFT THIS PIN: fix that, then run the four configurations above on a quiet
-# host with a forced image rebuild, and require the hambrowse=LLVM rows to PASS.
+#   * The LLVM lane links a FIXED low ET_EXEC at 0x400000 (user/init64.lds).
+#     The native lane's ELF32 output is REBASED to its own physical region
+#     (vaddr == phys == region), so its user vaddrs only ever cover its OWN
+#     pages. That is the whole difference between the two lanes here.
+#   * hambrowse has ~174 MiB of static BSS, so the ELF64 image occupies user
+#     vaddrs [0x400000, 0xB35E000) — which NUMERICALLY ALIAS physical RAM
+#     4-188 MiB: most of MEMBLOCK's [0x200000, 0x0F000000) pool and the
+#     kernel's own direct map. Under a shared PML4[0] the kernel loses its
+#     direct map inside that window whenever it runs under this task's CR3.
+#   * BOTH loader strategies lose. DEMAND-BSS (fs/elf.ad's ELF64 split) punches
+#     all 44,501 leaves in the window not-present, so the demand resolver's own
+#     low-RAM touches fault recursively and the box WEDGES with interrupts off
+#     — in-program markers stop between sys_bind and he_set_click_links, the
+#     first BSS store in main (`he_click_links` sits +135 MiB inside the
+#     window). EAGER full-span (what fs/elf.ad's ELF_MAX_LOW_BSS_DEMAND now
+#     forces above 64 MiB) instead installs user PTEs across the window, so the
+#     kernel reaches a direct-map VA and lands on the app's BSS: reproduced 5/5
+#     as `[pf] kernel write to RO user page va=0x0a890d98 pte=0x22090007` in
+#     page_set_rmap+0x2f — the kernel touching phys 168.6 MiB through its
+#     identity VA and hitting the task's US=1 page backed by phys 544.6 MiB
+#     instead. hambrowse now gets as far as opening its scene window and laying
+#     out at 880x600, then SIGSEGVs; the visual gate still FAILs.
+#
+# So the wedge is fixed but the lane is still wrong, and the residual failure is
+# a KERNEL MEMORY-CORRUPTION hazard, not a browser bug: it is only luck that it
+# faults instead of silently scribbling on a user page.
+#
+# TO LIFT THIS PIN, one of:
+#   a) link the LLVM lane's output as ET_DYN at a HIGH ASLR vbase so the image
+#      can never alias the direct map (the resolution mm/vma.ad's
+#      vma_register_bss_demand note already names), or
+#   b) the KPTI page_offset consumer flip, so the kernel reaches RAM through
+#      PML4[273] instead of the low identity map, or
+#   c) shrink hambrowse's static BSS below ELF_MAX_LOW_BSS_DEMAND (64 MiB) and
+#      below the low RAM the allocator hands out — its top arrays (sp_buf,
+#      ta_bytes, png_raw, idat_buf, png_out, html_buf, ...) are 4-16 MiB each.
+# Then run the four configurations above on a quiet host with a forced image
+# rebuild, and require the hambrowse=LLVM rows to PASS.
+#
+# scripts/test_elf_low_bss_window_host.sh is the permanent ratchet on this
+# class: it reads every shipped binary's ELF64 load geometry and reports its
+# demand-BSS window against the kernel's cap, so BSS growth in any of the ~278
+# apps cannot walk back into this band unnoticed.
 _LLVM_DEFAULT="${ADDER_LLVM_DEFAULT:-1}"
 _FORCE_NATIVE=" ${ADDER_FORCE_NATIVE_APPS-hambrowse js} "
 

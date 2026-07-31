@@ -4626,3 +4626,10 @@ bash scripts/test_llvm_ir_verify_host.sh
 # terminated literal), a >64-bit integer literal (wrapped), @bogus decorators
 # (ignored), and List/Dict/Tuple/Optional annotations (8-byte slot).
 bash scripts/test_compiler_lexer_errors.sh
+
+# Low-linked ELF64 ET_EXEC images alias the kernel's identity direct map: the
+# demand-BSS window fs/elf.ad punches not-present covers the SAME low physical
+# RAM the allocator hands out. A 174 MiB window (LLVM-lane hambrowse) wedges the
+# box on its first BSS store. This gate reads every shipped binary's ELF64 load
+# geometry and asserts none takes the demand path past ELF_MAX_LOW_BSS_DEMAND.
+bash scripts/test_elf_low_bss_window_host.sh
