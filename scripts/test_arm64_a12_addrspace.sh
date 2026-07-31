@@ -102,12 +102,13 @@ note "   arm64_a12_backing reserves 0x$BACK_SZ bytes (2 spaces x 2 MiB, private)
 # See the header. TCG's flush-on-ASID-change hides a global user mapping, so no
 # amount of booting can assert this; it is checked at the source, and it is
 # flagged here as inspection so nobody mistakes it for an executed result.
-for pair in "arch/arm64/llvm/head.S:l3_user_pgtable leaf" "arch/arm64/llvm/a12.S:A12 per-task leaf"; do
-    f="${pair%%:*}"; what="${pair#*:}"
-    grep -qE '0x0F47' "$f" || fail "INSPECTION: $what in $f is not nG=1 (0x0F47) — a global user mapping reintroduces the docs/arm64_phase50.md alias on real silicon, which TCG cannot show you"
-    grep -qE 'movz +x1, #0x0747|A12_PTE_FLAGS, 0x0747' "$f" \
-        && fail "INSPECTION: $f still builds a user leaf with nG=0 (0x0747)"
-done
+# Match the CODE, not the prose: both files discuss 0x0F47 and 0x0747 in their
+# headers, so a substring search would be satisfied by a comment while the
+# instruction built a global mapping.
+grep -qE '^[0-9]+:[[:space:]]+movz[[:space:]]+x1, #0x0F47' arch/arm64/llvm/head.S \
+    || fail "INSPECTION: head.S's l3_user_pgtable leaf is not built nG=1 (movz x1, #0x0F47) — a global user mapping reintroduces the docs/arm64_phase50.md alias on real silicon, which TCG cannot show you"
+grep -qE '^[[:space:]]*\.equ[[:space:]]+A12_PTE_FLAGS,[[:space:]]*0x0F47' arch/arm64/llvm/a12.S \
+    || fail "INSPECTION: a12.S's per-task leaf flags are not nG=1 (.equ A12_PTE_FLAGS, 0x0F47)"
 note "   INSPECTION ok: user-VA leaves are nG=1 in head.S and a12.S (TCG cannot test this; see header)"
 
 note "2) booting qemu-system-aarch64 -M virt"
