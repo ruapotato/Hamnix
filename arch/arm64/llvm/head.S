@@ -152,6 +152,15 @@ at_el1:
      * early_putc_user, ...). On exit() the sync stub restores this kernel context
      * and returns here. Proves EL0 accesses its OWN mapped memory AND real kernel
      * syscalls are serviced from EL0. A fault dumps ESR/ELR via vectors.S. */
+    /* ELPROBE (elprobe.S): before claiming ANYTHING about "EL0 userland", ask
+     * the CPU. The probe erets to a program in the kernel's own .text — the
+     * same AP=00 2 MiB block that carries A9's tasks — and executes
+     * `mrs x0, CurrentEL`, which is UNDEFINED at EL0 and defined at EL1. The
+     * vector SLOT the hardware picks, ESR.EC, SPSR.M and x0 all report the
+     * answer. It installs and restores its own VBAR_EL1, so nothing below is
+     * perturbed. */
+    bl      arm64_elprobe_run
+
     ldr     x0, =msg_a8
     bl      uart_puts
     bl      arm64_el0_prepare_user_mem_arm64
