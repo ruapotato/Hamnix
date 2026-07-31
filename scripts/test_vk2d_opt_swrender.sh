@@ -15,13 +15,47 @@
 #      alpha-write of the canonical glyph form only touches the alpha byte, which
 #      the real scanout target always holds at 255).
 # HOST-ONLY: python3 + as/ld, x86_64. NO QEMU.
+#
+# 2026-07-31 — VERDICT ON A RED: GATE ROT, not a broken optimization.
+# Claim 1 (VEC>=3) failed with VEC=0. lib/vk/vk_2d.ad has not been touched since
+# this gate landed (3b9cc5b2 is the SAME commit), and try_vectorize_{fill,blend,
+# glyph} are still wired into gen_while. What changed is underneath both: commit
+# ba2e4bcf (2026-07-21) retired the legacy opt1 lane, so `--opt` arms the SSA
+# pipeline and NO opt1 counter can move. Its three sibling gates
+# (test_opt_vec{torfill,blend,glyph}.sh) were taught to skip through
+# scripts/lib_opt1_lane.sh on 2026-07-25; this one was missed because its name
+# does not match `test_opt_vec*`, and it then sat red in a denominator nobody
+# was sweeping.
+#
+# It is NOT skipped wholesale. Claims 2 and 3 are pure CORRECTNESS (the shipped
+# SW rasterizer is not miscompiled under --opt, and RGB is inert on cov==0
+# cells) — they observe something real whether or not the lane is armed, and
+# they still FAIL the gate. Only the "the vectorizer fired" counter assertion is
+# conditional, and it re-arms itself the moment the probe reports the lane
+# active again (the probe is content-hash cached against the dump driver, so any
+# compiler edit re-probes).
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ_ROOT"
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib_opt1_lane.sh"
+OPT1_LANE="$(opt1_lane_state)"
+if [ "$OPT1_LANE" = "retired" ]; then
+    echo "SKIPPED-PARTIAL: --opt legacy opt1 lane is RETIRED (ba2e4bcf, 2026-07-21) — the VEC-fired assertion cannot move"
+    echo "SKIPPED-REASON: feature intentionally OFF pending the SSA optimizer rewrite; NOT a broken optimization"
+    echo "SKIPPED-EVIDENCE: scripts/_opt1_lane_probe.py — no legacy counter is higher with --opt ON than OFF"
+    echo "SKIPPED-TRACKING: $OPT1_TRACKING_DOC (docs/adder_ssa_optimizer_design.md)"
+    echo "STILL ASSERTED: --opt == --opt --no-vec == no-opt byte-identity, and the cov==0 RGB invariant"
+fi
+export OPT1_LANE
+
 python3 - <<'PY'
-import sys
+import os, sys
 sys.path.insert(0, "tests/fuzz")
+# "retired" => the opt1 counters cannot move; the VEC-fired claim is reported
+# but not failed. Any other value (active / unknown) asserts it for real, so an
+# inconclusive probe never silences the assertion.
+LANE = os.environ.get("OPT1_LANE", "unknown")
 import ad_codegen_host as h
 import adder_fuzzer as F
 from pathlib import Path
@@ -120,7 +154,11 @@ for a255 in (True, False):
     if not (o == v == n):
         print(f"  FAIL: --opt diverged from scalar (SW-render miscompile)"); fails += 1
     if vc < 3:
-        print(f"  FAIL: vectorizer fired on only {vc} loops (want >=3: fill+blend+glyph)"); fails += 1
+        if LANE == "retired":
+            print(f"  NOTE(lane-retired): vectorizer fired on {vc} loops "
+                  f"(want >=3 once the lane is re-armed) — not failed")
+        else:
+            print(f"  FAIL: vectorizer fired on only {vc} loops (want >=3: fill+blend+glyph)"); fails += 1
     if voff != 0:
         print(f"  FAIL: vectorizer not byte-inert with --opt OFF (VEC={voff})"); fails += 1
 
@@ -139,9 +177,15 @@ else:
 
 print("=" * 60)
 if fails == 0:
-    print("[vk2d_opt_swrender] PASS — real vk_2d SW-render loops vectorize under "
-          "--opt (fill+blend+glyph fire), byte-identical to scalar, RGB-inert on "
-          "cov==0, byte-inert --opt OFF")
+    if LANE == "retired":
+        print("[vk2d_opt_swrender] PASS (PARTIAL) — real vk_2d SW-render source is "
+              "byte-identical under --opt / --opt --no-vec / no-opt and RGB-inert "
+              "on cov==0; the VEC-fired claim is dormant while the opt1 lane is "
+              "retired")
+    else:
+        print("[vk2d_opt_swrender] PASS — real vk_2d SW-render loops vectorize under "
+              "--opt (fill+blend+glyph fire), byte-identical to scalar, RGB-inert on "
+              "cov==0, byte-inert --opt OFF")
     sys.exit(0)
 print(f"[vk2d_opt_swrender] FAIL — {fails} problem(s)")
 sys.exit(1)
