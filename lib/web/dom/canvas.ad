@@ -4851,6 +4851,30 @@ def _rng_method(rel: int32, r: int32) -> int32:
         _rng_set_start(r, a0, 0)
         _rng_set_end(r, a0, _rng_node_len(a0))
         return js_undefined()
+    # comparePoint / isPointInRange run their three preconditions BEFORE any
+    # boundary-point arithmetic, and in this order (Range-comparePoint.html and
+    # Range-isPointInRange.html are 478 rows of exactly these). None of them
+    # existed: a point past the end of a node compared as if it were in range.
+    if rel == NID_RNG_COMPAREPOINT or rel == NID_RNG_ISPOINTIN:
+        rsc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        if _nd_root(a0) != _nd_root(rsc):
+            if rel == NID_RNG_ISPOINTIN:
+                return js_bool(0)                          # spec: false, no throw
+            return _throw_domexc(cast[Ptr[uint8]]("WrongDocumentError"), 18, \
+                                 cast[Ptr[uint8]]("node is in a different tree"), 27)
+        if _nd_type(a0) == 10:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidNodeTypeError"), 20, \
+                                 cast[Ptr[uint8]]("node is a doctype"), 17)
+        cpo: float64 = 0.0
+        if js_arg_count() >= 2:
+            cpo = js_to_number(js_arg(1))
+        # `offset` is an unsigned long: it wraps to [0, 2^32), so a negative
+        # argument is a very large offset and out of bounds, not offset 0.
+        if cpo < 0.0:
+            cpo = cpo + 4294967296.0
+        if cpo < 0.0 or cpo > cast[float64](_rng_node_len(a0)):
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
     par: int32 = _nd_parent(a0)
     if js_type_of(par) != TAG_OBJ:
         if rel == NID_RNG_INTERSECTS or rel == NID_RNG_ISPOINTIN:
@@ -9713,6 +9737,53 @@ def _js_install_prelude():
     _pre_put(cast[Ptr[uint8]]("CommandEvent=CE;"))
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined')window.CommandEvent=CE;"))
+    _pre_nl()
+    # ---- Selection ---------------------------------------------------------
+    # getSelection() did not exist, which is 484 WPT rows on its own:
+    # dom/ranges/Range-mutations.js runs EVERY range-mutation case twice, once
+    # over a bare Range and once over the same range held by the selection, and
+    # the second half died at `getSelection().removeAllRanges()` with
+    # "getSelection is not defined". It is also ordinary page code -- copy
+    # buttons, editors and "did the user select anything" checks all call it.
+    #
+    # A real range STORE, not a stub that reports rangeCount 0: the test has an
+    # explicit escape hatch for browsers that refuse to select, and taking it
+    # would make those rows pass without running a single assertion. Holding
+    # the caller's own Range object means the assertions run against exactly
+    # the object the mutation was applied to.
+    _pre_put(cast[Ptr[uint8]]("function Sel(){this._r=[];}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.removeAllRanges=function(){this._r=[];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.empty=Sel.prototype.removeAllRanges;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.addRange=function(r){this._r=[r];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.removeRange=function(r){var i=this._r.indexOf(r);if(i>=0)this._r.splice(i,1);};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.getRangeAt=function(i){if(i<0||i>=this._r.length)ierr();return this._r[i];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'rangeCount',function(){return this._r.length;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'anchorNode',function(){return this._r.length?this._r[0].startContainer:null;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'anchorOffset',function(){return this._r.length?this._r[0].startOffset:0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'focusNode',function(){return this._r.length?this._r[0].endContainer:null;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'focusOffset',function(){return this._r.length?this._r[0].endOffset:0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'isCollapsed',function(){return this._r.length?this._r[0].collapsed:true;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.toString=function(){return this._r.length?String(this._r[0]):'';};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Selection=Sel;var _sel=new Sel();function gsel(){return _sel;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("getSelection=gsel;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined'){window.Selection=Sel;window.getSelection=gsel;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof document!=='undefined')document.getSelection=gsel;"))
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("})();"))
     _pre_nl()
