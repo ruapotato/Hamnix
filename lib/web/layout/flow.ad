@@ -481,9 +481,12 @@ def _apply_positioned():
         # pin has to be matched to the fill it sizes; taking any pin in the run
         # sized a 4em parent by its 50% child's pin. Matched BEFORE the
         # relocation loop below, while fills and pins still share a row frame.
+        run_top: int32 = 0x7fffffff
         if oofk != 0:
             bfm: int32 = pos_bf0[i]
             while bfm < pos_bf1[i]:
+                if bfill_top[bfm] < run_top:
+                    run_top = bfill_top[bfm]
                 hq: int32 = pos_hp0[i]
                 while hq < pos_hp1[i]:
                     if hpin_kind[hq] == 0 and hpin_px[hq] > 0 and \
@@ -501,6 +504,9 @@ def _apply_positioned():
                 bfill_rx[bf] = bfill_rx[bf] + dx
                 if bfill_lx[bf] < 0:
                     bfill_lx[bf] = 0
+            at_run_top: int32 = 0
+            if bfill_top[bf] == run_top:
+                at_run_top = 1
             if drow != 0:
                 nt: int32 = bfill_top[bf] + drow
                 nb: int32 = bfill_bot[bf] + drow
@@ -519,12 +525,22 @@ def _apply_positioned():
                 # EVERY fill in the run is out of flow for painting purposes:
                 # an in-flow child of an abspos box is laid out inside a box the
                 # flow grid does not contain either, so its fill must not be
-                # dropped for naming a row past the flow. Only the box's OWN
-                # background (pos_bf0, the first fill of the run — the same one
-                # the shrink-to-fit and left+right stretch paths take) carries
-                # the run's declared `top`; a descendant's y stays row-derived.
+                # dropped for naming a row past the flow.
+                #
+                # The run's declared `top` goes to the fills that START at the
+                # run's first row — the box's own background and anything flush
+                # with its content top — and the INNERMOST run wins, because
+                # runs are registered in document order so a nested positioned
+                # box overwrites the y its ancestor stamped. It cannot be
+                # narrowed to "the first fill of the run": a block emits its
+                # background at CLOSE, so a box that contains a filled
+                # descendant is NOT pos_bf0 of its own run (the descendant is),
+                # and pinning pos_bf0 put a fixed ancestor's `top:0` on its
+                # child and left the ancestor itself on the row grid, 12px down
+                # the page. A descendant lower in the box keeps its row-derived
+                # y, which is what still relates it to its siblings.
                 bfill_oof[bf] = cast[uint8](oofk)
-                if bf == pos_bf0[i]:
+                if at_run_top != 0:
                     bfill_pxy[bf] = oof_pxy
             bf = bf + 1
         # Move this box's explicit-height PIXEL PINS with it. A pin names ROW
