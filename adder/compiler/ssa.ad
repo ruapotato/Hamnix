@@ -54,6 +54,8 @@ from compiler.parser import (
     nd_num,
     nd_name_off,
     nd_name_len,
+    nd_name2_off,
+    nd_name2_len,
     nd_a,
     nd_b,
     nd_c,
@@ -90,6 +92,7 @@ from compiler.parser import (
     ND_EXTERN,
     ND_PARAM,
     ND_UNSAFE,
+    ND_CONTAINER_OF,
     BINOP_ADD,
     BINOP_SUB,
     BINOP_MUL,
@@ -171,6 +174,7 @@ from compiler.codegen import (
     glob_ptr_size,
     st_total,
     SF_NOFIELD,
+    struct_lookup,
 )
 
 from compiler.lexer import (
@@ -348,6 +352,13 @@ ssa_mem_addr: Array[256, uint32]        # its SVO_ALLOCA vid (the slot's i64 add
 ssa_mem_esz: Array[256, uint32]         # scalar/element byte width (1/2/4/8)
 ssa_mem_esgn: Array[256, uint32]        # scalar/element signedness tristate
 ssa_mem_isarr: Array[256, uint32]       # 1 => array local (indexed access only)
+# Row stride (bytes) of a 2-D local array `Array[N, Array[M, T]]`, i.e. M*esz.
+# 0 for every other local, INCLUDING a 1-D array — so `!= 0` is the test for "the
+# slot is 2-D", and every 1-D consumer keeps its existing behaviour untouched.
+# The slot itself is flat (N*M*esz bytes); `a[i][j]` is base + i*rowstride +
+# j*esz, exactly the layout ssa_array2d_base already computes for the 2-D GLOBAL
+# and 2-D struct-MEMBER cases.
+ssa_mem_rowstride: Array[256, uint32]   # 2-D local: inner-row byte size (M*esz)
 # Pointee width/signedness for a pointer local/param (0 width => not derefable in
 # subset).  Independent of ssa_ismem: a promotable pointer scalar still records
 # these so `*p` can pick the load width.
@@ -667,7 +678,8 @@ def ssa_expr_sgn(node: uint32) -> uint32:
         ibase: uint32 = nd_a[node]
         if ibase != 0 and nd_kind[ibase] == ND_IDENT:
             ibnid: uint32 = nm_intern(nd_name_off[ibase], nd_name_len[ibase])
-            if ibnid < NM_MAX and ssa_islocal[ibnid] != 0 and ssa_ismem[ibnid] != 0 and ssa_mem_isarr[ibnid] != 0:
+            if ibnid < NM_MAX and ssa_islocal[ibnid] != 0 and ssa_ismem[ibnid] != 0 \
+                    and ssa_mem_isarr[ibnid] != 0 and ssa_mem_rowstride[ibnid] == 0:
                 return ssa_mem_esgn[ibnid]      # local array element signedness
             # `p[i]` where p is a POINTER local/param: the POINTEE's
             # signedness — the SAME value ssa_load_at is already given for
@@ -2372,6 +2384,50 @@ def ssa_lower_member(node: uint32) -> uint32:
     return ssa_load_at(addr, msz, msgn)
 
 
+# `container_of(ptr, Type, field)` — Linux's list_for_each_entry adjustment:
+# the VALUE of `ptr` (a pointer to `Type.field`) minus that field's compile-time
+# byte offset within `Type`, yielding a pointer to the enclosing struct.  This is
+# an ordinary constant pointer subtraction, exactly what codegen.ad's
+# gen_container_of emits (`gen_expr(inner); subq $off, %rax`) — the SSA path had
+# simply never been taught the node kind, so it fell through to the catch-all
+# NONSUBSET_EXPR bail.  That mattered on ARM64 specifically: a bailed function
+# has NO native fallback there, so `_list_walk_and_sum` linked against an
+# auto-generated `return 0` stub — it did not fail to link, it silently summed
+# to zero.
+#
+# LLVM path only (callers gate on ssa_mem_model != 0), so the native --opt
+# lowering is untouched and codegen.ad's byte output is unchanged.
+def ssa_lower_container_of(node: uint32) -> uint32:
+    si: uint32 = struct_lookup(nd_name_off[node], nd_name_len[node])
+    if si == 0:
+        ssa_set_bail_at(SBR_MEMORY, 84)          # unknown struct type name
+        return 0
+    foff: uint32 = 0
+    fsgn: uint32 = 0
+    fsz: uint32 = struct_field_find(si, nd_name2_off[node], nd_name2_len[node],
+                                    &foff, &fsgn)
+    if fsz == SF_NOFIELD:
+        ssa_set_bail_at(SBR_MEMORY, 85)          # struct has no such field
+        return 0
+    pv: uint32 = ssa_lower_expr(nd_a[node], ssa_cur_bb)
+    if pv == 0:
+        return 0
+    if foff == 0:
+        return pv                                # field at offset 0: identity
+    oc: uint32 = ssa_const_in(ssa_cur_bb, cast[uint64](foff))
+    if oc == 0:
+        return 0
+    subv: uint32 = sv_new(SVO_BINOP)
+    if subv == 0:
+        return 0
+    sv_aux[subv] = BINOP_SUB
+    sv_a[subv] = pv
+    sv_b[subv] = oc
+    sv_type[subv] = SVT_PTR
+    bb_append(ssa_cur_bb, subv)
+    return subv
+
+
 # =======================================================================
 # RECURSIVE LVALUE-ADDRESS LOWERING  (Phase 4b; LLVM path only)
 # -----------------------------------------------------------------------
@@ -2437,6 +2493,15 @@ def ssa_array2d_base(arr2d: uint32, out_rowstride: Ptr[uint32], out_struct: Ptr[
     out_esgn[0] = 0
     k: uint32 = nd_kind[arr2d]
     if k == ND_IDENT:
+        # 2-D scalar-array LOCAL: base = its alloca address, row stride recorded
+        # at declaration time.  Checked BEFORE the global lookup because a local
+        # shadows a same-named global.
+        lnid: uint32 = nm_intern(nd_name_off[arr2d], nd_name_len[arr2d])
+        if lnid < NM_MAX and ssa_islocal[lnid] != 0 and ssa_mem_rowstride[lnid] != 0:
+            out_rowstride[0] = ssa_mem_rowstride[lnid]
+            out_esz[0] = ssa_mem_esz[lnid]
+            out_esgn[0] = ssa_mem_esgn[lnid]
+            return ssa_mem_addr[lnid]
         # 2-D scalar-array global: base = its symbol addr.
         gi: uint32 = ssa_global_array_2d(nd_name_off[arr2d], nd_name_len[arr2d])
         if gi == 0:
@@ -2516,7 +2581,14 @@ def ssa_region_base(base: uint32, out_stride: Ptr[uint32], out_struct: Ptr[uint3
                 if ssa_ismem[nid] != 0:
                     return ssa_load_at(ssa_mem_addr[nid], 8, 0)
                 return ssa_read_var(nid, ssa_cur_bb)
-            # local scalar array: region = the alloca address.
+            # local scalar array: region = the alloca address.  A 2-D local is
+            # NOT a valid one-level region — `a[i]` on it denotes a ROW, whose
+            # stride is rowstride, not esz.  Return 0 (no bail) so a bare `a[i]`
+            # on a 2-D local defers rather than silently indexing with the
+            # element stride; `a[i][j]` never reaches here (it arrives through
+            # the ND_INDEX case, which routes to ssa_array2d_base).
+            if ssa_ismem[nid] != 0 and ssa_mem_isarr[nid] != 0 and ssa_mem_rowstride[nid] != 0:
+                return 0
             if ssa_ismem[nid] != 0 and ssa_mem_isarr[nid] != 0:
                 out_esz[0] = ssa_mem_esz[nid]
                 out_esgn[0] = ssa_mem_esgn[nid]
@@ -2880,7 +2952,8 @@ def ssa_lower_addr_of(operand: uint32) -> uint32:
             ssa_set_bail_at(SBR_MEMORY, 23)
             return 0
         bnid: uint32 = nm_intern(nd_name_off[base], nd_name_len[base])
-        if bnid < NM_MAX and ssa_islocal[bnid] != 0 and ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0:
+        if bnid < NM_MAX and ssa_islocal[bnid] != 0 and ssa_ismem[bnid] != 0 \
+                and ssa_mem_isarr[bnid] != 0 and ssa_mem_rowstride[bnid] == 0:
             return ssa_local_index_addr(bnid, nd_b[operand])
         # &p[i] on a POINTER local/param: p + i*elem (no load).
         if bnid < NM_MAX and ssa_islocal[bnid] != 0 and ssa_ptr_esz[bnid] != 0:
@@ -3550,7 +3623,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         if bnid < NM_MAX and ssa_islocal[bnid] != 0:
             # Local array element load (LLVM path); a non-array local indexed like
             # an array is outside the subset.
-            if ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0:
+            if ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0 and ssa_mem_rowstride[bnid] == 0:
                 laddr: uint32 = ssa_local_index_addr(bnid, nd_b[node])
                 if laddr == 0:
                     return 0
@@ -3614,6 +3687,10 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         if ssa_mem_model != 0:
             return ssa_lower_member(node)
         ssa_set_bail_at(SBR_MEMORY, 47)
+    elif k == ND_CONTAINER_OF:
+        if ssa_mem_model != 0:
+            return ssa_lower_container_of(node)
+        ssa_set_bail_at(SBR_NONSUBSET_EXPR, 86)
     else:
         ssa_set_bail_at(SBR_NONSUBSET_EXPR, 48)
     return 0
@@ -3641,7 +3718,7 @@ def ssa_lower_index_store(bb: uint32, stmt: uint32, target: uint32) -> uint32:
         return bb
     bnid: uint32 = nm_intern(nd_name_off[base], nd_name_len[base])
     if bnid < NM_MAX and ssa_islocal[bnid] != 0:
-        if ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0:
+        if ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0 and ssa_mem_rowstride[bnid] == 0:
             return ssa_lower_local_index_store(bb, stmt, target, bnid)
         # `p[i] = rhs` on a POINTER local/param (LLVM path).
         if ssa_mem_model != 0 and ssa_ptr_esz[bnid] != 0:
@@ -3918,14 +3995,24 @@ def ssa_decl_slot_bytes(tnode: uint32) -> uint32:
         return 0
     if nd_kind[tnode] == ND_ARRAY_TYPE:
         delem: uint32 = nd_a[tnode]
-        if delem == 0 or nd_kind[delem] == ND_ARRAY_TYPE:
+        if delem == 0:
             return 0
+        drows: uint32 = 1
+        if nd_kind[delem] == ND_ARRAY_TYPE:
+            # 2-D `Array[N, Array[M, T]]`: a FLAT N*M*esz slot (row-major), the
+            # same layout the 2-D global/member paths already assume.  3-D+ still
+            # returns 0 (unsupported) rather than guessing a stride.
+            if nd_a[delem] == 0 or nd_kind[nd_a[delem]] == ND_ARRAY_TYPE:
+                return 0
+            drows = cast[uint32](nd_num[tnode])
+            tnode = delem
+            delem = nd_a[delem]
         if type_float_width(delem) != 0:
             return 0
         desz: uint32 = prim_type_size(delem)
         if desz != 1 and desz != 2 and desz != 4 and desz != 8:
             return 0
-        return cast[uint32](nd_num[tnode]) * desz
+        return drows * cast[uint32](nd_num[tnode]) * desz
     dsidx: uint32 = struct_lookup_by_node(tnode)
     if dsidx != 0:
         return st_total[dsidx - 1]
@@ -4034,10 +4121,19 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
         # Native path is unaffected: with ssa_mem_model == 0 every memory
         # classification bails BEFORE setting ssa_ismem, so ssa_ismem is never 1
         # and this whole guard is dead code for native codegen.
+        # 2-D is its OWN category (2), not just "an array": a 1-D and a 2-D
+        # declaration of the same name have DIFFERENT address arithmetic
+        # (base + i*esz vs base + i*rowstride + j*esz), so letting them share
+        # the classification would index the survivor with the loser's stride.
         new_is_arr: uint32 = 0
         if nd_kind[tnode] == ND_ARRAY_TYPE:
             new_is_arr = 1
-        if ssa_mem_isarr[nid] == new_is_arr:
+            if nd_a[tnode] != 0 and nd_kind[nd_a[tnode]] == ND_ARRAY_TYPE:
+                new_is_arr = 2
+        cur_is_arr: uint32 = ssa_mem_isarr[nid]
+        if cur_is_arr != 0 and ssa_mem_rowstride[nid] != 0:
+            cur_is_arr = 2
+        if cur_is_arr == new_is_arr:
             ssa_widen_mem_local(nid, tnode)
             return nid
         # Category mismatch: drop the ACCESS classification so the code below
@@ -4059,15 +4155,31 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
     # only consulted on the LLVM path (a float local bails the native subset
     # before any phi is typed), so this is inert for native codegen.
     ssa_local_fw[nid] = 0
+    ssa_mem_rowstride[nid] = 0                # cleared here; re-stamped by the 2-D arm
     # ---- local Array[N, T]: a stack slot addressed by index (LLVM path) -------
     if nd_kind[tnode] == ND_ARRAY_TYPE:
         if ssa_mem_model == 0:
             ssa_set_bail_at(SBR_MEMORY, 56)          # native path: arrays stay bailed
             return NM_MAX
         elem: uint32 = nd_a[tnode]
+        # A 2-D local `Array[N, Array[M, T]]` gets ONE flat N*M*esz slot in
+        # row-major order — precisely the layout ssa_array2d_base already assumes
+        # for 2-D GLOBALS and 2-D struct MEMBER fields, so `a[i][j]` reuses the
+        # existing ssa_region_base ND_INDEX path with no new address arithmetic.
+        # (Before this, the declaration itself bailed, which took the WHOLE
+        # enclosing function out of the LLVM lane — `_try_parse_hamnix_roots`'s
+        # 16x32 `done_words` unwind scratch cost the .hamnix-roots sentinel
+        # parser its emission, and on ARM64 that means it linked against a
+        # `return 0` auto-stub rather than failing loudly.)
+        # 3-D+ still bails: there is no third stride to record.
+        rows2d: uint32 = 0
         if elem != 0 and nd_kind[elem] == ND_ARRAY_TYPE:
-            ssa_set_bail_at(SBR_MEMORY, 57)          # multi-dimensional -> defer
-            return NM_MAX
+            if nd_a[elem] == 0 or nd_kind[nd_a[elem]] == ND_ARRAY_TYPE:
+                ssa_set_bail_at(SBR_MEMORY, 57)      # 3-D+ -> defer
+                return NM_MAX
+            rows2d = cast[uint32](nd_num[tnode])
+            tnode = elem                              # inner Array[M, T] is the row
+            elem = nd_a[elem]
         if type_float_width(elem) != 0:
             ssa_set_bail_at(SBR_FLOAT, 58)
             return NM_MAX
@@ -4075,7 +4187,7 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
         if aesz != 1 and aesz != 2 and aesz != 4 and aesz != 8:
             ssa_set_bail_at(SBR_MEMORY, 59)          # non-machine element -> defer
             return NM_MAX
-        cnt: uint32 = cast[uint32](nd_num[tnode])
+        cnt: uint32 = cast[uint32](nd_num[tnode])    # M for 2-D, N for 1-D
         ssa_islocal[nid] = 1
         ssa_ismem[nid] = 1
         ssa_mem_isarr[nid] = 1
@@ -4083,7 +4195,11 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
         ssa_mem_esgn[nid] = type_signedness(elem)
         ssa_local_sgn[nid] = 1                # a bare array ident decays to an addr
         ssa_local_size[nid] = 8
-        if ssa_ensure_slot(nid, cnt * aesz) == 0:
+        total2d: uint32 = cnt * aesz
+        if rows2d != 0:
+            ssa_mem_rowstride[nid] = cnt * aesz
+            total2d = rows2d * cnt * aesz
+        if ssa_ensure_slot(nid, total2d) == 0:
             ssa_set_bail_at(SBR_OVERFLOW, 60)
             return NM_MAX
         return nid
@@ -4708,6 +4824,7 @@ def ssa_build_function(fn: uint32) -> uint32:
         ssa_mem_esz[i] = 0
         ssa_mem_esgn[i] = 0
         ssa_mem_isarr[i] = 0
+        ssa_mem_rowstride[i] = 0
         ssa_ptr_esz[i] = 0
         ssa_ptr_esgn[i] = 0
         ssa_local_fw[i] = 0
