@@ -158,7 +158,7 @@ pump_body=$(awk '
     /^def[[:space:]]/ { inside=0 }
     inside { print }
 ' "$UID_SRC")
-if ! echo "$pump_body" | grep -q "kcursor_push_live"; then
+if ! grep -q "kcursor_push_live" <<<"$pump_body"; then
     fail_link "link 4 (hamUId.ad): kcursor_push_live() is no longer called inside daemon_pump_mouse - the kernel cursor only updates at compositor-present cadence (decouple is dead)"
 fi
 
@@ -174,7 +174,7 @@ cpo_body=$(awk '
     /^def[[:space:]]/ { inside=0 }
     inside { print }
 ' "$UID_SRC")
-if ! echo "$cpo_body" | grep -q "KCURSOR_ACTIVE"; then
+if ! grep -q "KCURSOR_ACTIVE" <<<"$cpo_body"; then
     fail_link "link 5 (hamUId.ad): cursor_pixel_over does not gate on KCURSOR_ACTIVE - the legacy overlay still paints under the kernel sprite (duplicate cursor / stale ghost during slow presents)"
 fi
 

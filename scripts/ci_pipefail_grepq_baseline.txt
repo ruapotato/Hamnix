@@ -1,0 +1,201 @@
+# scripts/ci_pipefail_grepq_baseline.txt — FROZEN inventory of the
+# `set -o pipefail` + `| grep -q` sites that already existed when
+# scripts/test_gate_pipefail_grepq.sh was introduced (2026-07-31).
+#
+# Each line is "<script> <count>". The file is a RATCHET, enforced by
+# scripts/test_gate_pipefail_grepq.sh:
+#   * a script NOT listed here may not acquire a site at all;
+#   * a listed script's count may only SHRINK;
+#   * the file may only shrink vs HEAD (PART 3), so a new finding cannot be
+#     laundered by appending a line.
+#
+# These are NOT blessed. Every one is a link that returns the wrong answer
+# when it matches and the payload is big enough — see the header of
+# scripts/_pipefail_grepq_scan.py for the measured rates. They are frozen
+# because fixing 333 assertions in one unreviewed sweep is its own risk: the
+# fix is mechanical but a typo in an assertion is a SILENT FALSE GREEN.
+# Fix them in the gate you are already touching, and delete the line.
+#
+# Already fixed and deliberately absent from this list (2026-07-31):
+#   test_de_focus_damage_host  test_de_new_apps  test_de_terminal_namespace
+#   test_de_scene_calc_edit_features  test_de_rio_blit  test_auxmouse_wheel_dz
+#   test_atkbd_no_keystroke_loss  test_atkbd_poll_aux_filter
+#   test_de_resize_event_relayout  test_de_cursor_decouple  test_de_uid_ns
+#   test_arm64_codegen  test_de_flicker_double_buffer
+scripts/test_adder_check_arith.sh 4
+scripts/test_adder_must_use.sh 3
+scripts/test_adder_x86_64_linux.sh 3
+scripts/test_alx_ko.sh 1
+scripts/test_arm64_a10_userland.sh 1
+scripts/test_arm64_a11_archive.sh 1
+scripts/test_arm64_baremetal.sh 2
+scripts/test_arm64_build_integrity.sh 2
+scripts/test_arm64_currentel_probe.sh 6
+scripts/test_arm64_el0.sh 2
+scripts/test_arm64_irq.sh 2
+scripts/test_arm64_isolation.sh 2
+scripts/test_arm64_llvm_lane_diff.sh 1
+scripts/test_arm64_pagefault.sh 2
+scripts/test_arm64_phase10.sh 2
+scripts/test_arm64_phase11.sh 2
+scripts/test_arm64_phase12.sh 2
+scripts/test_arm64_phase13.sh 2
+scripts/test_arm64_phase14.sh 2
+scripts/test_arm64_phase15.sh 2
+scripts/test_arm64_phase16.sh 2
+scripts/test_arm64_phase17.sh 2
+scripts/test_arm64_phase18.sh 2
+scripts/test_arm64_phase19.sh 2
+scripts/test_arm64_phase20.sh 2
+scripts/test_arm64_phase21.sh 2
+scripts/test_arm64_phase22.sh 2
+scripts/test_arm64_phase23.sh 2
+scripts/test_arm64_phase24.sh 2
+scripts/test_arm64_phase25.sh 2
+scripts/test_arm64_phase26.sh 2
+scripts/test_arm64_phase27.sh 1
+scripts/test_arm64_phase28.sh 1
+scripts/test_arm64_phase29.sh 1
+scripts/test_arm64_phase30.sh 1
+scripts/test_arm64_phase31.sh 1
+scripts/test_arm64_phase32.sh 1
+scripts/test_arm64_phase33.sh 1
+scripts/test_arm64_phase34.sh 1
+scripts/test_arm64_phase35.sh 1
+scripts/test_arm64_phase36.sh 1
+scripts/test_arm64_phase37.sh 1
+scripts/test_arm64_phase38.sh 1
+scripts/test_arm64_phase39.sh 1
+scripts/test_arm64_phase40.sh 1
+scripts/test_arm64_phase41.sh 1
+scripts/test_arm64_phase42.sh 1
+scripts/test_arm64_phase43.sh 1
+scripts/test_arm64_phase44.sh 1
+scripts/test_arm64_phase45.sh 1
+scripts/test_arm64_phase46.sh 1
+scripts/test_arm64_phase47.sh 1
+scripts/test_arm64_phase48.sh 1
+scripts/test_arm64_phase49.sh 1
+scripts/test_arm64_phase9.sh 2
+scripts/test_arm64_sched.sh 2
+scripts/test_arm64_syscalls.sh 2
+scripts/test_atlantic_ko.sh 1
+scripts/test_blkwrite.sh 1
+scripts/test_compiler_adjacent_strings.sh 2
+scripts/test_compiler_lexer_errors.sh 1
+scripts/test_coreutils2.sh 1
+scripts/test_coreutils3.sh 9
+scripts/test_coreutils4.sh 2
+scripts/test_coreutils5.sh 4
+scripts/test_coreutils6.sh 2
+scripts/test_curl_https_redirect.sh 2
+scripts/test_cut_gnu_crosscheck.sh 1
+scripts/test_de_appmenu_v2.sh 1
+scripts/test_de_browser.sh 2
+scripts/test_de_calpop_v2.sh 1
+scripts/test_de_ctxmenu_v2.sh 1
+scripts/test_de_cursor_nudge.sh 1
+scripts/test_de_cycler_v2.sh 1
+scripts/test_de_desktop_menu.sh 1
+scripts/test_de_desktop_v2.sh 1
+scripts/test_de_fileops.sh 1
+scripts/test_de_hamedit_picker.sh 2
+scripts/test_de_new_apps.sh 1
+scripts/test_de_notif_v2.sh 1
+scripts/test_de_osd_v2.sh 1
+scripts/test_de_panel_prefs.sh 1
+scripts/test_de_panel_v2.sh 1
+scripts/test_de_rband_v2.sh 1
+scripts/test_de_resize_v2.sh 1
+scripts/test_de_run_v2.sh 1
+scripts/test_de_scene_drag_iconclick.sh 1
+scripts/test_de_scene_flicker_relmouse.sh 2
+scripts/test_de_scene_menu_input.sh 2
+scripts/test_de_scene_render.sh 8
+scripts/test_de_scene_termfm.sh 6
+scripts/test_de_sessui_v2.sh 1
+scripts/test_desktop_refresh_keep_host.sh 1
+scripts/test_de_snap_v2.sh 1
+scripts/test_de_snarf_wctl.sh 1
+scripts/test_de_sysmon_v2.sh 1
+scripts/test_de_term_enter_linux.sh 7
+scripts/test_de_term_password_echo.sh 1
+scripts/test_de_term_render_nokey.sh 1
+scripts/test_de_tray_v2.sh 1
+scripts/test_de_visual.sh 1
+scripts/test_editor_picker_homedirs.sh 1
+scripts/test_execve_ustack_lowmem.sh 1
+scripts/test_ext4_bigalloc.sh 1
+scripts/test_ext4_csum.sh 1
+scripts/test_ext4_dirgrow.sh 1
+scripts/test_ext4_eainode.sh 2
+scripts/test_ext4_fast_commit.sh 2
+scripts/test_ext4_flexbg.sh 1
+scripts/test_ext4_inline.sh 1
+scripts/test_ext4_resize.sh 1
+scripts/test_ext4.sh 3
+scripts/test_gate_kvmdark.sh 1
+scripts/test_grep_host.sh 1
+scripts/test_hamaudiobook_hpm.sh 1
+scripts/test_hambrowse_btncenter_host.sh 2
+scripts/test_hambrowse_fetch_ondevice.sh 3
+scripts/test_hambrowse_fidelity_host.sh 1
+scripts/test_hambrowse_gpu_render.sh 3
+scripts/test_hambrowse_host.sh 4
+scripts/test_hambrowse_inputtypes_host.sh 2
+scripts/test_hambrowse_post_ondevice.sh 3
+scripts/test_hambrowse_searchbox_host.sh 2
+scripts/test_hamcalc_host.sh 1
+scripts/test_hamde_render.sh 1
+scripts/test_hamedit_save.sh 3
+scripts/test_hamfm_newfile_host.sh 1
+scripts/test_haminstall.sh 1
+scripts/test_hampaint_host.sh 1
+scripts/test_hamsheet_host.sh 6
+scripts/test_hamsh_lang_host.sh 1
+scripts/test_hamsh_tok_capacity.sh 1
+scripts/test_hamslides_host.sh 2
+scripts/test_hamwrite_host.sh 1
+scripts/test_hpm_channels.sh 6
+scripts/test_hpm_rollback.sh 6
+scripts/test_hpm.sh 16
+scripts/test_hpm_signed.sh 5
+scripts/test_hpm_source_pkg.sh 5
+scripts/test_igb_ko.sh 1
+scripts/test_installed_pkg_repo.sh 1
+scripts/test_installer_de_runlevel5.sh 2
+scripts/test_installer_full.sh 1
+scripts/test_installer_live_debian.sh 3
+scripts/test_installer_nvme_inram.sh 1
+scripts/test_installer_oom_reclaim.sh 1
+scripts/test_installer_wizard.sh 1
+scripts/test_js_functional_host.sh 4
+scripts/test_kernel_oops_capture.sh 1
+scripts/test_libata_ko.sh 1
+scripts/test_llvm_container_of_2d_exec.sh 1
+scripts/test_llvm_kernel_unsafe_link.sh 1
+scripts/test_mds_verw.sh 3
+scripts/test_mm_free_cow_zap_invariant.sh 6
+scripts/test_mm_pa_corrupt.sh 1
+scripts/test_napi.sh 2
+scripts/test_native_kernel_links.sh 1
+scripts/test_net9_host.sh 1
+scripts/test_note_terminate.sh 1
+scripts/test_ondevice_adderc_llvm.sh 1
+scripts/test_ondevice_hostac_llvm.sh 1
+scripts/test_opt_idxstore_saveset.sh 1
+scripts/test_perm_boundary.sh 3
+scripts/test_procfs.sh 1
+scripts/test_r8169_ko.sh 2
+scripts/test_selfhost_extern_link.sh 1
+scripts/test_selfhost_kernel_elf.sh 4
+scripts/test_sema_signature_conflicts.sh 1
+scripts/test_sky2_ko.sh 1
+scripts/test_smp_de_runlevel5.sh 1
+scripts/test_sort_gnu_crosscheck.sh 1
+scripts/test_suspend_resume.sh 1
+scripts/test_symlink_user.sh 2
+scripts/test_sysmon_host.sh 1
+scripts/test_tr_gnu_crosscheck.sh 1
+scripts/test_umdf_host.sh 2
+scripts/test_virtio_gpu_present.sh 3

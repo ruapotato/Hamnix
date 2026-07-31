@@ -189,13 +189,13 @@ RO_CHAIN="$(awk '
     inb && /^[[:space:]]*return / { exit }
 ' "$NAMEC_SRC")"
 [ -n "$RO_CHAIN" ] || fail_link "namec: the read-only DE-surface OR-chain is gone entirely"
-if ! printf '%s\n' "$RO_CHAIN" | grep -q "return devwsys_readonly_write(buf, count)"; then
+if ! grep -q "return devwsys_readonly_write(buf, count)" <<<"$RO_CHAIN"; then
     fail_link "namec: the read-only OR-chain no longer terminates in devwsys_readonly_write"
 fi
-if ! printf '%s\n' "$RO_CHAIN" | grep -q "dev_type == DEV_WSYS_NS"; then
+if ! grep -q "dev_type == DEV_WSYS_NS" <<<"$RO_CHAIN"; then
     fail_link "namec: DEV_WSYS_NS no longer routed to devwsys_readonly_write (writes to /ns now accepted!)"
 fi
-if ! printf '%s\n' "$RO_CHAIN" | grep -q "dev_type == DEV_WSYS_UID"; then
+if ! grep -q "dev_type == DEV_WSYS_UID" <<<"$RO_CHAIN"; then
     fail_link "namec: DEV_WSYS_UID no longer routed to devwsys_readonly_write (writes to /uid now accepted!)"
 fi
 

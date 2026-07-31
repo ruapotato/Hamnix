@@ -45,19 +45,19 @@ if [ -z "$init_body" ]; then
     fail_link "link 1: auxmouse_init() not found"
 else
     for rate in 200 100 80; do
-        if ! printf '%s\n' "$init_body" | grep -qE "_aux_send_expect_ack\(${rate}\)"; then
+        if ! grep -qE "_aux_send_expect_ack\(${rate}\)" <<<"$init_body"; then
             fail_link "link 1: auxmouse_init missing the sample-rate knock value ${rate} (IntelliMouse negotiation incomplete)"
         fi
     done
     # GET_DEVID must be issued and the 0x03 reply checked.
-    if ! printf '%s\n' "$init_body" | grep -qE 'MOUSE_CMD_GET_DEVID'; then
+    if ! grep -qE 'MOUSE_CMD_GET_DEVID' <<<"$init_body"; then
         fail_link "link 1: auxmouse_init does not GET_DEVID after the knock"
     fi
-    if ! printf '%s\n' "$init_body" | grep -qE 'MOUSE_DEVID_INTELLI'; then
+    if ! grep -qE 'MOUSE_DEVID_INTELLI' <<<"$init_body"; then
         fail_link "link 1: auxmouse_init does not check for the 0x03 IntelliMouse device id"
     fi
     # On a 0x03 reply it must switch to 4-byte packets.
-    if ! printf '%s\n' "$init_body" | grep -qE 'mouse_pkt_len[[:space:]]*=[[:space:]]*4'; then
+    if ! grep -qE 'mouse_pkt_len[[:space:]]*=[[:space:]]*4' <<<"$init_body"; then
         fail_link "link 1: auxmouse_init does not switch to 4-byte packets on IntelliMouse"
     fi
 fi
@@ -68,10 +68,10 @@ if [ -z "$dec_body" ]; then
     fail_link "link 2: auxmouse_process_byte() not found"
 else
     # A phase-3 (4th byte) branch must exist, gated on mouse_pkt_len >= 4.
-    if ! printf '%s\n' "$dec_body" | grep -qE 'mouse_pkt_len[[:space:]]*>=[[:space:]]*4'; then
+    if ! grep -qE 'mouse_pkt_len[[:space:]]*>=[[:space:]]*4' <<<"$dec_body"; then
         fail_link "link 2: decoder does not branch on the negotiated 4-byte length (no wheel path)"
     fi
-    if ! printf '%s\n' "$dec_body" | grep -qE 'mouse_phase[[:space:]]*=[[:space:]]*3'; then
+    if ! grep -qE 'mouse_phase[[:space:]]*=[[:space:]]*3' <<<"$dec_body"; then
         fail_link "link 2: decoder has no phase-3 (Z wheel byte) state"
     fi
 fi
@@ -82,7 +82,7 @@ push_body=$(fn_body _mouse_ring_push)
 if [ -z "$push_body" ]; then
     fail_link "link 3: _mouse_ring_push() not found"
 else
-    if ! printf '%s\n' "$push_body" | grep -qE '\.dz[[:space:]]*=[[:space:]]*dz'; then
+    if ! grep -qE '\.dz[[:space:]]*=[[:space:]]*dz' <<<"$push_body"; then
         fail_link "link 3: _mouse_ring_push hard-zeros dz instead of storing the wheel delta"
     fi
 fi
@@ -92,7 +92,7 @@ st_body=$(fn_body auxmouse_self_test)
 if [ -z "$st_body" ]; then
     fail_link "link 4: auxmouse_self_test() not found"
 else
-    if ! printf '%s\n' "$st_body" | grep -qE '_st_expect_dz'; then
+    if ! grep -qE '_st_expect_dz' <<<"$st_body"; then
         fail_link "link 4: self-test has no wheel (dz) assertion case"
     fi
 fi

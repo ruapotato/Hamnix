@@ -71,27 +71,27 @@ if [ -z "$drain_body" ]; then
     fail_inv "invariant A: _atkbd_drain() not found in $ATKBD_SRC"
 else
     # The BUGGY two-read shape is a `while (inb(KBD_STATUS_PORT)` loop header.
-    if printf '%s\n' "$drain_body" | grep -qE 'while[[:space:]]*\(inb\(KBD_STATUS_PORT\)'; then
+    if grep -qE 'while[[:space:]]*\(inb\(KBD_STATUS_PORT\)' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): loop still re-reads inb(KBD_STATUS_PORT) in its while-header (two-read race)"
     fi
     # Positive: the loop must gate on a cached status snapshot named st.
-    if ! printf '%s\n' "$drain_body" | grep -qE 'while[[:space:]]*\(st[[:space:]]*&[[:space:]]*KBD_STATUS_OBF'; then
+    if ! grep -qE 'while[[:space:]]*\(st[[:space:]]*&[[:space:]]*KBD_STATUS_OBF' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): loop does not gate on a cached status snapshot (st & KBD_STATUS_OBF)"
     fi
     # Still classifies AUX (0x20) and still routes KBD bytes.
-    if ! printf '%s\n' "$drain_body" | grep -qE '&[[:space:]]*0x20'; then
+    if ! grep -qE '&[[:space:]]*0x20' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): lost the AUX-bit (0x20) classification"
     fi
-    if ! printf '%s\n' "$drain_body" | grep -qE 'atkbd_process_byte'; then
+    if ! grep -qE 'atkbd_process_byte' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): no longer routes keyboard bytes to atkbd_process_byte"
     fi
     # BUG 3 SERIALIZATION invariant: the drain must mask local IRQs AND take
     # the re-entrancy guard so the IRQ-1 / timer-poll / stray-AUX producers
     # cannot interleave the port read + shared decode state.
-    if ! printf '%s\n' "$drain_body" | grep -qE 'local_irq_save'; then
+    if ! grep -qE 'local_irq_save' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): drain no longer masks local IRQs (producers can race the port read)"
     fi
-    if ! printf '%s\n' "$drain_body" | grep -qE 'atkbd_draining'; then
+    if ! grep -qE 'atkbd_draining' <<<"$drain_body"; then
         fail_inv "invariant A (_atkbd_drain): lost the atkbd_draining re-entrancy guard"
     fi
 fi
@@ -104,7 +104,7 @@ for fn in atkbd_poll atkbd_irq_handler; do
         fail_inv "invariant A: $fn() not found in $ATKBD_SRC"
         continue
     fi
-    if ! printf '%s\n' "$body" | grep -qE '_atkbd_drain'; then
+    if ! grep -qE '_atkbd_drain' <<<"$body"; then
         fail_inv "invariant A ($fn): does not route through the serialized _atkbd_drain()"
     fi
 done
@@ -116,7 +116,7 @@ if [ -z "$aux_body" ]; then
 else
     # The fixed handler feeds the stray keyboard byte to the keyboard state
     # machine instead of discarding it.
-    if ! printf '%s\n' "$aux_body" | grep -qE 'atkbd_process_byte'; then
+    if ! grep -qE 'atkbd_process_byte' <<<"$aux_body"; then
         fail_inv "invariant B: auxmouse_irq_handler drops the keyboard byte instead of routing it to atkbd_process_byte (lost keystroke during mouse activity)"
     fi
 fi
