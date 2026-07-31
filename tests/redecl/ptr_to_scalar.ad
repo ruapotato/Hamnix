@@ -1,0 +1,26 @@
+# The reverse (arch/x86/kernel/syscall.ad::_do_syscall_dispatch `cur`): a
+# Ptr[T] name re-declared as a plain integer. The stale pointee tagging must
+# not survive onto the scalar binding — an index or a signed/unsigned compare
+# on the rebound name has to use the scalar's own type.
+
+src: Array[8, uint8]
+
+
+def dispatch(sel: int32) -> int64:
+    if sel == 1:
+        cur: Ptr[uint8] = &src[0]
+        cur[0] = 5
+        return cast[int64](cur[0])
+
+    if sel == 2:
+        cur: uint64 = 0
+        cur = cur + 9
+        if cur > 4:
+            return cast[int64](cur)
+        return 0
+
+    return 0
+
+
+def main() -> int32:
+    return cast[int32](dispatch(2))

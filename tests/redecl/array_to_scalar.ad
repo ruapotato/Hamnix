@@ -1,0 +1,28 @@
+# The mirror case (lib/hamsheetcore.ad::_eval_scalar_fn `acc`): an Array name
+# re-declared as a plain scalar. Native kept the ARRAY binding, so `acc = ...`
+# wrote into the array's first bytes and reading `acc` yielded the array's
+# ADDRESS instead of the integer.
+
+def fill(p: Ptr[uint8], n: int32):
+    i: int32 = 0
+    while i < n:
+        p[i] = cast[uint8](i)
+        i = i + 1
+
+
+def dispatch(sel: int32) -> int32:
+    if sel == 1:
+        acc: Array[128, uint8]
+        fill(&acc[0], 4)
+        return cast[int32](acc[3])
+
+    if sel == 2:
+        acc: int32 = 0
+        acc = acc + 5
+        return acc
+
+    return 0
+
+
+def main() -> int32:
+    return dispatch(2)

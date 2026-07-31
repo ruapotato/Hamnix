@@ -4716,3 +4716,14 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_a12_addrspace.sh
 # 300,000-scope Function.prototype.call loop that completes only because the
 # arena is swept and refilled.
 bash scripts/test_hambrowse_rawtext_layout_host.sh
+# Shape-changing RE-DECLARATION of a local (the whole of the 2026-07-31
+# test_native_vs_seed_objdiff.sh red — 13 units, one cause). Adder has no block
+# scoping, so a second `x: T2` in a sibling branch is a FRESH binding and the
+# seed's alloc_local rebinds the name to a new slot. Native codegen.ad kept the
+# FIRST slot forever, so after `tk: int32` a later `tk: Array[128, uint8]` made
+# `&tk[0]` load the SCALAR slot's VALUE as a base address (with a default
+# 8-byte stride) instead of leaq-ing the array — the callee then wrote 128
+# bytes through whatever integer the earlier branch had left there. Gates
+# seed<->native objdiff lockstep over all four shape transitions
+# (scalar<->Array, scalar<->Ptr). Host-only (no QEMU); seconds.
+bash scripts/test_adder_redecl_shape.sh

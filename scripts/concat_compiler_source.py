@@ -148,6 +148,7 @@ HOST_BUFFER_OVERRIDES = {
         ("loc_struct_idx: Array[256, uint32]", "loc_struct_idx: Array[2048, uint32]"),
         ("loc_struct_is_ptr: Array[256, uint32]", "loc_struct_is_ptr: Array[2048, uint32]"),
         ("loc_type_node: Array[256, uint32]", "loc_type_node: Array[2048, uint32]"),
+        ("loc_decl_node: Array[256, uint32]", "loc_decl_node: Array[2048, uint32]"),
         ("MAX_FUNCS: uint32 = 1024", "MAX_FUNCS: uint32 = 16384"),
         ("fn_name_off: Array[1024, uint32]", "fn_name_off: Array[16384, uint32]"),
         ("fn_name_len: Array[1024, uint32]", "fn_name_len: Array[16384, uint32]"),

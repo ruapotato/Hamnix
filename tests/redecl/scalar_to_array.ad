@@ -1,0 +1,36 @@
+# Re-declaring a live SCALAR name as an Array must rebind it to the array's
+# own storage. Adder has no block scoping, so the second `tk:` is a FRESH
+# binding — the seed's alloc_local allocates a new slot and rebinds the name.
+#
+# The bug this pins: native kept the FIRST (8-byte scalar) slot, so `&tk[0]`
+# emitted `mov -off(%rbp),%rax` (load the scalar's VALUE as a base address)
+# plus a default 8-byte element stride, where the seed emits
+# `lea -off(%rbp),%rax` with a 1-byte stride. The callee then wrote through
+# whatever integer the earlier branch had left in that slot.
+
+def take(p: Ptr[uint8], n: int32) -> int32:
+    i: int32 = 0
+    s: int32 = 0
+    while i < n:
+        s = s + cast[int32](p[i])
+        p[i] = 0
+        i = i + 1
+    return s
+
+
+def dispatch(sel: int32) -> int32:
+    if sel == 1:
+        tk: int32 = 41
+        return tk + 1
+
+    if sel == 2:
+        tk: Array[128, uint8]
+        tk[0] = 7
+        tk[1] = 9
+        return take(&tk[0], 2)
+
+    return 0
+
+
+def main() -> int32:
+    return dispatch(2)
