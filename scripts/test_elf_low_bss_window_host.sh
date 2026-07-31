@@ -29,26 +29,44 @@
 # host. The failure lives entirely in the SHAPE of the image the loader is
 # handed, which is exactly what this gate reads.
 #
-# fs/elf.ad now caps the window (ELF_MAX_LOW_BSS_DEMAND) and falls back to an
-# eager full-span load above it — the same policy the ELF32 path has always
-# used for the same aliasing reason. This gate is the ratchet on the other
-# side of that cap: it reads the cap out of fs/elf.ad and reports every shipped
-# binary's window against it, so BSS growth in any of the ~278 apps can never
-# again silently walk into the dangerous band unnoticed.
+# THE LIFT (2026-07-30): the native ELF64 lane is now linked PIE.
+# ---------------------------------------------------------------
+# scripts/adder_cc_llvm_native64.sh links ET_DYN at base 0
+# (user/init64_pie.lds) instead of ET_EXEC at 0x400000. fs/elf.ad's ET_DYN arm
+# rebases such an image onto a base of the KERNEL's choosing — the high ASLR
+# vbase, or identity at the image's own memblock `region` on a deterministic
+# boot — so its user vaddrs only ever cover its OWN pages. The aliasing is gone
+# BY CONSTRUCTION for every app on the lane, not avoided by a size budget.
+# fs/elf.ad::_elf64_apply_relative_relocs applies the resulting
+# R_X86_64_RELATIVE entries at load time and REFUSES the load on any other
+# relocation kind.
+#
+# The ET_EXEC cap (ELF_MAX_LOW_BSS_DEMAND) stays in fs/elf.ad and is still
+# checked here: the ELF32 lane, Debian's busybox-static, and the
+# ADDER_NATIVE64_ETEXEC=1 debug link can all still hand the loader a low
+# ET_EXEC, and that path must remain safe.
 #
 # WHAT IT ASSERTS
-#   1. For every build/user/*.elf that is a low-linked ELF64 ET_EXEC, compute
-#      lowest PT_LOAD vaddr, the page-rounded file extent, and the page-rounded
-#      memory extent — mirroring _load_elf64's first pass exactly.
-#   2. Every such image is classified DEMAND (window <= cap) or EAGER
-#      (window > cap, loader suppresses the split). Both are safe; the report
-#      names which and why.
-#   3. FAIL if any image would take the DEMAND path with a window larger than
-#      the cap — that would mean the gate's model and fs/elf.ad have drifted
-#      apart, which is the only way this class ships again.
-#   4. WARN (not fail) when an image crosses onto the EAGER path for the first
-#      time: it is safe, but it means that app now pays a large contiguous
-#      region_alloc at exec, which is a real OOM risk on a small image.
+#   1. For every build/user/*.elf that is an ELF64 image, compute lowest PT_LOAD
+#      vaddr, the page-rounded file extent, and the page-rounded memory extent —
+#      mirroring _load_elf64's first pass exactly.
+#   2. ET_DYN images are SAFE BY CONSTRUCTION (rebased away from the direct
+#      map); they are reported, and their dynamic relocations are checked
+#      against what the loader can actually apply.
+#   3. Any remaining low-linked ET_EXEC is classified DEMAND (window <= cap) or
+#      EAGER (window > cap, loader suppresses the split). Both are safe; the
+#      report names which and why.
+#   4. FAIL if a low ET_EXEC would take the DEMAND path with a window larger
+#      than the cap — that would mean the gate's model and fs/elf.ad have
+#      drifted apart, which is the only way this class ships again.
+#   5. FAIL if an ET_DYN image carries a relocation kind the loader refuses
+#      (anything but R_X86_64_RELATIVE / R_X86_64_NONE) — on device that is a
+#      refused exec, and the point of a host gate is to catch it here.
+#   6. FAIL if NO ELF64 images are found at all, and FAIL if the whole
+#      population went ET_EXEC again — a silent lane regression would otherwise
+#      read as a quiet PASS.
+#   7. WARN (not fail) when an ET_EXEC image crosses onto the EAGER path: it is
+#      safe, but it pays a large contiguous region_alloc at exec.
 #
 # Host-only: no QEMU, no device. Reads ELF program headers with python3.
 #
@@ -96,9 +114,51 @@ PAGE    = 4096
 def rounddown_page(v): return v & ~(PAGE - 1)
 def roundup_page(v):   return (v + PAGE - 1) & ~(PAGE - 1)
 
+DT_RELA, DT_RELASZ, DT_RELAENT = 7, 8, 9
+R_X86_64_NONE, R_X86_64_RELATIVE = 0, 8
+
+
+def reloc_kinds(blob, phdrs):
+    """Mirror fs/elf.ad::_elf64_apply_relative_relocs: walk PT_DYNAMIC for
+    DT_RELA/DT_RELASZ/DT_RELAENT and return the set of relocation TYPES the
+    loader would be handed, plus the entry count."""
+    dyn = [p for p in phdrs if p[0] == 2]            # PT_DYNAMIC
+    if not dyn:
+        return set(), 0
+    _, d_off, _, d_filesz, _ = dyn[0]
+    rela_v = rela_sz = 0
+    rela_ent = 24
+    off = 0
+    while off + 16 <= d_filesz and d_off + off + 16 <= len(blob):
+        tag, val = struct.unpack_from('<QQ', blob, d_off + off)
+        if tag == 0:                                  # DT_NULL
+            break
+        if tag == DT_RELA:    rela_v = val
+        if tag == DT_RELASZ:  rela_sz = val
+        if tag == DT_RELAENT: rela_ent = val
+        off += 16
+    if not rela_sz or rela_ent != 24:
+        return set(), 0
+    # vaddr -> file offset via the containing file-backed PT_LOAD
+    rela_off = None
+    for p_type, p_off, p_vaddr, p_filesz, _ in phdrs:
+        if p_type == PT_LOAD and p_vaddr <= rela_v < p_vaddr + p_filesz:
+            rela_off = p_off + (rela_v - p_vaddr)
+            break
+    if rela_off is None or rela_off + rela_sz > len(blob):
+        return {'<DT_RELA not file-backed>'}, 0
+    kinds, n = set(), 0
+    for r in range(0, rela_sz, rela_ent):
+        _, r_info, _ = struct.unpack_from('<QQq', blob, rela_off + r)
+        kinds.add(r_info & 0xffffffff)
+        n += 1
+    return kinds, n
+
+
 def window(path):
     """Mirror fs/elf.ad::_load_elf64's first pass. Returns
-    (lowest_v, file_hi_rel, mem_hi_rel) or None if not a low ELF64 ET_EXEC."""
+    (e_type, lowest_v, file_hi_rel, mem_hi_rel, reloc_kinds, n_relocs)
+    or None if not an ELF64 image."""
     with open(path, 'rb') as f:
         blob = f.read()
     if len(blob) < 64 or blob[:4] != b'\x7fELF':
@@ -106,22 +166,25 @@ def window(path):
     if blob[4] != 2:                       # EI_CLASS: 2 = ELF64
         return None
     e_type = struct.unpack_from('<H', blob, 16)[0]
-    if e_type != 2:                        # ET_EXEC only; ET_DYN sits high
+    if e_type not in (2, 3):               # ET_EXEC / ET_DYN
         return None
     e_phoff     = struct.unpack_from('<Q', blob, 32)[0]
     e_phentsize = struct.unpack_from('<H', blob, 54)[0]
     e_phnum     = struct.unpack_from('<H', blob, 56)[0]
     lowest_v, highest_v, highest_file_v = None, 0, 0
+    phdrs = []
     for i in range(e_phnum):
         ph = e_phoff + i * e_phentsize
         if ph + 56 > len(blob):
             return None
         p_type = struct.unpack_from('<I', blob, ph)[0]
-        if p_type != PT_LOAD:
-            continue
+        p_offset = struct.unpack_from('<Q', blob, ph + 8)[0]
         p_vaddr  = struct.unpack_from('<Q', blob, ph + 16)[0]
         p_filesz = struct.unpack_from('<Q', blob, ph + 32)[0]
         p_memsz  = struct.unpack_from('<Q', blob, ph + 40)[0]
+        phdrs.append((p_type, p_offset, p_vaddr, p_filesz, p_memsz))
+        if p_type != PT_LOAD:
+            continue
         lowest_v = p_vaddr if lowest_v is None else min(lowest_v, p_vaddr)
         highest_v = max(highest_v, p_vaddr + p_memsz)
         highest_file_v = max(highest_file_v, p_vaddr + p_filesz)
@@ -129,14 +192,32 @@ def window(path):
         return None
     mem_hi_rel  = roundup_page(highest_v - lowest_v)
     file_hi_rel = min(roundup_page(highest_file_v - lowest_v), mem_hi_rel)
-    return lowest_v, file_hi_rel, mem_hi_rel
+    kinds, n_rel = reloc_kinds(blob, phdrs)
+    return e_type, lowest_v, file_hi_rel, mem_hi_rel, kinds, n_rel
 
-rows, bad, eager = [], [], []
+ET_EXEC, ET_DYN = 2, 3
+LOADER_APPLIES = {R_X86_64_NONE, R_X86_64_RELATIVE}
+
+execs, dyns, bad, badrel, eager = [], [], [], [], []
 for path in sorted(glob.glob(os.path.join(elfdir, '*.elf'))):
     w = window(path)
     if w is None:
         continue
-    lowest_v, file_hi_rel, mem_hi_rel = w
+    e_type, lowest_v, file_hi_rel, mem_hi_rel, kinds, n_rel = w
+    name = os.path.basename(path)
+
+    if e_type == ET_DYN:
+        # SAFE BY CONSTRUCTION: _load_elf64's ET_DYN arm rebases the image onto
+        # a base of the kernel's choosing (high ASLR vbase, or identity at its
+        # own memblock region), so its user vaddrs cover only its own pages.
+        # There is no window to bound. What CAN still go wrong is a relocation
+        # kind the loader refuses -- which is a refused exec on device.
+        unsupported = sorted(k for k in kinds if k not in LOADER_APPLIES)
+        dyns.append((name, mem_hi_rel, mem_hi_rel - file_hi_rel, n_rel))
+        if unsupported:
+            badrel.append((name, unsupported))
+        continue
+
     is_low = lowest_v < low_top
     # The loader's rule (fs/elf.ad): a low-linked ET_EXEC whose FULL span
     # exceeds the cap gets no demand split at all -- eager full span.
@@ -144,31 +225,55 @@ for path in sorted(glob.glob(os.path.join(elfdir, '*.elf'))):
     bss_lo = lowest_v + file_hi_rel
     bss_hi = lowest_v + mem_hi_rel
     win = 0 if suppressed else (mem_hi_rel - file_hi_rel)
-    rows.append((os.path.basename(path), lowest_v, bss_lo, bss_hi,
-                 mem_hi_rel, win, suppressed, is_low))
+    execs.append((name, lowest_v, bss_lo, bss_hi, mem_hi_rel, win,
+                  suppressed, is_low))
     if suppressed:
-        eager.append((os.path.basename(path), mem_hi_rel))
+        eager.append((name, mem_hi_rel))
     elif is_low and win > cap:
         # Model/loader drift: a demand window past the cap must be impossible.
-        bad.append((os.path.basename(path), win))
+        bad.append((name, win))
 
-if not rows:
-    print('[elfbss] INCONCLUSIVE: no low-linked ELF64 ET_EXEC images found')
-    sys.exit(125)
+if not execs and not dyns:
+    print('[elfbss] FAIL: no ELF64 images found in %s at all. This gate is the '
+          'ratchet on the low-BSS/direct-map class; an empty population means '
+          'it is asserting nothing, which is how the class ships again.' % elfdir)
+    sys.exit(1)
 
-rows.sort(key=lambda r: -r[4])
-print('[elfbss] %d low-linked ELF64 ET_EXEC images; top 10 by span:' % len(rows))
-print('[elfbss]   %-28s %10s %10s  %s' % ('image', 'span', 'bss-window', 'path'))
-for name, lowv, blo, bhi, span, win, sup, _ in rows[:10]:
-    print('[elfbss]   %-28s %9.1fM %9.1fM  %s  [0x%x, 0x%x)'
-          % (name, span / 1048576.0, win / 1048576.0,
-             'EAGER(capped)' if sup else 'demand', blo, bhi))
+print('[elfbss] %d ET_DYN (PIE, safe by construction) + %d ET_EXEC ELF64 images'
+      % (len(dyns), len(execs)))
+
+if dyns:
+    dyns.sort(key=lambda r: -r[1])
+    print('[elfbss] top 5 ET_DYN by span:')
+    print('[elfbss]   %-28s %10s %10s %8s' % ('image', 'span', 'bss-tail', 'relocs'))
+    for name, span, bsstail, n_rel in dyns[:5]:
+        print('[elfbss]   %-28s %9.1fM %9.1fM %8d'
+              % (name, span / 1048576.0, bsstail / 1048576.0, n_rel))
+
+if execs:
+    execs.sort(key=lambda r: -r[4])
+    print('[elfbss] top 10 ET_EXEC by span:')
+    print('[elfbss]   %-28s %10s %10s  %s' % ('image', 'span', 'bss-window', 'range'))
+    for name, lowv, blo, bhi, span, win, sup, _ in execs[:10]:
+        print('[elfbss]   %-28s %9.1fM %9.1fM  %s  [0x%x, 0x%x)'
+              % (name, span / 1048576.0, win / 1048576.0,
+                 'EAGER(capped)' if sup else 'demand', blo, bhi))
 
 for name, span in eager:
     print('[elfbss] WARNING: %s span %.1f MiB exceeds the cap -> EAGER full-span '
           'load. Safe (no direct-map alias) but it pays a %.1f MiB contiguous '
           'region_alloc at every exec; shrink its static BSS.'
           % (name, span / 1048576.0, span / 1048576.0))
+
+failed = False
+
+if badrel:
+    for name, kinds in badrel:
+        print('[elfbss] FAIL: %s (ET_DYN) carries dynamic relocation type(s) %s. '
+              'fs/elf.ad::_elf64_apply_relative_relocs applies R_X86_64_RELATIVE '
+              'only and REFUSES the load on anything else, so this image will '
+              'not exec on device.' % (name, ', '.join(str(k) for k in kinds)))
+    failed = True
 
 if bad:
     for name, win in bad:
@@ -177,12 +282,29 @@ if bad:
               'fs/elf.ad have drifted; the loader will punch that window into '
               'the kernel direct map and the box wedges on the first BSS store.'
               % (name, win / 1048576.0))
+    failed = True
+
+# LANE REGRESSION GUARD. The native ELF64 lane links PIE; a big population of
+# ELF64 images with ZERO ET_DYN among them means the lane silently reverted to
+# the low-ET_EXEC link (e.g. ADDER_NATIVE64_ETEXEC leaked into a build), which
+# reintroduces the aliasing hazard for every app at once. Without this check
+# that regression reads as a quiet PASS.
+if not dyns and len(execs) >= 10:
+    print('[elfbss] FAIL: %d ELF64 images and NOT ONE is ET_DYN. The native '
+          'ELF64 lane is supposed to link PIE (user/init64_pie.lds); every '
+          'image being a low ET_EXEC means the lane reverted and the '
+          'direct-map aliasing hazard is back for all of them.' % len(execs))
+    failed = True
+
+if failed:
     sys.exit(1)
 
-biggest_demand = max((r[5] for r in rows if not r[6]), default=0)
-print('[elfbss] PASS: largest live demand-BSS window %.1f MiB, cap %.1f MiB, '
-      '%d image(s) on the eager fallback.'
-      % (biggest_demand / 1048576.0, cap / 1048576.0, len(eager)))
+biggest_demand = max((r[5] for r in execs if not r[6]), default=0)
+print('[elfbss] PASS: %d PIE image(s) safe by construction (%d total relocs, all '
+      'R_X86_64_RELATIVE); largest ET_EXEC demand-BSS window %.1f MiB vs cap '
+      '%.1f MiB, %d image(s) on the eager fallback.'
+      % (len(dyns), sum(r[3] for r in dyns), biggest_demand / 1048576.0,
+         cap / 1048576.0, len(eager)))
 sys.exit(0)
 PY
 rc=$?

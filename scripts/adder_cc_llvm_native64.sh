@@ -22,17 +22,48 @@
 #
 # HOW:
 #   1) host_ac.elf --backend=llvm in.ad -> in.ll        (textual LLVM IR)
-#   2) clang -c -ffreestanding -fno-pic -mno-red-zone ... in.ll -> main.o
-#      (ELF64 object, small code model, no PIC/GOT/unwind/stack-protector so
-#       it references no libc/runtime symbol the native link can't resolve;
-#       R_X86_64_64/movabs are fine in ELF64).
+#   2) clang -c -ffreestanding -fpie -mno-red-zone ... in.ll -> main.o
+#      (ELF64 object, small code model, no unwind/stack-protector so it
+#       references no libc/runtime symbol the native link can't resolve).
 #   3) as (64-bit) assembles user/runtime.S (native _start + sys_* stubs),
 #      a synthesized progname.s (per-binary _start marker), and
 #      scripts/adder_llvm_runtime_native.s (native print_u64) into ELF64
 #      objects. The `.code64` directive in those .S/.s files is a no-op for
 #      64-bit `as` — no `--32`, so their 64-bit relocs are representable too.
-#   4) ld -m elf_x86_64 -nostdlib -static -no-pie -T user/init64.lds -> ELF64
-#      EXEC, OSABI=SYSV, ET_EXEC @ 0x400000, no PT_INTERP.
+#   4) ld -m elf_x86_64 -nostdlib -static -pie -T user/init64_pie.lds -> ELF64
+#      ET_DYN (PIE) at base 0, OSABI=SYSV, no PT_INTERP.
+#
+# PIE, NOT ET_EXEC (2026-07-30) — the low-BSS / direct-map lift.
+# --------------------------------------------------------------
+# This lane used to link ET_EXEC at a fixed low 0x400000 (user/init64.lds).
+# That makes every app's user vaddrs numerically alias low physical RAM — the
+# kernel's own identity direct map — so a kernel access through a direct-map VA
+# inside the image's span lands on the APP's memory instead. hambrowse (~174
+# MiB static BSS, span [0x400000, 0xB35E000)) aliased most of MEMBLOCK's
+# [0x200000, 0x0F000000) pool and either wedged the box (demand-BSS punched
+# 44,501 leaves not-present, so the demand resolver faulted recursively with
+# interrupts off) or corrupted (eager full-span: `[pf] kernel write to RO user
+# page va=0x0a890d98` at page_set_rmap, 5/5). It is only luck that it faulted
+# rather than silently scribbling on a WRITABLE user page.
+#
+# ET_DYN removes the aliasing BY CONSTRUCTION: fs/elf.ad's ET_DYN arm rebases
+# the image to a base of the KERNEL's choosing — the high ASLR vbase, or
+# identity at the image's own memblock `region` on a deterministic boot — so an
+# image's user vaddrs only ever cover its OWN pages. That is exactly the
+# property the native ELF32 lane always had, and why the native lane never hit
+# this class. It fixes all ~276 LLVM-lane apps at once, not just the one that
+# grew big enough to notice.
+#
+# The kernel applies the resulting R_X86_64_RELATIVE relocations at load time
+# (fs/elf.ad::_elf64_apply_relative_relocs). The link is -static -nostdlib with
+# every symbol defined in-image, so no PLT and no symbolic relocation survives —
+# hambrowse needs exactly 64 RELATIVE entries, all in .data.rel.ro. Step 5
+# below ASSERTS that, so a toolchain change cannot silently introduce a
+# relocation kind the loader would refuse (and it refuses loudly rather than
+# skipping: an unrelocated pointer is a wild store).
+#
+# ADDER_NATIVE64_ETEXEC=1 restores the old ET_EXEC link for A/B bisection. It
+# reintroduces the aliasing hazard — debug only.
 #
 # Usage:
 #   scripts/adder_cc_llvm_native64.sh <in.ad> <out-elf>
@@ -65,8 +96,19 @@ command -v "$CLANG" >/dev/null 2>&1 || { echo "[cc_llvm_native64] ERROR: $CLANG 
 for t in as ld; do command -v "$t" >/dev/null 2>&1 || { echo "[cc_llvm_native64] ERROR: $t not found (binutils)" >&2; exit 1; }; done
 
 RUNTIME_S="$PROJ_ROOT/user/runtime.S"
-LDS="$PROJ_ROOT/user/init64.lds"
 NATIVE_RT="$PROJ_ROOT/scripts/adder_llvm_runtime_native.s"
+
+# PIE (ET_DYN) by default; ADDER_NATIVE64_ETEXEC=1 restores the legacy
+# low-ET_EXEC link for A/B bisection (reintroduces the direct-map alias
+# hazard — debug only).
+if [ "${ADDER_NATIVE64_ETEXEC:-0}" = "1" ]; then
+    LDS="$PROJ_ROOT/user/init64.lds"
+    PIC_CFLAG="-fno-pic"; LD_PIE_FLAG="-no-pie"; LANE_KIND="ET_EXEC"
+else
+    LDS="$PROJ_ROOT/user/init64_pie.lds"
+    PIC_CFLAG="-fpie";    LD_PIE_FLAG="-pie";    LANE_KIND="PIE"
+fi
+
 for f in "$RUNTIME_S" "$LDS" "$NATIVE_RT"; do
     [ -f "$f" ] || { echo "[cc_llvm_native64] ERROR: missing $f" >&2; exit 1; }
 done
@@ -96,11 +138,12 @@ trap 'rm -rf "$TMP"' EXIT
 MAIN_O="$TMP/main.o"; RUNTIME_O="$TMP/runtime.o"
 PROG_O="$TMP/progname.o"; NATRT_O="$TMP/native_rt.o"
 
-# 2) clang: .ll -> ELF64 object directly. -fno-pic + default small code model
-#    keep it loadable at the fixed 0x400000 base; -ffreestanding/-nostdlib-ish
-#    flags keep it free of libc/GOT references. NO `.s` munging is needed
-#    because ELF64 represents R_X86_64_64/movabs natively.
-if ! "$CLANG" "$OPTLVL" -c -ffreestanding -fno-pic -fno-asynchronous-unwind-tables \
+# 2) clang: .ll -> ELF64 object directly. -fpie + the small code model make
+#    every global reference RIP-relative, so the only dynamic relocations the
+#    link can produce are R_X86_64_RELATIVE against in-image addresses that had
+#    to be materialised as data (function-pointer tables in .data.rel.ro).
+#    -ffreestanding/-nostdlib-ish flags keep it free of libc references.
+if ! "$CLANG" "$OPTLVL" -c -ffreestanding "$PIC_CFLAG" -fno-asynchronous-unwind-tables \
         -fno-unwind-tables -fno-stack-protector -fcf-protection=none -mno-red-zone \
         -fno-addrsig -mcmodel=small "$LL" -o "$MAIN_O" 2>"$TMP/clang.err"; then
     echo "[cc_llvm_native64] ERROR: clang -c failed for $LL" >&2; cat "$TMP/clang.err" >&2
@@ -127,13 +170,42 @@ for pair in "$RUNTIME_S:$RUNTIME_O" "$PROG_S:$PROG_O" "$NATIVE_RT:$NATRT_O"; do
     fi
 done
 
-# 4) Link the native ELF64 EXEC. progname.o first (strong marker overrides
+# 4) Link the native ELF64 image. progname.o first (strong marker overrides
 #    runtime.S's weak fallback), then runtime.o (_start + sys_*), the clang
 #    main, and the native print_u64 supplement.
-if ! ld -m elf_x86_64 -nostdlib -static -no-pie -T "$LDS" -o "$OUT_ELF" \
+if ! ld -m elf_x86_64 -nostdlib -static "$LD_PIE_FLAG" -T "$LDS" -o "$OUT_ELF" \
         "$PROG_O" "$RUNTIME_O" "$MAIN_O" "$NATRT_O" 2>"$TMP/ld.err"; then
     echo "[cc_llvm_native64] ERROR linking:" >&2; cat "$TMP/ld.err" >&2; exit 1
 fi
 
-echo "[cc_llvm_native64] built NATIVE ELF64 $OUT_ELF (via $HOST_AC + $CLANG $OPTLVL + native runtime)" >&2
+# 5) PIE CONTRACT CHECK. The kernel's loader (fs/elf.ad) applies ONLY
+#    R_X86_64_RELATIVE and REFUSES the load on any other kind, because skipping
+#    one would leave a wild pointer in .data — the same silent-corruption class
+#    the PIE move exists to eliminate. Assert the contract here so a toolchain
+#    or codegen change fails at BUILD time, where it is cheap to attribute,
+#    rather than as an unexplained refusal on device.
+if [ "$LANE_KIND" = "PIE" ]; then
+    if ! command -v readelf >/dev/null 2>&1; then
+        echo "[cc_llvm_native64] WARNING: readelf missing; skipped the PIE reloc-kind check" >&2
+    else
+        bad="$(readelf -rW "$OUT_ELF" 2>/dev/null \
+               | awk '/^[0-9a-f]+ /{print $3}' \
+               | grep -v '^R_X86_64_RELATIVE$' | grep -v '^R_X86_64_NONE$' \
+               | sort -u)"
+        if [ -n "$bad" ]; then
+            echo "[cc_llvm_native64] ERROR: $OUT_ELF carries dynamic relocations the" >&2
+            echo "  native ELF64 loader cannot apply (it handles R_X86_64_RELATIVE only):" >&2
+            echo "$bad" | sed 's/^/    /' >&2
+            echo "  The load would be REFUSED on device. Either the link stopped being" >&2
+            echo "  fully static/in-image, or codegen started emitting GOT/PLT references." >&2
+            exit 1
+        fi
+        if [ "$(readelf -hW "$OUT_ELF" 2>/dev/null | awk '/^ *Type:/{print $2}')" != "DYN" ]; then
+            echo "[cc_llvm_native64] ERROR: $OUT_ELF is not ET_DYN despite the PIE link" >&2
+            exit 1
+        fi
+    fi
+fi
+
+echo "[cc_llvm_native64] built NATIVE ELF64 $LANE_KIND $OUT_ELF (via $HOST_AC + $CLANG $OPTLVL + native runtime)" >&2
 exit 0
