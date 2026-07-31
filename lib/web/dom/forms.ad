@@ -3,6 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
+from lib.htmlengine import _anchor_orig
 from lib.htmlengine import _alnum_at, _attr_int, _attr_width_val, _bg_pop, _bg_push, _blk_dedicated, _blk_indent_pop, _blk_indent_push, _block_box_close, _block_box_open, _bump_row, _emit_vgap, _capture_href, _cascade_match_current, _cell_close, _close_seg, _close_style, _collect_css, _color_pop, _color_push, _compute_cols, _content_right, _deco_pop, _deco_push, _el_pop, _el_pop_lit, _el_push, _enter_skip, _flex_container_close, _flex_container_open, _flex_item_close, _flex_item_col, _float_box_close, _float_box_open, _fontpx_pop, _fontpx_push, _gencontent_close, _gencontent_open, _generic_block_wanted, g_li_pending, g_cell_pending, _grid_find_colmajor, _grid_find_dense, _grid_occupy_rect, _grid_rect_free, _grid_row_h_rows, _grid_row_top_rows, _grid_wrap_row, _handle_img, _handle_inline_svg, _img_cascade, _hx_find_attr, _hx_lower, _hx_name_eq, _inlb_close, _inlb_open, _inlb_tag, _is_display_none, _is_visually_hidden, _left_margin, _li_close_lvl, _mark_button_seg, _mark_button_seg_geo, _mark_button_seg_full, _mark_check_seg, _mark_field_seg, _mark_field_seg_geo, _mark_select_seg, _measure_table, _newline, _open_style, _own_color, _para_break, _parse_inline_wa, _pending_indjump, _pending_marker, _pending_marker_num, _pending_marker_shape, _pending_marker_x, _recompute_indent, _recompute_style, _seg_putc, _seg_putc_dec, _soft_newline, _style_break, _table_natural_width, _table_pop, _table_push, _table_region_end, _tag_align_attr, _tbl_apply_cellpad, _tagname_is, _word_flush, _word_push, _hx_tag_end_p
 
 # ====================================================================
@@ -926,7 +927,11 @@ def _handle_tag(ts: uint64, te: uint64):
     # getComputedStyle can read the element's REAL laid-out box back. A CLOSE
     # tag clears it so a stray box never picks up the closing tag's offset.
     if is_close == 0:
-        g_open_src = cast[int32](ts) - 1
+        # _anchor_orig maps a REWRITE offset back to the original-source anchor
+        # the DOM keys elements by (identity when laying out the source itself,
+        # -1 for a script-created element that has no source anchor — and -1
+        # correctly suppresses the stamp rather than aliasing another element).
+        g_open_src = _anchor_orig(cast[int32](ts) - 1)
     else:
         g_open_src = -1
 

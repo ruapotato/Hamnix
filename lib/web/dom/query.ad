@@ -4,6 +4,7 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _attr_decode_at
+from lib.htmlengine import csty_color_at, csty_bg_at
 from lib.htmlengine import _brand_by_tag
 from lib.htmlengine import base_url, base_url_len
 from lib.jsengine import _url_resolve, url_buf_a
@@ -811,6 +812,27 @@ def _style_clear(st: int32):
     js_set_prop(st, cast[Ptr[uint8]]("width"), 5, js_new_string(&g_stv_buf[0], 0))
 
 
+# Does the declaration value p[vs..ve) end in a CSS `!important` priority flag?
+# ASCII-case-insensitive, tolerating whitespace between '!' and the keyword
+# ("red ! IMPORTANT" is valid CSS). Returns the number of bytes the flag
+# occupies is NOT needed by the one caller — it always trims the fixed
+# "!important" tail and then re-trims whitespace — so this answers 0/1 for the
+# canonical spelling only, which is what every real stylesheet writes.
+def _cs_ends_important(p: Ptr[uint8], vs: int32, ve: int32) -> int32:
+    if ve - vs < 10:
+        return 0
+    lit: Ptr[uint8] = cast[Ptr[uint8]]("!important")
+    k: int32 = 0
+    while k < 10:
+        c: uint8 = p[ve - 10 + k]
+        if c >= 65 and c <= 90:
+            c = c + 32
+        if c != lit[k]:
+            return 0
+        k = k + 1
+    return 1
+
+
 # Parse a CSS declaration string p[0..n) ("color:red; display:none") into the
 # style object's camelCase properties. Implements cssText / setAttribute('style')
 # semantics (a full replace of the routed inline props).
@@ -850,6 +872,16 @@ def _style_apply_csstext(st: int32, pin: Ptr[uint8], nin: int32):
         ve: int32 = i
         while ve > vs and (ve > 0 and (p[ve - 1] == 32 or p[ve - 1] == 9)):
             ve = ve - 1
+        # CSSOM splits a declaration's VALUE from its PRIORITY: after
+        # `style="color: red !important"`, `el.style.color` is "red" and the
+        # flag lives in getPropertyPriority(). Keeping "!important" inside the
+        # value made the declaration unparseable downstream — the colour
+        # resolver saw "green !important", matched no colour, and the whole
+        # declaration was dropped, so an !important inline style did nothing.
+        if _cs_ends_important(p, vs, ve) != 0:
+            ve = ve - 10
+            while ve > vs and (p[ve - 1] == 32 or p[ve - 1] == 9):
+                ve = ve - 1
         vl: int32 = ve - vs
         if vl > STYLE_VAL_CAP - 1:
             vl = STYLE_VAL_CAP - 1
@@ -2886,9 +2918,42 @@ def _cs_length(cs: int32, el: int32, camel: Ptr[uint8], cl: uint64, \
         _cs_set2(cs, camel, cl, css, csl, js_new_string(deflt, defl))
 
 
+# The cascade-resolved colour for element `el`, or -1 when the cascade set none.
+#
+# `which` selects the property and encodes its INHERITANCE, which is the whole
+# reason the two cases are not symmetric:
+#   0 = color            — an inherited property. An unset element takes its
+#                          nearest styled ancestor's value, so the walk
+#                          continues up the tree.
+#   1 = background-color — NOT inherited. Unset means unset; stop immediately
+#                          and let the caller answer transparent. Walking up
+#                          here would report a parent's background as the
+#                          child's, which is exactly backwards.
+g_csty_bg_on: int32 = 0
+
+
+def _cs_cascade_color(el: int32, which: int32) -> int32:
+    if el < 0 or el >= dom_n:
+        return -1
+    if which != 0:
+        if g_csty_bg_on == 0:
+            return -1
+        return csty_bg_at(cast[uint64](dom_anchor[el]))
+    cur: int32 = el
+    hops: int32 = 0
+    while cur >= 0 and hops < 64:
+        v: int32 = csty_color_at(cast[uint64](dom_anchor[cur]))
+        if v >= 0:
+            return v
+        cur = _el_parent_idx(cur)
+        hops = hops + 1
+    return -1
+
+
 # Set a colour property resolved to rgb()/rgba(). Priority: a script-set inline
-# colour (resolved), else the laid-out text colour `segrgb` (>=0), else the UA
-# default (transparent for background, black otherwise).
+# colour (resolved), else the cascade's resolved value, else the laid-out text
+# colour `segrgb` (>=0), else the UA default (transparent for background, black
+# otherwise).
 def _cs_color(cs: int32, el: int32, camel: Ptr[uint8], cl: uint64, \
               css: Ptr[uint8], csl: uint64, segrgb: int32, transparent_def: int32):
     n: int32 = _cs_inline_len(el, camel, cl)
@@ -2898,6 +2963,14 @@ def _cs_color(cs: int32, el: int32, camel: Ptr[uint8], cl: uint64, \
             _cs_set2(cs, camel, cl, css, csl, _cs_color_string(rgb, g_gcs_alpha))
         else:
             _cs_set2(cs, camel, cl, css, csl, js_new_string(&g_cs_vbuf[0], cast[uint64](n)))
+        return
+    # No inline value: ask the CASCADE what it resolved for this element during
+    # layout (csty_*). This outranks `segrgb` because segrgb is the colour of the
+    # element's painted TEXT — an empty element has none, and a stylesheet rule
+    # on such an element used to be invisible to script entirely.
+    cx: int32 = _cs_cascade_color(el, transparent_def)
+    if cx >= 0:
+        _cs_set2(cs, camel, cl, css, csl, _cs_color_string(cx, 255))
         return
     if segrgb >= 0:
         _cs_set2(cs, camel, cl, css, csl, _cs_color_string(segrgb, 255))
@@ -3036,7 +3109,15 @@ def _new_computed_style(el: int32) -> int32:
     if found != 0 and gs0 >= 0:
         segrgb = seg_rgb[gs0]
         if segrgb < 0:
+            # A palette INDEX, not a CSS colour: the renderer's default ink is
+            # 0x101010, a deliberate near-black chosen for the glyph rasteriser.
+            # It is not the computed value of `color` — the CSS initial value is
+            # black, and chromium --headless reports "rgb(0, 0, 0)" for unstyled
+            # text (verified). Reporting the ink made EVERY element the cascade
+            # left alone read back rgb(16, 16, 16).
             segrgb = _palette_rgb(seg_color[gs0])
+            if segrgb == 0x101010:
+                segrgb = 0
         segbold = cast[int32](seg_bold[gs0])
     # The element's CASCADED content box (from the layout pass; -1 = none), used
     # so a `width`/`height`/`padding` that came from a STYLESHEET rule — not just
