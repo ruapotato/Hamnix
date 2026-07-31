@@ -173,10 +173,22 @@ def _refresh_uptime():
 # serial console for a compositor-spawned DE client, so this goes to a file the
 # gate cats in-guest (same shape as hamdesktop's /tmp/.hamdesktop.src).
 # Best-effort: a read-only /tmp simply skips it.
+#
+# WRITTEN ON CHANGE, not on every sample. This runs a few times a second for
+# the whole life of the session, and an unconditional open/write/close is
+# exactly the sort of constant background churn that pollutes a memory soak's
+# own numbers. On an idle desktop `used` barely moves, so the common case costs
+# nothing; a heartbeat every TEL_HEARTBEAT samples still proves to a reader
+# that the loop is alive rather than wedged.
 mem_samples: uint64 = 0
 mem_peak_used: uint64 = 0
+_mem_tel_last: uint64 = 0xffffffffffffffff
+TEL_HEARTBEAT: uint64 = 16
 _mem_telbuf: Array[128, uint8]
 def _report_mem(total: uint64, used: uint64):
+    if used == _mem_tel_last and mem_samples % TEL_HEARTBEAT != 0:
+        return
+    _mem_tel_last = used
     fd: int32 = sys_open_write(cast[Ptr[char]]("/tmp/.hammonscene.mem"))
     if fd < 0:
         return

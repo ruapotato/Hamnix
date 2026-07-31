@@ -105,6 +105,21 @@ else
     echo "[sysmon_mem] RESULT: FAIL"; exit 1
 fi
 
+# ---- the instance under test is the one the USER gets -------------------
+# hamdesktop launches an icon DETACHED, with the compositor's namespace and no
+# waiting parent. A serial-shell `&` spawn is none of those things, so a gate
+# that only ever tests the shell path is not testing the configuration the
+# report came from. Double-clicking the System Monitor icon is also a user
+# behaviour worth asserting on its own.
+SPAWN_PATH="$(val SPAWN_PATH)"
+if blind icon_launch; then
+    bad "(blinded): double-clicking the desktop icon launches the System Monitor"
+elif [ "$SPAWN_PATH" = "desktop_icon" ]; then
+    ok "the instance under test was launched by DOUBLE-CLICKING its desktop icon (cell $(val ICON_CELL))"
+else
+    bad "double-clicking the System Monitor desktop icon did not launch it (cell $(val ICON_CELL)); the run fell back to a serial-shell spawn, so the COMPOSITOR-spawned configuration the user reported was not exercised"
+fi
+
 M_SEQ0="$(val M_SEQ0)"; M_SEQ2="$(val M_SEQ2)"
 if [ "$(val SEQ_ADVANCED)" = "1" ]; then
     ok "the resample loop is live (sample seq $M_SEQ0 -> $M_SEQ2)"

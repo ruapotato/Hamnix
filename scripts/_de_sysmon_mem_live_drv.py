@@ -126,6 +126,46 @@ def emit(name, value):
     print(f"RESULT {name} {value}", flush=True)
 
 
+# ---- driving the REAL desktop icon --------------------------------------
+# hamdesktop publishes one "icon <cx> <cy> <label>" line per icon in
+# /tmp/.hamdesktop.src, at the cell origin it is ACTUALLY drawing. We use that
+# rather than re-deriving the column flow here: a re-derivation has to guess
+# the directory listing order too, and a guess that misses clicks some OTHER
+# app and reports a false failure.
+FB_W, FB_H = 1280, 800
+
+
+def ab(px, py):
+    return (max(0, min(32767, int(px * 32767 / FB_W))),
+            max(0, min(32767, int(py * 32767 / FB_H))))
+
+
+def mv(px, py, btn):
+    ax, ay = ab(px, py)
+    send(f"echo '{ax} {ay} {btn} 0 1' > /dev/mouse")
+
+
+def double_click(px, py):
+    # hamdesktop activates on the RELEASE edge, and launches on the SECOND
+    # click over the same cell (the first selects). Never hold the button
+    # across motion — that is a drag, which launches nothing.
+    for _ in range(2):
+        mv(px, py, 0); time.sleep(0.3)
+        mv(px, py, 1); time.sleep(0.3)
+        mv(px, py, 0); time.sleep(0.5)
+
+
+def sysmon_icon_cell():
+    """Screen point to click for the System Monitor desktop icon, or None."""
+    t = run_cmd("cat /tmp/.hamdesktop.src")
+    for cx, cy, label in re.findall(r"^icon (\d+) (\d+) (.+)$", t, re.M):
+        if "monitor" in label.strip().lower():
+            # Centre of the icon box within the cell (ICON_W 44, ICON_H 38 at
+            # ICON_INSET_Y 4) — clear of the label row underneath it.
+            return (int(cx) + 22, int(cy) + 23)
+    return None
+
+
 def kernel_mem():
     """(MemTotal, MemFree) in kB straight from the kernel device."""
     t = run_cmd("cat /proc/meminfo")
@@ -153,15 +193,38 @@ try:
     wait_for("[visual_gate] done", 120)
     time.sleep(5)
 
-    # Launch the System Monitor the way the desktop launcher does.
-    run_cmd("/bin/hammonscene &", settle=1.0, tries=1)
-    # Wait for it to publish its FIRST sample rather than sleeping blind.
+    # FIDELITY. The user's instance is spawned by the COMPOSITOR — they
+    # double-click the System Monitor icon on the desktop, and hamdesktop
+    # launches it DETACHED with the desktop's namespace. A serial-shell `&`
+    # spawn is a different parent, a different namespace and an ATTACHED child,
+    # so it is not the configuration the report came from. Drive the real icon
+    # first and fall back to the shell only if the click path did not take,
+    # recording WHICH path produced the instance under test.
+    emit("PRE_EXISTING", "1" if monitor_mem()[2] is not None else "0")
+
+    spawn_path = "none"
     ok = False
-    for _ in range(30):
-        time.sleep(2)
-        if monitor_mem()[2] is not None:
-            ok = True
-            break
+    cell = sysmon_icon_cell()
+    if cell:
+        emit("ICON_CELL", "%d,%d" % cell)
+        double_click(*cell)
+        for _ in range(12):
+            time.sleep(2)
+            if monitor_mem()[2] is not None:
+                ok = True
+                spawn_path = "desktop_icon"
+                break
+    else:
+        emit("ICON_CELL", "UNRESOLVED")
+    if not ok:
+        run_cmd("/bin/hammonscene &", settle=1.0, tries=1)
+        for _ in range(20):
+            time.sleep(2)
+            if monitor_mem()[2] is not None:
+                ok = True
+                spawn_path = "serial_shell"
+                break
+    emit("SPAWN_PATH", spawn_path)
     emit("SYSMON_PUBLISHED", "1" if ok else "0")
     if not ok:
         shot("00_no_publish")

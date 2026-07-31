@@ -1135,6 +1135,25 @@ def _report_icon_source(n: uint64):
     nl: uint64 = _u64_to_dec(n, &nb[0])
     sys_write(fd, &nb[0], nl)
     _writeall(fd, cast[Ptr[uint8]]("\n"))
+    # Then one "icon <cx> <cy> <label>" line per icon, at the cell origin the
+    # grid is ACTUALLY drawing it at (pinned position included). A gate that
+    # wants to click a named icon otherwise has to re-derive the column flow
+    # from these constants and guess the listing order — and a guess that
+    # misses clicks some OTHER app and reports a false failure. The layout is
+    # the desktop's business, so the desktop is what publishes it.
+    i: uint64 = 0
+    while i < n_icons:
+        _writeall(fd, cast[Ptr[uint8]]("icon "))
+        xb: Array[24, uint8]
+        xl: uint64 = _u64_to_dec(cast[uint64](icon_cx(i)), &xb[0])
+        sys_write(fd, &xb[0], xl)
+        _writeall(fd, cast[Ptr[uint8]](" "))
+        yl: uint64 = _u64_to_dec(cast[uint64](icon_cy(i)), &xb[0])
+        sys_write(fd, &xb[0], yl)
+        _writeall(fd, cast[Ptr[uint8]](" "))
+        sys_write(fd, label_ptr(i), ic_label_len[i])
+        _writeall(fd, cast[Ptr[uint8]]("\n"))
+        i = i + 1
     sys_close(fd)
 
 
