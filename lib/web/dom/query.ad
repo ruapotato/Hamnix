@@ -4,7 +4,7 @@
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
 from lib.htmlengine import _attr_decode_at
-from lib.htmlengine import csty_color_at, csty_bg_at
+from lib.htmlengine import csty_color_at, csty_bg_at, csty_important_at
 from lib.htmlengine import _brand_by_tag
 from lib.htmlengine import base_url, base_url_len
 from lib.jsengine import _url_resolve, url_buf_a
@@ -2818,6 +2818,11 @@ def _cs_srcstyle_len(el: int32, camel: Ptr[uint8], caml: uint64) -> int32:
 
 def _cs_inline_len(el: int32, camel: Ptr[uint8], caml: uint64) -> int32:
     if el < 0 or el >= dom_n:
+        return 0
+    # css-cascade-5 §6.4.2: an IMPORTANT author declaration outranks the inline
+    # style attribute. Answering with the inline value here would report a
+    # declaration the cascade already threw away.
+    if csty_important_at(cast[uint64](dom_anchor[el]), camel, cast[int32](caml)) != 0:
         return 0
     stv: int32 = js_get_prop(dom_obj[el], cast[Ptr[uint8]]("style"), 5)
     iv: int32 = js_get_prop(stv, camel, caml)

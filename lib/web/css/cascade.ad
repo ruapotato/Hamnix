@@ -299,6 +299,75 @@ LAYER_UNLAYERED: int32 = 1000   # ranks above every named/anonymous layer
 LAYER_NAME_CAP:  int32 = 2048
 
 r_layer:      Array[2048, int32]   # rank of the layer each rule was parsed in
+
+# Per-rule list of the camelCase property names the rule declares !important
+# (newline-separated, into imp_namebuf). See csty_important_at.
+IMP_NAMEBUF_CAP: int32 = 16384
+imp_namebuf:  Array[16384, uint8]
+imp_namebuf_w: int32 = 0
+r_impn_off:   Array[2048, int32]
+r_impn_len:   Array[2048, int32]
+g_impn_off:   int32 = 0
+g_impn_len:   int32 = 0
+
+
+# Scan a declaration block src[a,b) and pack the camelCase names of every
+# declaration carrying an `!important` priority into imp_namebuf; the span lands
+# in g_impn_off/g_impn_len. Quote- and paren-blind on purpose: a `!important`
+# inside a url() or a string is not valid CSS priority syntax.
+def _scan_important_names(a: uint64, b: uint64):
+    g_impn_off = imp_namebuf_w
+    g_impn_len = 0
+    i: uint64 = a
+    while i < b:
+        while i < b and (src_ptr[i] == 32 or src_ptr[i] == 9 or \
+                         src_ptr[i] == 10 or src_ptr[i] == 13 or src_ptr[i] == 59):
+            i = i + 1
+        ns: uint64 = i
+        while i < b and src_ptr[i] != 58 and src_ptr[i] != 59:
+            i = i + 1
+        if i >= b or src_ptr[i] == 59:
+            continue
+        ne: uint64 = i
+        i = i + 1
+        vs: uint64 = i
+        while i < b and src_ptr[i] != 59:
+            i = i + 1
+        ve: uint64 = i
+        while ne > ns and (src_ptr[ne - 1] == 32 or src_ptr[ne - 1] == 9 or \
+                           src_ptr[ne - 1] == 10 or src_ptr[ne - 1] == 13):
+            ne = ne - 1
+        while ve > vs and (src_ptr[ve - 1] == 32 or src_ptr[ve - 1] == 9 or \
+                           src_ptr[ve - 1] == 10 or src_ptr[ve - 1] == 13):
+            ve = ve - 1
+        if ve - vs < 10 or _mq_ci(ve - 10, cast[Ptr[uint8]]("!important"), 10) == 0:
+            continue
+        if imp_namebuf_w + cast[int32](ne - ns) + 1 > IMP_NAMEBUF_CAP:
+            return
+        up: int32 = 0
+        k: uint64 = ns
+        while k < ne:
+            c: uint8 = src_ptr[k]
+            if c == 45 and k > ns:                    # '-' -> uppercase next
+                up = 1
+            else:
+                if up != 0:
+                    imp_namebuf[imp_namebuf_w] = _upper_ascii(c)
+                    up = 0
+                else:
+                    imp_namebuf[imp_namebuf_w] = _hx_lower(c)
+                imp_namebuf_w = imp_namebuf_w + 1
+                g_impn_len = g_impn_len + 1
+            k = k + 1
+        imp_namebuf[imp_namebuf_w] = 10
+        imp_namebuf_w = imp_namebuf_w + 1
+        g_impn_len = g_impn_len + 1
+
+
+def _upper_ascii(c: uint8) -> uint8:
+    if c >= 97 and c <= 122:
+        return c - 32
+    return c
 layer_name_off: Array[128, int32]  # into layer_namebuf; -1 = anonymous
 layer_name_len: Array[128, int32]
 layer_namebuf:  Array[2048, uint8]
@@ -455,17 +524,21 @@ n_csty:   int32 = 0
 # shadowing it with stale entries.
 def csty_reset():
     n_csty = 0
+    csty_impbuf_w = 0
 
 
 # Record the cascade's resolved colours for the element whose start tag begins
 # at `lt`. Newest-last; the reader scans backwards so the most recent pass wins
-# even if a reset was missed.
-def csty_put(lt: uint64, col: int32, bg: int32):
+# even if a reset was missed. `ioff/ilen` span the !important property names the
+# matching rules declared (see csty_important_at).
+def csty_put(lt: uint64, col: int32, bg: int32, ioff: int32, ilen: int32):
     if n_csty >= CSTY_MAX:
         return
     csty_lt[n_csty]  = lt
     csty_col[n_csty] = col
     csty_bg[n_csty]  = bg
+    csty_imp_off[n_csty] = ioff
+    csty_imp_len[n_csty] = ilen
     n_csty = n_csty + 1
 
 
@@ -492,6 +565,55 @@ def csty_bg_at(lt: uint64) -> int32:
     if i < 0:
         return -1
     return csty_bg[i]
+
+
+# ---- !important VS THE INLINE STYLE ATTRIBUTE ----------------------------
+# css-cascade-5 §6.4.2: an IMPORTANT author declaration outranks the element's
+# inline `style` declaration. getComputedStyle consults the inline declaration
+# FIRST for every property it reports, so `.cls { visibility: inherit !important }`
+# lost to `style="visibility: hidden"` and the read-back said "hidden".
+#
+# Modelling importance per declaration would mean an `r_imp_<prop>` beside each
+# of the ~60 `r_<prop>` arrays. Instead each rule records the NAMES it declares
+# `!important` (camelCase, newline-separated), and the cascade accumulates the
+# union of those names over the rules that MATCH each element. That is exactly
+# the question the read-back has to answer — "may an inline value still win this
+# property?" — and it costs one blob per rule and one append per match.
+#
+# It deliberately does NOT change what the layout paints: an important
+# declaration already won or lost inside the ordinary specificity comparison
+# (which the layer fold now feeds). This is a read-back correction only.
+CSTY_IMPBUF_CAP: int32 = 16384
+csty_impbuf:     Array[16384, uint8]
+csty_impbuf_w:   int32 = 0
+csty_imp_off:    Array[4096, int32]
+csty_imp_len:    Array[4096, int32]
+
+
+# Is the camelCase property `p[0..n)` declared !important by a rule matching the
+# element anchored at `lt`?
+def csty_important_at(lt: uint64, p: Ptr[uint8], n: int32) -> int32:
+    i: int32 = _csty_find(lt)
+    if i < 0 or csty_imp_len[i] <= 0:
+        return 0
+    a: int32 = csty_imp_off[i]
+    e: int32 = a + csty_imp_len[i]
+    while a < e:
+        b: int32 = a
+        while b < e and csty_impbuf[b] != 10:
+            b = b + 1
+        if b - a == n:
+            k: int32 = 0
+            same: int32 = 1
+            while k < n:
+                if csty_impbuf[a + k] != p[k]:
+                    same = 0
+                    break
+                k = k + 1
+            if same != 0:
+                return 1
+        a = b + 1
+    return 0
 
 # cascade match results (filled by _cascade_match_current)
 m_col:    int32 = -1
@@ -6230,6 +6352,7 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
     if i < rgn_end:
         i = i + 1
     _parse_decls(dec_s, dec_e)
+    _scan_important_names(dec_s, dec_e)
     # Nothing we honour -> skip emitting rules entirely.
     if d_color < 0 and d_bg < 0 and d_weight == 0 and d_align == 0 and \
        d_deco == 0 and d_fstyle == 0 and d_nomark == 0 and \
@@ -6256,7 +6379,14 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
        d_ovfx == 0 and d_ovfy == 0 and d_txtovf == 0 and \
        d_objfit == 0 and d_objpos == 0 and d_asph == 0 and d_animname < 0 and \
        d_animfill < 0 and d_accent < 0:
-        return i
+        # …unless it declares something !important. The rule then contributes no
+        # value the engine models, but it still SUPPRESSES the element's inline
+        # declaration for those properties, which is a cascade fact the
+        # read-back needs (`.cls { visibility: inherit !important }` is a whole
+        # rule made of nothing this engine represents).
+        if g_impn_len <= 0:
+            imp_namebuf_w = g_impn_off               # nothing kept: reclaim
+            return i
     # one rule per comma-separated selector
     ss: uint64 = sel_s
     k: uint64 = sel_s
@@ -6266,6 +6396,8 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
                 ri: int32 = n_rules
                 _parse_selector(ss, k, ri)
                 r_layer[ri]  = g_cur_layer
+                r_impn_off[ri] = g_impn_off
+                r_impn_len[ri] = g_impn_len
                 r_color[ri]  = d_color
                 # Fold rgba()/#rrggbbaa alpha, element opacity, and a box-shadow
                 # class into the packed background colour (see _pack_fill_rgb).
@@ -6932,6 +7064,7 @@ def _store_keyframe(nameid: int32, isfrom: int32):
         return
     ri: int32 = n_rules
     r_layer[ri]   = g_cur_layer
+    r_impn_len[ri] = 0
     r_kfname[ri]  = nameid
     r_kf_from[ri] = isfrom
     r_animref[ri] = -1
@@ -7323,6 +7456,7 @@ def _collect_css():
     el_rootcnt = 0                                    # reset :nth-child root counter
     n_kf_names = 0                                     # reset @keyframes registry
     kf_namebuf_w = 0
+    imp_namebuf_w = 0                                  # reset !important names
     _layers_reset()                                    # reset @layer order
     _collect_cssom_layers()                            # injected layers rank first
     filt_reg_n = 0                                     # reset filter-list registry
@@ -8026,9 +8160,21 @@ def _cascade_match_current():
     sofit: int32 = -1
     sopos: int32 = -1
     sasp: int32 = -1
+    # Union of the !important property names the matching rules declare — the
+    # set of properties for which this element's inline style must lose.
+    el_imp_off: int32 = csty_impbuf_w
+    el_imp_len: int32 = 0
     ri: int32 = 0
     while ri < n_rules:
         if _rule_matches(ri, top) != 0:
+            if r_impn_len[ri] > 0 and \
+               csty_impbuf_w + r_impn_len[ri] <= CSTY_IMPBUF_CAP:
+                ic: int32 = 0
+                while ic < r_impn_len[ri]:
+                    csty_impbuf[csty_impbuf_w] = imp_namebuf[r_impn_off[ri] + ic]
+                    csty_impbuf_w = csty_impbuf_w + 1
+                    ic = ic + 1
+                el_imp_len = el_imp_len + r_impn_len[ri]
             # CASCADE SORT KEY. Layer rank is a HIGHER-order term than
             # specificity (css-cascade-5 §6.4.4), so folding it in above
             # LAYER_STEP gives every one of the ~60 property winners below the
@@ -8383,7 +8529,7 @@ def _cascade_match_current():
     # empty ones that paint no text segment and the inline ones that open no
     # block box. Stamped BEFORE the transform binding below, which re-packs m_bg
     # into an opaque handle that is not a colour.
-    csty_put(el_lt[top], m_col, m_bg)
+    csty_put(el_lt[top], m_col, m_bg, el_imp_off, el_imp_len)
     # CSS transform (stylesheet cascade): bind the winning affine template with
     # the fill this element paints and re-pack it through m_bg. Every background
     # consumer — block boxes (forms.ad reads m_bg directly), inline-block chips

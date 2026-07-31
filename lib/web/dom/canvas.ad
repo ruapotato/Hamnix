@@ -860,28 +860,6 @@ def _js_member_set_hook(dummy: int32) -> int32:
                     _cssom_set_active(asid, 1)
                 ai = ai + 1
         return 0
-    # `el.style = "color:red"` — CSSOM [PutForwards=cssText]: parse into the
-    # declaration, never store the string.
-    #
-    # The prototype setter (NID_STYLE_ACC_SET) catches the FIRST such assignment
-    # and the getter memoises the declaration as an OWN property; from then on
-    # the own property shadows the prototype accessor entirely, so every LATER
-    # `el.style = "..."` is a plain data write that no accessor sees. A loop
-    # that restyles the same element once per test case therefore honoured only
-    # its first iteration. This hook is the catch-all: it fires after every
-    # assignment, and acts exactly when the property was left holding a string.
-    if _bytes_eq(kp, kn, cast[Ptr[uint8]]("style"), 5) != 0:
-        sthis: int32 = js_mset_this()
-        scur: int32 = js_get_prop(sthis, cast[Ptr[uint8]]("style"), 5)
-        if js_type_of(scur) == TAG_STR:
-            if _find_el_by_obj(sthis) >= 0 or _find_cre_by_obj(sthis) >= 0:
-                sp2: Ptr[uint8] = js_str_ptr(scur)
-                sn2: int32 = _cstr_len(sp2)
-                sfr: int32 = _new_style_obj()
-                js_set_own(sthis, cast[Ptr[uint8]]("style"), 5, sfr)
-                if _is_undef_str(sp2, sn2) == 0:
-                    _style_apply_csstext(sfr, sp2, sn2)
-        return 0
     # `el.style.cssText = "color:red;display:none"` — `this` is the style object;
     # parse the string into its routed camelCase props so the cascade sees it.
     if _bytes_eq(kp, kn, cast[Ptr[uint8]]("cssText"), 7) != 0:
@@ -3001,23 +2979,7 @@ def _lazy_el_accessor(rel: int32) -> int32:
         js_set_own(thisv, cast[Ptr[uint8]]("nextSibling"), 11, wv)
         return js_undefined()
     if rel == NID_STYLE_ACC_SET:
-        # CSSOM: `style` is [PutForwards=cssText]. `el.style = "color:red"` does
-        # NOT replace the CSSStyleDeclaration with a string — it parses the
-        # string INTO the existing declaration, so el.style.color reads back
-        # "red" and the cascade sees the inline value. Storing the string
-        # verbatim left el.style a primitive: every later el.style.<prop> read
-        # was undefined and the inline declaration was invisible to
-        # getComputedStyle. Non-string assignments keep the old passthrough
-        # (a page handing over a real declaration object).
-        if js_type_of(wv) == TAG_STR:
-            wp: Ptr[uint8] = js_str_ptr(wv)
-            wn: int32 = _cstr_len(wp)
-            sfresh: int32 = _new_style_obj()
-            js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, sfresh)
-            if _is_undef_str(wp, wn) == 0:
-                _style_apply_csstext(sfresh, wp, wn)
-        else:
-            js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, wv)
+        js_set_own(thisv, cast[Ptr[uint8]]("style"), 5, wv)
     elif rel == NID_CLS_ACC_SET:
         js_set_own(thisv, cast[Ptr[uint8]]("classList"), 9, wv)
         if idx >= 0:
