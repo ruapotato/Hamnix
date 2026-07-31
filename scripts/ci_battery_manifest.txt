@@ -4637,3 +4637,14 @@ bash scripts/test_compiler_lexer_errors.sh
 # out green. The expensive gate proves the machine; this one proves the
 # expensive gate can still say no.
 bash scripts/test_leak_hours_report_mutations.sh
+# The CONFIGURATION half of the stale-image guard. No QEMU, ~1 s. The mtime
+# model in scripts/_installer_img.sh has been found short four times, and the
+# fourth was not a directory at all: ADDER_FORCE_NATIVE_APPS changes what the
+# build emits with the tree byte-for-byte identical, which cost an agent seven
+# consecutive false passes. This mutation-tests the stamp against a synthetic
+# tree in BOTH directions — 7 config/tree changes that must go STALE (including
+# a DELETED and a RENAMED source, which an mtime maximum structurally cannot
+# see, and a widened input-dir list) and 3 no-op controls that must stay FRESH,
+# because a stamp that always says stale means a 6-minute rebuild per gate and
+# gets the guard disabled.
+bash scripts/test_installer_img_stamp.sh

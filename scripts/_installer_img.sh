@@ -126,15 +126,142 @@ installer_img_newest_input() {
     echo "$newest"
 }
 
-# installer_img_is_stale <img> — 0 (true) when <img> is absent or older than
-# the newest tracked build input.
+# ---------------------------------------------------------------------------
+# THE THIRD BUG THIS FILE'S MODEL HAD (2026-07-30) — CONFIGURATION BLINDNESS
+# ---------------------------------------------------------------------------
+# Everything above compares the image's MTIME against tracked SOURCE mtimes.
+# That model answers exactly one question — "did a tracked file change after
+# this image was written?" — and it is blind to every other way the bytes in
+# the image can change. Twice already the fix was to widen the directory list
+# (`sys` in 07-25, `tests` in 07-28, `mm`/`linux_abi`/`adder` in 07-30), which
+# treats the symptom: each time, the model was short in the SAME direction and
+# each widening only closed the specific hole that had just been found.
+#
+# The case that forced this rewrite is not a directory at all. `ADDER_FORCE_
+# NATIVE_APPS` (and its siblings HAMNIX_KERNEL_BACKEND, HAMNIX_USER_OPT,
+# HAMNIX_KERNEL_OPT, ADDER_CC, ...) change what the build EMITS with the tree
+# byte-for-byte identical. An agent flipped one, rebuilt nothing because the
+# guard said "fresh", and took SEVEN CONSECUTIVE FALSE PASSES off an image
+# built under the other configuration. An implausible age was the only signal
+# available, and the age was entirely plausible.
+#
+# So ask the real question — "what else can change the image without changing
+# a tracked source file?" — and answer all of it:
+#
+#   (a) BUILD CONFIGURATION: any ADDER_* / HAMNIX_* / ENABLE_* variable in the
+#       environment. Default-INCLUDE with a small documented exclusion list,
+#       NOT an allow-list: a forgotten new knob must cause a spurious REBUILD
+#       (annoying, safe) and never a false pass (expensive, wrong). An
+#       allow-list would put us back where we started the first time somebody
+#       adds a knob and does not think of this file.
+#   (b) THE INPUT MODEL ITSELF: _HAMNIX_IMG_INPUT_DIRS and _..._GLOBS go into
+#       the stamp, so the day somebody adds the NEXT missing directory, every
+#       existing image is correctly declared stale — those images were built
+#       under a model that ignored it.
+#   (c) DELETIONS. An mtime maximum cannot fall. `rm kernel/foo.ad` changes
+#       what the image contains and moves no mtime forward, so the guard says
+#       fresh. The stamp hashes the tracked-file INVENTORY (sorted relative
+#       paths), which changes on any add, delete or rename.
+#   (d) THE TOOLCHAIN. HAMNIX_KERNEL_BACKEND=llvm compiles the kernel with
+#       clang; a clang upgrade changes every byte of the kernel with no source
+#       change at all. The compiler version strings go in.
+#
+# The stamp is written beside the image as <img>.stamp when a build succeeds,
+# and a stamp that is ABSENT or DIFFERENT makes the image stale exactly as
+# surely as an out-of-date mtime. Absent counts as stale so that images built
+# before this existed are rebuilt once rather than trusted forever.
+#
+# THE OTHER ERROR DIRECTION IS ALSO A BUG. A stamp that never matches means a
+# 6-14 minute rebuild on every single gate, which is how a guard gets disabled.
+# scripts/test_installer_img_stamp.sh mutation-tests BOTH directions, and its
+# negative control ("nothing changed => NOT stale") is the one that matters
+# most.
+
+# Variables that change WHERE or WHETHER we build, not WHAT ends up inside the
+# image. Everything else matching the three prefixes is load-bearing until
+# somebody proves otherwise here, in writing.
+_HAMNIX_IMG_CFG_EXCLUDE="HAMNIX_SKIP_BUILD HAMNIX_BUILD_DIR HAMNIX_INSTALLER_IMG_OUT
+HAMNIX_ROOTFS_OUT HAMNIX_INITRAMFS_BLOB HAMNIX_BUILD_LOCK_TIMEOUT
+HAMNIX_BUILD_LOCK_HELD HAMNIX_QEMU_SLOTS HAMNIX_QEMU_SLOT_DIR HAMNIX_QEMU_NO_KVM
+HAMNIX_VM_MEM HAMNIX_TEST_SMP HAMNIX_KERNEL_CACHE HAMNIX_BUILD_USER_FORCE
+HAMNIX_IMG_STAMP_DEBUG"
+
+# installer_img_stamp — the configuration identity of an image built NOW, from
+# this environment and this tree. One line per fact, hashed to one hex digest.
+installer_img_stamp() {
+    local root="${PROJ_ROOT:-.}"
+    {
+        # (a) build configuration
+        local kv name
+        while IFS= read -r kv; do
+            name="${kv%%=*}"
+            case " $(echo $_HAMNIX_IMG_CFG_EXCLUDE) " in
+                *" $name "*) continue ;;
+            esac
+            echo "cfg $kv"
+        done < <(env | grep -E '^(ADDER|HAMNIX|ENABLE)_[A-Za-z0-9_]*=' | sort)
+        # (b) the input model itself
+        echo "dirs $_HAMNIX_IMG_INPUT_DIRS"
+        echo "globs $_HAMNIX_IMG_INPUT_GLOBS"
+        # (c) the tracked-file inventory — catches deletions and renames, which
+        #     an mtime maximum structurally cannot see.
+        local d
+        for d in $_HAMNIX_IMG_INPUT_DIRS; do
+            [ -d "$root/$d" ] || { echo "inv $d ABSENT"; continue; }
+            echo "inv $d $(find "$root/$d" -type f -not -path '*/.git/*' \
+                            -printf '%P\n' 2>/dev/null | LC_ALL=C sort \
+                            | cksum | tr -d ' ')"
+        done
+        # (d) the toolchain
+        echo "tc cc $(${CLANG:-clang-19} --version 2>/dev/null | head -1)"
+        echo "tc py $(python3 --version 2>&1 | head -1)"
+    } | cksum | tr -d ' \n'
+    echo
+}
+
+installer_img_stamp_path() { echo "$1.stamp"; }
+
+# installer_img_write_stamp <img> — record the configuration that produced it.
+installer_img_write_stamp() {
+    local img="$1"
+    [ -f "$img" ] || return 1
+    installer_img_stamp > "$(installer_img_stamp_path "$img")" 2>/dev/null
+}
+
+# installer_img_stamp_mismatch <img> — 0 (true) when the stamp beside <img> is
+# absent or does not describe the configuration we would build with now.
+installer_img_stamp_mismatch() {
+    local img="$1" sp
+    sp="$(installer_img_stamp_path "$img")"
+    [ -f "$sp" ] || return 0
+    [ "$(cat "$sp" 2>/dev/null)" != "$(installer_img_stamp)" ]
+}
+
+# installer_img_is_stale <img> — 0 (true) when <img> is absent, older than the
+# newest tracked build input, or was built under a DIFFERENT configuration.
 installer_img_is_stale() {
     local img="$1"
     [ -f "$img" ] || return 0
+    if installer_img_stamp_mismatch "$img"; then
+        _HAMNIX_IMG_STALE_REASON="build CONFIGURATION differs from the one that produced it (or it predates the stamp)"
+        return 0
+    fi
     local img_t newest
     img_t=$(stat -c %Y "$img" 2>/dev/null || echo 0)
     newest=$(installer_img_newest_input)
-    [ "$img_t" -lt "$newest" ]
+    if [ "$img_t" -lt "$newest" ]; then
+        _HAMNIX_IMG_STALE_REASON="older than a tracked build input"
+        return 0
+    fi
+    _HAMNIX_IMG_STALE_REASON=""
+    return 1
+}
+
+# installer_img_stale_reason — WHICH of the two models condemned it. A gate
+# that rebuilds for six minutes should say why; "stale" alone sent two agents
+# looking in the wrong place on 07-24.
+installer_img_stale_reason() {
+    echo "${_HAMNIX_IMG_STALE_REASON:-stale}"
 }
 
 # ensure_installer_img <img> <tag> — guarantee <img> exists and is not stale.
@@ -156,7 +283,7 @@ ensure_installer_img() {
             return 1
         fi
         if [ -f "$img" ]; then
-            echo "$tag $img is STALE (older than a tracked build input) — rebuilding (~6 min)"
+            echo "$tag $img is STALE ($(installer_img_stale_reason)) — rebuilding (~6 min)"
         else
             echo "$tag $img absent — building installer image (~6 min)"
         fi
@@ -164,6 +291,10 @@ ensure_installer_img() {
             echo "$tag ERROR: build_installer_img.sh failed" >&2
             return 2
         }
+        # Record the configuration that produced it. Without this the NEXT
+        # caller cannot tell an image built with ADDER_FORCE_NATIVE_APPS=1 from
+        # one built without, which is the seven-false-passes trap.
+        installer_img_write_stamp "$img"
     fi
     [ -f "$img" ] || { echo "$tag ERROR: $img still absent after build" >&2; return 2; }
     return 0
@@ -237,7 +368,8 @@ installer_img_warn_if_stale() {
         "STALE ARTIFACT WARNING" \
         "$img" \
         "  $(installer_img_age_str "$img")" \
-        "  is OLDER than a tracked build input — it does NOT contain the" \
+        "  is STALE: $(installer_img_stale_reason)." \
+        "  It does NOT necessarily contain the" \
         "  code in this working tree. The verdict below may describe an" \
         "  OLD build (this exact trap cost two agent-days on 2026-07-24)." \
         "  Rebuild: bash scripts/build_installer_img.sh"
@@ -265,7 +397,7 @@ installer_img_needs_build() {
         fi
         _installer_img_loud "$tag" \
             "$img is STALE ($(installer_img_age_str "$img"))" \
-            "  — older than a tracked build input. REBUILDING (~6-14 min)."
+            "  — $(installer_img_stale_reason). REBUILDING (~6-14 min)."
         return 0
     fi
     return 0                           # absent — caller's block handles it
