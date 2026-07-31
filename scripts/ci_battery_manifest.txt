@@ -4654,3 +4654,25 @@ bash scripts/ci_run_gate.sh scripts/test_de_sysmon_mem_live.sh
 # x86, and LLVM aarch64 EXECUTED under qemu-aarch64 -- and requires all three to
 # agree on stdout AND exit status with zero bails.
 bash scripts/test_llvm_container_of_2d_exec.sh
+# Leak pass 19: the MUTATION gate for the hours-scale census adjudicator. No
+# QEMU, ~1 s. scripts/test_leak_hours_census.sh takes a TWO-HOUR boot and so
+# cannot live in a 50-minute shard; this feeds its adjudicator 17 synthetic
+# logs (a clean pair plus one per failure mode: short gap, missing census
+# control, missing run predicate, unidentifiable plant, an over-claiming
+# predicate, a real unaccounted frame, orphan growth, a truncated site, an arm
+# whose survivors are owned by dead tasks, an arm whose owners were never
+# recorded, resident growth past the bar) and FAILS if any of them still comes
+# out green. The expensive gate proves the machine; this one proves the
+# expensive gate can still say no.
+bash scripts/test_leak_hours_report_mutations.sh
+# The CONFIGURATION half of the stale-image guard. No QEMU, ~1 s. The mtime
+# model in scripts/_installer_img.sh has been found short four times, and the
+# fourth was not a directory at all: ADDER_FORCE_NATIVE_APPS changes what the
+# build emits with the tree byte-for-byte identical, which cost an agent seven
+# consecutive false passes. This mutation-tests the stamp against a synthetic
+# tree in BOTH directions — 7 config/tree changes that must go STALE (including
+# a DELETED and a RENAMED source, which an mtime maximum structurally cannot
+# see, and a widened input-dir list) and 3 no-op controls that must stay FRESH,
+# because a stamp that always says stale means a 6-minute rebuild per gate and
+# gets the guard disabled.
+bash scripts/test_installer_img_stamp.sh
