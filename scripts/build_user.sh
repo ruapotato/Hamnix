@@ -130,9 +130,46 @@ trap 'rm -rf "$_FAILDIR" "$_LANEDIR"' EXIT
 #
 # Knobs:
 #   ADDER_LLVM_DEFAULT=0        force the native lane for ALL apps (debug/A-B).
-#   ADDER_FORCE_NATIVE_APPS="a b"  force the native lane for just these apps.
+#   ADDER_FORCE_NATIVE_APPS="a b"  force the native lane for just these apps
+#                               (REPLACES the default pin below, so this is also
+#                               how you TEST the lane move: pass "" to unpin).
+#
+# LANE PIN (2026-07-30): hambrowse and js are pinned to the NATIVE lane.
+#
+# They are no longer pinned because they BAIL — the SSA_BB_MAX/LL_BB_MAX and
+# pointer-redeclaration fixes landed alongside this and both now emit with ZERO
+# bails and verifier-clean IR (scripts/test_llvm_ir_verify_host.sh ratchets
+# that, and it is what keeps the arm64 lane linkable, since a bail there has no
+# fallback). They are pinned because the LLVM-built hambrowse DOES NOT WORK ON
+# DEVICE: it reaches `[runtime:hambrowse] _start` and then renders nothing.
+#
+# Bisected with scripts/test_hambrowse_visual_ondevice.sh on a quiet host, each
+# configuration on a FRESHLY REBUILT image (the image staleness model keys off
+# source mtimes and CANNOT see this env var, so a rebuild must be forced by
+# deleting build/hamnix-*.img — reusing the image silently re-tests the previous
+# configuration, which produced seven false PASSes before it was caught):
+#
+#   hambrowse=LLVM  js=LLVM    -> INCONCLUSIVE, 0 render markers, 6 attempts
+#   hambrowse=LLVM  js=native  -> INCONCLUSIVE, 0 render markers
+#   hambrowse=native js=LLVM   -> PASS (canvas_magenta, svg_lime, svg_orange)
+#   hambrowse=native js=native -> PASS
+#
+# So `js` on the LLVM lane is FINE and `hambrowse` is not. js is pinned anyway
+# because nothing on-device exercises it independently, and 276/2 is the split
+# that is known-good end to end. A correct 276/2 beats a broken 278/0.
+#
+# The fault is NOT the pointer-redeclaration hoist: re-running with the hoist
+# reverted (and the canvas.ad `cq` name collision dodged by hand so nothing
+# bailed) still failed. It is also not reproducible on the HOST lane — the same
+# engine built through scripts/adder_cc_llvm.sh from user/hambrowse_host.ad
+# matches the seed build byte-for-byte on all 286 corpus pages. That points at
+# hambrowse.ad's device-only code (graphics/wsys/scene/net/fonts, ~700 functions
+# absent from hambrowse_host.ad), not at the shared parse/layout engine.
+#
+# TO LIFT THIS PIN: fix that, then run the four configurations above on a quiet
+# host with a forced image rebuild, and require the hambrowse=LLVM rows to PASS.
 _LLVM_DEFAULT="${ADDER_LLVM_DEFAULT:-1}"
-_FORCE_NATIVE=" ${ADDER_FORCE_NATIVE_APPS:-} "
+_FORCE_NATIVE=" ${ADDER_FORCE_NATIVE_APPS-hambrowse js} "
 
 # _classify_bail <llvm-logfile> — reduce an LLVM-lane failure to a short bail
 # class for the coverage report (why this app fell back to native).
@@ -163,6 +200,14 @@ _classify_bail() {
 # FAILDIR marker only if BOTH lanes fail.
 _compile_one_app() {
     local src="$1" out="$2" base="$3" nm=" $3 " llog
+    # A PINNED app never attempts the LLVM lane, so it leaves no bail log. Say
+    # so explicitly — a blank reason in the coverage report reads like an
+    # unexplained fallback, which is exactly the ambiguity this report exists to
+    # remove.
+    if [ "$_LLVM_DEFAULT" = "1" ] && [[ "$_FORCE_NATIVE" == *"$nm"* ]]; then
+        echo "lane-pin (see LANE PIN in scripts/build_user.sh)" \
+            > "$_LANEDIR/$base.reason"
+    fi
     if [ "$_LLVM_DEFAULT" = "1" ] && [[ "$_FORCE_NATIVE" != *"$nm"* ]]; then
         llog="$(mktemp)"
         if ADDER_HOST_AC="${ADDER_HOST_AC:-build/cutover/host_ac.elf}" \
@@ -222,8 +267,15 @@ _run_compile_pool() {
 
     # --- LLVM-default coverage report --------------------------------------
     local _llvm _nat _total
-    _llvm=$(ls -1 "$_LANEDIR"/*.llvm   2>/dev/null | wc -l)
-    _nat=$(ls -1 "$_LANEDIR"/*.native 2>/dev/null | wc -l)
+    # `ls` of an EMPTY glob exits 2, and under `set -euo pipefail` that rc
+    # propagates through the pipe and kills the script — so the coverage report
+    # itself failed the build the first time native fallback reached ZERO (the
+    # goal state). Count with a glob-into-array instead, which is empty-safe.
+    local -a _lm=() _nm=()
+    _lm=("$_LANEDIR"/*.llvm);   [ -e "${_lm[0]:-}" ] || _lm=()
+    _nm=("$_LANEDIR"/*.native); [ -e "${_nm[0]:-}" ] || _nm=()
+    _llvm=${#_lm[@]}
+    _nat=${#_nm[@]}
     _total=$(( _llvm + _nat ))
     echo "[build_user] ================ LLVM-default coverage ================"
     if [ "$_LLVM_DEFAULT" = "1" ]; then

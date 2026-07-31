@@ -91,6 +91,11 @@ from compiler.ssa import (
     ssa_build_domtree,
     ssa_bail,
     ssa_bail_reason,
+    ssa_bail_site,
+    ssa_bail_line,
+    sb_count,
+    pl_count,
+    arg_count,
     ssa_prog_decls,
     ssa_mem_model,
     SVT_I1,
@@ -124,6 +129,10 @@ from compiler.ssa import (
     SVO_INLINEASM,
     SVO_SYSCALL,
     SVO_FUNCADDR,
+)
+
+from compiler.cfg import (
+    nm_count,
 )
 
 from compiler.codegen import (
@@ -1900,6 +1909,20 @@ def llvm_emit_program(prog: uint32):
                 ll_put_name(nd_name_off[cur], nd_name_len[cur])
                 ll_puts(" reason=")
                 ll_put_u32(ssa_bail_reason)
+                ll_puts(" site=")
+                ll_put_u32(ssa_bail_site)
+                ll_puts(" line=")
+                ll_put_u32(ssa_bail_line)
+                ll_puts(" sv=")
+                ll_put_u32(sv_count)
+                ll_puts(" sb=")
+                ll_put_u32(sb_count)
+                ll_puts(" pl=")
+                ll_put_u32(pl_count)
+                ll_puts(" arg=")
+                ll_put_u32(arg_count)
+                ll_puts(" nm=")
+                ll_put_u32(nm_count)
                 ll_putc(10)
         cur = nd_next[cur]
 
