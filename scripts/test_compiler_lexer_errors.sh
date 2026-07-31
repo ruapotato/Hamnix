@@ -206,12 +206,17 @@ cap_case() {
     esac
 }
 
-# > 2048 tokens.
-{ echo 'def f() -> int32:'
-  echo '    a: int32 = 0'
-  for i in $(seq 1 1200); do echo "    a = a + $i"; done
-  echo '    return a'
-} > "$WORK/cap_tokens.ad"
+# > 2048 tokens. Deliberately token-DENSE and strbuf-CHEAP (integer literals
+# reclaim their strbuf slice; identifiers do not), so this crosses MAX_TOKENS
+# well before STRBUF_SIZE — a MAX_TOKENS regression cannot be masked by the
+# strbuf cap firing first.
+python3 - "$WORK/cap_tokens.ad" <<'PY'
+import sys
+line = "    a = " + " + ".join(["1"] * 30)
+body = "\n".join([line] * 60)
+open(sys.argv[1], "w").write(
+    "def f() -> int32:\n    a: int32 = 0\n" + body + "\n    return a\n")
+PY
 cap_case cap_tokens "MAX_TOKENS"
 
 # > 4096 bytes of string text (few tokens, lots of strbuf).
