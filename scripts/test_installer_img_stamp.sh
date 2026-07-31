@@ -207,6 +207,57 @@ else
     nfail=$((nfail + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# 9. THE PRODUCER/CONSUMER ENV-SKEW CASE (leak pass 20, 2026-07-31).
+#
+# Every case above stamps via a bare installer_img_write_stamp from a CLEAN
+# environment. build_installer_img.sh does not: it exports a series of
+# `${VAR:-default}` knobs on its way down and stamps at the BOTTOM, so the
+# digest it wrote described an environment that existed only inside itself.
+# A clean-env consumer could never match it, and declared a ZERO-MINUTE-OLD
+# image STALE — the exact ~14-minute spurious rebuild that producer-side
+# stamping was added on 07-30 to prevent. Measured on a real fresh image:
+# producer 4155381500747 vs clean consumer 1236644388579.
+#
+# This case reproduces the producer's REAL shape (snapshot, then export, then
+# stamp) and asserts both directions.
+# ---------------------------------------------------------------------------
+producer_stamp() {   # producer_stamp <caller-env-assignments...>
+    env -u ADDER_FORCE_NATIVE_APPS -u HAMNIX_KERNEL_BACKEND \
+        -u HAMNIX_USER_OPT -u ENABLE_XHCI_KO -u HAMNIX_SKIP_BUILD \
+        "$@" bash -c '
+        PROJ_ROOT="$1"; export PROJ_ROOT
+        # exactly what build_installer_img.sh does, in order:
+        _HAMNIX_IMG_STAMP_ENV0="$(env | grep -E "^(ADDER|HAMNIX|ENABLE)_[A-Za-z0-9_]*=" | sort || true)"
+        export HAMNIX_BUILD_DIR="$PROJ_ROOT/build"
+        export HAMNIX_DEFAULT_REAL_DEBIAN="${HAMNIX_DEFAULT_REAL_DEBIAN:-1}"
+        export HAMNIX_KERNEL_OPT="${HAMNIX_KERNEL_OPT:-0}"
+        export HAMNIX_USER_OPT="${HAMNIX_USER_OPT:-0}"
+        export HAMNIX_USER_OPT_EXCLUDE="${HAMNIX_USER_OPT_EXCLUDE:-}"
+        export HAMNIX_KERNEL_BACKEND="${HAMNIX_KERNEL_BACKEND:-llvm}"
+        export HAMNIX_ROOTFS_MIN_MB="${HAMNIX_ROOTFS_MIN_MB:-512}"
+        . "$PROJ_ROOT/scripts/_installer_img.sh"
+        installer_img_write_stamp "$PROJ_ROOT/build/hamnix-installer.img"' _ "$TREE"
+    touch "$IMG"
+}
+
+# 9a. Producer called clean, consumer clean => FRESH. This is the regression
+#     that cost the rebuild; before the fix it read STALE.
+producer_stamp
+check producer_env_skew FRESH \
+    "a build's own exported defaults do not make its fresh image look stale"
+
+# 9b. THE OTHER DIRECTION, which is the one that actually protects against the
+#     seven-false-passes trap: an image genuinely built with a different knob
+#     must still be STALE to a consumer that does not set it. If 9a had been
+#     "fixed" by making the stamp ignore configuration, this case fails.
+producer_stamp HAMNIX_USER_OPT=1
+check producer_env_skew_neg STALE \
+    "an image the producer built with --opt userland is stale to a plain consumer"
+
+# Leave the tree stamped clean for anything added after this point.
+producer_stamp
+
 # A table that shrank to nothing would pass vacuously.
 if [ "$ncase" -lt 12 ]; then
     echo "$TAG INCONCLUSIVE: only $ncase case(s) ran; the table has been gutted" >&2

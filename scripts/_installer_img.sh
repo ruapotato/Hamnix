@@ -186,6 +186,43 @@ HAMNIX_BUILD_LOCK_HELD HAMNIX_QEMU_SLOTS HAMNIX_QEMU_SLOT_DIR HAMNIX_QEMU_NO_KVM
 HAMNIX_VM_MEM HAMNIX_TEST_SMP HAMNIX_KERNEL_CACHE HAMNIX_BUILD_USER_FORCE
 HAMNIX_IMG_STAMP_DEBUG"
 
+# _hamnix_img_cfg_env — the config-relevant environment the stamp describes.
+#
+# THE PRODUCER/CONSUMER ENV-SKEW BUG (found 2026-07-31, leak pass 20)
+# ===================================================================
+# build_installer_img.sh stamps at its END, and on the way down it has already
+# done a series of `export HAMNIX_FOO="${HAMNIX_FOO:-default}"` — BUILD_DIR,
+# DEFAULT_REAL_DEBIAN, KERNEL_OPT, USER_OPT, USER_OPT_EXCLUDE, KERNEL_BACKEND,
+# ROOTFS_MIN_MB — plus whatever _build_lock.sh exports. So the digest it wrote
+# described an environment that only exists INSIDE that script.
+#
+# A consumer gate then recomputes the stamp from its own (clean) environment,
+# gets a different digest, and declares a ZERO-MINUTE-OLD image STALE. Measured
+# directly on a freshly built image: producer wrote 4155381500747, a clean-env
+# consumer computed 1236644388579, and the two differ ONLY by those exported
+# defaults — re-exporting them by hand reproduced the producer's digest exactly.
+#
+# The effect is precisely the one the producer-side stamping was ADDED on
+# 07-30 to prevent: `bash scripts/build_installer_img.sh` leaves an image the
+# next gate rebuilds for another ~14 minutes. It also silently DEGRADES the
+# guarantee, because ensure_installer_img re-stamps from the CONSUMER's env
+# afterwards — so the recorded identity became "whoever last looked at it",
+# not "what produced it".
+#
+# THE FIX: the producer snapshots the environment it was CALLED with, before
+# it exports anything, and stamps THAT. A consumer with the same environment
+# then agrees by construction, and a consumer with a genuinely different knob
+# (HAMNIX_KERNEL_OPT=1 against an image built at 0) still correctly mismatches
+# — which is the seven-false-passes protection this whole model exists for.
+# Both directions are asserted in scripts/test_installer_img_stamp.sh.
+_hamnix_img_cfg_env() {
+    if [ -n "${_HAMNIX_IMG_STAMP_ENV0+x}" ]; then
+        printf '%s\n' "$_HAMNIX_IMG_STAMP_ENV0"
+    else
+        env | grep -E '^(ADDER|HAMNIX|ENABLE)_[A-Za-z0-9_]*=' | sort
+    fi
+}
+
 # installer_img_stamp — the configuration identity of an image built NOW, from
 # this environment and this tree. One line per fact, hashed to one hex digest.
 installer_img_stamp() {
@@ -194,12 +231,13 @@ installer_img_stamp() {
         # (a) build configuration
         local kv name
         while IFS= read -r kv; do
+            [ -n "$kv" ] || continue
             name="${kv%%=*}"
             case " $(echo $_HAMNIX_IMG_CFG_EXCLUDE) " in
                 *" $name "*) continue ;;
             esac
             echo "cfg $kv"
-        done < <(env | grep -E '^(ADDER|HAMNIX|ENABLE)_[A-Za-z0-9_]*=' | sort)
+        done < <(_hamnix_img_cfg_env)
         # (b) the input model itself
         echo "dirs $_HAMNIX_IMG_INPUT_DIRS"
         echo "globs $_HAMNIX_IMG_INPUT_GLOBS"

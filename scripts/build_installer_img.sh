@@ -50,6 +50,22 @@ set -euo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJ_ROOT"
 
+# THE CONFIG ENVIRONMENT WE WERE CALLED WITH — captured HERE, before this
+# script exports a single one of its own `${VAR:-default}` knobs, and before
+# _build_lock.sh exports any of its own.
+#
+# The stamp written at the bottom of this file must describe the configuration
+# a CONSUMER can reproduce. Everything exported below this line exists only
+# inside this process, so stamping from the environment at the BOTTOM produced
+# a digest no consumer could ever match, and every gate declared a
+# zero-minute-old image STALE and rebuilt it. See the long note on
+# _hamnix_img_cfg_env in scripts/_installer_img.sh.
+#
+# Not exported: sub-invocations must not inherit it, or a nested build would
+# stamp with its parent's snapshot instead of its own caller's.
+# shellcheck disable=SC2034
+_HAMNIX_IMG_STAMP_ENV0="$(env | grep -E '^(ADDER|HAMNIX|ENABLE)_[A-Za-z0-9_]*=' | sort || true)"
+
 # Opt-in build isolation: HAMNIX_BUILD_DIR relocates the per-invocation
 # image/kernel outputs, the generated initramfs blob, and the build lock
 # into a caller-chosen directory so two builds in ONE checkout don't
