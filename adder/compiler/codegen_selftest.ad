@@ -23,6 +23,7 @@
 from compiler.lexer import (
     lex_init,
     lex_tokenize,
+    lex_err,
 )
 
 from compiler.parser import (
@@ -886,6 +887,7 @@ def main() -> int32:
 
     lex_init(src, src_len)
     lex_tokenize()
+    check_eq("lex error flag", lex_err, 0)
 
     parser_init()
     prog: uint32 = parse_program()
@@ -1663,6 +1665,7 @@ def build_first(src: Ptr[uint8]):
     n: uint32 = cast[uint32](strlen(src))
     lex_init(src, n)
     lex_tokenize()
+    check_eq("build_first lex err", lex_err, 0)
     parser_init()
     prog: uint32 = parse_program()
     check_eq("build_first parse err", p_err, 0)
@@ -1676,6 +1679,7 @@ def build_all(src: Ptr[uint8]):
     n: uint32 = cast[uint32](strlen(src))
     lex_init(src, n)
     lex_tokenize()
+    check_eq("build_all lex err", lex_err, 0)
     parser_init()
     prog: uint32 = parse_program()
     check_eq("build_all parse err", p_err, 0)
@@ -1691,6 +1695,7 @@ def build_globals(src: Ptr[uint8]):
     n: uint32 = cast[uint32](strlen(src))
     lex_init(src, n)
     lex_tokenize()
+    check_eq("build_globals lex err", lex_err, 0)
     parser_init()
     prog: uint32 = parse_program()
     check_eq("build_globals parse err", p_err, 0)
@@ -1735,6 +1740,7 @@ def realmod_test():
 
     lex_init(src, n)
     lex_tokenize()
+    check_eq("realmod lex err", lex_err, 0)
 
     parser_init()
     prog: uint32 = parse_program()

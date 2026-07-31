@@ -825,11 +825,20 @@ def drv_merge_ordered():
 #     too or the orphaned continuation tokens corrupt the merged source.)
 # Mirrors the seed concat strip_compiler_imports / merge_programs import
 # handling.
+# Set when the merged import closure did not FIT in drv_src. Before this
+# existed drv_src_put dropped the overflow bytes silently, so a tree that
+# outgrew DRV_SRC_CAP would compile a TRUNCATED closure and exit 0 — the same
+# failure shape as the lexer's MAX_TOKENS cap.
+drv_src_over: uint32 = 0
+
+
 # Emit one byte to drv_src (bounds-guarded).
 def drv_src_put(c: uint8):
     if drv_src_len < DRV_SRC_CAP - 1:
         drv_src[drv_src_len] = c
         drv_src_len = drv_src_len + 1
+    else:
+        drv_src_over = 1
 
 
 # Copy a `#` comment verbatim from drv_file[i] up to (but NOT including) the
@@ -1486,6 +1495,10 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if n == 0:
         drv_err("[host_ac] FAIL: cannot read input\n")
         return 3
+    if drv_src_over != 0:
+        drv_err("[host_ac] FAIL: merged import closure exceeds DRV_SRC_CAP "
+                "(the source would have been silently truncated)\n")
+        return 3
     if n < DRV_SRC_CAP:
         drv_src[n] = 0
 
@@ -1508,7 +1521,13 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             __syscall1(3, cast[uint64](dfd))
 
     lex_init(&drv_src[0], n)
-    lex_tokenize()
+    if lex_tokenize() < 0:
+        drv_err("[host_ac] FAIL: lex error at line ")
+        drv_err_u32(lex_err_line)
+        drv_err(": ")
+        drv_err(cast[Ptr[uint8]](lex_err_text()))
+        drv_err("\n")
+        return 8
 
     parser_init()
     prog: uint32 = parse_program()
@@ -1547,6 +1566,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # funcs/emitted/bailed. All diagnostics stay on stderr; stdout is unused.
     if want_llvm != 0:
         llvm_emit_program(prog)
+        if cg_err != 0:
+            drv_err("[host_ac] FAIL: ")
+            drv_err(cast[Ptr[uint8]](cg_err_text()))
+            drv_err(" reason=")
+            drv_err_u32(cg_err_reason)
+            drv_err(" line=")
+            drv_err_u32(cg_err_line())
+            drv_err("\n")
+            return 5
         if drv_write_ll(out_path) == 0:
             drv_err("[host_ac] FAIL: cannot write output .ll\n")
             return 8

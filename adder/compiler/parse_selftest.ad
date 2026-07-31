@@ -20,6 +20,8 @@
 from compiler.lexer import (
     lex_init,
     lex_tokenize,
+    lex_err,
+    tok_count,
     strbuf,
 )
 
@@ -156,11 +158,13 @@ def main() -> int32:
     emit(src)
 
     lex_init(src, src_len)
-    lex_tokenize()
+    lex_n: int32 = lex_tokenize()
 
     parser_init()
     prog: uint32 = parse_program()
 
+    check_eq("lex error flag", lex_err, 0)
+    check_eq("lex returned a count, not -1", cast[uint32](lex_n), tok_count)
     check_eq("parse error flag", p_err, 0)
     check_eq("program node kind", nd_kind[prog], ND_PROGRAM)
 

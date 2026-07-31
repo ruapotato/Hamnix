@@ -120,6 +120,12 @@ from compiler.parser import (
     ND_SLICE_TYPE,
     ND_ENUM,
     ND_ENUM_VARIANT,
+    ND_UNION,
+    ND_LIST_TYPE,
+    ND_DICT_TYPE,
+    ND_TUPLE_TYPE,
+    ND_OPTIONAL_TYPE,
+    nd_count,
     node_new,
     BINOP_ADD,
     BINOP_SUB,
@@ -824,6 +830,14 @@ cg_entry_off: uint32 = 0
 #       function's locals exceed the -128 disp8 reach)
 #   11 = unsupported inline asm (asm_volatile line/operand not in the
 #       bounded kernel instruction set this emitter assembles)
+#   13 = UNSUPPORTED DECORATOR. Only `@unsafe` has semantics; every other
+#       decorator used to be parsed and then SILENTLY DROPPED, so
+#       `@totally_bogus def f()` compiled clean and did nothing the name
+#       implied. The Python seed (codegen_x86.py, audit 10d6f7c) rejects
+#       these; native now agrees.
+#   14 = List[T] / Dict[K,V] / Tuple[...] / Optional[T] type annotation.
+#       These parse but have no codegen: they used to degenerate SILENTLY
+#       to an 8-byte slot. The seed raises CodeGenError; native now agrees.
 #   12 = WRONG ARGUMENT COUNT at a direct call to an in-unit `def` (the
 #       arity check — see arity_check_direct_call). Before this existed
 #       `f(1)` for a two-parameter `f` compiled clean and the callee read
@@ -870,6 +884,12 @@ def cg_err_text() -> Ptr[char]:
         return "unsupported inline asm"
     if cg_err_reason == 12:
         return "wrong number of arguments in call"
+    if cg_err_reason == 13:
+        return "unsupported decorator (only @unsafe is implemented)"
+    if cg_err_reason == 14:
+        return "List/Dict/Tuple/Optional type is not implemented"
+    if cg_err_reason == 15:
+        return "LLVM lane name table full (LL_NAME_MAX)"
     return "unknown"
 
 
@@ -18440,7 +18460,71 @@ def gen_program_all_functions(prog: uint32) -> uint32:
 # both inter-function call fixups and RIP-relative data fixups. Returns the
 # first function's code start offset. This is the entry point a real
 # self-hosting build (lexer/parser holding state in globals) needs.
+# -----------------------------------------------------------------------
+# Front-end acceptance check: constructs the parser accepts but codegen
+# does NOT implement.
+#
+# WHY THIS EXISTS. The Python SEED is the differential oracle, and kobjdiff
+# can only compare programs BOTH front ends agree to compile. These two
+# constructs never reached codegen at all natively — they were parsed and
+# then discarded — so the seed REJECTED programs the native compiler
+# accepted (and miscompiled). That divergence is invisible to every
+# object-level differential we own. The seed's rules are in
+# codegen_x86.py (_reject_unimplemented_parametric_type and the decorator
+# checks added by the 2026 silent-drop audit, commit 10d6f7c).
+# -----------------------------------------------------------------------
+
+# Reject every decorator except `@unsafe` on a decl (function/class/union).
+# nd_d is the decorator ident chain; func_is_unsafe() reads the same chain.
+def check_decorators(decl: uint32):
+    d: uint32 = nd_d[decl]
+    while d != 0:
+        if name_eq_cstr(nd_name_off[d], nd_name_len[d], "unsafe") == 0:
+            cg_fail(13, d)
+            return
+        d = nd_next[d]
+
+
+# Reject List/Dict/Tuple/Optional anywhere they were parsed.
+#
+# A FLAT scan over the node arena rather than a tree walk: every one of these
+# nodes can only be built by parse_type (parser.ad), so if one exists in the
+# arena the source mentioned the type — in a parameter, a return type, a
+# local, a global, a class field or nested inside Ptr[...]/Array[...]. The
+# flat form cannot miss a position the way an incomplete recursive walk can,
+# and it is O(nd_count) once per program.
+def check_unimplemented_types():
+    i: uint32 = 1
+    while i < nd_count:
+        k: uint32 = nd_kind[i]
+        if k == ND_LIST_TYPE or k == ND_DICT_TYPE or k == ND_TUPLE_TYPE or k == ND_OPTIONAL_TYPE:
+            cg_fail(14, i)
+            return
+        i = i + 1
+
+
+def check_program_accepted(prog: uint32):
+    check_unimplemented_types()
+    cur: uint32 = nd_b[prog]
+    while cur != 0:
+        k: uint32 = nd_kind[cur]
+        if k == ND_FUNCTION or k == ND_CLASS or k == ND_UNION:
+            check_decorators(cur)
+        if k == ND_CLASS:
+            m: uint32 = nd_b[cur]
+            while m != 0:
+                check_decorators(m)
+                m = nd_next[m]
+        cur = nd_next[cur]
+
+
 def gen_program_with_globals(prog: uint32) -> uint32:
+    # Reject what the parser accepts but this backend does not implement,
+    # BEFORE any emission — otherwise the construct is silently dropped and
+    # the compiler exits 0 on a program the seed refuses.
+    check_program_accepted(prog)
+    if cg_err != 0:
+        return 0
     # Stash the decl chain so class layout can resolve inheritance bases by
     # name, then lay out every class BEFORE globals (a struct-typed global
     # needs its struct total_size) and before any function/method emission.

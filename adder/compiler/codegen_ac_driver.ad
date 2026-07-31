@@ -45,6 +45,9 @@
 from compiler.lexer import (
     lex_init,
     lex_tokenize,
+    lex_err,
+    lex_err_line,
+    lex_err_text,
     tok_count,
 )
 
@@ -190,7 +193,13 @@ def main() -> int32:
     emit("\n")
 
     lex_init(&cc_src[0], n)
-    lex_tokenize()
+    if lex_tokenize() < 0:
+        emit("[hamnix_ac_emit] FAIL: lex error at line ")
+        put_u32(lex_err_line)
+        emit(": ")
+        emit(cast[Ptr[uint8]](lex_err_text()))
+        emit("\n")
+        sys_exit(8)
     emit("[hamnix_ac_emit] tokens=")
     put_u32(tok_count)
     emit("\n")

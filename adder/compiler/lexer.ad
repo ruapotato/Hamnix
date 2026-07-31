@@ -210,6 +210,66 @@ indent_stack: Array[64, uint32]
 indent_depth: uint32 = 1   # indent_stack[0] = 0 (base level)
 
 # -----------------------------------------------------------------------
+# Lexer error channel
+#
+# WHY THIS EXISTS. Until 2026-07 the native lexer DETECTED errors and had
+# nowhere to put them: lex_read_string() returned -1 for an unterminated
+# string / a newline inside a string / EOF-in-string, and every one of its
+# four call sites discarded the value; lex_tokenize() likewise returned
+# "-1 or count" and all seven of its drivers threw it away. A malformed
+# literal simply never became a token and the parser then failed (or did
+# NOT fail) somewhere else, with a line number pointing at the wrong place.
+# Three of the caps below (MAX_TOKENS, STRBUF_SIZE, MAX_INDENT) did not
+# even detect: they silently dropped output, so an over-cap source
+# compiled to a TRUNCATED program with exit status 0. That is the shape
+# that let the adjacent-string-literal miscompile live in the tree.
+#
+# The contract now mirrors the parser's p_err (see parser.ad node_new):
+# the first failure is recorded and kept, lexing continues far enough to
+# unwind, and lex_tokenize() returns -1. Nothing is discarded silently.
+lex_err: uint32 = 0
+lex_err_line: uint32 = 0
+# Reason codes — see lex_err_text() for the human-readable legend.
+#   1 unterminated string literal (EOF before the closing quote)
+#   2 newline inside a single-quoted string literal
+#   3 invalid \xNN hex escape
+#   4 unterminated character literal
+#   5 integer literal does not fit in 64 bits
+#   6 token limit exceeded (MAX_TOKENS)
+#   7 string/identifier buffer exhausted (STRBUF_SIZE)
+#   8 indentation nested deeper than MAX_INDENT
+lex_err_reason: uint32 = 0
+
+
+# Record the FIRST lexer failure; later ones do not overwrite it (the first
+# is the cause, the rest are fallout). Always sets lex_err.
+def lex_fail(reason: uint32):
+    if lex_err == 0:
+        lex_err_reason = reason
+        lex_err_line = lex_line
+    lex_err = 1
+
+
+def lex_err_text() -> Ptr[char]:
+    if lex_err_reason == 1:
+        return "unterminated string literal (EOF before closing quote)"
+    if lex_err_reason == 2:
+        return "newline inside string literal (use a triple-quoted string)"
+    if lex_err_reason == 3:
+        return "invalid \\xNN hex escape in literal"
+    if lex_err_reason == 4:
+        return "unterminated character literal"
+    if lex_err_reason == 5:
+        return "integer literal too large for 64 bits"
+    if lex_err_reason == 6:
+        return "too many tokens: source exceeds MAX_TOKENS (split the file)"
+    if lex_err_reason == 7:
+        return "string/identifier buffer exhausted: exceeds STRBUF_SIZE"
+    if lex_err_reason == 8:
+        return "indentation nested deeper than MAX_INDENT"
+    return "unknown lexer error"
+
+# -----------------------------------------------------------------------
 # Helpers: character classification
 # -----------------------------------------------------------------------
 
@@ -261,6 +321,11 @@ def strbuf_append(c: uint8):
     if strbuf_pos < STRBUF_SIZE - 1:
         strbuf[strbuf_pos] = c
         strbuf_pos = strbuf_pos + 1
+    else:
+        # HARD ERROR, not a silent drop. This used to return quietly, so a
+        # source whose string/ident text exceeded STRBUF_SIZE compiled to a
+        # program with TRUNCATED literals and identifiers and exit status 0.
+        lex_fail(7)
 
 
 def strbuf_nul_terminate():
@@ -297,6 +362,14 @@ def lex_advance() -> uint8:
 
 def emit_tok(t: uint32, val_start: uint32, val_len: uint32, num_val: uint64):
     if tok_count >= MAX_TOKENS:
+        # HARD ERROR. Returning without emitting made the token stream stop
+        # dead at the cap: the parser then saw a syntactically complete but
+        # TRUNCATED program and the compiler exited 0. Nine files in the tree
+        # exceed the on-device MAX_TOKENS (hamUId.ad 187 K, arm64/kmain.ad
+        # 185 K, ...), so on-device self-hosting would silently compile a
+        # prefix of the program. node_new (parser.ad) already had the right
+        # shape at MAX_NODES; this is the lexer half of the same contract.
+        lex_fail(6)
         return
     tok_type[tok_count] = t
     tok_line[tok_count] = lex_line
@@ -630,6 +703,7 @@ def lex_read_string(quote: uint8) -> int32:
     while True:
         c: uint8 = lex_cur()
         if c == 0:
+            lex_fail(1)
             return -1
         if triple != 0:
             if c == quote and lex_peek(1) == quote and lex_peek(2) == quote:
@@ -641,6 +715,7 @@ def lex_read_string(quote: uint8) -> int32:
             lex_advance()
         else:
             if c == 10:
+                lex_fail(2)
                 return -1
             if c == quote:
                 lex_advance()
@@ -665,26 +740,18 @@ def lex_read_string(quote: uint8) -> int32:
                 elif esc == quote:
                     strbuf_append(quote)
                 elif esc == 120:
-                    # hex escape \xNN
+                    # hex escape \xNN. A NON-hex digit used to decode as 0,
+                    # so "a\xZZ" became "a\0" — a NUL that TERMINATED the
+                    # literal (measured length 1). The seed raises
+                    # LexerError("Invalid hex escape"); match it.
                     hi: uint8 = lex_cur()
                     lex_advance()
                     lo: uint8 = lex_cur()
                     lex_advance()
-                    hv: uint8 = 0
-                    lv: uint8 = 0
-                    if hi >= 48 and hi <= 57:
-                        hv = hi - 48
-                    elif hi >= 65 and hi <= 70:
-                        hv = hi - 55
-                    elif hi >= 97 and hi <= 102:
-                        hv = hi - 87
-                    if lo >= 48 and lo <= 57:
-                        lv = lo - 48
-                    elif lo >= 65 and lo <= 70:
-                        lv = lo - 55
-                    elif lo >= 97 and lo <= 102:
-                        lv = lo - 87
-                    strbuf_append(hv * 16 + lv)
+                    if is_hex_digit(hi) == 0 or is_hex_digit(lo) == 0:
+                        lex_fail(3)
+                        return -1
+                    strbuf_append(hex_digit_val(hi) * 16 + hex_digit_val(lo))
                 else:
                     strbuf_append(esc)
             else:
@@ -726,27 +793,17 @@ def lex_read_char_lit() -> int32:
             lex_advance()
             lo: uint8 = lex_cur()
             lex_advance()
-            hv: uint8 = 0
-            lv: uint8 = 0
-            if hi >= 48 and hi <= 57:
-                hv = hi - 48
-            elif hi >= 65 and hi <= 70:
-                hv = hi - 55
-            elif hi >= 97 and hi <= 102:
-                hv = hi - 87
-            if lo >= 48 and lo <= 57:
-                lv = lo - 48
-            elif lo >= 65 and lo <= 70:
-                lv = lo - 55
-            elif lo >= 97 and lo <= 102:
-                lv = lo - 87
-            ch_val = hv * 16 + lv
+            if is_hex_digit(hi) == 0 or is_hex_digit(lo) == 0:
+                lex_fail(3)
+                return -1
+            ch_val = hex_digit_val(hi) * 16 + hex_digit_val(lo)
         else:
             ch_val = esc
     else:
         ch_val = c
         lex_advance()
     if lex_cur() != 39:
+        lex_fail(4)
         return -1
     lex_advance()
     emit_tok(TOK_CHAR_LIT, 0, 0, cast[uint64](ch_val))
@@ -1192,6 +1249,21 @@ def _classify_digit_word(word: Ptr[uint8], wlen: uint32) -> int32:
     return 0
 
 
+U64_MAX: uint64 = 18446744073709551615
+
+
+# True iff `val * base + digit` would wrap past 2^64-1. Guards the four
+# integer-literal accumulation loops below: `18446744073709551617` used to
+# accumulate silently to 1, i.e. the native compiler ACCEPTED a literal the
+# seed rejects ([lit-range]) and gave it a different value. That is a
+# seed/native divergence invisible to kobjdiff, because the two front ends
+# never even agree the program is legal.
+def _num_would_overflow(val: uint64, base: uint64, digit: uint64) -> int32:
+    if val > (U64_MAX - digit) / base:
+        return 1
+    return 0
+
+
 def _parse_num_from_buf(word: Ptr[uint8], wlen: uint32) -> uint64:
     # Parse a confirmed-numeric word to uint64 (integer portion only).
     val: uint64 = 0
@@ -1203,7 +1275,11 @@ def _parse_num_from_buf(word: Ptr[uint8], wlen: uint32) -> uint64:
             while i < wlen:
                 d: uint8 = word[i]
                 if d != 95:
-                    val = val * 16 + cast[uint64](hex_digit_val(d))
+                    dv: uint64 = cast[uint64](hex_digit_val(d))
+                    if _num_would_overflow(val, 16, dv) != 0:
+                        lex_fail(5)
+                        return 0
+                    val = val * 16 + dv
                 i = i + 1
             return val
         if prefix == 98:
@@ -1211,7 +1287,11 @@ def _parse_num_from_buf(word: Ptr[uint8], wlen: uint32) -> uint64:
             while i < wlen:
                 d: uint8 = word[i]
                 if d == 48 or d == 49:
-                    val = val * 2 + cast[uint64](d - 48)
+                    dv: uint64 = cast[uint64](d - 48)
+                    if _num_would_overflow(val, 2, dv) != 0:
+                        lex_fail(5)
+                        return 0
+                    val = val * 2 + dv
                 i = i + 1
             return val
         if prefix == 111:
@@ -1219,7 +1299,11 @@ def _parse_num_from_buf(word: Ptr[uint8], wlen: uint32) -> uint64:
             while i < wlen:
                 d: uint8 = word[i]
                 if d >= 48 and d <= 55:
-                    val = val * 8 + cast[uint64](d - 48)
+                    dv: uint64 = cast[uint64](d - 48)
+                    if _num_would_overflow(val, 8, dv) != 0:
+                        lex_fail(5)
+                        return 0
+                    val = val * 8 + dv
                 i = i + 1
             return val
     # Decimal (stop at '.', 'e', 'E')
@@ -1227,7 +1311,11 @@ def _parse_num_from_buf(word: Ptr[uint8], wlen: uint32) -> uint64:
     while i < wlen:
         d: uint8 = word[i]
         if is_digit(d) != 0:
-            val = val * 10 + cast[uint64](d - 48)
+            dv: uint64 = cast[uint64](d - 48)
+            if _num_would_overflow(val, 10, dv) != 0:
+                lex_fail(5)
+                return 0
+            val = val * 10 + dv
         elif d == 46 or d == 101 or d == 69:
             break
         i = i + 1
@@ -1263,6 +1351,12 @@ def lex_handle_indent() -> int32:
         if indent_depth < MAX_INDENT:
             indent_stack[indent_depth] = indent
             indent_depth = indent_depth + 1
+        else:
+            # Past MAX_INDENT the INDENT token was still emitted but the level
+            # was NOT pushed, so the matching DEDENT never came and the whole
+            # token stream desynchronised from that point on — silently, and
+            # only for deeply nested sources. Refuse instead.
+            lex_fail(8)
         emit_simple(TOK_INDENT)
     elif indent < top:
         while indent_depth > 1 and indent_stack[indent_depth - 1] > indent:
@@ -1286,6 +1380,9 @@ def lex_init(src: Ptr[uint8], src_len: uint32):
     strbuf_pos = 0
     indent_depth = 1
     indent_stack[0] = 0
+    lex_err = 0
+    lex_err_line = 0
+    lex_err_reason = 0
 
 
 def lex_tokenize() -> int32:
@@ -1293,6 +1390,11 @@ def lex_tokenize() -> int32:
     at_line_start: int32 = 1
 
     while lex_pos < lex_src_len:
+        # Stop at the FIRST error: everything after a malformed literal or an
+        # exhausted buffer is fallout, and continuing would only bury the
+        # real diagnostic under cascade noise.
+        if lex_err != 0:
+            return -1
         c: uint8 = lex_cur()
 
         # Line-start indentation handling
@@ -1334,7 +1436,8 @@ def lex_tokenize() -> int32:
             lex_advance()   # skip 'f'
             q: uint8 = lex_cur()
             val_start: uint32 = strbuf_pos
-            lex_read_string(q)
+            if lex_read_string(q) != 0:
+                return -1
             # Override type: last emitted token should be TOK_FSTRING
             if tok_count > 0:
                 tok_type[tok_count - 1] = TOK_FSTRING
@@ -1343,13 +1446,15 @@ def lex_tokenize() -> int32:
         # Raw strings: r"..." or r'...'
         if c == 114 and (lex_peek(1) == 34 or lex_peek(1) == 39):
             lex_advance()
-            lex_read_string(lex_cur())
+            if lex_read_string(lex_cur()) != 0:
+                return -1
             continue
 
         # Byte strings: b"..." or b'...'
         if c == 98 and (lex_peek(1) == 34 or lex_peek(1) == 39):
             lex_advance()
-            lex_read_string(lex_cur())
+            if lex_read_string(lex_cur()) != 0:
+                return -1
             continue
 
         # String literals " or '
@@ -1362,18 +1467,22 @@ def lex_tokenize() -> int32:
                 p3: uint8 = lex_peek(3)
                 # 'x' pattern: non-quote, non-backslash, then closing '
                 if p1 != 34 and p1 != 39 and p1 != 92 and p2 == 39:
-                    lex_read_char_lit()
+                    if lex_read_char_lit() != 0:
+                        return -1
                     continue
                 # '\x' pattern: backslash, then escape, then closing '
                 # For \xNN the closing ' is at position 4
                 if p1 == 92 and p3 == 39:
-                    lex_read_char_lit()
+                    if lex_read_char_lit() != 0:
+                        return -1
                     continue
                 # For \xNN: peek[4]
                 if p1 == 92 and lex_peek(2) == 120 and lex_peek(5) == 39:
-                    lex_read_char_lit()
+                    if lex_read_char_lit() != 0:
+                        return -1
                     continue
-            lex_read_string(c)
+            if lex_read_string(c) != 0:
+                return -1
             continue
 
         # Numbers
@@ -1583,4 +1692,6 @@ def lex_tokenize() -> int32:
         emit_simple(TOK_DEDENT)
 
     emit_simple(TOK_EOF)
+    if lex_err != 0:
+        return -1
     return cast[int32](tok_count)

@@ -41,6 +41,9 @@
 from compiler.lexer import (
     lex_init,
     lex_tokenize,
+    lex_err,
+    lex_err_line,
+    lex_err_text,
 )
 
 from compiler.parser import (
@@ -146,7 +149,13 @@ def main() -> int32:
     n: uint32 = cast[uint32](strlen(src))
 
     lex_init(src, n)
-    lex_tokenize()
+    if lex_tokenize() < 0:
+        emit("[selfhost_bss_emit] FAIL: lex error at line ")
+        put_u32(lex_err_line)
+        emit(": ")
+        emit(cast[Ptr[uint8]](lex_err_text()))
+        emit("\n")
+        sys_exit(8)
 
     parser_init()
     prog: uint32 = parse_program()

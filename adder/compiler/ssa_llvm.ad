@@ -137,6 +137,9 @@ from compiler.cfg import (
 
 from compiler.codegen import (
     cg_init,
+    cg_err,
+    cg_fail,
+    check_program_accepted,
     cg_prog_decls,
     cg_target_kernel,
     layout_classes,
@@ -1076,6 +1079,10 @@ def llvm_record_defined(off: uint32, len_: uint32):
     if llvm_name_in_defined(off, len_) != 0:
         return
     if dn_count >= LL_NAME_MAX:
+        # Dropping a name here produced a spurious `declare` COLLIDING with the
+        # function's own `define` ("redefinition") — or, worse, silently valid
+        # IR for a different program. Report it instead of returning quietly.
+        cg_fail(15, 0)
         return
     dn_off[dn_count] = off
     dn_len[dn_count] = len_
@@ -1098,6 +1105,7 @@ def llvm_record_callee(off: uint32, len_: uint32, argc: uint32):
             return
         i = i + 1
     if ce_count >= LL_NAME_MAX:
+        cg_fail(15, 0)
         return
     ce_off[ce_count] = off
     ce_len[ce_count] = len_
@@ -1120,6 +1128,7 @@ def llvm_record_faddr(off: uint32, len_: uint32):
     if llvm_name_in_faddr(off, len_) != 0:
         return
     if fa_count >= LL_NAME_MAX:
+        cg_fail(15, 0)
         return
     fa_off[fa_count] = off
     fa_len[fa_count] = len_
@@ -1871,6 +1880,13 @@ def llvm_emit_program(prog: uint32):
     layout_classes(prog)
     register_enums(prog)
     layout_globals(prog)
+    # The LLVM lane bypasses gen_program_with_globals entirely, so it must run
+    # the same front-end acceptance check or `@bogus` / `List[T]` would be
+    # accepted here after being rejected on the default ELF lane. AFTER
+    # cg_init(), which clears cg_err.
+    check_program_accepted(prog)
+    if cg_err != 0:
+        return
 
     ll_puts("target triple = ")
     ll_putc(34)
