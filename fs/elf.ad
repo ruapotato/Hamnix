@@ -43,7 +43,7 @@
 
 from mm.memblock import memblock_alloc, memblock_region_top
 from mm.page_alloc import (
-    alloc_page, alloc_pages, region_alloc,
+    alloc_page, alloc_pages, region_alloc, region_free,
     pa_set_site, pa_set_tag, pa_set_owner,
     PA_SITE_PGTABLE, PA_SITE_FORK_COPY, PA_SITE_COW_RESOLVE,
 )
@@ -365,6 +365,49 @@ ELF_MAX_LOW_BSS_DEMAND: uint64 = 0x4000000
 # vbase sit far above RAM and can never collide, so they are exempt.
 ELF_LOW_IMAGE_VADDR_TOP: uint64 = 0x40000000
 
+# ===========================================================================
+# NATIVE ET_DYN RELOCATION (2026-07-30) — the lift for the low-BSS class.
+#
+# The native ELF64 LLVM lane used to link ET_EXEC at a fixed low 0x400000
+# (user/init64.lds), which makes every app's user vaddrs numerically alias low
+# physical RAM — the kernel's own direct map. For hambrowse (~174 MiB static
+# BSS, image span [0x400000, 0xB35E000)) that aliased most of MEMBLOCK's pool
+# and either wedged the box (demand-BSS) or let the kernel scribble through a
+# direct-map VA onto the app's pages (eager). See the long note at the split
+# decision in _load_elf64 and the header of user/init64_pie.lds.
+#
+# The fix is to link the lane PIE (user/init64_pie.lds -> ET_DYN at base 0) so
+# _load_elf64's ET_DYN arm rebases the image onto a base of the KERNEL's
+# choosing — the high ASLR vbase, or identity at the image's own memblock
+# `region` on a deterministic boot. Either way the image only ever covers its
+# OWN pages, which is precisely the property the native ELF32 lane always had
+# and the reason the native lane never hit this class.
+#
+# A PIE needs its R_X86_64_RELATIVE relocations applied at the chosen base.
+# Historically the kernel applied NONE (see the U20 note in _load_elf64:
+# glibc/musl static-PIE binaries self-relocate from userspace via
+# _dl_relocate_static_pie using auxv). A NATIVE Hamnix PIE has no such runtime,
+# so the loader must do it. It is a small job: the lane is -static -nostdlib
+# with every symbol defined in-image, so no PLT and no symbolic relocation can
+# survive the link — hambrowse needs exactly 64 R_X86_64_RELATIVE entries, all
+# in .data.rel.ro, all inside the eager file-backed extent (never the
+# demand-BSS tail, which has no file bytes to patch).
+#
+# Any OTHER relocation type is a hard load failure rather than a silent skip:
+# an unrelocated pointer is a wild store, and this is exactly the class of bug
+# that cost a full device bisect to attribute the first time.
+_ELF_DT_NULL:     uint64 = 0
+_ELF_DT_NEEDED:   uint64 = 1
+_ELF_DT_PLTRELSZ: uint64 = 2
+_ELF_DT_PLTGOT:   uint64 = 3
+_ELF_DT_RELA:     uint64 = 7
+_ELF_DT_RELASZ:   uint64 = 8
+_ELF_DT_RELAENT:  uint64 = 9
+_ELF_DT_SONAME:   uint64 = 14
+_ELF_DT_JMPREL:   uint64 = 23
+_ELF_R_X86_64_NONE:     uint64 = 0
+_ELF_R_X86_64_RELATIVE: uint64 = 8
+
 elf_last_app_ro_n:     uint64 = 0
 elf_last_app_ro_lo:    Array[8, uint64]
 elf_last_app_ro_hi:    Array[8, uint64]
@@ -514,6 +557,162 @@ def _collect_app_ro_spans(blob: Ptr[uint8], e_phoff: uint64,
     elf_last_app_ro_n = n
 
 
+def _elf64_vaddr_to_blob_off(blob: Ptr[uint8], e_phoff: uint64,
+                             e_phentsize: uint32, e_phnum: uint32,
+                             v: uint64) -> uint64:
+    # Map a link-time vaddr to its byte offset inside `blob` by finding the
+    # PT_LOAD that contains it in its FILE-backed part. Returns 0 when no
+    # PT_LOAD covers it (0 is never a valid answer here: the ELF header itself
+    # occupies offset 0).
+    i: uint32 = 0
+    while i < e_phnum:
+        ph: uint64 = cast[uint64](blob) + e_phoff \
+                    + cast[uint64](i) * cast[uint64](e_phentsize)
+        if _read_u32(cast[Ptr[uint8]](ph + 0)) == PT_LOAD:
+            p_offset: uint64 = _read_u64(cast[Ptr[uint8]](ph + 8))
+            p_vaddr:  uint64 = _read_u64(cast[Ptr[uint8]](ph + 16))
+            p_filesz: uint64 = _read_u64(cast[Ptr[uint8]](ph + 32))
+            if v >= p_vaddr and v < p_vaddr + p_filesz:
+                return p_offset + (v - p_vaddr)
+        i = i + 1
+    return 0
+
+
+def _elf64_apply_relative_relocs(blob: Ptr[uint8], blob_size: uint64,
+                                 e_phoff: uint64, e_phentsize: uint32,
+                                 e_phnum: uint32, lowest_v: uint64,
+                                 region: uint64, file_hi_rel: uint64,
+                                 load_bias: uint64) -> int32:
+    # Apply an ET_DYN image's R_X86_64_RELATIVE relocations for a load at
+    # `load_bias` (the image's chosen user-virtual base). Returns 0 on success,
+    # -1 on anything it cannot honour.
+    #
+    # Writes go through the image's IDENTITY `region` mapping — the same
+    # channel the PT_LOAD copy above uses, and for the same reason: the biased
+    # user vaddr is not mapped in the kernel's view yet, and `region` is. That
+    # also means the writes need the SMAP bracket (region_alloc's backing can
+    # alias a recycled US=1 page), exactly like _elf_memcpy_serviced.
+    #
+    # No-op when there is no PT_DYNAMIC (a plain non-PIE ET_DYN blob, or the
+    # ELF32 path's callers) or no DT_RELA.
+    dyn_off: uint64 = 0
+    dyn_sz:  uint64 = 0
+    i: uint32 = 0
+    while i < e_phnum:
+        ph: uint64 = cast[uint64](blob) + e_phoff \
+                    + cast[uint64](i) * cast[uint64](e_phentsize)
+        if _read_u32(cast[Ptr[uint8]](ph + 0)) == PT_DYNAMIC:
+            dyn_off = _read_u64(cast[Ptr[uint8]](ph + 8))
+            dyn_sz  = _read_u64(cast[Ptr[uint8]](ph + 32))
+        i = i + 1
+    if dyn_off == 0 or dyn_sz == 0:
+        return 0
+    if dyn_off + dyn_sz > blob_size:
+        printk0("elf64: PT_DYNAMIC runs past the image\n")
+        return -1
+
+    # Walk the 16-byte (d_tag, d_val) entries for the RELA table coordinates.
+    rela_v:   uint64 = 0
+    rela_sz:  uint64 = 0
+    rela_ent: uint64 = 24
+    has_linkage: int32 = 0
+    off: uint64 = 0
+    while off + 16 <= dyn_sz:
+        d_tag: uint64 = _read_u64(cast[Ptr[uint8]](
+            cast[uint64](blob) + dyn_off + off))
+        d_val: uint64 = _read_u64(cast[Ptr[uint8]](
+            cast[uint64](blob) + dyn_off + off + 8))
+        if d_tag == _ELF_DT_NULL:
+            off = dyn_sz
+        else:
+            if d_tag == _ELF_DT_RELA:
+                rela_v = d_val
+            if d_tag == _ELF_DT_RELASZ:
+                rela_sz = d_val
+            if d_tag == _ELF_DT_RELAENT:
+                rela_ent = d_val
+            # Any real dynamic-linking machinery disqualifies the image from
+            # kernel-side relocation — see the NOT-OURS note below.
+            if d_tag == _ELF_DT_NEEDED or d_tag == _ELF_DT_SONAME \
+                    or d_tag == _ELF_DT_PLTGOT or d_tag == _ELF_DT_JMPREL \
+                    or d_tag == _ELF_DT_PLTRELSZ:
+                has_linkage = 1
+            off = off + 16
+    if rela_sz == 0:
+        return 0
+
+    # NOT-OURS GUARD. A native Hamnix PIE from scripts/adder_cc_llvm_native64.sh
+    # is -static -nostdlib with no dynamic-linking machinery at all: no
+    # DT_NEEDED, no DT_SONAME, no PLT. A DYNAMIC image that HAS any of those is
+    # a Linux shared-object-consuming binary; its relocations are symbolic and
+    # belong to ld.so, not to us. Refuse rather than guess.
+    #
+    # KNOWN RESIDUAL, stated plainly: a glibc/musl STATIC-PIE has the same
+    # DT shape as ours (no PT_INTERP, OSABI=0, RELATIVE-only) and is therefore
+    # indistinguishable here — and it self-relocates from userspace via
+    # _dl_relocate_static_pie, so applying its relocations here would
+    # DOUBLE-BIAS every pointer. That is not a regression: elf_is_linux_binary's
+    # own comment records that static-PIE Linux binaries are not supported by
+    # this loader today, and nothing in the tree ships one. Before that changes,
+    # this needs a positive marker for our own images (a PT_NOTE, or a reserved
+    # DT_LOOS tag) rather than a shape heuristic.
+    if has_linkage != 0:
+        printk0("elf64: ET_DYN has dynamic linkage (DT_NEEDED/PLT) - not a native PIE, skipping relocs\n")
+        return 0
+    if rela_ent != 24:
+        printk1("elf64: unsupported DT_RELAENT %d (want 24)\n", rela_ent)
+        return -1
+
+    rela_off: uint64 = _elf64_vaddr_to_blob_off(blob, e_phoff, e_phentsize,
+                                                e_phnum, rela_v)
+    if rela_off == 0 or rela_off + rela_sz > blob_size:
+        printk0("elf64: DT_RELA table is not inside a file-backed PT_LOAD\n")
+        return -1
+
+    n_rel: uint64 = 0
+    r: uint64 = 0
+    while r + rela_ent <= rela_sz:
+        e: uint64 = cast[uint64](blob) + rela_off + r
+        r_offset: uint64 = _read_u64(cast[Ptr[uint8]](e + 0))
+        r_info:   uint64 = _read_u64(cast[Ptr[uint8]](e + 8))
+        r_addend: uint64 = _read_u64(cast[Ptr[uint8]](e + 16))
+        r_type:   uint64 = r_info & 0xffffffff
+        if r_type == _ELF_R_X86_64_NONE:
+            r = r + rela_ent
+        else:
+            if r_type != _ELF_R_X86_64_RELATIVE:
+                # A symbolic / GOT / PLT relocation. The native lane links
+                # -static -nostdlib with every symbol defined in-image, so this
+                # is unreachable today; if a toolchain change ever makes it
+                # reachable, FAIL the load. Skipping it would leave a wild
+                # pointer in .data and reintroduce exactly the silent-corruption
+                # class this whole change exists to remove.
+                printk1("elf64: unsupported dynamic reloc type %d in a native PIE\n",
+                        r_type)
+                return -1
+            # Target must sit inside the EAGER file-backed extent: that is the
+            # only part `region` actually backs. .data.rel.ro / .got always do;
+            # a reloc pointing into the demand-BSS tail would have no file bytes
+            # to patch and means the image is malformed.
+            if r_offset < lowest_v:
+                printk1("elf64: reloc target 0x%x below the image base\n", r_offset)
+                return -1
+            rel: uint64 = r_offset - lowest_v
+            if rel + 8 > file_hi_rel:
+                printk1("elf64: reloc target 0x%x outside the file-backed extent\n",
+                        r_offset)
+                return -1
+            _ua_stac()
+            slot: Ptr[uint64] = cast[Ptr[uint64]](region + rel)
+            slot[0] = load_bias + r_addend
+            _ua_clac()
+            n_rel = n_rel + 1
+            r = r + rela_ent
+    printk2("elf64: applied %d R_X86_64_RELATIVE relocs at bias 0x%x\n",
+            n_rel, load_bias)
+    return 0
+
+
 def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # U5 ELF64 path: Linux x86_64 binaries (ELFCLASS64). Same rebase
     # model as the ELF32 path — copy PT_LOAD segments into one
@@ -642,11 +841,72 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # the native-lane build of the same program is proven to run on. The cap is
     # deliberately set well ABOVE every currently-working image so this is a
     # no-op for them: the DE-OOM fix the demand split exists for is untouched.
-    if e_type == cast[uint32](ELF_ET_EXEC) \
-            and mem_hi_rel > ELF_MAX_LOW_BSS_DEMAND \
-            and lowest_v < ELF_LOW_IMAGE_VADDR_TOP:
-        printk1("elf64: low-BSS demand window %d MiB > cap -> EAGER full span (direct-map alias guard)\n",
-                mem_hi_rel >> 20)
+    #
+    # THE RULE IS ABOUT THE EFFECTIVE LOAD BASE, NOT e_type (2026-07-30).
+    # Moving the lane to PIE removes the aliasing for the ASLR case, but NOT
+    # automatically for a deterministic boot. With aslr_disabled the ET_DYN arm
+    # loads the image IDENTITY at its own `region` (dyn_vbase == 0 -> region),
+    # and identity is only safe while vaddr == phys holds for the WHOLE image.
+    # A demand-BSS tail breaks exactly that: the eager extent is backed at
+    # [region, region+file_hi_rel) but the punched tail
+    # [region+file_hi_rel, region+mem_hi_rel) is a range of low VAs with no
+    # backing at all — which is the direct-map alias again, just displaced by
+    # the region base. The native ELF32 lane is safe precisely because it is
+    # always EAGER full-span, so vaddr == phys everywhere and a kernel
+    # direct-map access inside the image's span reaches the intended page.
+    #
+    # So: suppress the split whenever the image will land in the low,
+    # direct-map-aliasing band, whether that is a low ET_EXEC link or an ET_DYN
+    # identity load. A high ASLR vbase (the default) sits above all RAM and
+    # keeps the demand split — which is the case the DE-OOM fix needs.
+    #
+    # AND THE SUPPRESSION IS UNCONDITIONAL FOR A LOW BASE — no size cap.
+    # Device-proven (test_cow_fork, a PIE hamsh exec'ing /bin/test_cow_fork):
+    #   [trap-diag] vec=0xe err=0x2 (supervisor WRITE, not-present)
+    #   cr2=0x0c000000  pml4e[0]/pdpte[0]/pde[96] present, pte[0]=0
+    # pde[96] covers [192 MiB, 194 MiB): a 2 MiB identity entry that
+    # elf_prepare_demand_range had CRACKED into 4 KiB leaves and punched
+    # not-present for an ET_DYN image loaded IDENTITY at its own region
+    # (~192 MiB, before ASLR is armed). Its BSS window was far under the 64 MiB
+    # cap, so the old rule kept the demand split — and the punched window sat
+    # exactly at the allocator's high-water mark, so the very next low-RAM
+    # allocation the kernel touched through its direct map hit a not-present
+    # leaf and halted the box.
+    #
+    # That is WORSE than the ET_EXEC case the cap was written for. A low
+    # ET_EXEC at 0x400000 punches a window starting at 4 MiB — RAM the
+    # allocator consumed long ago and never revisits — which is the only reason
+    # a 23 MiB window survived on device at all. An identity ET_DYN punches a
+    # window starting at the TOP of what the allocator has handed out, i.e. the
+    # worst possible place. The size of the window was never the real variable;
+    # WHERE it lands is, and for a low base that cannot be bounded safely.
+    #
+    # So a low-based image gets NO demand split at any size. That restores exact
+    # vaddr == phys across the whole image — the native ELF32 lane's shape, the
+    # one proven on device. The cost is a contiguous region_alloc at exec, which
+    # is why ELF_MAX_LOW_BSS_DEMAND survives below purely as the threshold for
+    # WARNING about that cost (and for the host gate's eager-cost report); it is
+    # no longer a correctness knob. The DE-OOM fix the demand split exists for is
+    # untouched, because every app now links PIE and lands at a HIGH ASLR vbase,
+    # where the split is kept.
+    img_base_is_low: int32 = 1
+    if e_type == cast[uint32](ELF_ET_EXEC):
+        if lowest_v >= ELF_LOW_IMAGE_VADDR_TOP:
+            img_base_is_low = 0
+    else:
+        planned_vbase: uint64 = elf_aslr_app_vbase
+        if _in_interp_load != 0:
+            planned_vbase = elf_aslr_interp_vbase
+        # planned_vbase == 0 means "identity at region" -> low by definition.
+        if planned_vbase >= ELF_LOW_IMAGE_VADDR_TOP:
+            img_base_is_low = 0
+    if img_base_is_low != 0 and mem_hi_rel > file_hi_rel:
+        if mem_hi_rel > ELF_MAX_LOW_BSS_DEMAND:
+            printk1("elf64: low-base image span %d MiB -> EAGER full span (direct-map alias guard; large contiguous region_alloc)\n",
+                    mem_hi_rel >> 20)
+        else:
+            printk1("elf64: low-base image span %d MiB -> EAGER full span (direct-map alias guard)\n",
+                    mem_hi_rel >> 20)
         file_hi_rel = mem_hi_rel
     # region_alloc (not raw memblock_alloc): a freeable large-region
     # allocator. task_reap returns this chunk to the pool on exit, so
@@ -823,6 +1083,30 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
                 region, region + file_hi_rel)
         printk2("elf64: ET_DYN bss-demand: [0x%x, 0x%x)\n",
                 app_bss_lo, app_bss_hi)
+        # NATIVE PIE: apply R_X86_64_RELATIVE now that the load base is
+        # decided. Must run AFTER the PT_LOAD copy into `region` (there would
+        # be nothing to patch before it) and BEFORE the W^X read-only flip the
+        # installer does. The targets live in .data.rel.ro / .got, which are in
+        # the RW segment, so the RO flip never covers them — but the ordering
+        # is load-bearing regardless and is why this sits here and not in the
+        # caller.
+        #
+        # A Linux static-PIE reaching this path self-relocates from userspace
+        # (_dl_relocate_static_pie via auxv) and its relocations are of kinds
+        # this applier rejects. Only apply for NATIVE images; elf_last_was_linux
+        # is not set yet here, so gate on the same signal elf_is_linux_binary
+        # uses (OSABI + PT_INTERP), which is already decided by the header.
+        if elf_is_linux_binary(blob) == 0:
+            # The bias is dyn_vbase - lowest_v, matching app_entry_user's own
+            # rebase above. It equals dyn_vbase for the base-0 PIE the native
+            # lane emits, but spelling it out keeps a nonzero-based PIE correct.
+            if _elf64_apply_relative_relocs(blob, blob_size, e_phoff,
+                                            e_phentsize, e_phnum, lowest_v,
+                                            region, file_hi_rel,
+                                            dyn_vbase - lowest_v) != 0:
+                printk0("elf64: ET_DYN relocation failed - refusing the load\n")
+                region_free(region, file_hi_rel)
+                return 0
     # W^X Stage 1b: record this image's non-writable (.text/.rodata)
     # PT_LOAD spans in elf_last_app_ro_* so the installer can flip them
     # READ-ONLY after the whole image is mapped RW. app_load_base is the
