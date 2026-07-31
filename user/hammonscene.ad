@@ -167,6 +167,54 @@ def _refresh_uptime():
     hammon_set_uptime(secs)
 
 
+# Publish the model the MEMORY row is actually drawing, plus the sample
+# sequence number, so a gate can assert the DISPLAYED figure tracks
+# /proc/meminfo instead of eyeballing a screenshot. stdout does not reach the
+# serial console for a compositor-spawned DE client, so this goes to a file the
+# gate cats in-guest (same shape as hamdesktop's /tmp/.hamdesktop.src).
+# Best-effort: a read-only /tmp simply skips it.
+mem_samples: uint64 = 0
+mem_peak_used: uint64 = 0
+_mem_telbuf: Array[128, uint8]
+def _report_mem(total: uint64, used: uint64):
+    fd: int32 = sys_open_write(cast[Ptr[char]]("/tmp/.hammonscene.mem"))
+    if fd < 0:
+        return
+    p: uint64 = 0
+    pre: Ptr[uint8] = cast[Ptr[uint8]]("total=")
+    k: uint64 = 0
+    while pre[k] != 0:
+        _mem_telbuf[p] = pre[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(total, &_mem_telbuf[p])
+    mid: Ptr[uint8] = cast[Ptr[uint8]](" used=")
+    k = 0
+    while mid[k] != 0:
+        _mem_telbuf[p] = mid[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(used, &_mem_telbuf[p])
+    sfx: Ptr[uint8] = cast[Ptr[uint8]](" n=")
+    k = 0
+    while sfx[k] != 0:
+        _mem_telbuf[p] = sfx[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(mem_samples, &_mem_telbuf[p])
+    pk: Ptr[uint8] = cast[Ptr[uint8]](" peak=")
+    k = 0
+    while pk[k] != 0:
+        _mem_telbuf[p] = pk[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(mem_peak_used, &_mem_telbuf[p])
+    _mem_telbuf[p] = 10
+    p = p + 1
+    sys_write(fd, &_mem_telbuf[0], p)
+    sys_close(fd)
+
+
 def _refresh_mem():
     n: uint64 = _slurp(cast[Ptr[char]]("/proc/meminfo"))
     total: uint64 = _field(n, cast[Ptr[uint8]]("MemTotal:"))
@@ -174,7 +222,11 @@ def _refresh_mem():
     if free > total:
         free = total
     cur_used = total - free
+    mem_samples = mem_samples + 1
+    if cur_used > mem_peak_used:
+        mem_peak_used = cur_used
     hammon_set_mem(total, total - free)
+    _report_mem(total, cur_used)
 
 
 # ---- CPU sampling from /dev/stat (Linux /proc/stat shape) ----------
