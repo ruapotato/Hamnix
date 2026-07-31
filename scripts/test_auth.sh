@@ -22,7 +22,7 @@
 #                                that SAME live /etc/shadow, returns "ok",
 #                                su calls SYS_SETUID_AUTH on the verified
 #                                fd, then prints
-#                                "su: switched to uid 1000 (alice)" via
+#                                "su: switched to uid <N> (alice)" via
 #                                sys_getuid() — the deterministic identity
 #                                proof — before execing alice's login
 #                                shell.
@@ -31,7 +31,7 @@
 # the LIVE authoritative /etc/shadow through the VFS (resolve_path +
 # kernel-mediator perm bypass), NOT the frozen initramfs copy. If passwd
 # wrote one shadow and su read another, the right-password su would be
-# DENIED and su's "switched to uid 1000 (alice)" line would never print —
+# DENIED and su's "switched to uid <N> (alice)" line would never print —
 # assertion C below would fail. So C passing is the crux proof.
 #
 # Because passwd/su take over the console and read passwords with echo
@@ -163,14 +163,43 @@ SU_BAD=$(slice "$M_SU_BAD" "$M_SU_OK")
 SU_OK=$(slice "$M_SU_OK" "$M_WHOAMI")
 
 fail=0
+ALICE_UID=""
 
 # Sanity: the box booted to an interactive prompt.
 grep -a -q "$KERNEL_BANNER" "$LOG" || { echo "[test_auth] FAIL: kernel banner absent." >&2; fail=1; }
 grep -a -q "$PROMPT_MARKER" "$LOG" || { echo "[test_auth] FAIL: shell-ready marker absent." >&2; fail=1; }
 
-# A. useradd alice reported success.
+# A. useradd alice reported success, and we LEARN the uid it allocated.
+#
+# 2026-07-31: assertion C used to demand the literal "switched to uid 1000".
+# useradd allocates the lowest free uid >= 1000 by scanning /etc/passwd, and
+# etc/passwd has since gained TWO shipped accounts in that range -- `dave` at
+# 1000 (ef449d6e) and `live` at 1001 (10db26d2, the live->hostowner rename).
+# alice is therefore 1002, and the gate had been asserting a roster that no
+# longer exists. This file's own header always said "uid >= 1000"; only the
+# assertion was pinned. Gate rot, not an auth defect.
+#
+# Rather than loosen C to "any uid >= 1000" (which would no longer prove su
+# reached the RIGHT account), take the uid straight out of useradd's own report
+# -- "useradd: created alice (uid 1002) with home server #alice ..." -- and
+# require su to land on exactly that. That is STRICTER than the old check: it
+# cross-checks the allocator against the authenticator, and it survives the next
+# account added to etc/passwd.
 if printf '%s\n' "$ADD" | grep -a -q -E "useradd: created $ALICE"; then
-    echo "[test_auth] PASS (A): useradd $ALICE created the account."
+    ALICE_UID=$(printf '%s\n' "$ADD" \
+        | sed -n "s/.*useradd: created $ALICE (uid \([0-9]\{1,\}\)).*/\1/p" \
+        | head -1)
+    if [ -z "$ALICE_UID" ]; then
+        echo "[test_auth] FAIL (A): useradd reported success but did not print" \
+             "the allocated uid; cannot cross-check C." >&2
+        printf '%s\n' "$ADD" | sed 's/^/      /' >&2
+        fail=1
+    elif [ "$ALICE_UID" -lt 1000 ]; then
+        echo "[test_auth] FAIL (A): useradd allocated uid $ALICE_UID for $ALICE;" \
+             "regular accounts must be >= 1000 (1=hostowner, 2..999 system)." >&2
+        fail=1
+    fi
+    echo "[test_auth] PASS (A): useradd $ALICE created the account (uid ${ALICE_UID:-?})."
 else
     echo "[test_auth] FAIL (A): 'useradd: created $ALICE' not seen." >&2
     printf '%s\n' "$ADD" | sed 's/^/      /' >&2
@@ -190,14 +219,19 @@ fi
 #    passwd's write and su's verify hit the SAME live /etc/shadow, or this
 #    fails. After a verified /dev/auth "ok" + SYS_SETUID_AUTH, su prints
 #    "su: switched to uid <N> (alice)" using sys_getuid() — proving its
-#    OWN process identity actually became alice's uid (1000), independent
+#    OWN process identity actually became alice's uid (the one useradd
+#    reported in assertion A -- 1002 today, since dave=1000 and live=1001
+#    are shipped in etc/passwd), independent
 #    of any nested-shell interactive read. If passwd and su had hit
 #    different shadows the auth would have been DENIED and this line would
 #    never print.
-if printf '%s\n' "$SU_OK" | grep -a -q -E "su: switched to uid 1000 \($ALICE\)"; then
-    echo "[test_auth] PASS (C): su $ALICE (right password) -> 'su: switched to uid 1000 ($ALICE)' — identity changed, live shadow consulted."
+if [ -z "$ALICE_UID" ]; then
+    echo "[test_auth] FAIL (C): no uid from useradd to cross-check against." >&2
+    fail=1
+elif printf '%s\n' "$SU_OK" | grep -a -q -E "su: switched to uid $ALICE_UID \($ALICE\)"; then
+    echo "[test_auth] PASS (C): su $ALICE (right password) -> 'su: switched to uid $ALICE_UID ($ALICE)' — identity changed to the uid useradd allocated, live shadow consulted."
 else
-    echo "[test_auth] FAIL (C): su did NOT confirm the identity change to '$ALICE' (auth or SYS_SETUID_AUTH failed)." >&2
+    echo "[test_auth] FAIL (C): su did NOT confirm the identity change to '$ALICE' at uid $ALICE_UID (auth or SYS_SETUID_AUTH failed)." >&2
     printf '%s\n' "$SU_OK" | sed 's/^/      /' >&2
     fail=1
 fi
