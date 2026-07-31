@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 3294
+#!PASS_FLOOR 3304
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-relative-syntax.html	> .foo in .nest,@scope created by insertRule valid
@@ -747,13 +747,11 @@ dom/nodes/Element-insertAdjacentElement.html	Inserted element should be target e
 dom/nodes/Element-insertAdjacentElement.html	Inserted element should be target element's last child for 'beforeend' case
 dom/nodes/Element-insertAdjacentElement.html	Inserted element should be target element's next sibling for 'afterend' case
 dom/nodes/Element-insertAdjacentElement.html	Inserted element should be target element's previous sibling for 'beforebegin' case
-dom/nodes/Element-insertAdjacentElement.html	Inserting to an invalid location should cause a Syntax Error exception
 dom/nodes/Element-insertAdjacentText.html	Adding more than one child to document should cause a HierarchyRequestError exception
 dom/nodes/Element-insertAdjacentText.html	Inserted text node should be target element's first child for 'afterbegin' case
 dom/nodes/Element-insertAdjacentText.html	Inserted text node should be target element's last child for 'beforeend' case
 dom/nodes/Element-insertAdjacentText.html	Inserted text node should be target element's next sibling for 'afterend' case
 dom/nodes/Element-insertAdjacentText.html	Inserted text node should be target element's previous sibling for 'beforebegin' case
-dom/nodes/Element-insertAdjacentText.html	Inserting to an invalid location should cause a Syntax Error exception
 dom/nodes/Element-matches-namespaced-elements.html	empty string namespace, webkitMatchesSelector
 dom/nodes/Element-matches-namespaced-elements.html	has a namespace, *|, webkitMatchesSelector
 dom/nodes/Element-matches-namespaced-elements.html	has a namespace, webkitMatchesSelector
@@ -1060,19 +1058,11 @@ dom/nodes/getElementsByClassName-21.htm	delete element from collection
 dom/nodes/getElementsByClassName-22.htm	move item in collection order
 dom/nodes/getElementsByClassName-25.htm	verify spacing is handled correctly
 dom/nodes/getElementsByClassName-31.htm	<FILE PRODUCED NO RESULTS>
-dom/nodes/insert-adjacent.html	insertAdjacentElement(afterbegin, [object Object] )
-dom/nodes/insert-adjacent.html	insertAdjacentElement(afterend, [object Object] )
-dom/nodes/insert-adjacent.html	insertAdjacentElement(beforebegin, [object Object] )
-dom/nodes/insert-adjacent.html	insertAdjacentElement(beforeend, [object Object] )
-dom/nodes/insert-adjacent.html	insertAdjacentText should return null
 dom/nodes/insert-adjacent.html	insertAdjacentText(afterbegin, tartiflette )
 dom/nodes/insert-adjacent.html	insertAdjacentText(afterend, gateau aux pommes )
 dom/nodes/insert-adjacent.html	insertAdjacentText(beforebegin, raclette )
 dom/nodes/insert-adjacent.html	insertAdjacentText(beforeend, lasagne )
 dom/nodes/insert-adjacent.html	invalid caller object insertAdjacentElement
-dom/nodes/insert-adjacent.html	invalid caller object insertAdjacentText
-dom/nodes/insert-adjacent.html	invalid syntax for insertAdjacentElement
-dom/nodes/insert-adjacent.html	invalid syntax for insertAdjacentText
 dom/nodes/insertion-removing-steps/Node-append-form-and-script-from-fragment.html	When adding a script+form in a fragment and the form matches an associated element, the script that checks whether the button is associated to the form should run after inserting the form
 dom/nodes/insertion-removing-steps/Node-append-meta-referrer-and-script-from-fragment.html	<meta name=referrer> gets processed and applied in the post-insertion steps
 dom/nodes/insertion-removing-steps/Node-appendChild-script-and-button-from-div.html	Script inserted before a form-associated button can observe the button's form, because by the time the script executes, the DOM insertion that associates the button with the form is already done
@@ -4076,6 +4066,8 @@ url/failure.html	Loading data…
 +dom/nodes/Element-getElementsByTagNameNS.html	getElementsByTagNameNS('http://www.w3.org/1999/xhtml', '*')
 +dom/nodes/Element-hasAttribute.html	hasAttribute should check for attribute presence, irrespective of namespace
 +dom/nodes/Element-hasAttributes.html	element.hasAttributes() must return false when the element does not have attribute.
++dom/nodes/Element-insertAdjacentElement.html	Inserting to an invalid location should cause a Syntax Error exception
++dom/nodes/Element-insertAdjacentText.html	Inserting to an invalid location should cause a Syntax Error exception
 +dom/nodes/Element-lastElementChild.html	lastElementChild
 +dom/nodes/Element-matches-namespaced-elements.html	empty string namespace, matches
 +dom/nodes/Element-matches-namespaced-elements.html	has a namespace, *|, matches
@@ -4970,7 +4962,15 @@ url/failure.html	Loading data…
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH NON-BREAKING SPACE to getElementsByClassName still finds the span
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH NON-JOINER to getElementsByClassName still finds the span
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH SPACE to getElementsByClassName still finds the span
++dom/nodes/insert-adjacent.html	insertAdjacentElement(afterbegin, [object Object] )
++dom/nodes/insert-adjacent.html	insertAdjacentElement(afterend, [object Object] )
++dom/nodes/insert-adjacent.html	insertAdjacentElement(beforebegin, [object Object] )
++dom/nodes/insert-adjacent.html	insertAdjacentElement(beforeend, [object Object] )
++dom/nodes/insert-adjacent.html	insertAdjacentText should return null
++dom/nodes/insert-adjacent.html	invalid caller object insertAdjacentText
 +dom/nodes/insert-adjacent.html	invalid object argument insertAdjacentElement
++dom/nodes/insert-adjacent.html	invalid syntax for insertAdjacentElement
++dom/nodes/insert-adjacent.html	invalid syntax for insertAdjacentText
 +dom/nodes/insertion-removing-steps/Node-appendChild-script-and-iframe.html	A script inserted atomically before an iframe (using a DocumentFragment) does not observe the iframe's contentWindow, since the 'script running' and 'iframe setup' both happen in order, after DOM insertion completes
 +dom/nodes/insertion-removing-steps/Node-appendChild-script-and-style.html	An earlier-inserted <script> synchronously observes a later-inserted <style> (via a DocumentFragment) being applied
 +dom/nodes/insertion-removing-steps/Node-appendChild-script-with-mutation-observer-takeRecords.html	An inserted script should be able to observe its own mutation record with takeRecords

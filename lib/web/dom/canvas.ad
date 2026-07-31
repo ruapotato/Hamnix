@@ -3079,6 +3079,8 @@ def _nid_mutates(rel: int32) -> int32:
         return 1
     if rel == NID_TC_SET or rel == NID_IH_SET or rel == NID_INSADJ:
         return 1
+    if rel == NID_INSADJ_EL or rel == NID_INSADJ_TXT:
+        return 1
     if rel == NID_STYLE_SETPROP or rel == NID_STYLE_REMPROP:
         return 1
     return 0
@@ -3596,6 +3598,87 @@ def _nd_normalize(n: int32, depth: int32):
 # a further 29 with "threw object TypeError ... that is not a DOMException" —
 # the tests are checking these rejections, not the happy path.
 #
+# element.insertAdjacentElement(where, element) / insertAdjacentText(where,
+# data) — DOM "insert adjacent". The HTML-STRING sibling of these has been here
+# since round 4; the two NODE forms were simply absent, so
+# dom/nodes/insert-adjacent.html scored 1 of 14 and 13 of those failures read
+# "insertAdjacentElement is not a function".
+#
+# Both resolve `where` to a (parent, before) pair and then go through the SAME
+# _insert_before_v the rest of the mutation methods use, so a <script> inserted
+# this way is prepared, sibling links are rewired, and the readback sees it —
+# none of which a second insertion path would have got for free.
+#
+#   beforebegin -> (this.parentNode, this)      afterbegin  -> (this, firstChild)
+#   beforeend   -> (this, null)                 afterend    -> (parentNode, next)
+#
+# The sibling positions have no parent to insert into when `this` is a root, and
+# the spec distinguishes the two cases: insertAdjacentElement RETURNS NULL for a
+# null parent, but only after the position string has been validated, so a bad
+# position on a parentless element is still a SyntaxError.
+def _insert_adjacent_node(rel: int32) -> int32:
+    wpos: Array[32, uint8]
+    wn: int32 = _arg_bytes(0, &wpos[0], 32)
+    w: int32 = -1
+    if _ci_eq_cstr(&wpos[0], wn, cast[Ptr[uint8]]("beforebegin")) != 0:
+        w = 0
+    elif _ci_eq_cstr(&wpos[0], wn, cast[Ptr[uint8]]("afterbegin")) != 0:
+        w = 1
+    elif _ci_eq_cstr(&wpos[0], wn, cast[Ptr[uint8]]("beforeend")) != 0:
+        w = 2
+    elif _ci_eq_cstr(&wpos[0], wn, cast[Ptr[uint8]]("afterend")) != 0:
+        w = 3
+    if w < 0:
+        return _throw_domexc(cast[Ptr[uint8]]("SyntaxError"), 11, \
+                             cast[Ptr[uint8]]("invalid insert position"), 23)
+    thisv: int32 = js_this()
+    node: int32 = js_null()
+    if rel == NID_INSADJ_EL:
+        node = js_arg(1)
+        # insertAdjacentElement takes an ELEMENT. A DocumentType (or any other
+        # node) is a WebIDL conversion failure, which is a TypeError — NOT the
+        # HierarchyRequestError the generic pre-insert check would raise.
+        if js_type_of(node) != TAG_OBJ or _nd_type(node) != 1:
+            js_throw_type_error(cast[Ptr[uint8]]("argument is not an Element"))
+            return js_undefined()
+    par: int32 = thisv
+    ref: int32 = js_null()
+    if w == 0 or w == 3:
+        par = _nd_parent(thisv)
+        if js_type_of(par) != TAG_OBJ:
+            # No parent: nothing to insert into. Per spec this is a
+            # HierarchyRequestError for insertAdjacentText and a null return
+            # for insertAdjacentElement.
+            if rel == NID_INSADJ_TXT:
+                return _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
+                                     cast[Ptr[uint8]]("node has no parent"), 18)
+            return js_null()
+        if w == 0:
+            ref = thisv
+        else:
+            # The wired sibling links, not a childNodes index: those links are
+            # what _dom_children_insert resolves a reference node against, so a
+            # ref taken from anywhere else silently degrades to an append.
+            ref = js_get_prop(thisv, cast[Ptr[uint8]]("nextSibling"), 11)
+            if js_type_of(ref) != TAG_OBJ:
+                ref = js_null()
+    elif w == 1:
+        ref = js_get_prop(thisv, cast[Ptr[uint8]]("firstChild"), 10)
+        if js_type_of(ref) != TAG_OBJ:
+            ref = js_null()
+    if rel == NID_INSADJ_TXT:
+        tv: int32 = js_arg(1)
+        if js_type_of(tv) != TAG_STR:
+            tv = js_new_string(js_str_ptr(tv), cast[uint64](_cstr_len(js_str_ptr(tv))))
+        node = _cre_make_text(tv)
+    if _pre_insert_invalid(par, node, ref) != 0:
+        return js_undefined()
+    _insert_before_v(par, node, ref)
+    if rel == NID_INSADJ_TXT:
+        return js_undefined()
+    return node
+
+
 # Returns 1 when it has THROWN (the caller must return immediately), 0 when the
 # insertion is valid.
 def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
@@ -5392,6 +5475,8 @@ def _js_host_dispatch(id: int32) -> int32:
             if sbel >= 0:
                 _do_submit(sbel)
         return js_undefined()
+    if rel == NID_INSADJ_EL or rel == NID_INSADJ_TXT:
+        return _insert_adjacent_node(rel)
     if rel == NID_INSADJ:
         # element.insertAdjacentHTML(position, html). 'beforeend' appends the
         # parsed fragment inside the element (after existing content);

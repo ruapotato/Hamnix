@@ -1489,6 +1489,10 @@ def _attach_el_natives(o: int32):
                 js_new_native_fn(js_hbase + NID_CLOSEST))
     js_set_prop(o, cast[Ptr[uint8]]("insertAdjacentHTML"), 18, \
                 js_new_native_fn(js_hbase + NID_INSADJ))
+    js_set_prop(o, cast[Ptr[uint8]]("insertAdjacentElement"), 21, \
+                js_new_native_fn(js_hbase + NID_INSADJ_EL))
+    js_set_prop(o, cast[Ptr[uint8]]("insertAdjacentText"), 18, \
+                js_new_native_fn(js_hbase + NID_INSADJ_TXT))
     js_set_prop(o, cast[Ptr[uint8]]("contains"), 8, \
                 js_new_native_fn(js_hbase + NID_CONTAINS))
     js_set_prop(o, cast[Ptr[uint8]]("getAttributeNames"), 17, \
