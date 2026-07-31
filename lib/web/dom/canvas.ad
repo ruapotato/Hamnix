@@ -8611,6 +8611,53 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("}"))
     _pre_nl()
+    # CommandEvent (HTML "invokers"): the event a <button command=...
+    # commandfor=...> dispatches at its target. Engine-authored rather than
+    # native because it is pure IDL — an Event subclass with two readonly
+    # members and one type check — and the prelude already owns that shape.
+    #   command  DOMString, default "". A dictionary member that is PRESENT
+    #            but not undefined is stringified, so {command:null} is "null"
+    #            and {command:[1,2,3]} is "1,2,3"; absent or undefined is "".
+    #   source   Element?, default null. Anything present, non-null and not an
+    #            Element is a TypeError — that is what rejects {} and an
+    #            XMLHttpRequest (an EventTarget, but not a node).
+    # Both are non-writable, so a page assigning to them is a silent no-op in
+    # sloppy mode, as the readonly IDL attributes are.
+    _pre_put(cast[Ptr[uint8]]("function CE(t,init){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var e=new Event(t,init||{});Object.setPrototypeOf(e,CE.prototype);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var c='',s=null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(init!==null&&init!==undefined){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(init.command!==undefined)c=''+init.command;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var v=init.source;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==undefined&&v!==null){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof v!=='object'||v.nodeType!==1)throw new TypeError('source is not an Element');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("s=v;}}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Object.defineProperty(e,'command',{value:c,enumerable:true,configurable:true});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Object.defineProperty(e,'source',{value:s,enumerable:true,configurable:true});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return e;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("CE.prototype=Object.create(Event.prototype);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("CE.prototype.constructor=CE;"))
+    _pre_nl()
+    # Exported by BARE assignment (a global in sloppy mode) as well as onto
+    # window: the prelude body is an IIFE, so a function declaration inside it
+    # is invisible to the page.
+    _pre_put(cast[Ptr[uint8]]("CommandEvent=CE;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined')window.CommandEvent=CE;"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("})();"))
     _pre_nl()
     js_eval_nested(&hb_pre_buf[0], cast[uint64](hb_pre_w))
