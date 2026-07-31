@@ -266,6 +266,92 @@ a11_done:
     ldr     x0, =msg_a11_ret
     bl      uart_puts
 
+    /* A12 (a12.S): PER-TASK ADDRESS SPACES. Everything above shared ONE 2 MiB
+     * user window, so loading a second program destroyed the first — the build
+     * script says so itself. A12 builds two independent TTBR0 address spaces
+     * (own L1/L2/L3, own private backing pages, ASID 1 and 2) that map the SAME
+     * user VA to DIFFERENT physical memory.
+     *
+     * The order below is the assertion. 'a10' is loaded into space 0, then
+     * 'sum' is loaded into space 1 AT THE SAME VA. Only then is space 0 run: if
+     * the two spaces were one window, space 1's load would have overwritten
+     * space 0 and this would print sum's line. Space 0 is then run a SECOND
+     * time, after space 1 has both loaded and executed, so a window that was
+     * merely restored-by-accident is caught too. */
+    ldr     x0, =msg_a12
+    bl      uart_puts
+    bl      arm64_a12_build_spaces
+
+    mov     x0, #0                      /* space 0 <- "a10" */
+    bl      arm64_a12_switch
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_a10
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a12_fail
+
+    mov     x0, #1                      /* space 1 <- "sum", SAME VA */
+    bl      arm64_a12_switch
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_sum
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a12_fail
+
+    mov     x0, #0                      /* run space 0: must still be a10 */
+    bl      arm64_a12_switch
+    ldr     x0, =msg_a12_run0
+    bl      uart_puts
+    bl      arm64_a10_launch
+    mov     x0, #0
+    bl      arm64_a12_take_exit_arm64
+    cbz     x0, a12_truncated
+
+    mov     x0, #1                      /* run space 1: must be sum */
+    bl      arm64_a12_switch
+    ldr     x0, =msg_a12_run1
+    bl      uart_puts
+    bl      arm64_a10_launch
+    mov     x0, #1
+    bl      arm64_a12_take_exit_arm64
+    cbz     x0, a12_truncated
+
+    mov     x0, #0                      /* run space 0 AGAIN: still a10 */
+    bl      arm64_a12_switch
+    ldr     x0, =msg_a12_run0b
+    bl      uart_puts
+    bl      arm64_a10_launch
+    mov     x0, #0
+    bl      arm64_a12_take_exit_arm64
+    cbz     x0, a12_truncated
+
+    /* Back to the boot space, then check the two backing regions by their
+     * IDENTITY PAs — no task mapping involved, so no TLB alias can fake it. */
+    bl      arm64_a12_switch_kernel
+    bl      arm64_a12_window_differs
+    cbz     x0, a12_same
+    ldr     x0, =msg_a12_differ
+    bl      uart_puts
+    b       a12_done
+a12_same:
+    ldr     x0, =msg_a12_same
+    bl      uart_puts
+    b       a12_done
+a12_truncated:
+    bl      arm64_a12_switch_kernel
+    ldr     x0, =msg_a12_trunc
+    bl      uart_puts
+    b       a12_done
+a12_fail:
+    bl      arm64_a12_switch_kernel
+    ldr     x0, =msg_a12_loadfail
+    bl      uart_puts
+a12_done:
+    ldr     x0, =msg_a12_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -325,7 +411,17 @@ mmu_enable:
     ldr     x0, =l3_user_pgtable
     movz    x3, #0x4800, lsl #16    /* PA base 0x4800_0000 */
     mov     x5, #0
-2:  movz    x1, #0x0747             /* page: VALID|AF|SH_inner|AttrIndx1|AP=01 */
+    /* nG=1 (bit 11) — NOT a cosmetic flag. docs/arm64_phase50.md root-caused
+     * the per-task-TTBR0 trap: a GLOBAL (nG=0) translation for a user VA is not
+     * evicted by `tlbi aside1is` (which only evicts per-ASID NON-global
+     * entries), so it shadows every later per-ASID mapping of the same VA and
+     * tasks silently agree with each other through the stale alias. Its
+     * Option A says to remove the competing global translation; making this
+     * window non-global does exactly that, at the only moment it is cheap.
+     * A8..A11 run on ASID 0 and are unaffected; a12.S's spaces use ASID 1/2 and
+     * therefore need no TLB maintenance at a switch at all. Kernel identity
+     * blocks stay global: EL1-only, identical in every space, never re-mapped. */
+2:  movz    x1, #0x0F47             /* page: VALID|AF|SH_inner|AttrIndx1|AP=01|nG */
     orr     x1, x1, x3
     str     x1, [x0, x5, lsl #3]
     add     x3, x3, #0x1000         /* +4KiB */
@@ -479,10 +575,30 @@ msg_a11_badhit:
     .asciz  "A11: FAIL load-by-name returned an image for a name NOT in the archive\n"
 msg_a11_ret:
     .asciz  "A11: archive stage complete, returned to kernel\n"
+msg_a12:
+    .asciz  "A12: PER-TASK ADDRESS SPACES (two TTBR0 spaces, same user VA, different PA)\n"
+msg_a12_run0:
+    .asciz  "A12: running space 0 (ASID 1) — loaded 'a10' BEFORE space 1 was loaded\n"
+msg_a12_run1:
+    .asciz  "A12: running space 1 (ASID 2) — loaded 'sum' at the SAME VA\n"
+msg_a12_run0b:
+    .asciz  "A12: running space 0 AGAIN — must be untouched by space 1\n"
+msg_a12_differ:
+    .asciz  "A12 PASS: the two spaces' backing pages differ (checked by identity PA)\n"
+msg_a12_same:
+    .asciz  "A12 FAIL: the two spaces' backing pages are IDENTICAL (one shared window)\n"
+msg_a12_loadfail:
+    .asciz  "A12 FAIL: load-by-name into a per-task space missed\n"
+msg_a12_trunc:
+    .asciz  "A12 FAIL: an EL0 run did not reach exit() (truncated)\n"
+msg_a12_ret:
+    .asciz  "A12: per-task address-space stage complete\n"
 /* Member names asked for at runtime. Fixed 16-byte fields in the archive, but
  * these are ordinary NUL-terminated strings — the walk compares up to the NUL
  * and requires the stored name to end there too, so "sum" cannot match a
  * hypothetical "summer". */
+name_a10:
+    .asciz  "a10"
 name_sum:
     .asciz  "sum"
 name_echo:

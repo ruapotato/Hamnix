@@ -4687,3 +4687,14 @@ bash scripts/test_installer_img_stamp.sh
 # DATA load from the same page, so neither a permissive nor a restrictive model
 # passes both.
 bash scripts/ci_run_gate.sh scripts/test_arm64_currentel_probe.sh
+
+# test_arm64_a12_addrspace: A12 first increment -- PER-TASK TTBR0 address spaces
+# on the aarch64 LLVM lane. Up to A11 every EL0 program shared ONE 2 MiB window,
+# so loading the second destroyed the first; the build script says so itself.
+# A12 gives each task its own L1/L2/L3 and private backing pages, so the SAME
+# user VA resolves to different physical memory per task. The gate is built on
+# ORDER ('sum' is loaded into space 1 BEFORE space 0 is ever run, so a shared
+# window would make space 0 print sum's line) plus a kernel-side comparison of
+# the two backing regions by their identity PAs. It also requires the EL0-RW
+# window's new nG=1 descriptor not to have regressed A8..A11.
+bash scripts/ci_run_gate.sh scripts/test_arm64_a12_addrspace.sh

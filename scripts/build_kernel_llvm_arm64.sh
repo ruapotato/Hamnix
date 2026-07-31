@@ -36,7 +36,7 @@ command -v "$CLANG"   >/dev/null || { echo "[kllvm-arm64] ERROR: $CLANG not foun
 command -v "$AS_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $AS_CMD not found (apt install binutils-aarch64-linux-gnu)" >&2; exit 1; }
 command -v "$LD_CMD"  >/dev/null || { echo "[kllvm-arm64] ERROR: $LD_CMD not found" >&2; exit 1; }
 [ -x "$HOST_AC" ] || { echo "[kllvm-arm64] ERROR: no host_ac.elf at $HOST_AC (source scripts/_adder_cc.sh; adder_cc_bootstrap)" >&2; exit 1; }
-for f in head.S vectors.S gic.S el0.S sched.S a10.S elprobe.S intrinsics.S stubs.c kernel.lds \
+for f in head.S vectors.S gic.S el0.S sched.S a10.S a12.S elprobe.S intrinsics.S stubs.c kernel.lds \
          user_rt.S user.lds user_blob.S; do
     [ -f "$ARM/$f" ] || { echo "[kllvm-arm64] ERROR: missing $ARM/$f" >&2; exit 1; }
 done
@@ -153,6 +153,7 @@ echo "[kllvm-arm64] 3) assemble boot layer (head/vectors/intrinsics) + compile s
 "$AS_CMD" -o "$WORK/el0.o"        "$ARM/el0.S"        || { echo "[kllvm-arm64] ERROR: as el0.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/sched.o"      "$ARM/sched.S"      || { echo "[kllvm-arm64] ERROR: as sched.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/a10.o"        "$ARM/a10.S"        || { echo "[kllvm-arm64] ERROR: as a10.S" >&2; exit 1; }
+"$AS_CMD" -o "$WORK/a12.o"        "$ARM/a12.S"        || { echo "[kllvm-arm64] ERROR: as a12.S" >&2; exit 1; }
 "$AS_CMD" -o "$WORK/elprobe.o"    "$ARM/elprobe.S"    || { echo "[kllvm-arm64] ERROR: as elprobe.S" >&2; exit 1; }
 # -I "$WORK" so user_blob.S's `.incbin "a10_user.bin"` picks up the image just
 # built in 3a — never a checked-in or stale copy.
@@ -239,7 +240,7 @@ echo "[kllvm-arm64] 4) link bootable aarch64 kernel ELF (kernel.lds, -nostdlib -
 "$LD_CMD" -nostdlib -static -z noexecstack -z max-page-size=4096 \
     -T "$ARM/kernel.lds" -o "$OUT_ELF" \
     "$WORK/head.o" "$WORK/vectors.o" "$WORK/gic.o" "$WORK/el0.o" "$WORK/sched.o" \
-    "$WORK/a10.o" "$WORK/elprobe.o" "$WORK/user_blob.o" "$WORK/kernel_arm64.o" \
+    "$WORK/a10.o" "$WORK/a12.o" "$WORK/elprobe.o" "$WORK/user_blob.o" "$WORK/kernel_arm64.o" \
     "$WORK/intrinsics.o" "$WORK/stubs.o" "$WORK/autostub_bails.o" \
     || { echo "[kllvm-arm64] ERROR: ld link failed" >&2; exit 1; }
 
