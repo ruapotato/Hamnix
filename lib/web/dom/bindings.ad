@@ -1358,6 +1358,12 @@ NID_SHEET_ACC_S:  int32 = 259        # set el.sheet (polyfill escape hatch)
 # property it never touches. Resolved from a saved source offset on read.
 NID_CURSCRIPT_ACC: int32 = 260       # get document.currentScript
 NID_CURSCRIPT_SET: int32 = 261       # set document.currentScript (inert)
+# element.insertAdjacentElement(position, element) / insertAdjacentText(pos, s).
+# The HTML-string sibling of these, insertAdjacentHTML, has been here since
+# round 4 (NID_INSADJ); the two NODE forms were simply absent, so
+# dom/nodes/insert-adjacent.html scored 1 of 14 with 13 "is not a function".
+NID_INSADJ_EL:     int32 = 262       # element.insertAdjacentElement(pos, el)
+NID_INSADJ_TXT:    int32 = 263       # element.insertAdjacentText(pos, data)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
