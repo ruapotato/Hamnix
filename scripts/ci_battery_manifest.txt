@@ -4633,3 +4633,16 @@ bash scripts/test_compiler_lexer_errors.sh
 # box on its first BSS store. This gate reads every shipped binary's ELF64 load
 # geometry and asserts none takes the demand path past ELF_MAX_LOW_BSS_DEMAND.
 bash scripts/test_elf_low_bss_window_host.sh
+
+# EXECUTION differential for the two SSA lowerings that cleared the LAST
+# whole-kernel LLVM bails (2026-07-30): container_of and 2-D LOCAL arrays. No
+# QEMU-system, ~3 min (qemu-USER only). Registered because these two are the
+# only remaining class of bug the aarch64 lane cannot report: since the bail
+# auto-stubber landed, a bailed callee is given a generated `return 0` body, so
+# the image LINKS and lies. Both functions this unblocked had live callers in
+# the emitted kernel IR (_list_walk_and_sum 6, _try_parse_hamnix_roots 2), i.e.
+# the ARM64 kernel was already calling stubs. The gate runs the fixture through
+# three lanes -- native codegen.ad x86 (the ORACLE, recomputed every run), LLVM
+# x86, and LLVM aarch64 EXECUTED under qemu-aarch64 -- and requires all three to
+# agree on stdout AND exit status with zero bails.
+bash scripts/test_llvm_container_of_2d_exec.sh

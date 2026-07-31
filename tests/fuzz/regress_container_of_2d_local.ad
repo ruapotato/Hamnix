@@ -1,0 +1,302 @@
+# tests/fuzz/regress_container_of_2d_local.ad
+#
+# EXECUTION fixture for the two SSA-subset lowerings added on 2026-07-30 to
+# clear the last whole-kernel LLVM bails:
+#
+#   1) `container_of(ptr, Type, field)`  — ND_CONTAINER_OF had no SSA arm at
+#      all, so it hit the catch-all NONSUBSET_EXPR bail (site 48) and took its
+#      whole enclosing function out of the LLVM lane. Real casualty:
+#      tests/core_smoke.ad::_list_walk_and_sum.
+#   2) 2-D LOCAL arrays `Array[N, Array[M, T]]` — bailed at the DECLARATION
+#      (SBR_MEMORY site 57). Real casualty: init/main.ad::_try_parse_hamnix_roots
+#      and its 16x32 `done_words` unwind scratch.
+#
+# WHY AN EXECUTING FIXTURE AND NOT AN IR DIFF. On x86 a bailed function falls
+# back to the native codegen.ad lane and nothing is visibly wrong. On aarch64
+# there IS no fallback: since the bail auto-stubber landed, a bailed callee gets
+# a generated `u64 f(void){return 0;}`, so the image LINKS and the function
+# silently returns 0. Both casualties above HAD live callers in the emitted
+# kernel IR (6 and 2 respectively). An emitted-code diff cannot see that; only
+# running the code against an independent oracle can. The oracle here is the
+# NATIVE codegen.ad backend, which has implemented both constructs for years
+# through a completely separate code path (gen_container_of; the local-array
+# slot lowering) — a shared-nothing second implementation.
+#
+# Every arm is designed so that the WRONG lowering produces a DIFFERENT number,
+# not a crash:
+#   * container_of with the offset subtraction dropped reads a neighbouring
+#     field, so the sum moves.
+#   * a 2-D local indexed with the ELEMENT stride instead of the ROW stride
+#     aliases row 0 over every row, so the row-distinguishing sums collapse.
+#   * a 2-D local sized as if 1-D (N*esz instead of N*M*esz) overruns its slot
+#     into the neighbouring locals, which the interleaved scalar checks below
+#     would then see move.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+_ch:   Array[1, uint8]
+_digs: Array[32, uint8]
+
+
+def _putc(c: uint8) -> int32:
+    _ch[0] = c
+    sys_write(cast[int32](1), &_ch[0], cast[uint64](1))
+    return 0
+
+
+def print_u64(val: uint64) -> int32:
+    nd: int64 = 0
+    v: uint64 = val
+    if v == cast[uint64](0):
+        _digs[0] = cast[uint8](48)
+        nd = 1
+    while v > cast[uint64](0):
+        q: uint64 = v / cast[uint64](10)
+        d: uint64 = v - q * cast[uint64](10)
+        _digs[cast[int64](nd)] = cast[uint8](d + cast[uint64](48))
+        nd = nd + 1
+        v = q
+    k: int64 = nd - 1
+    while k >= 0:
+        _putc(_digs[cast[int64](k)])
+        k = k - 1
+    _putc(cast[uint8](10))
+    return 0
+
+
+# ===========================================================================
+# 1) container_of — the list_for_each_entry shape, verbatim.
+# ===========================================================================
+
+class ListHead:
+    next_ptr: uint64
+    prev_ptr: uint64
+
+
+# `link` sits at byte offset 16, NOT 0 — the offset subtraction is load-bearing.
+# If container_of lowers as the identity, `value` reads ListNode.pad2 instead.
+class ListNode:
+    value: uint64
+    pad2:  uint64
+    link:  ListHead
+
+
+# A second shape whose embedded head is at offset 0, so container_of IS the
+# identity there. Both arms must be right: an implementation that always
+# subtracts something, or never does, fails one of them.
+class HeadFirst:
+    link: ListHead
+    tag:  uint64
+
+
+demo_head: ListHead
+demo_n1:   ListNode
+demo_n2:   ListNode
+demo_n3:   ListNode
+
+hf_head: ListHead
+hf_n1:   HeadFirst
+
+
+def _link_all():
+    # Circular list: head -> n1 -> n2 -> n3 -> head.
+    demo_n1.value = 100
+    demo_n1.pad2  = 900000
+    demo_n2.value = 20
+    demo_n2.pad2  = 900000
+    demo_n3.value = 3
+    demo_n3.pad2  = 900000
+    demo_head.next_ptr = cast[uint64](&demo_n1.link)
+    demo_n1.link.next_ptr = cast[uint64](&demo_n2.link)
+    demo_n2.link.next_ptr = cast[uint64](&demo_n3.link)
+    demo_n3.link.next_ptr = cast[uint64](&demo_head)
+
+
+# The exact body of tests/core_smoke.ad::_list_walk_and_sum.
+def walk_and_sum(head: Ptr[ListHead]) -> uint64:
+    head_addr: uint64 = cast[uint64](head)
+    pos:       uint64 = head[0].next_ptr
+    total:     uint64 = 0
+    while pos != head_addr:
+        link: Ptr[ListHead] = cast[Ptr[ListHead]](pos)
+        node: Ptr[ListNode] = container_of(link, ListNode, link)
+        total = total + node[0].value
+        pos = link[0].next_ptr
+    return total
+
+
+# container_of on a struct whose embedded head is at offset 0 (identity case).
+def head_first_tag(l: Ptr[ListHead]) -> uint64:
+    hf: Ptr[HeadFirst] = container_of(l, HeadFirst, link)
+    return hf[0].tag
+
+
+# container_of on a node reached WITHOUT walking the list, so the pointer is a
+# plain parameter rather than a loop-carried phi — the same adjustment in a
+# different dataflow shape. (Indexing the container_of result DIRECTLY,
+# `container_of(...)[0].value`, is deliberately absent: the native codegen.ad
+# ORACLE cannot compile that form, so it has no differential and asserting it
+# here would only pin the LLVM lane against itself.)
+def direct_container_of(l: Ptr[ListHead]) -> uint64:
+    n: Ptr[ListNode] = container_of(l, ListNode, link)
+    return n[0].value
+
+
+# ===========================================================================
+# 2) 2-D LOCAL arrays.
+# ===========================================================================
+
+# The `done_words` shape from init/main.ad::_try_parse_hamnix_roots: a 16x32
+# uint8 scratch written per row and read back per row. Row stride is 32 bytes;
+# indexing with the ELEMENT stride (1) would make every row alias row 0.
+def grid_u8(rows: uint64, cols: uint64) -> uint64:
+    g: Array[16, Array[32, uint8]]
+    i: uint64 = 0
+    while i < rows:
+        j: uint64 = 0
+        while j < cols:
+            g[i][j] = cast[uint8]((i * 7 + j * 3 + 1) & 255)
+            j = j + 1
+        i = i + 1
+    # Read back in a DIFFERENT order than written, so a row-aliasing bug cannot
+    # be masked by write-then-immediately-read locality.
+    acc: uint64 = 0
+    j2: uint64 = 0
+    while j2 < cols:
+        i2: uint64 = 0
+        while i2 < rows:
+            acc = acc + cast[uint64](g[i2][j2]) * (i2 + 1)
+            i2 = i2 + 1
+        j2 = j2 + 1
+    return acc
+
+
+# A wider element (8 bytes) so the row stride is M*8, not M*1: catches a
+# lowering that computes the stride from the outer count instead of the inner
+# row byte size.
+#
+# `neighbour` is the SLOT-SIZE detector, and it has to be an ARRAY, not a scalar.
+# A 2-D slot sized as if 1-D (N*esz instead of N*M*esz) is NOT observable through
+# the grid itself: the writes and the reads use the same address arithmetic, so
+# every element still round-trips — the slot size only decides whose memory gets
+# stomped. Scalar guards do not work either; they promote to registers and never
+# touch the frame. A memory-resident array local, filled BEFORE the grid and
+# verified AFTER it, is the thing an under-sized alloca actually damages.
+# (This is best-effort by construction — frame layout is LLVM's choice — so the
+# gate ALSO asserts the emitted alloca size directly; see the gate's step 3b.)
+def grid_u64(rows: uint64, cols: uint64) -> uint64:
+    neighbour: Array[64, uint64]
+    g: Array[8, Array[4, uint64]]
+    guard_lo: uint64 = 111111
+    guard_hi: uint64 = 222222
+    ni: uint64 = 0
+    while ni < 64:
+        neighbour[ni] = ni * 31 + 7
+        ni = ni + 1
+    i: uint64 = 0
+    while i < rows:
+        j: uint64 = 0
+        while j < cols:
+            g[i][j] = i * 1000 + j
+            j = j + 1
+        i = i + 1
+    acc: uint64 = 0
+    i2: uint64 = 0
+    while i2 < rows:
+        j2: uint64 = 0
+        while j2 < cols:
+            acc = acc + g[i2][j2]
+            j2 = j2 + 1
+        i2 = i2 + 1
+    # Verify the neighbour AFTER the grid writes: an under-sized grid slot
+    # overruns into it and moves this sum.
+    nk: uint64 = 0
+    while nk < 64:
+        acc = acc + neighbour[nk]
+        nk = nk + 1
+    return acc + guard_lo + guard_hi
+
+
+# 4-byte elements, and a row index that is a runtime VALUE derived from a
+# previous read of the same array — so the address arithmetic cannot be
+# constant-folded away by LLVM into something that accidentally works.
+def grid_u32_chained(n: uint64) -> uint64:
+    g: Array[8, Array[8, uint32]]
+    i: uint64 = 0
+    while i < n:
+        j: uint64 = 0
+        while j < n:
+            g[i][j] = cast[uint32]((i * 8 + j) & 7)
+            j = j + 1
+        i = i + 1
+    acc: uint64 = 0
+    r: uint64 = 0
+    k: uint64 = 0
+    while k < n:
+        r = cast[uint64](g[r][k])          # next row index comes OUT of the array
+        if r >= n:
+            r = 0
+        acc = acc + r * (k + 1)
+        k = k + 1
+    return acc
+
+
+# A 1-D local array and a 2-D local array declared in the SAME function, in
+# disjoint branches: the 1-D consumers of ssa_mem_isarr must keep their old
+# element-stride behaviour while the 2-D one uses the row stride.
+# (The same-NAME 1-D/2-D redeclaration — which the new 2-D redeclaration
+# CATEGORY guard is for — is deliberately not asserted here: the native
+# codegen.ad oracle rejects that form outright, so it has no differential.)
+def mixed_1d_2d(sel: uint64) -> uint64:
+    acc: uint64 = 0
+    if sel == 0:
+        v: Array[8, uint32]
+        i: uint64 = 0
+        while i < 8:
+            v[i] = cast[uint32](i * 5)
+            i = i + 1
+        i = 0
+        while i < 8:
+            acc = acc + cast[uint64](v[i])
+            i = i + 1
+    else:
+        w: Array[4, Array[4, uint32]]
+        i: uint64 = 0
+        while i < 4:
+            j: uint64 = 0
+            while j < 4:
+                w[i][j] = cast[uint32](i * 4 + j)
+                j = j + 1
+            i = i + 1
+        i = 0
+        while i < 4:
+            j: uint64 = 0
+            while j < 4:
+                acc = acc + cast[uint64](w[i][j]) * (i + 1)
+                j = j + 1
+            i = i + 1
+    return acc
+
+
+def repro() -> uint64:
+    _link_all()
+    hf_n1.tag = 555
+    hf_n1.link.next_ptr = 0
+    hf_head.next_ptr = cast[uint64](&hf_n1.link)
+
+    acc: uint64 = 0
+    acc = acc + walk_and_sum(&demo_head)                  # 100 + 20 + 3 = 123
+    acc = acc + head_first_tag(&hf_n1.link)               # 555 (offset-0 arm)
+    acc = acc + direct_container_of(&demo_n2.link)        # 20
+    acc = acc + grid_u8(cast[uint64](16), cast[uint64](32))
+    acc = acc + grid_u64(cast[uint64](8), cast[uint64](4))
+    acc = acc + grid_u32_chained(cast[uint64](8))
+    acc = acc + mixed_1d_2d(cast[uint64](0))              # 0+5+..+35 = 140
+    acc = acc + mixed_1d_2d(cast[uint64](1))
+    return acc
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    r: uint64 = repro()
+    print_u64(r)
+    return cast[int32](cast[int64](r) & 255)
