@@ -4626,3 +4626,14 @@ bash scripts/test_llvm_ir_verify_host.sh
 # terminated literal), a >64-bit integer literal (wrapped), @bogus decorators
 # (ignored), and List/Dict/Tuple/Optional annotations (8-byte slot).
 bash scripts/test_compiler_lexer_errors.sh
+# Leak pass 19: the MUTATION gate for the hours-scale census adjudicator. No
+# QEMU, ~1 s. scripts/test_leak_hours_census.sh takes a TWO-HOUR boot and so
+# cannot live in a 50-minute shard; this feeds its adjudicator 17 synthetic
+# logs (a clean pair plus one per failure mode: short gap, missing census
+# control, missing run predicate, unidentifiable plant, an over-claiming
+# predicate, a real unaccounted frame, orphan growth, a truncated site, an arm
+# whose survivors are owned by dead tasks, an arm whose owners were never
+# recorded, resident growth past the bar) and FAILS if any of them still comes
+# out green. The expensive gate proves the machine; this one proves the
+# expensive gate can still say no.
+bash scripts/test_leak_hours_report_mutations.sh
