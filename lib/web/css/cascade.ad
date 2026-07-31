@@ -3514,7 +3514,7 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
             # `border:5px solid` / `border-width:5px` / `border-left:2px ...`.
             # A colour/style-only value (`border-color:red`) has no leading length
             # (_style_len -> -1) and leaves the width untouched.
-            bw: int32 = _border_any_width(vs, ve)
+            bw: int32 = _style_len(vs, ve)
             if bw >= 0:
                 d_bordw = bw
             # `border` (with a length OR a style keyword) is a SHORTHAND that resets
@@ -3564,19 +3564,7 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
                 # web and the two paths agree on it to the pixel, so holding it
                 # there keeps every 1px-bordered card in the corpus byte-identical
                 # and confines this change to borders that were visibly wrong.
-                # A TRANSPARENT border colour paints nothing at all. Style
-                # code 4 is the painter's "draw no edge" code and it leaves the
-                # per-side WIDTHS alone, which is exactly the CSS meaning: the
-                # border still occupies its layout, it is simply invisible.
-                # This must also force the per-side path, because the legacy 1px
-                # stroke consults no style at all and would keep painting black.
-                if _border_is_transparent(vs, ve) != 0:
-                    _set_side_s(0, 4)
-                    _set_side_s(1, 4)
-                    _set_side_s(2, 4)
-                    _set_side_s(3, 4)
-                    _sync_bordps()
-                elif sc >= 1 or uw >= 2:
+                if sc >= 1 or uw >= 2:
                     _sync_bordps()
                 else:
                     d_bordps = 0
@@ -4968,61 +4956,6 @@ def _scan_cvars(a: uint64, b: uint64):
 # or -1. _color_value reads past internal spaces/commas itself (rgb(...)/hsl(...))
 # so a token boundary at the function name still parses the whole functional
 # colour.
-# The WIDTH of a `border` shorthand, wherever it sits in the value.
-#
-# CSS lets `border`'s three components appear in ANY order, and
-# `border: solid 15px transparent` is a spelling the WPT css-backgrounds suite
-# uses repeatedly. _style_len only reads the LEADING token, so a value that
-# opens with its style keyword reported "no width" and the border silently
-# became 1px -- the declared 15px vanished.
-#
-# Scan whitespace/'/'-separated tokens for the first that parses as a bare
-# length. Tokens containing '(' or opening with '#' are SKIPPED: `rgb(1,2,3)`
-# and `#c00` carry digits that are not lengths, and mistaking one for a width
-# would be a worse bug than the one being fixed. Returns -1 when there is no
-# width token, exactly like _style_len, so a colour-only value is untouched.
-def _border_any_width(vs: uint64, ve: uint64) -> int32:
-    i: uint64 = vs
-    while i < ve:
-        while i < ve and (src_ptr[i] == 32 or src_ptr[i] == 9 or src_ptr[i] == 47):
-            i = i + 1
-        if i >= ve:
-            break
-        ts: uint64 = i
-        skip: int32 = 0
-        if src_ptr[i] == 35:                          # '#rrggbb'
-            skip = 1
-        while i < ve and src_ptr[i] != 32 and src_ptr[i] != 9 and src_ptr[i] != 47:
-            if src_ptr[i] == 40:                      # a function token
-                skip = 1
-            i = i + 1
-        if skip == 0:
-            # a length must OPEN with a digit, '.' or a sign -- style and colour
-            # keywords never do, so this rejects them without a keyword table.
-            c0: uint8 = src_ptr[ts]
-            if (c0 >= 48 and c0 <= 57) or c0 == 46 or c0 == 43 or c0 == 45:
-                _len_i = ts
-                _len_end = i
-                _len_bad = 0
-                v: int32 = _len_number()
-                if _len_bad == 0:
-                    return v
-    return -1
-
-
-# Does this border value declare a FULLY TRANSPARENT colour?
-#
-# `border: solid 15px transparent` occupies its 15px of layout but paints
-# NOTHING. _color_value does not recognise `transparent`, so it returned -1,
-# the painter read "no declared colour" and fell back to BLACK -- drawing a
-# hard black frame exactly where the author asked for an invisible one.
-# Measured on the WPT css3-background-clip trio: 332 black px in the test that
-# Chromium does not paint at all, which was the ENTIRE pixel difference
-# between those tests and their references.
-def _border_is_transparent(vs: uint64, ve: uint64) -> int32:
-    return _val_has_word(vs, ve, cast[Ptr[uint8]]("transparent"))
-
-
 def _bg_shorthand_color(vs: uint64, ve: uint64) -> int32:
     i: uint64 = vs
     while i < ve:
