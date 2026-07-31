@@ -1733,3 +1733,134 @@ block *inside* a syscall or a fault. That is the hinge — once it holds, the
 inventions. Note also that A13's frame pool is a bump allocator with no free
 path; a real pager needs eviction, and `ASID recycling` (item 3) remains the
 point at which `nG` stops being untestable.
+
+---
+
+## A14 — PER-TASK KERNEL STACKS + `__switch_to` (landed 2026-07-31)
+
+**A task can now block inside a syscall.** This was the hinge A13's section names
+as the next step, and it is now demonstrated end-to-end on
+`qemu-system-aarch64 -M virt -cpu cortex-a72`.
+
+Gate: `scripts/test_arm64_a14_kstack.sh` (registered).
+Commits: `89f17c5d` (mechanism + policy), `a0621fae` (gate).
+
+### It was NOT a port — check before you believe the brief
+
+The premise going in was that `arch/arm64/kmain.ad` "already does all of it" and
+A14 would be a port. That is true of fork/exec/pipes/signals; **it is not true of
+kernel stacks.** Every `arm64_pNN_switch_to` in the 25k-line standalone kernel is
+a TTBR0+ASID swap and nothing else, and the standalone lane's "blocking" is done
+by **parking the blocked task's EL0 PC on a self-loop** and having the timer-IRQ
+scheduler skip it (`arm64_p21_park_blocked_el0`). There is no `SP_EL1` write, no
+per-task kernel stack, and no callee-saved context switch anywhere in
+`arch/arm64/`. A task in the standalone lane cannot block inside a syscall
+either. A14 is an invention, and the phases below it inherit from A14, not from
+`kmain.ad`.
+
+### What landed
+
+* `arch/arm64/llvm/a14.S` — a 16 KiB kernel stack per task, a context block
+  (x19..x28, FP, LR, SP, kstack_top), `arm64_a14_switch_to(prev, next)` over
+  exactly the AAPCS64 callee-saved set, a first-entry trampoline, and
+  `arm64_a14_switch_entry` (called from the middle of el0.S's syscall path, so a
+  task that stops there stops **mid-syscall**, with its EL0 register frame live
+  below it on its own stack).
+* **`SP_EL1` selection needs no stub change and no scratch register.** `SP_EL1`
+  is unused while at EL0, so the stack is chosen by ERETing to EL0 with SP
+  already at that task's stack top; el0.S's frame pop leaves SP exactly there
+  before every `eret`, so the invariant maintains itself. This avoids the
+  chicken-and-egg of wanting a free GPR before the frame is saved.
+* `head.S`'s own execution is one of the switchable contexts, so the last task
+  hands the CPU back through the same `__switch_to` rather than a special unwind.
+* Policy in emitted Adder (`init/main.ad`): `arm64_a14_pick_arm64` (who runs
+  next), `arm64_a14_syscall_arm64` (block/wake/exit, and the third dispatch
+  outcome `2 == switch`), `arm64_a14_resumed_arm64`, `arm64_a14_report_arm64`.
+  Same split as A8/A9/A13.
+
+### The correctness fix A14 forced out: el0.S's frame was not a `pt_regs`
+
+`ELR_EL1`, `SPSR_EL1` and `SP_EL0` are **single hardware registers, not per-task
+state.** Through A13 that was invisible — exactly one task was ever in flight, so
+the live HW values at `eret` were still that task's. The moment a task blocks and
+a peer runs, the peer's entry overwrites all three.
+
+The first A14 boot proved it: the woken task eret'd on task B's values and landed
+in B's post-exit `b .` loop, and the kernel hung. It **hung** rather than printing
+a plausible log, which is the good version of this failure — the same defect one
+syscall earlier would have looked entirely fine, exactly like A11's exit latch and
+A12's misdecoded abort.
+
+The frame is now a real 34-slot `pt_regs` (x0..x30, SP_EL0, ELR_EL1, SPSR_EL1) —
+the same layout `sched.S`'s A9 context blocks use — restored before every `eret`.
+`arm64_svc_dispatch_arm64`'s contract (`frame_ptr[n] == xN`) is unchanged, and for
+a task that was not descheduled the three writes are exact no-ops, so A8..A13 are
+untouched (A13's abort path still erets on the ELR it faulted on, so the faulting
+instruction still retries).
+
+### What was executed vs. inspected
+
+**Executed**: the five events in the only order a genuine deschedule can produce
+(`order=0x12345`: A blocked, B stored `0x2222` into A's *parked* x0 slot, B
+exited, A resumed mid-syscall, A exited); the two tasks' kernel SPs
+(`0x41403ec0` and `0x41407ec0`) landing in different reservations, with A's
+parked EL0 frame on A's stack and A resuming on the *same* SP it blocked on; and
+the sentinels A left in x21..x28 surviving B's entire syscall (checksum
+`0x62246`, recomputed in Python from `a14.S`'s `.equ` constants and cross-checked
+against `init/main.ad`'s constant, so neither side is its own oracle). The whole
+A8..A13 ladder passes in the same boot.
+
+**Inspected**: that the two kernel-stack reservations are disjoint and ≥16 KiB
+(from the ELF symbol table — every runtime range check is *relative* to those
+symbols, so aliasing them would satisfy all of them), and that el0.S still
+restores the three sysregs from the frame.
+
+**`nG` is not at issue here, and the gate says so.** A14 adds no page-table entry,
+no `TTBR0` write and no `tlbi`; both tasks run in the kernel L1 on ASID 0 over
+head.S's existing `nG=1` EL0-RW window. So A14 is neither exposed to nor evidence
+about the TCG `nG` blindness of `docs/arm64_phase50.md`. Per-task *address spaces*
+(A12) and per-task *kernel stacks* (A14) are deliberately still separate
+increments; combining them introduces ASID recycling, which is the first point at
+which `nG` stops being untestable and needs KVM or real silicon.
+
+### Mutations
+
+* **Both tasks share one kernel stack** (B's ctx SP pointed at A's stack top):
+  caught — `A14 FAIL: kernel-stack canary reads 0x819edb14, expected 0x819eda94`.
+* **Shared stack *and* the canary comparison neutered**: still caught, by the
+  event-order check — the boot dies after the resume and A never exits. Note the
+  honest limit this exposes: in that run the *sentinel-checksum* assertion is
+  never reached, so the gate has canary + order as its detectors of a shared
+  stack, and no direct evidence that the checksum alone would catch it.
+* **The wake hands off immediately** (`return 2` instead of `0`, making a block
+  indistinguishable from a hand-off): caught **only** by the order check —
+  `order=0x1245`. The canary was intact, the checksum was right, the stacks were
+  distinct, and the log read perfectly. This is precisely why the order is
+  accumulated as digits rather than counted; a counter round-trips under any
+  reordering.
+* Reverting the `ELR/SPSR/SP_EL0` restore is caught twice: by the boot hang and by
+  a source-level assertion in the gate.
+
+### Where A14 stops — be precise
+
+* **Two tasks and exactly one block/wake edge.** There is no run queue, no
+  priority, and no preemption *while* a task is blocked (the A14 tasks run with
+  DAIF masked; A9's timer preemption is a separate stage and the two have not
+  been combined).
+* **No task struct.** A "task" is a context block plus a stack. There is no pid,
+  no state enum, no parent/child, no fd table — so the block/wake edge is
+  hand-wired between two known contexts rather than driven by a wait queue.
+* **The kernel stacks are plain `.bss` reservations with no guard page.** A deep
+  kernel call chain would silently run off the bottom into the neighbouring
+  symbol. A guard mapping is the obvious next hardening and A13's pager machinery
+  can supply it.
+* **The blocked task's own kernel stack is where its EL0 frame lives, and nothing
+  bounds how many tasks exist.** Both stacks are statically reserved; there is no
+  allocator, and A13's frame pool is still a bump allocator with no free path.
+* **A14 does not combine with A12.** Both tasks share one address space. Doing
+  per-task stacks *and* per-task TTBR0 at once is the next increment, and it is
+  the one that finally requires a KVM or real-silicon run for `nG`.
+
+With the hinge in place, the `arch/arm64/kmain.ad` ladder's fork/exec/pipes/wait
+now *are* ports for the parts that are policy — but each still needs the task
+struct and wait queues that A14 deliberately did not invent.

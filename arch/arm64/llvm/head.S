@@ -423,6 +423,34 @@ a13_done:
     ldr     x0, =msg_a13_ret
     bl      uart_puts
 
+    /* A14 (a14.S): PER-TASK KERNEL STACKS + __switch_to. Every EL1 entry up to
+     * here ran on THIS stack and unwound it fully before another task could run,
+     * so no task could block inside a syscall — the gate on fork/exec/pipes/
+     * wait/signals. A14 gives each task its own 16 KiB kernel stack and a real
+     * context switch, then proves it: task A blocks mid-syscall, task B runs
+     * kernel code and deposits a value into A's PARKED EL0 frame, B exits, A
+     * resumes INSIDE its syscall and returns to EL0 with the registers it left
+     * there. head.S's own execution is one of the switchable contexts, so this
+     * `bl` returns via the same __switch_to the tasks use. TTBR0 is the kernel
+     * space (restored above), ASID 0, and A14 adds no mappings and no `tlbi`. */
+    ldr     x0, =msg_a14
+    bl      uart_puts
+    bl      arm64_a14_init
+    bl      arm64_a14_run
+    ldr     x0, =arm64_a14_kstack_a
+    ldr     x1, =arm64_a14_kstack_a_top
+    ldr     x2, =arm64_a14_kstack_b
+    ldr     x3, =arm64_a14_kstack_b_top
+    bl      arm64_a14_report_arm64
+    cbz     x0, a14_fail
+    ldr     x0, =msg_a14_ret
+    bl      uart_puts
+    b       a14_done
+a14_fail:
+    ldr     x0, =msg_a14_fail
+    bl      uart_puts
+a14_done:
+
 park:
     wfi
     b       park
@@ -674,6 +702,12 @@ msg_a13_fail:
     .asciz  "A13 FAIL: the demand-paging stage did not complete\n"
 msg_a13_ret:
     .asciz  "A13: demand-paging stage complete\n"
+msg_a14:
+    .asciz  "A14: PER-TASK KERNEL STACKS (a task blocks inside a syscall; a peer runs)\n"
+msg_a14_fail:
+    .asciz  "A14 FAIL: the per-task-kernel-stack stage did not complete\n"
+msg_a14_ret:
+    .asciz  "A14: kernel-stack/context-switch stage complete\n"
 /* Member names asked for at runtime. Fixed 16-byte fields in the archive, but
  * these are ordinary NUL-terminated strings — the walk compares up to the NUL
  * and requires the stored name to end there too, so "sum" cannot match a

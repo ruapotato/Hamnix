@@ -129,7 +129,25 @@ arm64_el0_user_entry:
     .globl arm64_llvm_lower_sync_entry
     .type arm64_llvm_lower_sync_entry, %function
 arm64_llvm_lower_sync_entry:
-    sub     sp, sp, #(16 * 16)          /* 32 GPR slots */
+    /* A14 GREW THIS FRAME, and it is not bookkeeping — it is a correctness fix
+     * this lane could not see until a task blocked.
+     *
+     * ELR_EL1, SPSR_EL1 and SP_EL0 are SINGLE hardware registers, not per-task
+     * state. Through A13 that was invisible: exactly one task was ever mid-flight,
+     * the stub eret'd with the HW values the trap had left, and they were still
+     * that task's. The moment a task blocks and a PEER runs, the peer's entry
+     * (and every one of its own traps) overwrites all three — so the blocked task
+     * would eret to the PEER's resume PC with the PEER's stack. That is exactly
+     * what happened on the first A14 boot: the woken task erets into task B's
+     * post-exit `b .` loop and the kernel hangs. (It hung rather than printing a
+     * plausible log, which is the good version of this failure; the same defect
+     * one syscall earlier would have looked fine.)
+     *
+     * So the frame is now a real pt_regs: 31 GPRs + SP_EL0 + ELR_EL1 + SPSR_EL1,
+     * 34 slots (17 x 16, keeping the 16-byte SP alignment) — the SAME layout
+     * sched.S's A9 context blocks use. arm64_svc_dispatch_arm64's contract
+     * (frame_ptr[n] == xN) is unchanged, so nothing above slot 30 disturbs it. */
+    sub     sp, sp, #(16 * 17)          /* 34 slots: x0..x30, SP_EL0, ELR, SPSR */
     stp     x0,  x1,  [sp, #(16 * 0)]
     stp     x2,  x3,  [sp, #(16 * 1)]
     stp     x4,  x5,  [sp, #(16 * 2)]
@@ -146,6 +164,13 @@ arm64_llvm_lower_sync_entry:
     stp     x26, x27, [sp, #(16 * 13)]
     stp     x28, x29, [sp, #(16 * 14)]
     str     x30,      [sp, #(16 * 15)]
+    /* A14: the three per-task HW registers (see the header above). */
+    mrs     x9,  sp_el0
+    str     x9,       [sp, #(8 * 31)]
+    mrs     x9,  elr_el1
+    str     x9,       [sp, #(8 * 32)]
+    mrs     x9,  spsr_el1
+    str     x9,       [sp, #(8 * 33)]
 
     /* A13: DECODE ESR_EL1.EC FIRST. Before A13 this stub called the syscall
      * dispatcher for EVERY synchronous exception from EL0 — so a data abort was
@@ -173,13 +198,42 @@ arm64_llvm_lower_sync_entry:
     cbz     x0, 3f                      /* refused -> unwind to head.S (status 139) */
     b       .Lel0_resume                /* ELR_EL1 untouched: RETRY the fault */
 
+.Lel0_a14_switch:
+    /* A14: the dispatcher answered 2 — "this syscall switches tasks". We are on
+     * the CURRENT task's own kernel stack (arch/arm64/llvm/a14.S), with the EL0
+     * frame just pushed above sitting below us on it. arm64_a14_switch_entry may
+     * not return for a long time (another task runs, in kernel code, on ITS
+     * stack), or ever (the last task hands the CPU back to the boot context). If
+     * it does return, this task's EL0 frame is still exactly where it was, and
+     * .Lel0_resume reloads it and erets — the task never learns it was
+     * descheduled mid-syscall. This branch is the ONLY el0.S change A14 needs:
+     * SP_EL1 selection is implicit, because `add sp, sp, #(16*16)` below leaves
+     * SP at the running task's kernel-stack top before every eret. */
+    bl      arm64_a14_switch_entry
+    b       .Lel0_resume
+
 .Lel0_svc:
     mov     x0, sp                      /* frame_ptr -> arg0 */
     bl      arm64_svc_dispatch_arm64
+    cmp     x0, #2
+    b.eq    .Lel0_a14_switch            /* A14: block/exit -> __switch_to */
     cbnz    x0, 3f                      /* nonzero -> EL0 task exited */
+    b       .Lel0_resume
 
 .Lel0_resume:
-    /* Resume EL0: reload the (mutated) frame and eret. */
+    /* Resume EL0: reload the (mutated) frame and eret. The three sysregs go
+     * FIRST, while x9 is still free — restoring SP_EL0/ELR_EL1/SPSR_EL1 from the
+     * frame rather than trusting the live HW values is what makes this eret
+     * correct for a task that was descheduled since it trapped (A14). For a task
+     * that was NOT descheduled these writes are exact no-ops, so A8..A13 are
+     * unaffected; the A13 abort path in particular still erets with the SAME
+     * ELR_EL1 it faulted on, so the faulting instruction still retries. */
+    ldr     x9,       [sp, #(8 * 31)]
+    msr     sp_el0, x9
+    ldr     x9,       [sp, #(8 * 32)]
+    msr     elr_el1, x9
+    ldr     x9,       [sp, #(8 * 33)]
+    msr     spsr_el1, x9
     ldp     x0,  x1,  [sp, #(16 * 0)]
     ldp     x2,  x3,  [sp, #(16 * 1)]
     ldp     x4,  x5,  [sp, #(16 * 2)]
@@ -196,7 +250,7 @@ arm64_llvm_lower_sync_entry:
     ldp     x26, x27, [sp, #(16 * 13)]
     ldp     x28, x29, [sp, #(16 * 14)]
     ldr     x30,      [sp, #(16 * 15)]
-    add     sp, sp, #(16 * 16)
+    add     sp, sp, #(16 * 17)
     eret                                /* -> EL0, after the svc */
 
 3:  /* EL0 exit(): restore the saved kernel SP/LR and return to head.S. */

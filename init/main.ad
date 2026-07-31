@@ -4640,6 +4640,15 @@ ARM64_LLVM_NR_EXITGRP: uint64 = 94     # aarch64 Linux __NR_exit_group
 ARM64_LLVM_NR_GETPID: uint64 = 172     # aarch64 Linux __NR_getpid
 ARM64_LLVM_NR_GETJIFFIES: uint64 = 165 # reuse __NR_getrusage slot as a get-jiffies probe
 
+# A14 (arch/arm64/llvm/a14.S): the blocking-syscall numbers. DELIBERATELY outside
+# the aarch64 Linux range so they can never collide with a real number
+# arm64_do_syscall_arm64 handles -- the A14 arm is taken before that dispatch, and
+# if these overlapped a real syscall the overlap would be silent.
+ARM64_A14_NR_BLOCK: uint64 = 0xA140    # block this task inside the syscall
+ARM64_A14_NR_WAKE: uint64 = 0xA141     # deliver a value to the blocked task
+ARM64_A14_NR_EXIT_B: uint64 = 0xA142   # the waker exits (and switches)
+ARM64_A14_NR_EXIT_A: uint64 = 0xA143   # the woken task exits, reporting a sum
+
 arm64_llvm_el0_exit_code: int64 = 0
 arm64_llvm_el0_exit_pending: int64 = 0
 
@@ -4736,6 +4745,13 @@ def arm64_svc_dispatch_arm64(frame_ptr: Ptr[uint64]) -> int64:
     # the stub whether the task exited (1 -> restore kernel context + return to
     # head.S) or should resume EL0 (0 -> reload frame + eret).
     nr: uint64 = frame_ptr[8]
+    # A14: the blocking syscalls answer 2 == "this syscall switches tasks", a
+    # third outcome el0.S routes to arm64_a14_switch_entry. Taken BEFORE the
+    # normal dispatch and before the exit latch is consulted: an A14 syscall is
+    # neither a resume nor an exit, and folding it into either would lose exactly
+    # the distinction A14 exists to make.
+    if nr >= ARM64_A14_NR_BLOCK and nr <= ARM64_A14_NR_EXIT_A:
+        return arm64_a14_syscall_arm64(frame_ptr, nr)
     rc: uint64 = arm64_do_syscall_arm64(nr, frame_ptr[0], frame_ptr[1],
                                         frame_ptr[2], frame_ptr[3],
                                         frame_ptr[4], frame_ptr[5])
@@ -5322,6 +5338,249 @@ def arm64_a13_take_kill_arm64() -> int64:
             arm64_a13_refusals, cast[uint64](arm64_llvm_el0_exit_code))
     arm64_llvm_el0_exit_pending = 0
     arm64_llvm_el0_exit_code = 0
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# A14 (arch/arm64/llvm/a14.S): PER-TASK KERNEL STACKS + __switch_to — the point
+# at which A TASK CAN BLOCK INSIDE A SYSCALL.
+#
+# Everything through A13 ran EL1 on ONE stack (head.S's) and unwound it fully
+# before another task could run. A9 switched tasks, but only at the EL0 boundary:
+# the timer IRQ saved an interrupted EL0 frame and eret'd into a different EL0
+# frame, so no task ever had kernel state that needed to survive. A13's page
+# faults were serviced to completion and returned to the same task. That is why
+# fork/exec/pipes/wait/signals could not be ported into this lane: every one of
+# them needs a task to stop half-way through kernel code, let a PEER run kernel
+# code, and then resume with its own kernel call frames intact.
+#
+# THE POLICY IS HERE, IN EMITTED ADDER; a14.S owns only what Adder cannot express
+# (the callee-saved register + SP swap, SPSR/ELR/SP_EL0, `eret`). Same split as
+# A8's dispatcher, A9's scheduler and A13's pager.
+#
+# HOW THIS REFUSES TO PASS VACUOUSLY. Two independent things are checked, and
+# neither can be satisfied by a lane that merely *looks* like it blocked:
+#
+#   1. THE EVENT ORDER. Each event appends a hex digit to arm64_a14_seq:
+#      1 = A blocked inside a syscall, 2 = B delivered a value to A's PARKED
+#      frame, 3 = B exited, 4 = A resumed inside its syscall, 5 = A exited. Only a
+#      genuine deschedule can produce 0x12345: if the wake were serviced
+#      synchronously inside A's own syscall there would be no 2 or 3 between the
+#      1 and the 4, and if A never blocked there would be no 4 at all. This is
+#      order, not a count -- a counter would round-trip under a reordering, which
+#      is the class of defect this lane has been bitten by before (a 2-D slot
+#      sized as 1-D passes because writes and reads share the address arithmetic).
+#
+#   2. THE PARKED REGISTERS. A loads sentinels into x21..x28 BEFORE it blocks. They
+#      are saved into A's EL0 frame, which sits on A's kernel stack under A's
+#      parked call frames while B runs an entire syscall on ITS stack. A sums them
+#      after it resumes and reports the sum. On a SHARED kernel stack B's frame
+#      lands on top of A's and the sum is wrong -- so this is an EXECUTED check of
+#      the property, not an inspection of the reservation. The stack ranges are
+#      additionally asserted from the runtime SPs below, and the disjointness of
+#      the two reservations is asserted from the symbol table by the gate.
+#
+# ADDITIVE + aarch64-only: reached only from arch/arm64/llvm/a14.S and el0.S, and
+# no symbol from those files is declared here (an `extern def` in this SHARED root
+# breaks the x86_64 LINK -- see the A10 block). All arch addresses arrive as
+# ordinary AAPCS64 arguments.
+# ---------------------------------------------------------------------------
+ARM64_A14_EXPECT_SEQ: uint64 = 0x12345  # A blocks, B wakes, B exits, A resumes, A exits
+# x21..x28 = 0xC001..0xC008 (sum 0x60024) plus B's 0x2222 wake value. The gate
+# recomputes this in python from a14.S's .equ constants and cross-checks it
+# against THIS number, so neither the kernel nor the EL0 program is its own oracle.
+ARM64_A14_EXPECT_SUM: uint64 = 0x62246
+
+arm64_a14_ctx_boot_addr: uint64 = 0
+arm64_a14_ctx_a_addr: uint64 = 0
+arm64_a14_ctx_b_addr: uint64 = 0
+arm64_a14_seq: uint64 = 0           # event order, one hex digit per event
+arm64_a14_a_frame: uint64 = 0       # A's PARKED EL0 register frame (on A's kstack)
+arm64_a14_a_blocked: int64 = 0
+arm64_a14_a_exited: int64 = 0
+arm64_a14_b_exited: int64 = 0
+arm64_a14_a_sp: uint64 = 0          # A's kernel SP at the moment it blocked
+arm64_a14_b_sp: uint64 = 0          # B's kernel SP at the moment it exited
+arm64_a14_resume_sp: uint64 = 0     # A's kernel SP when it came back
+arm64_a14_sum: uint64 = 0           # the checksum A reported after resuming
+arm64_a14_canary_bad: int64 = 0
+arm64_a14_resumes: uint64 = 0
+arm64_a14_active: int64 = 0
+
+
+def arm64_a14_register_arm64(boot: uint64, a: uint64, b: uint64):
+    # Called once from a14.S's arm64_a14_init after it has built the three
+    # contexts. Publishes them and resets the whole verdict state, so a stale
+    # value from an earlier stage can never contribute to the A14 report.
+    arm64_a14_ctx_boot_addr = boot
+    arm64_a14_ctx_a_addr = a
+    arm64_a14_ctx_b_addr = b
+    arm64_a14_seq = cast[uint64](0)
+    arm64_a14_a_frame = cast[uint64](0)
+    arm64_a14_a_blocked = 0
+    arm64_a14_a_exited = 0
+    arm64_a14_b_exited = 0
+    arm64_a14_a_sp = cast[uint64](0)
+    arm64_a14_b_sp = cast[uint64](0)
+    arm64_a14_resume_sp = cast[uint64](0)
+    arm64_a14_sum = cast[uint64](0)
+    arm64_a14_canary_bad = 0
+    arm64_a14_resumes = cast[uint64](0)
+    arm64_a14_active = 1
+    # A13's negative control latched an exit; the A14 tasks reuse the SAME sync
+    # stub, and arm64_svc_dispatch_arm64 reports 1 (exited) while that latch is
+    # set. Clearing it here is the A9 lesson (arm64_sched_register_arm64) applied
+    # again: a stale latch truncates the run after one syscall while the log stays
+    # plausible.
+    arm64_llvm_el0_exit_pending = 0
+    arm64_llvm_el0_exit_code = 0
+    printk2("A14: registered 2 tasks with their OWN kernel stacks (ctx A=0x%x, B=0x%x)\n", a, b)
+
+
+def arm64_a14_syscall_arm64(frame_ptr: Ptr[uint64], nr: uint64) -> int64:
+    # Returns 0 = resume this task at EL0, 1 = task exited (unwind to head.S),
+    # 2 = SWITCH (el0.S calls arm64_a14_switch_entry, which may not come back).
+    if arm64_a14_active == 0:
+        printk1("A14 FAIL: A14 syscall 0x%x issued outside the A14 stage\n", nr)
+        return 0
+    if nr == ARM64_A14_NR_BLOCK:
+        arm64_a14_seq = arm64_a14_seq * cast[uint64](16) + cast[uint64](1)
+        # frame_ptr IS the EL0 register frame el0.S pushed on THIS task's kernel
+        # stack. Remembering it is what lets the waker deposit a return value into
+        # a task that is not running -- the shape every real blocking syscall has.
+        arm64_a14_a_frame = cast[uint64](frame_ptr)
+        arm64_a14_a_blocked = 1
+        printk1("A14: task A BLOCKED inside a syscall; its EL0 frame stays parked at 0x%x\n",
+                arm64_a14_a_frame)
+        return 2
+    elif nr == ARM64_A14_NR_WAKE:
+        if arm64_a14_a_blocked == 0:
+            printk0("A14 FAIL: wake issued with no blocked task\n")
+            return 0
+        arm64_a14_seq = arm64_a14_seq * cast[uint64](16) + cast[uint64](2)
+        v: uint64 = frame_ptr[0]
+        af: Ptr[uint64] = cast[Ptr[uint64]](arm64_a14_a_frame)
+        af[0] = v                       # the blocked task's x0 slot
+        arm64_a14_a_blocked = 0
+        frame_ptr[0] = cast[uint64](0)  # B's own syscall returns 0
+        printk1("A14: task B stored 0x%x into the BLOCKED task's parked x0 slot; A is runnable\n", v)
+        # Deliberately 0, not 2: B resumes at EL0 and only switches when it EXITS.
+        # A wake that switched immediately would make the block indistinguishable
+        # from a hand-off, and the event order could not tell them apart.
+        return 0
+    elif nr == ARM64_A14_NR_EXIT_B:
+        arm64_a14_seq = arm64_a14_seq * cast[uint64](16) + cast[uint64](3)
+        arm64_a14_b_exited = 1
+        printk0("A14: task B exited; the CPU goes to the task that blocked\n")
+        return 2
+    elif nr == ARM64_A14_NR_EXIT_A:
+        arm64_a14_seq = arm64_a14_seq * cast[uint64](16) + cast[uint64](5)
+        arm64_a14_sum = frame_ptr[0]
+        arm64_a14_a_exited = 1
+        printk1("A14: task A exited, reporting sentinel checksum 0x%x\n", arm64_a14_sum)
+        return 2
+    printk1("A14 FAIL: unknown A14 syscall 0x%x\n", nr)
+    return 0
+
+
+def arm64_a14_pick_arm64(cur: uint64, cur_sp: uint64) -> uint64:
+    # THE SCHEDULING DECISION. Called from a14.S's switch entry with the running
+    # context and the kernel SP it is about to park on. Returns the context to
+    # switch to. Recording cur_sp here (rather than deriving it) is what makes the
+    # "these are different stacks" claim a runtime observation.
+    if cur == arm64_a14_ctx_a_addr:
+        arm64_a14_a_sp = cur_sp
+        if arm64_a14_a_exited != 0:
+            printk0("A14: no runnable task left; the CPU goes back to the boot context\n")
+            return arm64_a14_ctx_boot_addr
+        return arm64_a14_ctx_b_addr
+    elif cur == arm64_a14_ctx_b_addr:
+        arm64_a14_b_sp = cur_sp
+        if arm64_a14_a_blocked != 0:
+            printk0("A14 FAIL: B is leaving while A is still blocked — nothing would ever wake it\n")
+            return arm64_a14_ctx_boot_addr
+        return arm64_a14_ctx_a_addr
+    printk1("A14 FAIL: switch requested from an unknown context 0x%x\n", cur)
+    return arm64_a14_ctx_boot_addr
+
+
+def arm64_a14_resumed_arm64(got: uint64, want: uint64, sp: uint64) -> int64:
+    # Called from a14.S immediately after arm64_a14_switch_to RETURNS — i.e. from
+    # inside the syscall the task blocked in, on that task's own kernel stack. The
+    # canary was written to this exact stack slot before the switch; another task
+    # running on the same stack would have overwritten it.
+    arm64_a14_seq = arm64_a14_seq * cast[uint64](16) + cast[uint64](4)
+    arm64_a14_resumes = arm64_a14_resumes + cast[uint64](1)
+    arm64_a14_resume_sp = sp
+    if got != want:
+        arm64_a14_canary_bad = 1
+        printk2("A14 FAIL: kernel-stack canary reads 0x%x, expected 0x%x — the parked frame was clobbered\n",
+                got, want)
+        return 0
+    printk1("A14: a task RESUMED inside its syscall, on its own kernel stack (SP 0x%x, canary intact)\n", sp)
+    return 1
+
+
+def arm64_a14_in_range(v: uint64, lo: uint64, hi: uint64) -> int64:
+    if v < lo or v >= hi:
+        return 0
+    return 1
+
+
+def arm64_a14_report_arm64(ka_lo: uint64, ka_hi: uint64,
+                           kb_lo: uint64, kb_hi: uint64) -> int64:
+    # Called from head.S after arm64_a14_run returns. Every claim below is about
+    # something OBSERVED at runtime; the only inspected facts (the reservations
+    # are disjoint, and the demo's constants agree) live in the gate.
+    arm64_a14_active = 0
+    if ka_hi <= kb_lo or kb_hi <= ka_lo:
+        printk0("A14: the two kernel-stack reservations do not overlap\n")
+    else:
+        printk0("A14 FAIL: the two kernel stacks OVERLAP — they are not per-task at all\n")
+        return 0
+    if arm64_a14_seq != ARM64_A14_EXPECT_SEQ:
+        printk2("A14 FAIL: event order 0x%x, expected 0x%x (1=A blocked 2=B woke 3=B exited 4=A resumed 5=A exited)\n",
+                arm64_a14_seq, ARM64_A14_EXPECT_SEQ)
+        return 0
+    if arm64_a14_a_exited == 0 or arm64_a14_b_exited == 0:
+        printk0("A14 FAIL: a task never reached its exit syscall\n")
+        return 0
+    if arm64_a14_resumes != cast[uint64](1) or arm64_a14_canary_bad != 0:
+        printk1("A14 FAIL: %d mid-syscall resume(s), or the canary was clobbered\n",
+                arm64_a14_resumes)
+        return 0
+    # The blocked task's kernel SP, its PARKED EL0 frame, and the SP it resumed on
+    # must all be inside ITS OWN stack -- and the waker's SP inside the OTHER one.
+    if arm64_a14_in_range(arm64_a14_a_sp, ka_lo, ka_hi) == 0:
+        printk1("A14 FAIL: the blocked task's kernel SP 0x%x is not in its own stack\n",
+                arm64_a14_a_sp)
+        return 0
+    if arm64_a14_in_range(arm64_a14_a_frame, ka_lo, ka_hi) == 0:
+        printk1("A14 FAIL: the parked EL0 frame 0x%x is not on the blocked task's stack\n",
+                arm64_a14_a_frame)
+        return 0
+    if arm64_a14_in_range(arm64_a14_resume_sp, ka_lo, ka_hi) == 0:
+        printk1("A14 FAIL: the task resumed on SP 0x%x, not on its own stack\n",
+                arm64_a14_resume_sp)
+        return 0
+    if arm64_a14_in_range(arm64_a14_b_sp, kb_lo, kb_hi) == 0:
+        printk1("A14 FAIL: the waker's kernel SP 0x%x is not in ITS own stack\n",
+                arm64_a14_b_sp)
+        return 0
+    if arm64_a14_resume_sp != arm64_a14_a_sp:
+        printk2("A14 FAIL: resumed on SP 0x%x but blocked on 0x%x — the frame moved\n",
+                arm64_a14_resume_sp, arm64_a14_a_sp)
+        return 0
+    # THE EXECUTED CHECK. The sentinels A left in x21..x28 before it blocked came
+    # back through B running a whole syscall on its own stack.
+    if arm64_a14_sum != ARM64_A14_EXPECT_SUM:
+        printk2("A14 FAIL: sentinel checksum 0x%x, expected 0x%x — the parked EL0 registers did not survive the peer\n",
+                arm64_a14_sum, ARM64_A14_EXPECT_SUM)
+        return 0
+    printk2("A14: kernel SPs — blocked task 0x%x, waker 0x%x (different stacks)\n",
+            arm64_a14_a_sp, arm64_a14_b_sp)
+    printk2("A14 PASS: a task BLOCKED inside a syscall, a peer ran kernel code and woke it, and it resumed mid-syscall with its parked EL0 registers intact (order=0x%x, checksum=0x%x)\n",
+            arm64_a14_seq, arm64_a14_sum)
     return 1
 
 
