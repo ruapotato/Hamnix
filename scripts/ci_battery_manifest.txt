@@ -4744,3 +4744,22 @@ bash scripts/test_adder_redecl_shape.sh
 # continues. nG=1 stays an INSPECTION assertion (TCG flushes globals on an ASID
 # change and cannot discriminate the bit) -- same boundary as the A12 gate.
 bash scripts/ci_run_gate.sh scripts/test_arm64_a13_demand.sh
+# test_arm64_a14_kstack: A14 -- PER-TASK KERNEL STACKS + __switch_to, i.e. THE
+# POINT AT WHICH A TASK CAN BLOCK INSIDE A SYSCALL. It is easy to believe this
+# lane could already do it -- A9 switched EL0 tasks and A13 serviced a page fault
+# -- but neither ever kept KERNEL state across a peer: A9 switched only at the EL0
+# boundary, A13 serviced its faults to completion on head.S's ONE stack. That is
+# the gate on porting fork/exec/pipes/wait/signals, none of which exist in
+# arch/arm64/llvm/. a14.S adds a 16 KiB stack per task and a real callee-saved+SP
+# switch; the POLICY (who runs next, block/wake, every verdict) is emitted Adder.
+# Growing el0.S's frame to a real 34-slot pt_regs is part of the fix, not
+# bookkeeping: ELR_EL1/SPSR_EL1/SP_EL0 are SINGLE hardware registers, and the
+# first A14 boot hung because the woken task eret'd on the PEER's values.
+# The gate refuses to pass vacuously: the five events must appear in the ONE order
+# a genuine deschedule produces (a count would survive any reordering), the two
+# tasks' kernel SPs must land in reservations the SYMBOL TABLE says are disjoint,
+# and the sentinels the blocked task left in x21..x28 must survive the peer's
+# entire syscall -- recomputed in python from a14.S's .equ constants and
+# cross-checked against init/main.ad's, so neither side is its own oracle. A14
+# adds no mapping, no TTBR0 write and no tlbi, so it is NOT evidence about nG.
+bash scripts/ci_run_gate.sh scripts/test_arm64_a14_kstack.sh
