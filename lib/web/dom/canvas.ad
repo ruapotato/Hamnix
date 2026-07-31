@@ -8726,6 +8726,11 @@ def _js_build_document():
     # `.classList` and `document.documentElement.classList` work. Each is the
     # SAME registered object getElementById/querySelector return, so mutations
     # (appendChild, style, className) reach the live tree + render.
+    # document.currentScript is null except while a classic <script> body is
+    # executing (set/cleared around each eval in _run_scripts). Defined here so
+    # `'currentScript' in document` is true and a read outside script execution
+    # answers null rather than undefined, as in Chromium.
+    js_set_prop(doc, cast[Ptr[uint8]]("currentScript"), 13, js_null())
     _doc_set_el(doc, cast[Ptr[uint8]]("documentElement"), 15, \
                 cast[Ptr[uint8]]("html"))
     _doc_set_el(doc, cast[Ptr[uint8]]("body"), 4, cast[Ptr[uint8]]("body"))
@@ -9656,6 +9661,21 @@ def _run_scripts() -> int32:
                 # The host prelude goes in immediately before the page's FIRST
                 # executed script, so a script-free page never pays for it.
                 _js_install_prelude()
+                # document.currentScript — the <script> element whose body is
+                # executing right now, null outside classic-script execution
+                # AND during module evaluation (HTML §"prepare the script
+                # element": the "current script" is only set for classic
+                # scripts). Tests reach their own markup through it —
+                # `document.currentScript.previousElementSibling` is the
+                # standard way a WPT file names the <template> that belongs to
+                # it, and with the property absent every such assertion threw
+                # on null before it ever reached the behaviour under test.
+                # Registered off the start tag at `i`, so it is the SAME object
+                # querySelector('script') hands back.
+                if is_mod == 0:
+                    _scan_start_tag(i)
+                    js_set_prop(js_doc, cast[Ptr[uint8]]("currentScript"), 13, \
+                                _dom_register_el())
                 if is_mod != 0:
                     # `<script type=module>`: evaluate as an ES module (own scope,
                     # deferred-style, imports resolved through the browser's module
@@ -9666,6 +9686,10 @@ def _run_scripts() -> int32:
                     js_eval(&src_ptr[bs], be - bs)
                 if js_error() != 0:
                     js_had_error = 1
+                # Execution finished: the stack of scripts is empty again, so
+                # currentScript reverts to null (a page reading it from a
+                # timer/event callback must NOT see the last parsed script).
+                js_set_prop(js_doc, cast[Ptr[uint8]]("currentScript"), 13, js_null())
             # continue past </script>
             i = be
             i = _hx_tag_end_p(src_ptr, src_len, i)

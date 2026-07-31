@@ -75,6 +75,27 @@ def to_uint32(h: int32) -> uint32:
     return cast[uint32](to_int32(h))
 
 
+# Nesting depth of the console-inspect renderer (display_val/display_obj).
+#
+# WHY A CAP IS LOAD-BEARING, NOT COSMETIC
+# =======================================
+# display_obj walks an object's own properties and inspects each value in turn.
+# On a DOM object that graph is CYCLIC and effectively unbounded: an element
+# holds parentNode / ownerDocument / previousElementSibling, the document holds
+# body / documentElement / currentScript, and any of those paths returns to
+# where it started. Inspecting one element therefore recursed until the native
+# stack was gone — a SIGSEGV that killed the process, not a JS exception the
+# page could catch, and it took out an entire WPT file's results with it.
+# (Reproduced the moment document.currentScript began answering an element:
+# testharness.js formats the actual value into its failure message.)
+#
+# Real consoles cap the same way — node and Chromium print [Object] past their
+# nesting limit rather than serialising a cycle. 6 is deep enough that every
+# plain data structure a page logs prints in full.
+DISP_MAX_DEPTH: int32 = 6
+disp_depth: int32 = 0
+
+
 # display: append a value's string form via emit_c (uses current emit_tgt)
 def display_val(h: int32):
     t: int32 = tag_of(h)
@@ -99,6 +120,17 @@ def display_val(h: int32):
 
 def display_obj(h: int32):
     o: int32 = objid_of(h)
+    if disp_depth >= DISP_MAX_DEPTH:
+        # Past the nesting limit: name the shape, do not descend. Arrays and
+        # functions keep their own labels so the placeholder still tells the
+        # reader what was there.
+        if cast[int32](obj_kind[o]) == OK_ARRAY:
+            emit_cstr(cast[Ptr[uint8]]("[Array]"))
+        elif cast[int32](obj_kind[o]) == OK_FUNC:
+            emit_cstr(cast[Ptr[uint8]]("function"))
+        else:
+            emit_cstr(cast[Ptr[uint8]]("[Object]"))
+        return
     # A Symbol is a TAG_OBJ under the hood but is a PRIMITIVE: ToPrimitive skips
     # it, so it lands here. Render it as its SymbolDescriptiveString ("Symbol(d)",
     # ES 20.4.3.3) — node's console.log and String(sym) both print that. Falling
@@ -126,12 +158,14 @@ def display_obj(h: int32):
         # console.log prints arrays as: [ a, b, c ] — but our gate uses join;
         # for plain display use comma-separated bracketed form.
         emit_c(91)
+        disp_depth = disp_depth + 1
         i: int32 = 0
         while i < arr_len[o]:
             if i > 0:
                 emit_cstr(cast[Ptr[uint8]](", "))
             display_val_quoted(arr_get(o, i))
             i = i + 1
+        disp_depth = disp_depth - 1
         emit_c(93)
         return
     # error-like object (has both name and message): print "Name: message".
@@ -152,7 +186,9 @@ def display_obj(h: int32):
     p: int32 = obj_head[o]
     first: int32 = 1
     # props are stored newest-first; reverse for stable output
+    disp_depth = disp_depth + 1
     display_obj_props(o)
+    disp_depth = disp_depth - 1
     emit_cstr(cast[Ptr[uint8]](" }"))
 
 
@@ -320,6 +356,7 @@ def to_string_val(h: int32) -> int32:
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
+    disp_depth = 0
     display_val(p)
     id: int32 = bld_end()
     emit_tgt = save
