@@ -14081,6 +14081,27 @@ def he_bfill_bord(i: int32) -> int32:
     return bfill_bord[i]
 
 
+# OUT-OF-FLOW class of background fill i: 0 = in-flow (its rect is resolved
+# through the row grid, unchanged), 1 = position:absolute, 2 = position:fixed.
+# A non-zero fill paints from PIXEL geometry and may extend the canvas without
+# extending the row grid — see the bfill_oof block in lib/web/layout/box.ad.
+def he_bfill_oof(i: int32) -> int32:
+    return cast[int32](bfill_oof[i])
+
+
+# Viewport-relative pixel TOP of out-of-flow fill i, or -1 to derive it from the
+# row grid. Set for `position:fixed; top:T` (which resolves to exactly T against
+# the viewport edge — no body top padding).
+def he_bfill_pxy(i: int32) -> int32:
+    return bfill_pxy[i]
+
+
+# Explicit CSS pixel HEIGHT of out-of-flow fill i, or -1 to derive it from the
+# row span. Carries the real declared px, not the 16px row-grid rounding.
+def he_bfill_pxh(i: int32) -> int32:
+    return bfill_pxh[i]
+
+
 # CSS filter of background fill i, packed as (type << 20) | amount (0 = none).
 # See lib/web/css/cascade.ad _filter_value for the encoding. The renderer applies
 # it as a per-pixel post-pass over the fill's rectangle (htmlpaint_filter_rect).

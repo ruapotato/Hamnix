@@ -47,6 +47,12 @@ def _reset_layout():
         bfill_padt[fb] = 0
         bfill_padb[fb] = 0
         bfill_inlb[fb] = 0
+        # Out-of-flow pixel geometry is stamped by _apply_positioned; a slot
+        # reused across layouts must not inherit a prior render's rect (native
+        # BSS persists), or an in-flow fill would paint at a stale fixed-bar y.
+        bfill_oof[fb] = cast[uint8](0)
+        bfill_pxy[fb] = -1
+        bfill_pxh[fb] = -1
         fb = fb + 1
     seg_text_len = 0
     n_eimg = 0
@@ -434,6 +440,50 @@ def _apply_positioned():
                 if cast[uint64](nr) + 1 > total_rows:
                     total_rows = cast[uint64](nr) + 1
                 j = j + 1
+        # OUT-OF-FLOW CLASS + PIXEL GEOMETRY (see bfill_oof in layout/box.ad).
+        # An absolute/fixed box contributes no rows to the flow, so on a page
+        # whose in-flow content is shorter than the box its fill's last row sits
+        # past the last flow row and the renderer used to DROP it. Classify the
+        # fill so the paint pass resolves it in pixels instead of through the row
+        # grid. mode 2 is absolute/fixed; pos_fx 1 is fixed.
+        oofk: int32 = 0
+        if pos_mode[i] == 2:
+            oofk = 1
+            if pos_fx[i] == 1:
+                oofk = 2
+        # A `fixed` box with a declared `top` sits exactly that many px below the
+        # VIEWPORT edge — its containing block is the viewport, so the page's own
+        # top padding does not apply and `top:0` means y=0, not y=TOP_PAD. Only
+        # at rest (no assumed scroll): once the row-based scroll offset is in
+        # play the row path is the one that knows where the viewport is.
+        # An `absolute` box with NO positioned ancestor (pos_cbrun -1, origin row
+        # 0) has the SAME containing block as a fixed box — the initial
+        # containing block, i.e. the viewport — so its `top` resolves in exactly
+        # the same pixels. Without this the two spellings of "50% down the
+        # viewport" disagree: WPT css-sizing/fit-content-block-size-abspos puts
+        # `position:absolute; top:50%` against a `position:fixed; top:50%`
+        # reference, and the absolute side stayed on the quantised row grid at
+        # y=336 while the fixed side moved to Chromium's y=300. An absolute box
+        # inside a positioned ancestor keeps the row path: its containing block
+        # is the ancestor's padding box, whose top the engine only knows as a row.
+        oof_pxy: int32 = -1
+        icb: int32 = 0
+        if oofk == 2:
+            icb = 1
+        elif oofk == 1 and pos_cbrun[i] < 0 and pos_orow[i] == 0:
+            icb = 1
+        if icb != 0 and pos_t[i] >= 0 and pos_scroll_y == 0:
+            oof_pxy = pos_t[i]
+        # Explicit CSS height in REAL px, recovered from the box's own height pin
+        # (kind 0 = `height`). The row span is a 16px-grid rounding of it; the pin
+        # is the only place the declared value survives.
+        oof_pxh: int32 = -1
+        if oofk != 0:
+            hq: int32 = pos_hp0[i]
+            while hq < pos_hp1[i]:
+                if hpin_kind[hq] == 0 and hpin_px[hq] > 0:
+                    oof_pxh = hpin_px[hq]
+                hq = hq + 1
         # Relocate the box's background fill(s) by the same delta and stamp the
         # stacking order so the paint pass can sort positioned boxes by z-index.
         bf: int32 = pos_bf0[i]
@@ -457,6 +507,10 @@ def _apply_positioned():
                 if cast[uint64](nb) > total_rows:
                     total_rows = cast[uint64](nb)
             bfill_z[bf] = pos_z[i]
+            if oofk != 0:
+                bfill_oof[bf] = cast[uint8](oofk)
+                bfill_pxy[bf] = oof_pxy
+                bfill_pxh[bf] = oof_pxh
             bf = bf + 1
         # Move this box's explicit-height PIXEL PINS with it. A pin names ROW
         # INDICES, and the box was just relocated by `drow` rows; a pin left behind

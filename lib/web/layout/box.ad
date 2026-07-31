@@ -279,6 +279,34 @@ bfill_inlb: Array[256, uint8]
 # fills set this to -1 (their borders come from the bbox registry). Painted as a
 # 1px rounded stroke in bfill_rad after the fill.
 bfill_bord: Array[256, int32]
+# ---- OUT-OF-FLOW PIXEL GEOMETRY -------------------------------------
+# An `position: absolute/fixed` box is NOT in the flow, so it contributes no
+# rows to the row grid — yet bfill_top/bot name ROW INDICES, and the renderer
+# resolves a fill's pixel rect through row_top[]/row_h[]. On a page whose
+# in-flow content is SHORTER than the out-of-flow box (the whole point of
+# `position:fixed`), the fill's last row sits past the last flow row and the
+# renderer dropped the fill entirely: a fixed bar on an otherwise empty page
+# painted NOTHING. (WPT css/css-position/position-fixed-dynamic-transformed-
+# sibling-ref.html is exactly that document, and it rendered 800x600 white.)
+#
+# The fix is not to grow the flow — an out-of-flow box must not push in-flow
+# content, and four measured variants of "extend the row grid" each cost more
+# reftests than they earned. It is to give the box the PIXEL rect CSS already
+# specified for it and paint that directly, bypassing the row grid:
+#
+#   bfill_oof   0 = in-flow (row-driven, byte-identical), 1 = absolute,
+#               2 = fixed. Non-zero fills are painted from pixel geometry and
+#               are allowed to extend the CANVAS (never the row grid).
+#   bfill_pxy   viewport/page-relative pixel TOP, or -1 = derive from rows.
+#               `position:fixed; top:T` resolves to exactly T — no TOP_PAD,
+#               because the viewport edge is the containing block edge.
+#   bfill_pxh   pixel HEIGHT from the box's explicit `height`, or -1 = derive
+#               from the row span. Taken from the run's height pin, which is
+#               the only place the real CSS px (not the 16px-grid rounding)
+#               survives.
+bfill_oof:  Array[256, uint8]
+bfill_pxy:  Array[256, int32]
+bfill_pxh:  Array[256, int32]
 n_bfills:   int32 = 0
 
 # ---- LINK BOX registry (POINTER HIT-TEST ONLY — never painted) -------

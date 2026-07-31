@@ -34,6 +34,7 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     he_n_bfills, he_bfill_lx, he_bfill_rx, he_bfill_top, he_bfill_bot, \
     he_bfill_rgb, he_bfill_z, he_bfill_radius, he_bfill_filter, \
     he_bfill_padt, he_bfill_padb, he_bfill_bord, he_page_bg, \
+    he_bfill_oof, he_bfill_pxy, he_bfill_pxh, \
     he_n_lnkboxes, he_lnkbox_lid, he_lnkbox_lx, he_lnkbox_rx, \
     he_lnkbox_top, he_lnkbox_bot, he_lnkbox_padt, he_lnkbox_padb, \
     he_filter_is_list, he_filter_list_len, he_filter_list_at, \
@@ -469,6 +470,60 @@ def _hpg_paint_border_sides(bx0: int32, ytop: int32, bw2: int32, bh2: int32, \
 CHAR_CELL: int32 = 8
 
 
+# ---- OUT-OF-FLOW pixel geometry -------------------------------------------
+# `_hpg_nrow` / `_hpg_flow_bot` are the row grid this render resolved: the row
+# count, and the y (px) one past the last flow row. An out-of-flow box
+# (position:absolute/fixed) contributes NO flow rows, so its fill routinely
+# names rows at or past `_hpg_nrow` and cannot be resolved through row_top[].
+# These two let _hpg_row_y/_hpg_row_h answer for such a row by continuing the
+# grid at the body pitch, WITHOUT creating the rows (creating them would move
+# in-flow content, which is exactly what out-of-flow must never do).
+_hpg_nrow:     uint64 = 0
+_hpg_flow_bot: int32 = 0
+
+
+def _hpg_row_y(r: int32) -> int32:
+    if r <= 0:
+        return TOP_PAD
+    if cast[uint64](r) < _hpg_nrow:
+        return row_top[cast[uint64](r)]
+    return _hpg_flow_bot + (r - cast[int32](_hpg_nrow)) * BODY_H
+
+
+def _hpg_row_h(r: int32) -> int32:
+    if r >= 0 and cast[uint64](r) < _hpg_nrow:
+        return row_h[cast[uint64](r)]
+    return BODY_H
+
+
+# Resolve background fill `fi`'s vertical extent in px. In-flow fills go through
+# the row grid exactly as before (byte-identical). An out-of-flow fill prefers
+# the PIXEL geometry CSS gave it — `position:fixed; top:T` is T px below the
+# VIEWPORT edge, not below the page's top padding, and an explicit `height` is
+# the declared px, not the 16px row-grid rounding of it. Returns the top; the
+# bottom lands in _hpg_fy1.
+_hpg_fy1: int32 = 0
+
+
+def _hpg_fill_y(fi: int32, ftop: int32, fbot: int32) -> int32:
+    fy0: int32 = 0
+    if he_bfill_oof(fi) != 0:
+        pxy: int32 = he_bfill_pxy(fi)
+        if pxy >= 0:
+            fy0 = pxy
+        else:
+            fy0 = _hpg_row_y(ftop)
+        pxh: int32 = he_bfill_pxh(fi)
+        if pxh > 0:
+            _hpg_fy1 = fy0 + pxh
+        else:
+            _hpg_fy1 = _hpg_row_y(fbot - 1) + _hpg_row_h(fbot - 1)
+        return fy0
+    fy0 = row_top[cast[uint64](ftop)]
+    _hpg_fy1 = row_top[cast[uint64](fbot - 1)] + row_h[cast[uint64](fbot - 1)]
+    return fy0
+
+
 def _hpg_align_pass(nseg: uint64, nrow: uint64):
     txtb: Ptr[uint8] = he_seg_text_ptr()
     r: uint64 = 0
@@ -787,6 +842,10 @@ def htmlpage_render() -> int32:
         y = y + pitch
         r2 = r2 + 1
     total_h: int32 = y + TOP_PAD
+    # Publish the resolved row grid so the out-of-flow resolver can answer for a
+    # row the flow never created (see _hpg_row_y).
+    _hpg_nrow = nrow
+    _hpg_flow_bot = y
 
     # 2b. MEASURE PASS: the engine wraps text on its 8px CHARACTER GRID, but the
     # scalable renderer flows real proportional advances that are usually WIDER,
@@ -858,6 +917,29 @@ def htmlpage_render() -> int32:
     if canvas_w < pw:
         canvas_w = pw
 
+    # 2c. OUT-OF-FLOW CANVAS EXTENT. An absolute/fixed box adds no rows to the
+    # flow, so on a page whose in-flow content is SHORTER than the box (the
+    # ordinary case for `position:fixed` — a 50px bar over an empty document)
+    # its painted rect falls past total_h and htmlpaint would clip it away
+    # entirely. Grow the CANVAS to hold it. The ROW GRID is deliberately NOT
+    # grown: rows are flow, and an out-of-flow box must not displace in-flow
+    # content. Only out-of-flow fills are consulted, so a page with none is
+    # byte-identical.
+    nbf0: int32 = he_n_bfills()
+    if nbf0 > HPG_MAX_BF:
+        nbf0 = HPG_MAX_BF
+    ei: int32 = 0
+    while ei < nbf0:
+        if he_bfill_oof(ei) != 0:
+            etop: int32 = he_bfill_top(ei)
+            ebot: int32 = he_bfill_bot(ei)
+            if etop >= 0 and ebot > etop and he_bfill_rx(ei) > he_bfill_lx(ei):
+                _hpg_fill_y(ei, etop, ebot)
+                ey1: int32 = _hpg_fy1 + he_bfill_padb(ei)
+                if ey1 > total_h:
+                    total_h = ey1
+        ei = ei + 1
+
     # 3. canvas cleared to the page background (<body>/<html> bg, gap #3) or
     # white by default. A dark-theme page thus fills the whole viewport, not
     # just its text boxes.
@@ -899,13 +981,22 @@ def htmlpage_render() -> int32:
         fi: int32 = bf_order[fo]
         ftop: int32 = he_bfill_top(fi)
         fbot: int32 = he_bfill_bot(fi)
-        if ftop >= 0 and fbot > ftop and cast[uint64](fbot - 1) < nrow:
+        # An OUT-OF-FLOW fill (position:absolute/fixed) is exempt from the
+        # last-flow-row test: it names rows the flow never created precisely
+        # BECAUSE it is out of flow, and dropping it is how a `position:fixed`
+        # bar over short content painted nothing at all. Its rect comes from
+        # pixel geometry instead (_hpg_fill_y). In-flow fills are unchanged.
+        fdraw: int32 = 0
+        if ftop >= 0 and fbot > ftop:
+            if cast[uint64](fbot - 1) < nrow or he_bfill_oof(fi) != 0:
+                fdraw = 1
+        if fdraw != 0:
             fx0: int32 = he_bfill_lx(fi)
             if fx0 < 0:
                 fx0 = 0
             fx1: int32 = he_bfill_rx(fi)
-            fy0: int32 = row_top[cast[uint64](ftop)]
-            fy1: int32 = row_top[cast[uint64](fbot - 1)] + row_h[cast[uint64](fbot - 1)]
+            fy0: int32 = _hpg_fill_y(fi, ftop, fbot)
+            fy1: int32 = _hpg_fy1
             # CSS padding box: grow the fill up/down to cover the element's vertical
             # padding (content was inset by it). 0 for unpadded boxes -> unchanged.
             fy0 = fy0 - he_bfill_padt(fi)
