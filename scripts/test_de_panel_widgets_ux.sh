@@ -7,9 +7,27 @@
 #   A1  WINDOW LIST tracks live windows: hampanelscene enumerates
 #       /dev/wsys/windows, hashes the snapshot (FNV-1a) so ANY change (open /
 #       close / title-late / same-count swap) repaints the taskbar.
-#   A2  CPU widget reports real utilisation via an idle/total DELTA from
-#       /dev/uptime (NOT the load-average*50 scaling that pegged at 100%);
-#       the first sample has no baseline so it reports 0%, not "all busy".
+#   A2  CPU widget reports real utilisation via a busy/total DELTA from
+#       /dev/stat, through the shared lib/cpustat.ad parser; the first sample
+#       has no baseline so it reports 0%, not "all busy".
+#
+#       2026-07-31: A2 used to require '"/dev/uptime"' and `_cpu_prev_total`.
+#       The widget deliberately MOVED OFF /dev/uptime, and the reason is in
+#       user/hampanelscene.ad's own comment: /dev/uptime's idle column
+#       (kernel/sched/loadavg.ad _la_idle_jiffies) is "wall ticks minus ring-3
+#       ticks", which folds ALL kernel/system time into idle -- so any load
+#       whose busy work ran in the kernel read ~0% on the panel while the
+#       System Monitor showed real usage. The widget now samples the aggregate
+#       "cpu" row of /dev/stat via lib/cpustat.ad, the same source hammonscene
+#       reads, so the two cannot diverge. The baseline global was renamed
+#       _cpu_prev_total -> _cpu_prev_tot in the same change.
+#
+#       So the gate was pinning the SOURCE OF A FIXED BUG: it demanded the
+#       widget keep reading the counter that made it report ~0% under kernel
+#       load. Gate rot of the worst kind -- had anyone "fixed" the tree to
+#       satisfy it, they would have reintroduced the defect. A2 now asserts the
+#       /dev/stat delta, and asserts /dev/uptime does NOT come back as the CPU
+#       source.
 #   A3  Right-click on BLANK bar space (incl. the elastic tasks/spacer region)
 #       opens the ADD-A-WIDGET menu, not Move/Remove.
 #   A4  Right-click on a real widget INCLUDING the Applications button opens the
@@ -37,8 +55,24 @@ need "$PS" "if win_hash != last_win_hash" "panel repaints when the window set ch
 need "$PS" "def _render_tasks" "panel renders the window-list taskbar"
 
 echo "[panel_ux] --- A2: CPU widget idle/total delta ---"
-need "$PS" '"/dev/uptime"' "CPU widget samples /dev/uptime (idle+total)"
-need "$PS" "_cpu_prev_total" "CPU widget keeps a previous-sample baseline"
+need "$PS" '"/dev/stat"' "CPU widget samples /dev/stat (busy+total)"
+need "$PS" "cpustat_busy_pct" "CPU widget uses the shared lib/cpustat delta parser"
+need "$PS" "_cpu_prev_tot" "CPU widget keeps a previous-sample baseline"
+# The idle column of /dev/uptime folds kernel time into idle; the CPU widget
+# must never go back to it. Scope the check to _cpu_pct so an unrelated
+# uptime reader elsewhere in the panel is not caught.
+cpu_body=$(awk '
+    /^def[[:space:]]+_cpu_pct[[:space:]]*\(/ { inside=1; print; next }
+    /^def[[:space:]]/ { if (inside) { inside=0 } }
+    inside { print }
+' "$PS")
+if [ -z "$cpu_body" ]; then
+    failf "CPU widget: _cpu_pct() not found - is it renamed?"
+elif grep -q '"/dev/uptime"' <<<"$cpu_body"; then
+    failf "CPU widget reads /dev/uptime again - its idle column folds kernel time into idle and reports ~0% under kernel load"
+else
+    pass "CPU widget does not read /dev/uptime (the wrong idle counter)"
+fi
 need "$PS" "_cpu_inited" "CPU widget has a first-sample guard"
 if grep -q 'pct: uint64 = centi / 2' "$PS"; then
     failf "CPU widget still scales load-average (centi/2) — pegs at 100%"
