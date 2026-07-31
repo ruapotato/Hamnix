@@ -2423,17 +2423,22 @@ def _poll_events(efd: int32, vp: Ptr[int32]) -> int32:
 
 # ====================================================================
 def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M0 main-entered\n"))
     sys_bind(cast[Ptr[char]]("/dev"), cast[Ptr[char]]("#c"), 0)
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M1 after-sys_bind\n"))
 
     # Route pointer clicks on JS click-handler elements to their handlers: the
     # engine wraps such elements in synthetic "#__evt_N" links reusing the link
     # hit-test. (Host harness leaves this off so its render stays stable.)
     he_set_click_links(1)
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M2 after-click_links\n"))
 
     # Give the page's JS a REAL fetch(): register the http9-backed transport so
     # `fetch(url)` in a <script> makes an actual network request (same /net client
     # as a navigation). Must precede the first he_layout() (scripts run there).
     js_set_fetch_transport(cast[Fn[Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[int64], Ptr[int32], Ptr[uint8]]](cast[uint64](_js_fetch_transport)))
+
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M3 after-fetch_transport\n"))
 
     # Resolve the page to load.
     is_demo: int32 = 0
@@ -2479,11 +2484,14 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # Fonts + the reflow hook are needed to paint anything, so load them first.
     # They are cheap and page-independent (the DE's other scene apps load fonts
     # pre-window too); this is NOT the memory-heavy part.
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M4 before-fonts\n"))
     browserfonts_load()
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M5 after-fonts\n"))
     # TRUE reflow: wrap prose to the window in real TrueType advances (not the
     # 8px char grid). Installed after the faces load, before the first layout;
     # every later resize re-lays-out through the same hook.
     htmlpage_install_reflow()
+    _writeall(2, cast[Ptr[uint8]]("[hbdbg] M6 after-reflow\n"))
 
     _writeall(2, cast[Ptr[uint8]]("[hambrowse] opening scene window\n"))
     wid: int32 = _newwindow()
