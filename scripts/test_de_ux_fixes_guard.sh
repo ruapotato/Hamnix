@@ -62,12 +62,43 @@ echo "[ux_guard] --- QA-N1: default terminal opens clear of the desktop icon str
 # text "bleeding through" the terminal (the compositor z-order was correct;
 # the strip simply was not under any window). The terminal must now open at an
 # x origin clear of the strut, like every other default DE app.
-if grep -q 'geometry 24 40 ' "$TS"; then
-    failf "terminal still opens at x=24 (bisects the desktop icon column — QA-N1 regressed)"
+# (The old `grep -q 'geometry 24 40 '` spot-check that used to live here was
+# removed: it pinned BOTH coordinates too, so once y moved to 52 it could no
+# longer fire at all -- a return to x=24 would have slipped straight past it.
+# The derived x check below subsumes it and actually catches that.)
+#
+# 2026-07-31: this used to be `need "$TS" "geometry 150 40 "`, pinning BOTH
+# coordinates. The Y origin has since moved 40 -> 52, deliberately, in 7919357d
+# (#254, rounded SSD titlebar corners): the titlebar sits WSYS_TITLEBAR_H = 18px
+# ABOVE the content origin, so a content y of 40 put the titlebar top at 22 --
+# tucked UNDER the 28px top panel, where the new rounded corners were occluded.
+# y=52 puts it at 34, a clean 6px below the panel. x=150 never moved, and x is
+# the only thing QA-N1 is about (see the strut discussion above); the y was
+# incidental over-specification that turned a working tree red. Gate rot.
+#
+# Assert the two properties separately, and derive rather than pin: x must clear
+# the ~x=130 icon strut, and the titlebar top (y - WSYS_TITLEBAR_H) must clear
+# the top panel.
+TITLEBAR_H=$(grep -oE '^WSYS_TITLEBAR_H: int64 = [0-9]+' sys/src/9/port/devwsys.ad \
+             | grep -oE '[0-9]+$')
+TOP_PANEL_H=28
+geo=$(grep -oE '"geometry [0-9]+ [0-9]+ "' "$TS" | head -1)
+if [ -z "$geo" ] || [ -z "${TITLEBAR_H:-}" ]; then
+    failf "terminal default geometry literal not found in $TS (or WSYS_TITLEBAR_H missing from devwsys.ad)"
 else
-    pass "terminal no longer opens at the bisecting x=24 origin"
+    geo_x=$(awk '{print $2}' <<<"$geo")
+    geo_y=$(awk '{print $3}' <<<"$geo")
+    if [ "$geo_x" -lt 140 ]; then
+        failf "terminal default x origin is $geo_x - must clear the desktop icon strut (labels end ~x=130)"
+    else
+        pass "terminal default origin clears the icon strut (x=$geo_x)"
+    fi
+    if [ "$((geo_y - TITLEBAR_H))" -le "$TOP_PANEL_H" ]; then
+        failf "terminal titlebar top is at $((geo_y - TITLEBAR_H)) - occluded by the ${TOP_PANEL_H}px top panel (#254 rounded corners invisible)"
+    else
+        pass "terminal titlebar top ($((geo_y - TITLEBAR_H))) clears the ${TOP_PANEL_H}px top panel"
+    fi
 fi
-need "$TS" "geometry 150 40 " "terminal default origin clears the icon strut (x=150)"
 
 echo "[ux_guard] --- QA-N2: hamterm closes its window when the shell exits ---"
 # `exit` (or Ctrl-D/EOF) in the DE terminal's hamsh must tear the terminal
