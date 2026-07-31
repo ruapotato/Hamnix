@@ -4796,10 +4796,33 @@ def _js_host_dispatch(id: int32) -> int32:
             return js_undefined()
         didx: int32 = cast[int32](js_to_number(js_arg(0)))
         dsrc: int32 = cssom_sheet_srccount[dsid]
-        if didx >= dsrc:
-            _cssom_delete_rule(dsid, didx - dsrc)
         dcr: int32 = js_get_prop(dsv, cast[Ptr[uint8]]("cssRules"), 8)
         ncr: int32 = _cssrules_without(dcr, didx)
+        if didx >= dsrc:
+            _cssom_delete_rule(dsid, didx - dsrc)
+        else:
+            # DELETING A RULE THE SHEET WAS PARSED FROM. The cascade reads those
+            # rules out of the <style> element's TEXT, not out of the model, so
+            # removing the model entry (there is none) changed nothing: a
+            # deleted `@layer second {}` kept declaring its layer, and the rule
+            # deleteRule was called to remove kept applying.
+            #
+            # Migrate the sheet: re-load what SURVIVES into the model, drop the
+            # source-rule count, and suppress the element's text so the rules
+            # are not counted twice. The sheet is model-backed from here on, and
+            # every later insert/delete takes the ordinary path above.
+            _cssom_clear_sheet(dsid)
+            _style_text_suppress(_style_el_of_sheet(dsv))
+            dn: int32 = js_array_len(ncr)
+            di: int32 = 0
+            while di < dn:
+                dct: int32 = js_get_prop(js_array_get(ncr, di), \
+                                         cast[Ptr[uint8]]("cssText"), 7)
+                if js_type_of(dct) == TAG_STR:
+                    _cssom_insert_rule(dsid, cssom_sheet_nrules[dsid], \
+                                       js_str_bytes(dct), js_str_bytelen(dct))
+                di = di + 1
+            cssom_sheet_srccount[dsid] = 0
         js_set_prop(dsv, cast[Ptr[uint8]]("cssRules"), 8, ncr)
         js_set_prop(dsv, cast[Ptr[uint8]]("rules"), 5, ncr)
         return js_undefined()
@@ -8124,6 +8147,7 @@ shc_obj:      Array[512, int32]      # the <style> element object
 shc_sheet:    Array[512, int32]      # its CSSStyleSheet JS object
 shc_off:      Array[512, int32]      # the text it was built from, in shc_buf
 shc_len:      Array[512, int32]
+shc_sid:      Array[512, int32]      # its cascade-model sheet id (-1 = none)
 shc_n:        int32 = 0
 shc_w:        int32 = 0
 shc_buf:      Array[262144, uint8]
@@ -8131,14 +8155,80 @@ shc_buf:      Array[262144, uint8]
 # comparison runs BEFORE we know whether the text is being banked.
 shc_cur:      Array[65536, uint8]
 
+# <style> elements whose TEXT no longer feeds the cascade, because a CSSOM
+# deletion moved the sheet's surviving rules into the cascade model (see
+# NID_SS_DELETERULE). Emitting the text as well would apply every rule twice.
+STYSUP_MAX:   int32 = 64
+stysup_obj:   Array[64, int32]
+n_stysup:     int32 = 0
+
+
+# A <style> element REMOVED from the document contributes nothing to the
+# cascade. Its TEXT stops contributing automatically — the rewrite no longer
+# emits a detached node — but a sheet that was migrated into the cascade model
+# (insertRule / replaceSync / the deleteRule migration below) is reached through
+# the model, which knows nothing about the DOM. Its rules therefore kept
+# cascading after `styleElement.remove()`, and its @layer statements kept
+# holding their place in the layer order, so a test that appends a sheet,
+# asserts, removes it and repeats saw every earlier iteration's layers.
+#
+# Called at the head of every style flush, so "attached" is re-evaluated at
+# exactly the moments the cascade is re-read.
+def _cssom_sync_style_owners():
+    i: int32 = 0
+    while i < shc_n:
+        if shc_sid[i] >= 0:
+            cid: int32 = _find_cre_by_obj(shc_obj[i])
+            if cid >= 0 and cre_gone[cid] != 0:
+                _cssom_set_active(shc_sid[i], 0)
+            else:
+                _cssom_set_active(shc_sid[i], 1)
+        i = i + 1
+
+
+def _style_text_suppress(obj: int32):
+    if obj < 0 or n_stysup >= STYSUP_MAX:
+        return
+    i: int32 = 0
+    while i < n_stysup:
+        if stysup_obj[i] == obj:
+            return
+        i = i + 1
+    stysup_obj[n_stysup] = obj
+    n_stysup = n_stysup + 1
+
+
+def _style_text_suppressed(obj: int32) -> int32:
+    i: int32 = 0
+    while i < n_stysup:
+        if stysup_obj[i] == obj:
+            return 1
+        i = i + 1
+    return 0
+
+
+# The <style> element object a CSSStyleSheet object belongs to, or -1. The memo
+# below is the only sheet -> element link the engine keeps.
+def _style_el_of_sheet(sheetobj: int32) -> int32:
+    i: int32 = 0
+    while i < shc_n:
+        if shc_sheet[i] == sheetobj:
+            return shc_obj[i]
+        i = i + 1
+    return -1
+
 
 # Build (or rebuild) the CSSStyleSheet object for style text p[0..n).
+g_built_sid: int32 = -1
+
+
 def _style_sheet_build(p: Ptr[uint8], n: int32) -> int32:
     # A cascade-model id is nice-to-have (it is what insertRule/replaceSync
     # mutate); when the 256-sheet model is full the CSSOM object is still built
     # with sid -1 so `.cssRules` keeps working — a page that creates hundreds of
     # transient <style> elements must not start returning null halfway through.
     sid: int32 = _cssom_new_sheet(1, 0)
+    g_built_sid = sid
     o: int32 = _new_sheet_obj(sid)
     cr: int32 = js_get_prop(o, cast[Ptr[uint8]]("cssRules"), 8)
     sc: int32 = _sheet_split_load(sid, cr, 0, p, n)
@@ -8223,6 +8313,7 @@ def _sheet_accessor(rel: int32) -> int32:
                 return shc_sheet[k]
             # text changed: reparse, and re-bank it if the buffer allows
             shc_sheet[k] = _style_sheet_build(&shc_cur[0], cn)
+            shc_sid[k] = g_built_sid
             if shc_w + cn < SHC_BUF_CAP:
                 shc_off[k] = shc_w
                 shc_len[k] = cn
@@ -8241,6 +8332,7 @@ def _sheet_accessor(rel: int32) -> int32:
         shc_n = slot + 1
         shc_obj[slot] = thisv
         shc_sheet[slot] = sh
+        shc_sid[slot] = g_built_sid
         shc_off[slot] = shc_w
         shc_len[slot] = cn
         j2: int32 = 0
@@ -10162,6 +10254,20 @@ def _emit_created(cid: int32):
     # js_get_prop here would call back into this function and never return.
     # An own innerHTML exists exactly when the page ASSIGNED one, which is the
     # case this branch wants.
+    # A <style> whose sheet was migrated into the cascade model contributes its
+    # rules from there; emitting its text too would apply every rule twice.
+    # RENDER path only — g_ser_mode still serialises the real text, because
+    # CSSOM mutations do not alter the element's child text node.
+    if g_ser_mode == 0 and _style_text_suppressed(co) != 0:
+        _rw_cstr(cast[Ptr[uint8]]("</"))
+        ts2: int32 = 0
+        while ts2 < cre_tag_len[cid]:
+            _rw_ch(dom_idbuf[cre_tag_off[cid] + ts2])
+            ts2 = ts2 + 1
+        _rw_ch(62)
+        if wrap_outer != 0:
+            _rw_cstr(cast[Ptr[uint8]]("</a>"))
+        return
     hv: int32 = js_undefined()
     if js_has_own(co, cast[Ptr[uint8]]("innerHTML"), 9) != 0:
         hv = js_get_prop(co, cast[Ptr[uint8]]("innerHTML"), 9)
@@ -10693,6 +10799,7 @@ def _style_flush():
     if g_flushing != 0:
         return
     g_flushing = 1
+    _cssom_sync_style_owners()
     _dom_readback()
     _relayout()
     g_flushing = 0
