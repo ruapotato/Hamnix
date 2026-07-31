@@ -73,6 +73,14 @@ for f in "${pats[@]}"; do
     [ -f "$f" ] || continue
     # A gate that launches QEMU -- directly, via the shared runners, or by
     # demanding an installer image -- is not a host gate.
-    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|ensure_installer_img|installer_img_or_verdict' "$f" && continue
+    #
+    # 2026-07-31: `_installed_boot.sh` / `installed_boot_start` was MISSING from
+    # this list, so five gates that boot the installed NVMe disk under OVMF were
+    # classified QEMU-free and swept as host gates: test_auth, test_useradd,
+    # test_user_home_mount, test_himem_above_4g, test_bios_boot. That is how
+    # test_auth turned up in a "host gate" sweep -- it boots a VM, it just does
+    # it through a helper whose name contains neither "qemu" nor "img". The
+    # exclusion is a capability test, so it has to name every route to a VM.
+    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|_installed_boot\.sh|installed_boot_start|ensure_installer_img|installer_img_or_verdict' "$f" && continue
     echo "$f"
 done
