@@ -296,6 +296,30 @@ def htmlpage_row_height(r: uint64) -> int32:
     return row_h[r]
 
 
+# PAINTED vertical extent of background fill `i`, in canvas px — the same
+# numbers the fill pass draws with. A caller that recomputes row_top[top] /
+# row_top[bot-1]+row_h[bot-1] itself gets the wrong answer for an OUT-OF-FLOW
+# fill, whose rect comes from pixel geometry and whose rows the flow grid does
+# not contain: the POSFILL proof line reported y0=12 y1=0 for a `top:0;
+# height:50px` fixed bar that was in fact painted at y 0..50. A proof that
+# recomputes the thing it is proving can go stale against it; this cannot.
+def htmlpage_fill_y0(i: int32) -> int32:
+    ft: int32 = he_bfill_top(i)
+    fb0: int32 = he_bfill_bot(i)
+    if ft < 0 or fb0 <= ft:
+        return -1
+    return _hpg_fill_y(i, ft, fb0) - he_bfill_padt(i)
+
+
+def htmlpage_fill_y1(i: int32) -> int32:
+    ft: int32 = he_bfill_top(i)
+    fb0: int32 = he_bfill_bot(i)
+    if ft < 0 or fb0 <= ft:
+        return -1
+    _hpg_fill_y(i, ft, fb0)
+    return _hpg_fy1 + he_bfill_padb(i)
+
+
 def htmlpage_row_baseline(r: uint64) -> int32:
     if r >= HPG_MAX_ROWS:
         return -1

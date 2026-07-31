@@ -48,6 +48,7 @@ from lib.htmlpaint import htmlpaint_load_face, htmlpaint_width, \
     htmlpaint_target_rgba, htmlpaint_target_internal, htmlpaint_set_shear, \
     htmlpaint_text_ttf
 from lib.htmlpage import htmlpage_render, htmlpage_row_top, \
+    htmlpage_fill_y0, htmlpage_fill_y1, \
     htmlpage_n_linkboxes, htmlpage_linkbox_lid, htmlpage_linkbox_x0, \
     htmlpage_linkbox_x1, htmlpage_linkbox_y0, htmlpage_linkbox_y1, \
     htmlpage_row_height, htmlpage_row_baseline, htmlpage_install_reflow, \
@@ -1014,12 +1015,16 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         pfrx: int32 = he_bfill_rx(pfi)
         pftop: int32 = he_bfill_top(pfi)
         pfbot: int32 = he_bfill_bot(pfi)
-        py0: int32 = htmlpage_row_top(cast[uint64](pftop))
-        py1: int32 = py0
-        if pfbot > pftop:
-            lastr: int32 = pfbot - 1
-            py1 = htmlpage_row_top(cast[uint64](lastr)) + \
-                  htmlpage_row_height(cast[uint64](lastr))
+        # ASK THE RENDERER for the rect it painted rather than recomputing it
+        # from the row grid: an OUT-OF-FLOW fill (position:absolute/fixed) is
+        # resolved in pixels and its rows are not in the flow grid at all, so
+        # the recomputation reported y0=12 y1=0 for a `top:0; height:50px`
+        # fixed bar the renderer had painted at y 0..50.
+        py0: int32 = htmlpage_fill_y0(pfi)
+        py1: int32 = htmlpage_fill_y1(pfi)
+        if py0 < 0:
+            py0 = htmlpage_row_top(cast[uint64](pftop))
+            py1 = py0
         # Sample a STABLE fill pixel to report the box's painted colour. The old
         # top-left+3 sample landed on the box's own left-aligned glyph ink (text
         # starts at the content origin), so it read a glyph pixel rather than the
