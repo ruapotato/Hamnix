@@ -92,8 +92,21 @@ for f in "${pats[@]}"; do
     # _build_lock.sh is NOT in the list: it only MENTIONS qemu in a comment
     # about _kernel_iso.sh's shim, and 4 genuinely QEMU-free gates source it.
     #
+    # 2026-07-31: the enumeration above only walked scripts/_*.sh, and a route
+    # to a VM does not have to be an underscore helper. `scripts/hamnix-ac` --
+    # the on-device Adder compile driver -- has its own run_qemu() and
+    # `timeout 180s qemu-system-x86_64`, and scripts/test_selfhost_whole.sh
+    # reaches it by name. That gate BOOTS A KERNEL and was being handed to
+    # callers as QEMU-free, which is how it ended up in an "honest host sweep"
+    # red list. Re-derived by grepping ALL of scripts/ (not just _*.sh) for
+    # qemu-system: hamnix-ac is the only test-reachable one the list was
+    # missing; the rest (run_installer.sh, run_x86_bare.sh, build_installed_
+    # nvme.sh, bench_de_ondevice.sh, the verify_*.py / qa_*.py drivers,
+    # kllvm_repro_bss_zero.sh, build_kernel_llvm_arm64.sh) are invoked by no
+    # test_*.sh, and the one gate that names verify_*.py does so in a comment.
+    #
     # If you add a helper that can start a VM, add it here. This is a
     # CAPABILITY test, and it has to name every route to a VM or it lies.
-    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|_hamsh_drive\.sh|hamsh_boot|_installed_boot\.sh|installed_boot_start|_kernel_iso\.sh|_kvm_coreutils_repro\.sh|_kvm_wc_repro\.sh|ensure_installer_img|installer_img_or_verdict' "$f" && continue
+    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|_hamsh_drive\.sh|hamsh_boot|_installed_boot\.sh|installed_boot_start|_kernel_iso\.sh|_kvm_coreutils_repro\.sh|_kvm_wc_repro\.sh|hamnix-ac|ensure_installer_img|installer_img_or_verdict' "$f" && continue
     echo "$f"
 done
