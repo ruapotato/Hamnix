@@ -841,9 +841,36 @@ def _load_elf64(blob: Ptr[uint8], blob_size: uint64) -> uint64:
     # the native-lane build of the same program is proven to run on. The cap is
     # deliberately set well ABOVE every currently-working image so this is a
     # no-op for them: the DE-OOM fix the demand split exists for is untouched.
-    if e_type == cast[uint32](ELF_ET_EXEC) \
-            and mem_hi_rel > ELF_MAX_LOW_BSS_DEMAND \
-            and lowest_v < ELF_LOW_IMAGE_VADDR_TOP:
+    #
+    # THE RULE IS ABOUT THE EFFECTIVE LOAD BASE, NOT e_type (2026-07-30).
+    # Moving the lane to PIE removes the aliasing for the ASLR case, but NOT
+    # automatically for a deterministic boot. With aslr_disabled the ET_DYN arm
+    # loads the image IDENTITY at its own `region` (dyn_vbase == 0 -> region),
+    # and identity is only safe while vaddr == phys holds for the WHOLE image.
+    # A demand-BSS tail breaks exactly that: the eager extent is backed at
+    # [region, region+file_hi_rel) but the punched tail
+    # [region+file_hi_rel, region+mem_hi_rel) is a range of low VAs with no
+    # backing at all — which is the direct-map alias again, just displaced by
+    # the region base. The native ELF32 lane is safe precisely because it is
+    # always EAGER full-span, so vaddr == phys everywhere and a kernel
+    # direct-map access inside the image's span reaches the intended page.
+    #
+    # So: suppress the split whenever the image will land in the low,
+    # direct-map-aliasing band, whether that is a low ET_EXEC link or an ET_DYN
+    # identity load. A high ASLR vbase (the default) sits above all RAM and
+    # keeps the demand split — which is the case the DE-OOM fix needs.
+    img_base_is_low: int32 = 1
+    if e_type == cast[uint32](ELF_ET_EXEC):
+        if lowest_v >= ELF_LOW_IMAGE_VADDR_TOP:
+            img_base_is_low = 0
+    else:
+        planned_vbase: uint64 = elf_aslr_app_vbase
+        if _in_interp_load != 0:
+            planned_vbase = elf_aslr_interp_vbase
+        # planned_vbase == 0 means "identity at region" -> low by definition.
+        if planned_vbase >= ELF_LOW_IMAGE_VADDR_TOP:
+            img_base_is_low = 0
+    if mem_hi_rel > ELF_MAX_LOW_BSS_DEMAND and img_base_is_low != 0:
         printk1("elf64: low-BSS demand window %d MiB > cap -> EAGER full span (direct-map alias guard)\n",
                 mem_hi_rel >> 20)
         file_hi_rel = mem_hi_rel

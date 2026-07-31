@@ -208,14 +208,21 @@ for path in sorted(glob.glob(os.path.join(elfdir, '*.elf'))):
 
     if e_type == ET_DYN:
         # SAFE BY CONSTRUCTION: _load_elf64's ET_DYN arm rebases the image onto
-        # a base of the kernel's choosing (high ASLR vbase, or identity at its
-        # own memblock region), so its user vaddrs cover only its own pages.
-        # There is no window to bound. What CAN still go wrong is a relocation
-        # kind the loader refuses -- which is a refused exec on device.
+        # a base of the kernel's choosing, so its user vaddrs cover only its own
+        # pages. There is no window to bound. Two things can still go wrong:
+        #   * a relocation kind the loader refuses -> a refused exec on device;
+        #   * a BSS tail past the cap. On the DEFAULT (ASLR-on) boot the image
+        #     sits at a high vbase and keeps the cheap demand split. On a
+        #     DETERMINISTIC (aslr_disabled) boot it loads IDENTITY at its own
+        #     region, where the loader suppresses the split and backs the FULL
+        #     span eagerly to keep vaddr == phys -- correct, but it pays a large
+        #     contiguous region_alloc at every exec, which is a real OOM risk.
         unsupported = sorted(k for k in kinds if k not in LOADER_APPLIES)
         dyns.append((name, mem_hi_rel, mem_hi_rel - file_hi_rel, n_rel))
         if unsupported:
             badrel.append((name, unsupported))
+        if mem_hi_rel > cap:
+            eager.append((name, mem_hi_rel))
         continue
 
     is_low = lowest_v < low_top
@@ -261,8 +268,10 @@ if execs:
 
 for name, span in eager:
     print('[elfbss] WARNING: %s span %.1f MiB exceeds the cap -> EAGER full-span '
-          'load. Safe (no direct-map alias) but it pays a %.1f MiB contiguous '
-          'region_alloc at every exec; shrink its static BSS.'
+          'load whenever it lands in the low band (a low ET_EXEC link, or an '
+          'ET_DYN identity load on a deterministic/aslr_disabled boot). Safe '
+          '(vaddr == phys, no direct-map alias) but it pays a %.1f MiB '
+          'contiguous region_alloc at every exec; shrink its static BSS.'
           % (name, span / 1048576.0, span / 1048576.0))
 
 failed = False
