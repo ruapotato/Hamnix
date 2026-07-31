@@ -1905,6 +1905,22 @@ def _len_apply_unit(milli: int32) -> int32:
     if _unit_at(i, e, cast[Ptr[uint8]]("ch")) != 0:  # ~ one monospace cell
         _len_i = i + 2
         return milli * (EM_PX / 2) / 1000
+    # `ex` — the font's x-height (css-values-3 §5.1.1). The unit was MISSING
+    # from this table entirely, and the fall-through is worse than a wrong
+    # value: it returns milli/1000 WITHOUT advancing _len_i past the unit, so
+    # the two letters stay in the buffer. A bare `width: 2ex` merely computed
+    # 2px, but inside calc() the leftover token derails the whole expression —
+    # `calc(1ex + 1ex)` did not evaluate at all, while its reference's `2ex`
+    # did, and WPT css-values/ex-calc-expression-001 is exactly that pair.
+    #
+    # css-values-3 prescribes 0.5em when the font's x-height is unavailable,
+    # and it is unavailable here: lengths resolve in the cascade, which has no
+    # font face to interrogate (that lives in the paint pass). 0.5em is also
+    # what this table already uses for `ch`, so the two font-relative
+    # approximations stay consistent with each other.
+    if _unit_at(i, e, cast[Ptr[uint8]]("ex")) != 0:
+        _len_i = i + 2
+        return milli * (EM_PX / 2) / 1000
     if _unit_at(i, e, cast[Ptr[uint8]]("pt")) != 0:  # 1pt == 4/3 px
         _len_i = i + 2
         return milli * 4 / 3 / 1000
