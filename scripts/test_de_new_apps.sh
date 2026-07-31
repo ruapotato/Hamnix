@@ -35,6 +35,11 @@ compile_one() {
     out="$(mktemp --tmpdir "hamnix-${name}.XXXXXX.elf")"
     if python3 -m compiler.adder compile --target=x86_64-adder-user \
             "user/${name}.ad" -o "$out" >/tmp/de_new_apps.$name.log 2>&1; then
+        # The SIGPIPE race that this gate's other links had (see the block at
+        # the /n/distros check) needs a payload the writer is still emitting
+        # when grep -q exits. A one-line payload measured 0/400 under 8-way
+        # host load, so this site is exempt:
+        # pipefail-grepq-ok: `file` on a SINGLE path emits one line (126 B)
         if file "$out" | grep -q ELF; then
             passed "$name compiles to an ELF"
         else
