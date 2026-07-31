@@ -5,7 +5,10 @@
  * The whole-kernel `.ll` (init/main.ad closure, --target=aarch64-bare-metal)
  * leaves 105 symbols undefined that on x86 are supplied by arch/x86 .S or the
  * native hybrid main.o: x86-specific CR/MSR/EFI/IDT/TSS/CEA/AP/FPU machinery and
- * the 5 LLVM bails (start_kernel, do_syscall, ...). NONE of these are reached by
+ * x86-only entry points. (It used to also cover the LLVM bails; as of
+ * 2026-07-30 the whole-kernel aarch64 emit has ZERO bails — 11383/11383 — so
+ * every stub left here is a genuine x86 arch mechanism, and build step 3c
+ * localizes any of these the kernel closure now really defines.) NONE of these are reached by
  * the A3 boot proof (which enters head.S and calls only the pure emitted Adder
  * leaf kernel_printk_printk__fmt_is_flag); they exist solely to make the image
  * LINK. Each is a return-0 / nop stub. Real aarch64 mechanisms (PSCI reset/
@@ -116,6 +119,14 @@ u64 tests_core_smoke__list_walk_and_sum(void) { return 0; }
 u64 tss64_percpu_init(void) { return 0; }
 u64 tss_set_ist1(void) { return 0; }
 u64 tss_set_rsp0(void) { return 0; }
+/* x86 ring-3 test payload from arch/x86/kernel/syscall_64.S — the SAME class as
+ * syscall_entry / smp_user_probe_entry / pf_race_probe_entry above. It was
+ * absent from this snapshot only because `start_kernel`, its sole referent, was
+ * itself a stub until the NM_MAX raise let it emit: start_kernel takes its
+ * ADDRESS as the baked init fallback when no /init ELF is found in the cpio.
+ * On aarch64 there is no ring-3 x86 payload, and the fallback is deliberately an
+ * address that faults rather than one that runs. */
+u64 user_demo_entry(void) { return 0; }
 u64 vdso_image_base(void) { return 0; }
 u64 vdso_image_size(void) { return 0; }
 u64 write_cr4(void) { return 0; }

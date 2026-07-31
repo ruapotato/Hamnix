@@ -230,49 +230,68 @@ HOST_BUFFER_OVERRIDES = {
         # backend) does. A handful of large user apps (hamsh/hamUId/js/hambrowse)
         # have functions with >256 distinct names; at 256 nm_intern overflows,
         # cfg_overflow trips, and the SSA/LLVM path bails to the native lane.
-        # Raise the HOST compiler's cap to 1024 so those functions emit through
-        # LLVM. This is exactly the MAX_GLOBALS host-only bump pattern: EVERY
+        # Raise the HOST compiler's cap so those functions emit through LLVM.
+        # This is exactly the MAX_GLOBALS host-only bump pattern: EVERY
         # array/constant sized by NM_MAX MUST scale in lockstep or the
         # liveness/SSA passes write out of bounds. Derived sizes:
-        #   LV_WORDS   = NM_MAX/32                 (liveness bitset words: 8->32)
-        #   lv_*       = BB_MAX(8192) * LV_WORDS   (65536 -> 262144)
-        #   cfgv_seen  = LV_WORDS                  (8 -> 32)
-        #   lr_hole_*  = NM_MAX * LR_MAX_HOLES(4)  (1024 -> 4096)
+        #   LV_WORDS   = NM_MAX/32                 (liveness bitset words: 8->64)
+        #   lv_*       = BB_MAX(8192) * LV_WORDS   (65536 -> 524288)
+        #   cfgv_seen  = LV_WORDS                  (8 -> 64)
+        #   lr_hole_*  = NM_MAX * LR_MAX_HOLES(4)  (1024 -> 8192)
         # (loop_break_bb/loop_cont_bb are LOOP_MAX-sized, NOT NM_MAX — untouched.)
-        ("NM_MAX: uint32 = 256", "NM_MAX: uint32 = 1024"),
-        ("nm_off: Array[256, uint32]", "nm_off: Array[1024, uint32]"),
-        ("nm_len: Array[256, uint32]", "nm_len: Array[1024, uint32]"),
-        ("nm_trunc: Array[256, uint32]", "nm_trunc: Array[1024, uint32]"),
-        ("nm_slotread: Array[256, uint32]", "nm_slotread: Array[1024, uint32]"),
-        ("nm_usecost: Array[256, uint32]", "nm_usecost: Array[1024, uint32]"),
-        ("LV_WORDS: uint32 = 8", "LV_WORDS: uint32 = 32"),
-        ("lv_use: Array[65536, uint32]", "lv_use: Array[262144, uint32]"),
-        ("lv_def: Array[65536, uint32]", "lv_def: Array[262144, uint32]"),
-        ("lv_in: Array[65536, uint32]", "lv_in: Array[262144, uint32]"),
-        ("lv_out: Array[65536, uint32]", "lv_out: Array[262144, uint32]"),
-        ("cfgv_seen: Array[8, uint32]", "cfgv_seen: Array[32, uint32]"),
-        ("lr_start: Array[256, uint32]", "lr_start: Array[1024, uint32]"),
-        ("lr_end: Array[256, uint32]", "lr_end: Array[1024, uint32]"),
-        ("lr_valid: Array[256, uint32]", "lr_valid: Array[1024, uint32]"),
-        ("lr_nhole: Array[256, uint32]", "lr_nhole: Array[1024, uint32]"),
-        ("lr_hole_lo: Array[1024, uint32]", "lr_hole_lo: Array[4096, uint32]"),
-        ("lr_hole_hi: Array[1024, uint32]", "lr_hole_hi: Array[4096, uint32]"),
-        ("lr_hole_depth: Array[1024, uint32]", "lr_hole_depth: Array[4096, uint32]"),
-        ("lr_hole_brdepth: Array[1024, uint32]", "lr_hole_brdepth: Array[4096, uint32]"),
-        ("cl_set: Array[256, uint32]", "cl_set: Array[1024, uint32]"),
+        #
+        # 1024 -> 2048 (2026-07-30). MEASURED, not guessed: instrumenting the
+        # emitter to print nm_count per function over the whole-kernel
+        # init/main.ad closure (11383 functions) with the cap temporarily at
+        # 4096 gives exactly four functions above 400 distinct names —
+        #   start_kernel                             nm=1492 (sb=2605 blocks)
+        #   block_smoke_test                         nm=596
+        #   linux_u_syscall_dispatch_inner           nm=539
+        #   do_syscall_dispatch                      nm=471
+        # — so 1024 was binding on start_kernel ALONE, and 2048 clears it with
+        # 37% headroom while leaving the runner-up 3.4x under. Cost, measured on
+        # the same whole-kernel emit: 45.1 s at 1024, 60.6 s at 4096 (+34%), so
+        # 2048 is ~+11%; .bss grows 32 -> 64 MiB (ssa_curdef + ssa_incphi, each
+        # SSA_BB_MAX(4096) * NM_MAX). Raising beat splitting start_kernel: the
+        # split would be a refactor of the SHARED boot sequence (2605 basic
+        # blocks) to buy an 11% host-compile win that nobody is asking for.
+        # start_kernel had NO caller in the emitted IR, so it was a LATENT (not
+        # live) ARM64 link break — but see the guard below: it is exactly the
+        # class of bail that goes live the moment the subset broadens.
+        ("NM_MAX: uint32 = 256", "NM_MAX: uint32 = 2048"),
+        ("nm_off: Array[256, uint32]", "nm_off: Array[2048, uint32]"),
+        ("nm_len: Array[256, uint32]", "nm_len: Array[2048, uint32]"),
+        ("nm_trunc: Array[256, uint32]", "nm_trunc: Array[2048, uint32]"),
+        ("nm_slotread: Array[256, uint32]", "nm_slotread: Array[2048, uint32]"),
+        ("nm_usecost: Array[256, uint32]", "nm_usecost: Array[2048, uint32]"),
+        ("LV_WORDS: uint32 = 8", "LV_WORDS: uint32 = 64"),
+        ("lv_use: Array[65536, uint32]", "lv_use: Array[524288, uint32]"),
+        ("lv_def: Array[65536, uint32]", "lv_def: Array[524288, uint32]"),
+        ("lv_in: Array[65536, uint32]", "lv_in: Array[524288, uint32]"),
+        ("lv_out: Array[65536, uint32]", "lv_out: Array[524288, uint32]"),
+        ("cfgv_seen: Array[8, uint32]", "cfgv_seen: Array[64, uint32]"),
+        ("lr_start: Array[256, uint32]", "lr_start: Array[2048, uint32]"),
+        ("lr_end: Array[256, uint32]", "lr_end: Array[2048, uint32]"),
+        ("lr_valid: Array[256, uint32]", "lr_valid: Array[2048, uint32]"),
+        ("lr_nhole: Array[256, uint32]", "lr_nhole: Array[2048, uint32]"),
+        ("lr_hole_lo: Array[1024, uint32]", "lr_hole_lo: Array[8192, uint32]"),
+        ("lr_hole_hi: Array[1024, uint32]", "lr_hole_hi: Array[8192, uint32]"),
+        ("lr_hole_depth: Array[1024, uint32]", "lr_hole_depth: Array[8192, uint32]"),
+        ("lr_hole_brdepth: Array[1024, uint32]", "lr_hole_brdepth: Array[8192, uint32]"),
+        ("cl_set: Array[256, uint32]", "cl_set: Array[2048, uint32]"),
     ],
     "regalloc.ad": [
         # Mirror the cfg NM_MAX host bump (256 -> 1024): the linear-scan allocator
         # indexes ra_* arrays by name id up to RA_MAXNAMES (== cfg NM_MAX). If cfg
         # NM_MAX grows but these stay 256 the allocator reads/writes past the end.
-        ("RA_MAXNAMES: uint32 = 256", "RA_MAXNAMES: uint32 = 1024"),
-        ("ra_assigned_reg: Array[256, uint32]", "ra_assigned_reg: Array[1024, uint32]"),
-        ("ra_store_elim: Array[256, uint32]", "ra_store_elim: Array[1024, uint32]"),
-        ("ra_order: Array[256, uint32]", "ra_order: Array[1024, uint32]"),
-        ("ra_name_vetoed: Array[256, uint32]", "ra_name_vetoed: Array[1024, uint32]"),
-        ("ra_name_isfloat: Array[256, uint32]", "ra_name_isfloat: Array[1024, uint32]"),
-        ("ra_xmm_assigned: Array[256, uint32]", "ra_xmm_assigned: Array[1024, uint32]"),
-        ("ra_xmm_order: Array[256, uint32]", "ra_xmm_order: Array[1024, uint32]"),
+        ("RA_MAXNAMES: uint32 = 256", "RA_MAXNAMES: uint32 = 2048"),
+        ("ra_assigned_reg: Array[256, uint32]", "ra_assigned_reg: Array[2048, uint32]"),
+        ("ra_store_elim: Array[256, uint32]", "ra_store_elim: Array[2048, uint32]"),
+        ("ra_order: Array[256, uint32]", "ra_order: Array[2048, uint32]"),
+        ("ra_name_vetoed: Array[256, uint32]", "ra_name_vetoed: Array[2048, uint32]"),
+        ("ra_name_isfloat: Array[256, uint32]", "ra_name_isfloat: Array[2048, uint32]"),
+        ("ra_xmm_assigned: Array[256, uint32]", "ra_xmm_assigned: Array[2048, uint32]"),
+        ("ra_xmm_order: Array[256, uint32]", "ra_xmm_order: Array[2048, uint32]"),
     ],
     "ssa.ad": [
         # Mirror the cfg NM_MAX host bump (256 -> 1024). ssa_curdef/ssa_incphi are
@@ -280,21 +299,22 @@ HOST_BUFFER_OVERRIDES = {
         # scale to 1024*1024 = 1048576. The per-name ssa_* attribute arrays are
         # indexed by name id and scale 256 -> 1024. (sv_*/sb_* arrays are
         # value-/block-indexed, NOT name-indexed — untouched.)
-        ("ssa_curdef: Array[262144, uint32]", "ssa_curdef: Array[1048576, uint32]"),
-        ("ssa_incphi: Array[262144, uint32]", "ssa_incphi: Array[1048576, uint32]"),
-        ("ssa_islocal: Array[256, uint32]", "ssa_islocal: Array[1024, uint32]"),
-        ("ssa_local_sgn: Array[256, uint32]", "ssa_local_sgn: Array[1024, uint32]"),
-        ("ssa_local_size: Array[256, uint32]", "ssa_local_size: Array[1024, uint32]"),
-        ("ssa_ismem: Array[256, uint32]", "ssa_ismem: Array[1024, uint32]"),
-        ("ssa_mem_addr: Array[256, uint32]", "ssa_mem_addr: Array[1024, uint32]"),
-        ("ssa_mem_esz: Array[256, uint32]", "ssa_mem_esz: Array[1024, uint32]"),
-        ("ssa_mem_esgn: Array[256, uint32]", "ssa_mem_esgn: Array[1024, uint32]"),
-        ("ssa_mem_isarr: Array[256, uint32]", "ssa_mem_isarr: Array[1024, uint32]"),
-        ("ssa_ptr_esz: Array[256, uint32]", "ssa_ptr_esz: Array[1024, uint32]"),
-        ("ssa_ptr_esgn: Array[256, uint32]", "ssa_ptr_esgn: Array[1024, uint32]"),
-        ("ssa_local_struct: Array[256, uint32]", "ssa_local_struct: Array[1024, uint32]"),
-        ("ssa_local_struct_is_ptr: Array[256, uint32]", "ssa_local_struct_is_ptr: Array[1024, uint32]"),
-        ("ssa_local_fw: Array[256, uint32]", "ssa_local_fw: Array[1024, uint32]"),
+        ("ssa_curdef: Array[262144, uint32]", "ssa_curdef: Array[2097152, uint32]"),
+        ("ssa_incphi: Array[262144, uint32]", "ssa_incphi: Array[2097152, uint32]"),
+        ("ssa_islocal: Array[256, uint32]", "ssa_islocal: Array[2048, uint32]"),
+        ("ssa_local_sgn: Array[256, uint32]", "ssa_local_sgn: Array[2048, uint32]"),
+        ("ssa_local_size: Array[256, uint32]", "ssa_local_size: Array[2048, uint32]"),
+        ("ssa_ismem: Array[256, uint32]", "ssa_ismem: Array[2048, uint32]"),
+        ("ssa_mem_addr: Array[256, uint32]", "ssa_mem_addr: Array[2048, uint32]"),
+        ("ssa_mem_esz: Array[256, uint32]", "ssa_mem_esz: Array[2048, uint32]"),
+        ("ssa_mem_esgn: Array[256, uint32]", "ssa_mem_esgn: Array[2048, uint32]"),
+        ("ssa_mem_isarr: Array[256, uint32]", "ssa_mem_isarr: Array[2048, uint32]"),
+        ("ssa_mem_rowstride: Array[256, uint32]", "ssa_mem_rowstride: Array[2048, uint32]"),
+        ("ssa_ptr_esz: Array[256, uint32]", "ssa_ptr_esz: Array[2048, uint32]"),
+        ("ssa_ptr_esgn: Array[256, uint32]", "ssa_ptr_esgn: Array[2048, uint32]"),
+        ("ssa_local_struct: Array[256, uint32]", "ssa_local_struct: Array[2048, uint32]"),
+        ("ssa_local_struct_is_ptr: Array[256, uint32]", "ssa_local_struct_is_ptr: Array[2048, uint32]"),
+        ("ssa_local_fw: Array[256, uint32]", "ssa_local_fw: Array[2048, uint32]"),
         ("SSA_BB_MAX: uint32 = 1024", "SSA_BB_MAX: uint32 = 4096"),
         ("sb_first_val: Array[1024, uint32]", "sb_first_val: Array[4096, uint32]"),
         ("sb_last_val: Array[1024, uint32]", "sb_last_val: Array[4096, uint32]"),
@@ -311,8 +331,8 @@ HOST_BUFFER_OVERRIDES = {
         ("sb_visited: Array[1024, uint32]", "sb_visited: Array[4096, uint32]"),
         ("sb_rpo: Array[1024, uint32]", "sb_rpo: Array[4096, uint32]"),
         ("sb_po: Array[1024, uint32]", "sb_po: Array[4096, uint32]"),
-        ("ssa_curdef: Array[1048576, uint32]", "ssa_curdef: Array[4194304, uint32]"),
-        ("ssa_incphi: Array[1048576, uint32]", "ssa_incphi: Array[4194304, uint32]"),
+        ("ssa_curdef: Array[2097152, uint32]", "ssa_curdef: Array[8388608, uint32]"),
+        ("ssa_incphi: Array[2097152, uint32]", "ssa_incphi: Array[8388608, uint32]"),
     ],
     "ssa_opt.ad": [
         ("SSA_BB_MAX_LOCAL: uint32 = 1024", "SSA_BB_MAX_LOCAL: uint32 = 4096"),
@@ -353,6 +373,92 @@ HOST_BUFFER_OVERRIDES = {
 # Carries the host SSA_BB_MAX across the per-module override calls (ssa.ad is
 # concatenated before its three siblings, so it is seen first).
 _HOST_BB = [None]
+
+# Same, for the host NM_MAX. cfg.ad is concatenated before regalloc.ad/ssa.ad,
+# so the cap is seen first and can be enforced on the two sibling modules that
+# size arrays by it.
+_HOST_NM = [None]
+
+# Every NAME-INDEXED array, by owning module, that MUST be exactly NM_MAX
+# entries long. `nm_intern` hands out ids in [0, NM_MAX), and each of these is
+# written at that id, so one left at the on-device 256 (or a stale 1024 after a
+# raise) is a straight out-of-bounds write into whatever .bss follows it. The
+# two sibling CONSTANTS are worse than an array: `RA_MAXNAMES` bounds the
+# allocator's own loops, and `LV_WORDS` is the liveness bitset WIDTH — leaving
+# LV_WORDS small does not overflow, it silently makes every liveness set only
+# describe the first LV_WORDS*32 names, so names past it read as DEAD and their
+# live ranges are wrong. That is a miscompile with no crash.
+_NM_INDEXED = {
+    "cfg.ad": ["nm_off", "nm_len", "nm_trunc", "nm_slotread", "nm_usecost",
+               "lr_start", "lr_end", "lr_valid", "lr_nhole", "cl_set"],
+    "regalloc.ad": ["ra_assigned_reg", "ra_store_elim", "ra_order",
+                    "ra_name_vetoed", "ra_name_isfloat", "ra_xmm_assigned",
+                    "ra_xmm_order"],
+    "ssa.ad": ["ssa_islocal", "ssa_local_sgn", "ssa_local_size", "ssa_ismem",
+               "ssa_mem_addr", "ssa_mem_esz", "ssa_mem_esgn", "ssa_mem_isarr",
+               "ssa_mem_rowstride", "ssa_ptr_esz", "ssa_ptr_esgn",
+               "ssa_local_struct", "ssa_local_struct_is_ptr", "ssa_local_fw"],
+}
+
+
+def _check_nm_lockstep(mod, text):
+    """Fail the concat BY NAME if the host NM_MAX was raised but something it
+    sizes was left behind. Mirrors the SSA_BB_MAX guard above; see _NM_INDEXED
+    for why a stale sibling CONSTANT is worse than a stale array."""
+    m = re.search(r"\nNM_MAX: uint32 = (\d+)", text)
+    if m:
+        _HOST_NM[0] = int(m.group(1))
+    nm = _HOST_NM[0]
+    if nm is None or nm == 256:
+        return                                  # on-device build: nothing raised
+    stale = []
+    for name in _NM_INDEXED.get(mod, []):
+        for mm in re.finditer(
+                r"\n" + re.escape(name) + r": Array\[(\d+), uint(?:8|32|64)\]",
+                text):
+            if int(mm.group(1)) != nm:
+                stale.append("%s[%s] (want %d)" % (name, mm.group(1), nm))
+    if mod == "cfg.ad":
+        lv = re.search(r"\nLV_WORDS: uint32 = (\d+)", text)
+        if lv and int(lv.group(1)) != nm // 32:
+            stale.append("LV_WORDS=%s (want NM_MAX/32 = %d)"
+                         % (lv.group(1), nm // 32))
+        if lv:
+            want_lv = 8192 * (nm // 32)         # BB_MAX * LV_WORDS
+            for a in ("lv_use", "lv_def", "lv_in", "lv_out"):
+                mm = re.search(r"\n" + a + r": Array\[(\d+), uint32\]", text)
+                if mm and int(mm.group(1)) != want_lv:
+                    stale.append("%s[%s] (want BB_MAX*LV_WORDS = %d)"
+                                 % (a, mm.group(1), want_lv))
+            mm = re.search(r"\ncfgv_seen: Array\[(\d+), uint32\]", text)
+            if mm and int(mm.group(1)) != nm // 32:
+                stale.append("cfgv_seen[%s] (want LV_WORDS = %d)"
+                             % (mm.group(1), nm // 32))
+        for a in ("lr_hole_lo", "lr_hole_hi", "lr_hole_depth", "lr_hole_brdepth"):
+            mm = re.search(r"\n" + a + r": Array\[(\d+), uint32\]", text)
+            if mm and int(mm.group(1)) != nm * 4:
+                stale.append("%s[%s] (want NM_MAX*LR_MAX_HOLES = %d)"
+                             % (a, mm.group(1), nm * 4))
+    if mod == "regalloc.ad":
+        mm = re.search(r"\nRA_MAXNAMES: uint32 = (\d+)", text)
+        if mm and int(mm.group(1)) != nm:
+            stale.append("RA_MAXNAMES=%s (want NM_MAX = %d)" % (mm.group(1), nm))
+    if mod == "ssa.ad":
+        bb = _HOST_BB[0] or 1024
+        for a in ("ssa_curdef", "ssa_incphi"):
+            mm = re.search(r"\n" + a + r": Array\[(\d+), uint32\]", text)
+            if mm and int(mm.group(1)) != bb * nm:
+                stale.append("%s[%s] (want SSA_BB_MAX*NM_MAX = %d)"
+                             % (a, mm.group(1), bb * nm))
+    if stale:
+        raise SystemExit(
+            "[concat] ERROR: host build raised NM_MAX to %d but left "
+            "name-indexed name(s) unscaled in %s: %s. nm_intern hands out ids "
+            "in [0,NM_MAX), so a stale ARRAY is an out-of-bounds write and a "
+            "stale CONSTANT (LV_WORDS / RA_MAXNAMES) silently truncates the "
+            "liveness/allocation domain. Update HOST_BUFFER_OVERRIDES['%s'] "
+            "(and _NM_INDEXED if you added a new name-indexed array)."
+            % (nm, mod, ", ".join(stale), mod))
 
 
 def apply_host_buffer_overrides(mod, text):
@@ -420,6 +526,13 @@ def apply_host_buffer_overrides(mod, text):
                     "an out-of-bounds write. Add it to "
                     "HOST_BUFFER_OVERRIDES['%s']."
                     % (host_bb, mod, ", ".join(sorted(set(stale))), mod))
+
+    # Guard the NAME-INDEXED family (NM_MAX) exactly the same way — see
+    # _check_nm_lockstep. NM_MAX is the costlier of the two caps to raise
+    # (ssa_curdef/ssa_incphi are SSA_BB_MAX * NM_MAX), which is precisely why it
+    # is the one most likely to be raised in cfg.ad and forgotten in regalloc.ad
+    # or ssa.ad.
+    _check_nm_lockstep(mod, text)
 
     prefixes = {"lexer.ad": "tok_", "parser.ad": "nd_"}.get(mod)
     if prefixes is not None:
