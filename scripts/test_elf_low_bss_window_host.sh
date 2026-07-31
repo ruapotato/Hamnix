@@ -42,10 +42,22 @@
 # R_X86_64_RELATIVE entries at load time and REFUSES the load on any other
 # relocation kind.
 #
-# The ET_EXEC cap (ELF_MAX_LOW_BSS_DEMAND) stays in fs/elf.ad and is still
-# checked here: the ELF32 lane, Debian's busybox-static, and the
-# ADDER_NATIVE64_ETEXEC=1 debug link can all still hand the loader a low
-# ET_EXEC, and that path must remain safe.
+# A LOW BASE NOW MEANS NO DEMAND SPLIT AT ANY SIZE. The ELF32 lane, Debian's
+# busybox-static, the ADDER_NATIVE64_ETEXEC=1 debug link, and an ET_DYN identity
+# load on a deterministic (aslr_disabled) boot can all still put an image in the
+# low band, and fs/elf.ad backs those EAGER full-span so vaddr == phys holds
+# across the whole image.
+#
+# That rule used to be capped at ELF_MAX_LOW_BSS_DEMAND, and the cap was WRONG:
+# device evidence (test_cow_fork, a PIE hamsh exec'ing /bin/test_cow_fork) gave
+# `vec=0xe err=0x2 cr2=0x0c000000` with pde[96] cracked and pte[0]=0 — a
+# demand window FAR UNDER the cap, punched by an ET_DYN image loaded identity at
+# its own ~192 MiB region, sitting exactly at the allocator's high-water mark.
+# The size of the window was never the real variable; WHERE it lands is. A low
+# ET_EXEC at 0x400000 punches a window over RAM the allocator consumed long ago,
+# which is the only reason a 23 MiB window ever survived. ELF_MAX_LOW_BSS_DEMAND
+# survives only as the threshold for WARNING about the contiguous region_alloc
+# that an eager load costs.
 #
 # WHAT IT ASSERTS
 #   1. For every build/user/*.elf that is an ELF64 image, compute lowest PT_LOAD
@@ -54,20 +66,18 @@
 #   2. ET_DYN images are SAFE BY CONSTRUCTION (rebased away from the direct
 #      map); they are reported, and their dynamic relocations are checked
 #      against what the loader can actually apply.
-#   3. Any remaining low-linked ET_EXEC is classified DEMAND (window <= cap) or
-#      EAGER (window > cap, loader suppresses the split). Both are safe; the
-#      report names which and why.
-#   4. FAIL if a low ET_EXEC would take the DEMAND path with a window larger
-#      than the cap — that would mean the gate's model and fs/elf.ad have
-#      drifted apart, which is the only way this class ships again.
+#   3. Any remaining low-linked ET_EXEC is EAGER full-span, whatever its size.
+#   4. FAIL if a LOW-based image would take the DEMAND path with ANY window —
+#      that would mean the gate's model and fs/elf.ad have drifted apart, which
+#      is the only way this class ships again.
 #   5. FAIL if an ET_DYN image carries a relocation kind the loader refuses
 #      (anything but R_X86_64_RELATIVE / R_X86_64_NONE) — on device that is a
 #      refused exec, and the point of a host gate is to catch it here.
 #   6. FAIL if NO ELF64 images are found at all, and FAIL if the whole
 #      population went ET_EXEC again — a silent lane regression would otherwise
 #      read as a quiet PASS.
-#   7. WARN (not fail) when an ET_EXEC image crosses onto the EAGER path: it is
-#      safe, but it pays a large contiguous region_alloc at exec.
+#   7. WARN (not fail) when an image past the cap would take the EAGER path in
+#      the low band: safe, but it pays a large contiguous region_alloc at exec.
 #
 # Host-only: no QEMU, no device. Reads ELF program headers with python3.
 #
@@ -227,18 +237,24 @@ for path in sorted(glob.glob(os.path.join(elfdir, '*.elf'))):
         continue
 
     is_low = lowest_v < low_top
-    # The loader's rule (fs/elf.ad): a low-linked ET_EXEC whose FULL span
-    # exceeds the cap gets no demand split at all -- eager full span.
-    suppressed = is_low and mem_hi_rel > cap
+    # The loader's rule (fs/elf.ad): a LOW-BASED image gets NO demand split at
+    # any size -- eager full span, so vaddr == phys across the whole image.
+    # The cap is no longer a correctness knob, only the threshold for warning
+    # about the contiguous region_alloc that eager load costs.
+    suppressed = is_low
     bss_lo = lowest_v + file_hi_rel
     bss_hi = lowest_v + mem_hi_rel
     win = 0 if suppressed else (mem_hi_rel - file_hi_rel)
     execs.append((name, lowest_v, bss_lo, bss_hi, mem_hi_rel, win,
                   suppressed, is_low))
     if suppressed:
-        eager.append((name, mem_hi_rel))
-    elif is_low and win > cap:
-        # Model/loader drift: a demand window past the cap must be impossible.
+        if mem_hi_rel > cap:
+            eager.append((name, mem_hi_rel))
+    elif is_low:
+        # Model/loader drift: a LOW-based image with ANY demand window must be
+        # impossible -- that is the exact shape that halted the box with
+        # cr2=0x0c000000 (a punched not-present leaf at the allocator's
+        # high-water mark).
         bad.append((name, win))
 
 if not execs and not dyns:
@@ -287,11 +303,11 @@ if badrel:
 
 if bad:
     for name, win in bad:
-        print('[elfbss] FAIL: %s would take the DEMAND path with a %.1f MiB '
-              'window -- past ELF_MAX_LOW_BSS_DEMAND. The gate model and '
-              'fs/elf.ad have drifted; the loader will punch that window into '
-              'the kernel direct map and the box wedges on the first BSS store.'
-              % (name, win / 1048576.0))
+        print('[elfbss] FAIL: %s is LOW-based and would take the DEMAND path '
+              'with a %.1f MiB window. A low-based image must get NO demand '
+              'split at any size (fs/elf.ad); the gate model and the loader '
+              'have drifted, and the loader will punch that window into the '
+              'kernel direct map.' % (name, win / 1048576.0))
     failed = True
 
 # LANE REGRESSION GUARD. The native ELF64 lane links PIE; a big population of
