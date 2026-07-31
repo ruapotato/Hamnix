@@ -3543,11 +3543,28 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
                 _set_side_s(1, sc)
                 _set_side_s(2, sc)
                 _set_side_s(3, sc)
-                # A uniform SOLID border keeps d_bordps 0 -> the legacy 1px stroke
-                # path (byte-identical to before). A uniform NON-solid style
-                # (dashed/dotted/double) DOES route to the per-side painter so
-                # `border:1px dashed` actually renders dashes.
-                if sc >= 1:
+                # A uniform NON-solid style (dashed/dotted/double) routes to the
+                # per-side painter so `border:1px dashed` actually renders dashes.
+                #
+                # A uniform SOLID border of MORE THAN ONE PIXEL now routes there
+                # too. It used to keep d_bordps 0 and fall to the legacy 1px
+                # stroke, which meant `border: 20px solid blue` painted a HAIRLINE:
+                # measured against Chromium (--headless --screenshot
+                # --window-size=800,600) on `div{width:100px;height:80px;
+                # border:20px blue solid;background:green}`, Chromium paints 8,800
+                # blue px (the real 20px ring) and 8,000 green; we painted 384 blue.
+                # Spelling the identical border per-side
+                # (`border-top-width:20px; ...`) already took the per-side painter
+                # and drew a ring, so the two spellings of one border disagreed --
+                # the shorthand was the only thing deciding whether a border was
+                # 20px or 1px.
+                #
+                # ONE-pixel solid borders deliberately stay on the legacy path.
+                # `border: 1px solid #ccc` is the single most common border on the
+                # web and the two paths agree on it to the pixel, so holding it
+                # there keeps every 1px-bordered card in the corpus byte-identical
+                # and confines this change to borders that were visibly wrong.
+                if sc >= 1 or uw >= 2:
                     _sync_bordps()
                 else:
                     d_bordps = 0
