@@ -2435,6 +2435,7 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # as a navigation). Must precede the first he_layout() (scripts run there).
     js_set_fetch_transport(cast[Fn[Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[uint8], int32, Ptr[int64], Ptr[int32], Ptr[uint8]]](cast[uint64](_js_fetch_transport)))
 
+
     # Resolve the page to load.
     is_demo: int32 = 0
     target: Ptr[uint8] = cast[Ptr[uint8]](0)
