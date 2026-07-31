@@ -119,11 +119,24 @@ MAX_STR: int32 = 400000
 # NOT change the argument above — it is still a lifetime budget and still the
 # wrong tool for an unbounded loop; it is a right-sizing for the largest real
 # page the engine is now asked to serialise.
+# 16 MiB -> 32 MiB (2026-07-31), same shape of cause, one step further. Giving
+# `document` its real child list ([doctype, <html>]) makes a NodeIterator or
+# TreeWalker rooted at the document actually traverse the page -- which is what
+# a browser does, and what dom/traversal/NodeIterator.html and TreeWalker.html
+# spend most of their rows on. Each visited node that fails an assertion costs
+# testharness.js's format_value() an element serialisation, per the 8->16
+# paragraph above. MEASURED: at 16 MiB both files die mid-generation with
+# "string pool exhausted" and lose 738 subtests between them; at 32 MiB both
+# complete, and 64 MiB scores identically, so 32 is the size and not a guess.
+# The array is BSS, so this is a VIRTUAL reservation -- untouched pages cost no
+# RSS, and a page that never builds 32 MiB of strings never pays for them. The
+# argument above is unchanged: byte reclamation is still the real fix and a
+# constant is still the wrong tool for an unbounded loop.
 # Until then the ceiling is deliberately LOUD: str_intern/emit_c report
 # "[engine] CEILING string pool exhausted" and set a catchable error rather than
 # corrupting BSS (scripts/test_jsengine_strpool_clean_host.sh pins that).
-SP_CAP:  int32 = 16777216
-sp_buf: Array[16777216, uint8]           # 8 MiB string pool (bump; freed only at js_init)
+SP_CAP:  int32 = 33554432
+sp_buf: Array[33554432, uint8]           # 32 MiB string pool (bump; freed only at js_init)
 sp_top: int32 = 0
 st_off: Array[400000, int32]
 st_len: Array[400000, int32]

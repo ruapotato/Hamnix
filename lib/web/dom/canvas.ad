@@ -552,6 +552,19 @@ def _cre_make_text(sval: int32) -> int32:
     return tco
 
 
+# Is this document's `contentType` value the HTML one? A document that carries
+# no contentType at all (the main parsed document) is HTML too, so an absent /
+# non-string value answers yes.
+def _is_html_content_type(ctv: int32) -> int32:
+    if js_type_of(ctv) != TAG_STR:
+        return 1
+    ctp2: Ptr[uint8] = js_str_bytes(ctv)
+    ctn2: int32 = js_str_bytelen(ctv)
+    if _bytes_eq(ctp2, ctn2, cast[Ptr[uint8]]("text/html"), 9) != 0:
+        return 1
+    return 0
+
+
 # A created Comment (kind 2) or ProcessingInstruction (kind 3). Both are real
 # members of the created-node pool, which is what lets them be APPENDED: a
 # comment used to be a bare JS object with no cre_* row, so appendChild could
@@ -571,6 +584,14 @@ def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
         js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#comment"), 8))
         _node_identity(co2, g_proto_comm)
+    elif kind == 4:
+        # CDATASection: nodeType 4, and per spec a SUBCLASS OF Text -- so
+        # `cdata instanceof Text` is true and the Text/CharacterData members
+        # (data, length, substringData, splitText) come down the chain.
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(4.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#cdata-section"), 14))
+        _node_identity(co2, g_proto_cdata)
     else:
         js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(7.0))
         js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, targetv)
@@ -659,12 +680,9 @@ def _wire_sibling_links(arr: int32, parentv: int32):
             is_el = 0
         if is_el != 0:
             js_set_prop(ev, cast[Ptr[uint8]]("previousElementSibling"), 22, prev_el)
-            js_set_prop(ev, cast[Ptr[uint8]]("previousSibling"), 15, prev_el)
             js_set_prop(ev, cast[Ptr[uint8]]("nextElementSibling"), 18, js_null())
-            js_set_prop(ev, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
             if prev_el != js_null():
                 js_set_prop(prev_el, cast[Ptr[uint8]]("nextElementSibling"), 18, ev)
-                js_set_prop(prev_el, cast[Ptr[uint8]]("nextSibling"), 11, ev)
             prev_el = ev
             if firsto == js_null():
                 firsto = ev
@@ -673,9 +691,51 @@ def _wire_sibling_links(arr: int32, parentv: int32):
     if parentv != js_null():
         js_set_prop(parentv, cast[Ptr[uint8]]("firstElementChild"), 17, firsto)
         js_set_prop(parentv, cast[Ptr[uint8]]("lastElementChild"), 16, lasto)
-        # element-only child model: firstChild/lastChild alias the element ones.
-        js_set_prop(parentv, cast[Ptr[uint8]]("firstChild"), 10, firsto)
-        js_set_prop(parentv, cast[Ptr[uint8]]("lastChild"), 9, lasto)
+        # NODE-level links are wired over childNodes, which is a DIFFERENT
+        # array from `children` for a source-parsed element (children is
+        # element-only; childNodes carries its text). Deriving firstChild from
+        # the element array is what made a Text node unable to be firstChild,
+        # lastChild, previousSibling or nextSibling at all -- so
+        # `p.appendChild(document.createTextNode("x")); p.firstChild` was null,
+        # for the single most common two lines in DOM-building page code. In
+        # WPT it is the root of 676 "cannot read property 'parentNode' of
+        # null" failures: dom/common.js builds its detached paragraphs that way
+        # and every range anchored at `.firstChild` then started from null.
+        _wire_node_links(parentv)
+
+
+# previousSibling / nextSibling / firstChild / lastChild over the parent's FULL
+# child list, text and comments included.
+def _wire_node_links(parentv: int32):
+    # OWN property only. childNodes on a source element is a lazy accessor and
+    # reading it materialises the whole child list; forcing that here would
+    # turn every appendChild into a full-subtree registration (the DOM_MAX
+    # trap) and, measurably, hung css/css-cascade/scope-proximity.html for
+    # over three minutes. If the page has not asked for childNodes yet, the
+    # accessor will compute the links when it does.
+    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
+        return
+    kn: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
+    if js_is_array(kn) == 0:
+        return
+    prev_any: int32 = js_null()
+    firstn: int32 = js_null()
+    lastn: int32 = js_null()
+    k: int32 = 0
+    m: int32 = js_array_len(kn)
+    while k < m:
+        nv: int32 = js_array_get(kn, k)
+        js_set_prop(nv, cast[Ptr[uint8]]("previousSibling"), 15, prev_any)
+        js_set_prop(nv, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+        if prev_any != js_null():
+            js_set_prop(prev_any, cast[Ptr[uint8]]("nextSibling"), 11, nv)
+        prev_any = nv
+        if firstn == js_null():
+            firstn = nv
+        lastn = nv
+        k = k + 1
+    js_set_prop(parentv, cast[Ptr[uint8]]("firstChild"), 10, firstn)
+    js_set_prop(parentv, cast[Ptr[uint8]]("lastChild"), 9, lastn)
 
 
 def _frag_close_top(depth: int32):
@@ -2556,6 +2616,10 @@ def _append_child_v(parentv: int32, childv: int32):
                 js_array_push(pch, childv)
                 _wire_sibling_links(pch, dom_obj[par])
             _dom_nodes_push(dom_obj[par], childv)
+            # AFTER childNodes has the new node: the node-level links are
+            # derived from childNodes, which _wire_sibling_links above could
+            # only see in its pre-push state.
+            _wire_node_links(dom_obj[par])
             js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, dom_obj[par])
             js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, dom_obj[par])
         else:
@@ -2570,6 +2634,7 @@ def _append_child_v(parentv: int32, childv: int32):
                     js_array_push(ccpch, childv)
                     _wire_sibling_links(ccpch, parentv)
                 _dom_nodes_push(parentv, childv)
+                _wire_node_links(parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
@@ -2618,6 +2683,33 @@ def _mount_dispatch(rel: int32) -> int32:
         if js_arg_count() >= 1:
             cval = js_arg(0)
         return _cre_make_chardata(cval, 2, js_undefined())
+    if rel == NID_CREATECDATA:
+        # document.createCDATASection(data).
+        #
+        # In an HTML document this is a NotSupportedError, NOT a working
+        # factory -- dom/nodes/Document-createCDATASection.html asserts exactly
+        # that and nothing else. XML documents (contentType application/xml,
+        # image/svg+xml, application/xhtml+xml) mint the node. The main
+        # document carries no contentType at all, which is also the HTML case.
+        cdct: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("contentType"), 11)
+        if _is_html_content_type(cdct) != 0:
+            return _throw_domexc(cast[Ptr[uint8]]("NotSupportedError"), 17, \
+                                 cast[Ptr[uint8]]("createCDATASection in an HTML document"), \
+                                 38)
+        cdsv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            cdsv = _cd_arg_str(0)
+        # "]]>" cannot appear in a CDATA section's data.
+        cdsp: Ptr[uint8] = js_str_bytes(cdsv)
+        cdsn: int32 = js_str_bytelen(cdsv)
+        ck3: int32 = 0
+        while ck3 + 2 < cdsn:
+            if cdsp[ck3] == 93 and cdsp[ck3 + 1] == 93 and cdsp[ck3 + 2] == 62:
+                return _throw_domexc( \
+                    cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                    cast[Ptr[uint8]]("CDATA data contains ]]>"), 23)
+            ck3 = ck3 + 1
+        return _cre_make_chardata(cdsv, 4, js_undefined())
     if rel == NID_CREATEPI:
         # document.createProcessingInstruction(target, data). The target must be
         # an XML Name and the data must not contain "?>" — WPT
@@ -3682,6 +3774,13 @@ def _insert_adjacent_node(rel: int32) -> int32:
 # Returns 1 when it has THROWN (the caller must return immediately), 0 when the
 # insertion is valid.
 def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
+    # 0. `node` is a non-nullable `Node` in the IDL, so null / a primitive is a
+    #    TypeError raised by the ARGUMENT CONVERSION -- before any of the
+    #    pre-insert steps below, and therefore before the parent check. A plain
+    #    OBJECT still reaches step 4 and is a HierarchyRequestError.
+    if js_type_of(nodev) != TAG_OBJ:
+        js_throw_type_error(cast[Ptr[uint8]]("argument is not a Node"))
+        return 1
     pk: int32 = _nd_type(parentv)
     # 1. parent must be a Document, DocumentFragment or Element.
     if pk != 9 and pk != 11 and pk != 1:
@@ -3761,6 +3860,27 @@ def _pre_insert_invalid(parentv: int32, nodev: int32, childv: int32) -> int32:
                 _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), 21, \
                               cast[Ptr[uint8]]("fragment has multiple elements"), 30)
                 return 1
+        # A document accepts AT MOST ONE doctype, and a doctype may not be
+        # inserted after the document element. Both rows of
+        # pre-insertion-validation-hierarchy.js's doctype pair assert this.
+        if nk == 10:
+            dk: int32 = _nd_kids(parentv)
+            if dk != 0:
+                di: int32 = 0
+                dn: int32 = js_array_len(dk)
+                while di < dn:
+                    dt2: int32 = _nd_type(js_array_get(dk, di))
+                    if dt2 == 10:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), \
+                                      21, \
+                                      cast[Ptr[uint8]]("document already has a doctype"), 31)
+                        return 1
+                    if dt2 == 1 and js_type_of(childv) != TAG_OBJ:
+                        _throw_domexc(cast[Ptr[uint8]]("HierarchyRequestError"), \
+                                      21, \
+                                      cast[Ptr[uint8]]("doctype after the document element"), 34)
+                        return 1
+                    di = di + 1
     return 0
 
 
@@ -4359,8 +4479,13 @@ def _tv_show_ok(w: int32, node: int32) -> int32:
 
 # 1 = FILTER_ACCEPT, 2 = FILTER_REJECT, 3 = FILTER_SKIP.
 def _tv_filter(tv: int32, node: int32) -> int32:
-    w: int32 = cast[int32](js_to_number(js_get_prop(tv, \
-                           cast[Ptr[uint8]]("whatToShow"), 10)))
+    wf: float64 = js_to_number(js_get_prop(tv, \
+                               cast[Ptr[uint8]]("whatToShow"), 10))
+    # Narrow the reflected `unsigned long` back to the int32 the mask test
+    # uses; 4294967295 does not fit an int32 and must wrap, not saturate.
+    if wf >= 2147483648.0:
+        wf = wf - 4294967296.0
+    w: int32 = cast[int32](wf)
     if _tv_show_ok(w, node) == 0:
         return 3                                           # SKIP, never REJECT
     f: int32 = js_get_prop(tv, cast[Ptr[uint8]]("filter"), 6)
@@ -4511,8 +4636,14 @@ def _rng_dispatch(rel: int32) -> int32:
         if js_arg_count() >= 3:
             filtv = js_arg(2)
         js_set_prop(tv, cast[Ptr[uint8]]("root"), 4, rootv)
-        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, \
-                    js_number(cast[float64](showv)))
+        # whatToShow is an `unsigned long` in WebIDL, so it reflects as
+        # 4294967295 for SHOW_ALL -- not the -1 that the int32 the mask is
+        # carried in reads back as. The bitmask arithmetic still uses the
+        # signed value; only the reflected property is re-widened.
+        showu: float64 = cast[float64](showv)
+        if showv < 0:
+            showu = showu + 4294967296.0
+        js_set_prop(tv, cast[Ptr[uint8]]("whatToShow"), 10, js_number(showu))
         js_set_prop(tv, cast[Ptr[uint8]]("filter"), 6, filtv)
         if rel == NID_CREATETW:
             js_set_prop(tv, cast[Ptr[uint8]]("currentNode"), 11, rootv)
@@ -4720,6 +4851,43 @@ def _rng_method(rel: int32, r: int32) -> int32:
         _rng_set_start(r, a0, 0)
         _rng_set_end(r, a0, _rng_node_len(a0))
         return js_undefined()
+    # comparePoint / isPointInRange run their three preconditions BEFORE any
+    # boundary-point arithmetic, and in this order (Range-comparePoint.html and
+    # Range-isPointInRange.html are 478 rows of exactly these). None of them
+    # existed: a point past the end of a node compared as if it were in range.
+    if rel == NID_RNG_COMPAREPOINT or rel == NID_RNG_ISPOINTIN:
+        rsc: int32 = _rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)
+        if _nd_root(a0) != _nd_root(rsc):
+            if rel == NID_RNG_ISPOINTIN:
+                return js_bool(0)                          # spec: false, no throw
+            return _throw_domexc(cast[Ptr[uint8]]("WrongDocumentError"), 18, \
+                                 cast[Ptr[uint8]]("node is in a different tree"), 27)
+        if _nd_type(a0) == 10:
+            return _throw_domexc(cast[Ptr[uint8]]("InvalidNodeTypeError"), 20, \
+                                 cast[Ptr[uint8]]("node is a doctype"), 17)
+        cpo: float64 = 0.0
+        if js_arg_count() >= 2:
+            cpo = js_to_number(js_arg(1))
+        # `offset` is an unsigned long: it wraps to [0, 2^32), so a negative
+        # argument is a very large offset and out of bounds, not offset 0.
+        if cpo < 0.0:
+            cpo = cpo + 4294967296.0
+        if cpo < 0.0 or cpo > cast[float64](_rng_node_len(a0)):
+            return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
+                                 cast[Ptr[uint8]]("offset is out of bounds"), 23)
+    if rel == NID_RNG_INTERSECTS:
+        # intersectsNode has TWO distinct "no comparison possible" cases and
+        # they answer OPPOSITELY. A node in a DIFFERENT tree is false; a node
+        # in the same tree with NO PARENT (i.e. the root itself) is TRUE. Both
+        # were answered false, which was invisible only while
+        # documentElement.parentNode was null -- `document` then looked like a
+        # different tree from everything in it, so the false came out right for
+        # the wrong reason. 62 rows of Range-intersectsNode.html are exactly
+        # `intersectsNode(document)`.
+        if _nd_root(a0) != _nd_root(_rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)):
+            return js_bool(0)
+        if js_type_of(_nd_parent(a0)) != TAG_OBJ:
+            return js_bool(1)
     par: int32 = _nd_parent(a0)
     if js_type_of(par) != TAG_OBJ:
         if rel == NID_RNG_INTERSECTS or rel == NID_RNG_ISPOINTIN:
@@ -4940,6 +5108,85 @@ def _node_generic_dispatch(rel: int32) -> int32:
     return js_bool(0)
 
 
+# The dispatchEvent body proper, once the spec preconditions above have
+# passed. Lifted out of the dispatcher so the DISPATCH FLAG can be set
+# around it and cleared on EVERY exit -- it has five return points.
+def _dispatch_event_arg() -> int32:
+    dspel: int32 = _find_el_by_obj(js_this())
+    # document.dispatchEvent(ev) / window.dispatchEvent(ev): neither is a
+    # registered element, so fire the DOC_EL-sentinel listeners directly
+    # with the caller's event object. Guarded ABOVE the created-node path so
+    # a document dispatch never mis-routes through _find_cre_by_obj.
+    if dspel < 0 and (js_this() == js_doc or js_this() == js_win) and \
+       js_arg_count() >= 1:
+        ddvo: int32 = js_arg(0)
+        ddtp: int32 = js_get_prop(ddvo, cast[Ptr[uint8]]("type"), 4)
+        ddsrc: Ptr[uint8] = js_str_ptr(ddtp)
+        ddbuf: Array[128, uint8]
+        ddn: int32 = 0
+        while ddsrc[ddn] != 0 and ddn < 127:
+            ddbuf[ddn] = ddsrc[ddn]
+            ddn = ddn + 1
+        ddbuf[ddn] = 0
+        return js_bool(_fire_document_ev(ddvo, &ddbuf[0], ddn))
+    if dspel < 0 and js_arg_count() >= 1:
+        # created/dynamic node: object-dispatch along the live parentNode
+        # chain (the source-tree path below can't reach it).
+        dcid: int32 = _find_cre_by_obj(js_this())
+        if dcid >= 0:
+            devo: int32 = js_arg(0)
+            js_set_prop(devo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                        js_new_native_fn(js_hbase + NID_PREVENT))
+            js_set_prop(devo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                        js_new_native_fn(js_hbase + NID_STOPPROP))
+            js_set_prop(devo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
+                        js_new_native_fn(js_hbase + NID_STOPIMMED))
+            dtp: int32 = js_get_prop(devo, cast[Ptr[uint8]]("type"), 4)
+            dtpp: Ptr[uint8] = js_str_ptr(dtp)
+            dtbuf: Array[128, uint8]
+            dtn: int32 = 0
+            while dtpp[dtn] != 0 and dtn < 127:
+                dtbuf[dtn] = dtpp[dtn]
+                dtn = dtn + 1
+            dtbuf[dtn] = 0
+            dbub: int32 = js_to_bool(js_get_prop(devo, cast[Ptr[uint8]]("bubbles"), 7))
+            _obj_dispatch(js_this(), &dtbuf[0], dtn, devo, dbub)
+            if g_prevent_default != 0:
+                return js_bool(0)
+            return js_bool(1)
+    if dspel >= 0 and js_arg_count() >= 1:
+        evo: int32 = js_arg(0)
+        tp: int32 = js_get_prop(evo, cast[Ptr[uint8]]("type"), 4)
+        tpsrc: Ptr[uint8] = js_str_ptr(tp)
+        # Copy the type into a stable buffer: js_set_prop below may move the
+        # JS string heap, invalidating tpsrc.
+        dtyp: Array[128, uint8]
+        tpn: int32 = 0
+        while tpsrc[tpn] != 0 and tpn < 127:
+            dtyp[tpn] = tpsrc[tpn]
+            tpn = tpn + 1
+        dtyp[tpn] = 0
+        dk: int32 = _evt_std_kind(&dtyp[0], tpn)
+        # Enrich a plain {type:...} object into a usable Event: attach the
+        # methods + props handlers read, so `el.dispatchEvent({type:'click'})`
+        # works without an Event constructor. Idempotent for a reused event.
+        js_set_prop(evo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                    js_new_native_fn(js_hbase + NID_PREVENT))
+        js_set_prop(evo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                    js_new_native_fn(js_hbase + NID_STOPPROP))
+        js_set_prop(evo, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
+        if dk >= 0:
+            _dispatch_event(dspel, dk, evo)
+        else:
+            # any other type (keydown/mouseover/focus/CustomEvent): bubble
+            # through the string-typed listener table.
+            _dispatch_generic(dspel, &dtyp[0], tpn, evo)
+        if g_prevent_default != 0:
+            return js_bool(0)
+        return js_bool(1)
+    return js_bool(1)
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_HASKIDS and rel <= NID_ISDEFAULTNS:
@@ -4965,8 +5212,28 @@ def _js_host_dispatch(id: int32) -> int32:
         if rel == NID_TEXT_CTOR:
             return _cre_make_text(cdv)
         return _cre_make_chardata(cdv, 2, js_undefined())
-    if rel == NID_CREATEPI:
+    if rel == NID_CREATEPI or rel == NID_CREATECDATA:
         return _mount_dispatch(rel)
+    if rel == NID_DOCUMENT_CTOR:
+        # `new Document()` is an XML document (contentType application/xml)
+        # with no root element -- the same thing
+        # implementation.createDocument(null, null, null) produces, which is
+        # what the tail of _impl_dispatch already builds. It reads only the
+        # argument list (empty here), never `this`.
+        #
+        # Two corrections afterwards, both asserted by
+        # dom/nodes/Document-constructor.html: the result is a Document and
+        # NOT an XMLDocument (createDocument() returns an XMLDocument; the
+        # constructor does not), and an empty document's firstChild/lastChild
+        # are null, where reading index 0 of the empty child array gives
+        # undefined.
+        ndoc: int32 = _impl_dispatch(NID_IMPL_CREDOC)
+        if js_type_of(ndoc) == TAG_OBJ:
+            if g_proto_doc != 0:
+                js_set_proto_v(ndoc, g_proto_doc)
+            js_set_prop(ndoc, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+            js_set_prop(ndoc, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+        return ndoc
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
         return _mount_dispatch(rel)
     if rel == NID_COOKIE_GET:
@@ -5355,7 +5622,14 @@ def _js_host_dispatch(id: int32) -> int32:
             rvel: int32 = _find_el_by_obj(js_this())
             # created/dynamic node: drop from the object-stored listener array.
             if rvel < 0 and _find_cre_by_obj(js_this()) >= 0:
-                _obj_remove_listener(js_this(), &dom_idtmp[0], rvn, js_arg(1))
+                rc3: int32 = 0
+                if js_arg_count() >= 3:
+                    r3: int32 = js_arg(2)
+                    if js_type_of(r3) == 5:
+                        rc3 = js_to_bool(js_get_prop(r3, cast[Ptr[uint8]]("capture"), 7))
+                    else:
+                        rc3 = js_to_bool(r3)
+                _obj_remove_listener(js_this(), &dom_idtmp[0], rvn, js_arg(1), rc3)
             # document/window removeEventListener targets the DOC_EL sentinel
             # (only GEN_KIND listeners live there — no attribute slots).
             if rvel < 0 and (js_this() == js_doc or js_this() == js_win):
@@ -5412,78 +5686,32 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_DISPATCH:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
         # returning !defaultPrevented. Reads ev.type to pick the handler.
-        dspel: int32 = _find_el_by_obj(js_this())
-        # document.dispatchEvent(ev) / window.dispatchEvent(ev): neither is a
-        # registered element, so fire the DOC_EL-sentinel listeners directly
-        # with the caller's event object. Guarded ABOVE the created-node path so
-        # a document dispatch never mis-routes through _find_cre_by_obj.
-        if dspel < 0 and (js_this() == js_doc or js_this() == js_win) and \
-           js_arg_count() >= 1:
-            ddvo: int32 = js_arg(0)
-            ddtp: int32 = js_get_prop(ddvo, cast[Ptr[uint8]]("type"), 4)
-            ddsrc: Ptr[uint8] = js_str_ptr(ddtp)
-            ddbuf: Array[128, uint8]
-            ddn: int32 = 0
-            while ddsrc[ddn] != 0 and ddn < 127:
-                ddbuf[ddn] = ddsrc[ddn]
-                ddn = ddn + 1
-            ddbuf[ddn] = 0
-            return js_bool(_fire_document_ev(ddvo, &ddbuf[0], ddn))
-        if dspel < 0 and js_arg_count() >= 1:
-            # created/dynamic node: object-dispatch along the live parentNode
-            # chain (the source-tree path below can't reach it).
-            dcid: int32 = _find_cre_by_obj(js_this())
-            if dcid >= 0:
-                devo: int32 = js_arg(0)
-                js_set_prop(devo, cast[Ptr[uint8]]("preventDefault"), 14, \
-                            js_new_native_fn(js_hbase + NID_PREVENT))
-                js_set_prop(devo, cast[Ptr[uint8]]("stopPropagation"), 15, \
-                            js_new_native_fn(js_hbase + NID_STOPPROP))
-                js_set_prop(devo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
-                            js_new_native_fn(js_hbase + NID_STOPIMMED))
-                dtp: int32 = js_get_prop(devo, cast[Ptr[uint8]]("type"), 4)
-                dtpp: Ptr[uint8] = js_str_ptr(dtp)
-                dtbuf: Array[128, uint8]
-                dtn: int32 = 0
-                while dtpp[dtn] != 0 and dtn < 127:
-                    dtbuf[dtn] = dtpp[dtn]
-                    dtn = dtn + 1
-                dtbuf[dtn] = 0
-                dbub: int32 = js_to_bool(js_get_prop(devo, cast[Ptr[uint8]]("bubbles"), 7))
-                _obj_dispatch(js_this(), &dtbuf[0], dtn, devo, dbub)
-                if g_prevent_default != 0:
-                    return js_bool(0)
-                return js_bool(1)
-        if dspel >= 0 and js_arg_count() >= 1:
-            evo: int32 = js_arg(0)
-            tp: int32 = js_get_prop(evo, cast[Ptr[uint8]]("type"), 4)
-            tpsrc: Ptr[uint8] = js_str_ptr(tp)
-            # Copy the type into a stable buffer: js_set_prop below may move the
-            # JS string heap, invalidating tpsrc.
-            dtyp: Array[128, uint8]
-            tpn: int32 = 0
-            while tpsrc[tpn] != 0 and tpn < 127:
-                dtyp[tpn] = tpsrc[tpn]
-                tpn = tpn + 1
-            dtyp[tpn] = 0
-            dk: int32 = _evt_std_kind(&dtyp[0], tpn)
-            # Enrich a plain {type:...} object into a usable Event: attach the
-            # methods + props handlers read, so `el.dispatchEvent({type:'click'})`
-            # works without an Event constructor. Idempotent for a reused event.
-            js_set_prop(evo, cast[Ptr[uint8]]("preventDefault"), 14, \
-                        js_new_native_fn(js_hbase + NID_PREVENT))
-            js_set_prop(evo, cast[Ptr[uint8]]("stopPropagation"), 15, \
-                        js_new_native_fn(js_hbase + NID_STOPPROP))
-            js_set_prop(evo, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
-            if dk >= 0:
-                _dispatch_event(dspel, dk, evo)
-            else:
-                # any other type (keydown/mouseover/focus/CustomEvent): bubble
-                # through the string-typed listener table.
-                _dispatch_generic(dspel, &dtyp[0], tpn, evo)
-            if g_prevent_default != 0:
-                return js_bool(0)
-            return js_bool(1)
+        #
+        # THE THREE PRECONDITIONS, in the spec's order. The middle one is not a
+        # conformance nicety: without the DISPATCH FLAG a listener that
+        # re-dispatches the event it is handling recurses forever, and the
+        # engine died on a 20,000-frame NATIVE STACK OVERFLOW -- a SIGSEGV, not
+        # a catchable throw, taking the whole file's results with it. It
+        # reproduced only under the 8 MiB stack the python harness runs with
+        # and not under the shell's 64 MiB, which is why a manual run looked
+        # clean.
+        if js_arg_count() >= 1 and js_type_of(js_arg(0)) != TAG_OBJ:
+            js_throw_type_error( \
+                cast[Ptr[uint8]]("dispatchEvent: argument is not an Event"))
+            return js_undefined()
+        if js_arg_count() >= 1:
+            gev: int32 = js_arg(0)
+            if js_to_bool(js_get_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12)) != 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidStateError"), 17, \
+                                     cast[Ptr[uint8]]("event is already being dispatched"), 34)
+            if js_to_bool(js_get_prop(gev, cast[Ptr[uint8]]("@uninit"), 7)) != 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidStateError"), 17, \
+                                     cast[Ptr[uint8]]("event is not initialized"), 23)
+            js_set_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12, js_bool(1))
+            dres: int32 = _dispatch_event_arg()
+            js_set_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12, js_bool(0))
+            js_set_prop(gev, cast[Ptr[uint8]]("eventPhase"), 10, js_number(0.0))
+            return dres
         return js_bool(1)
     if rel == NID_SUBMIT:
         # form.submit() — fire a cancelable, bubbling `submit` event on the form
@@ -5562,6 +5790,18 @@ def _js_host_dispatch(id: int32) -> int32:
                         if t == txt:
                             return js_bool(1)
                         t = tx_parent[t]
+            # Fallback: walk the LIVE parentNode chain. The tx-tree path above
+            # only knows source ELEMENTS, so contains() answered false for
+            # every Text/Comment/CDATA child and for every created node --
+            # `p.contains(p.firstChild)` on a script-built paragraph, which is
+            # the ordinary case.
+            cnv: int32 = js_arg(0)
+            cndep: int32 = 0
+            while js_type_of(cnv) == TAG_OBJ and cndep < 512:
+                if cnv == js_this():
+                    return js_bool(1)
+                cnv = js_get_prop(cnv, cast[Ptr[uint8]]("parentNode"), 10)
+                cndep = cndep + 1
         return js_bool(0)
     if rel == NID_MATCHES:
         # element.matches(selector) -> bool. Selector machinery reused from
@@ -5883,6 +6123,17 @@ def _js_host_dispatch(id: int32) -> int32:
         if cre_n >= CRE_MAX:
             return js_null()
         src_obj: int32 = js_this()
+        # A DocumentType is not in either node pool (it has no tag and cannot
+        # be rendered), so cloneNode() returned NULL for it. WPT's shared
+        # pre-insertion-validation-hierarchy.js clones `doc.childNodes[0]` --
+        # the doctype -- and inserts it, so a null clone silently turned four
+        # HierarchyRequestError rows into an argument TypeError.
+        if _nd_type(src_obj) == 10:
+            return _new_doctype_obj( \
+                js_str_bytes(js_get_prop(src_obj, cast[Ptr[uint8]]("name"), 4)), \
+                js_str_bytelen(js_get_prop(src_obj, cast[Ptr[uint8]]("name"), 4)), \
+                js_get_prop(src_obj, cast[Ptr[uint8]]("publicId"), 8), \
+                js_get_prop(src_obj, cast[Ptr[uint8]]("systemId"), 8))
         clsrc: int32 = _find_el_by_obj(src_obj)
         clcre: int32 = -1
         if clsrc < 0:
@@ -6110,7 +6361,16 @@ def _js_host_dispatch(id: int32) -> int32:
             # object, so it does not need a dom_* row.
             if el < 0 and js_type_of(js_this()) == TAG_OBJ and \
                js_is_callable(js_arg(1)) != 0:
-                _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1))
+                oo: int32 = 0
+                oc: int32 = 0
+                if js_arg_count() >= 3:
+                    a3: int32 = js_arg(2)
+                    if js_type_of(a3) == 5:
+                        oo = js_to_bool(js_get_prop(a3, cast[Ptr[uint8]]("once"), 4))
+                        oc = js_to_bool(js_get_prop(a3, cast[Ptr[uint8]]("capture"), 7))
+                    else:
+                        oc = js_to_bool(a3)
+                _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1), oo, oc)
             if (el >= 0 or el == DOC_EL) and js_is_callable(js_arg(1)) != 0:
                 ek: int32 = _evt_std_kind(&dom_idtmp[0], evn)
                 # A non-standard type (keydown/mouseover/focus/custom) becomes a
@@ -6439,6 +6699,18 @@ def _js_host_dispatch(id: int32) -> int32:
                 _wire_sibling_links(js_get_prop(js_this(), \
                                     cast[Ptr[uint8]]("children"), 8), js_this())
                 _mo_record_childlist(js_this(), -1, js_arg(0))
+            elif js_type_of(js_arg(0)) == TAG_OBJ and \
+                 _nd_type(js_arg(0)) == 3:
+                # A SOURCE text node is in neither registry (see NID_REMOVE);
+                # `while (el.firstChild) el.removeChild(el.firstChild)` is the
+                # same never-terminating loop without this.
+                _dom_children_drop(js_this(), js_arg(0))
+                _wire_node_links(js_this())
+                _mo_record_childlist(js_this(), -1, js_arg(0))
+                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
+                            js_null())
+                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentElement"), 13, \
+                            js_null())
         return js_arg(0)
     if rel == NID_REPLCHILD:
         # parent.replaceChild(newNode, oldNode) — mount newNode at oldNode's
@@ -6509,6 +6781,26 @@ def _js_host_dispatch(id: int32) -> int32:
                 js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, js_null())
                 js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), 13, \
                             js_null())
+            else:
+                # A SOURCE TEXT NODE is in neither registry -- it is a plain
+                # object minted on demand by _stx_text_node -- so remove() was
+                # a silent no-op on it. That is not a cosmetic gap: the single
+                # most common "empty this element" idiom on the web is
+                #     while (el.firstChild) el.firstChild.remove();
+                # and with firstChild now correctly naming a Text node, a
+                # no-op remove() turns it into an INFINITE LOOP. It hung
+                # css/css-cascade/scope-proximity.html for over three minutes
+                # before this.
+                stxp: int32 = js_get_prop(js_this(), \
+                                          cast[Ptr[uint8]]("parentNode"), 10)
+                if js_type_of(stxp) == 5:
+                    _dom_children_drop(stxp, js_this())
+                    _wire_node_links(stxp)
+                    _mo_record_childlist(stxp, -1, js_this())
+                    js_set_prop(js_this(), cast[Ptr[uint8]]("parentNode"), 10, \
+                                js_null())
+                    js_set_prop(js_this(), cast[Ptr[uint8]]("parentElement"), \
+                                13, js_null())
         return js_undefined()
     if rel == NID_GETATTR:
         if js_arg_count() >= 1:
@@ -6951,6 +7243,40 @@ def _js_host_dispatch(id: int32) -> int32:
 
 
 # copy the page <title> text into dom_title_buf; returns its length.
+# The parsed document's DocumentType node, or null when the source carries no
+# <!DOCTYPE>. Only the NAME is modelled (an HTML doctype has an empty publicId
+# and systemId, which is what every non-legacy page has).
+dt_name_buf: Array[64, uint8]
+
+
+def _scan_doctype() -> int32:
+    i: uint64 = 0
+    while i + 9 < src_len and i < 4096:
+        if src_ptr[i] == 60 and src_ptr[i + 1] == 33 and \
+           _ascii_ci_eq(&src_ptr[i + 2], 7, cast[Ptr[uint8]]("DOCTYPE"), 7) != 0:
+            j: uint64 = i + 9
+            while j < src_len and (src_ptr[j] == 32 or src_ptr[j] == 9 or \
+                                   src_ptr[j] == 10 or src_ptr[j] == 13):
+                j = j + 1
+            n: int32 = 0
+            while j < src_len and n < 63 and src_ptr[j] != 62 and \
+                  src_ptr[j] != 32 and src_ptr[j] != 9 and src_ptr[j] != 10 and \
+                  src_ptr[j] != 13:
+                c: uint8 = src_ptr[j]
+                if c >= 65 and c <= 90:
+                    c = c + 32                             # doctype name lowercases
+                dt_name_buf[n] = c
+                n = n + 1
+                j = j + 1
+            ev: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+            dtv: int32 = _new_doctype_obj(&dt_name_buf[0], n, ev, ev)
+            js_set_prop(dtv, cast[Ptr[uint8]]("ownerDocument"), 13, js_doc)
+            js_set_prop(dtv, cast[Ptr[uint8]]("parentNode"), 10, js_doc)
+            return dtv
+        i = i + 1
+    return js_null()
+
+
 def _scan_title() -> int32:
     i: uint64 = 0
     while i < src_len:
@@ -8182,7 +8508,19 @@ def _build_dom_interfaces():
     _attach_childnode_mixin(g_proto_pi)
     g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
                                   g_proto_node)
+    g_proto_cdata = _dom_interface(cast[Ptr[uint8]]("CDATASection"), 12, \
+                                   g_proto_text)
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
+    # `new Document()` builds a real XML document rather than an empty husk.
+    js_global_set(cast[Ptr[uint8]]("Document"), 8, \
+                  _rebrand_ctor(g_proto_doc, NID_DOCUMENT_CTOR))
+    # ONE copy of createCDATASection, on Document.prototype -- every document
+    # object here chains to it, and the HTML-vs-XML NotSupportedError split is
+    # decided at call time from the receiver's contentType. A per-instance
+    # method on each of the four document factories would be four objects out
+    # of the shared pool for no behavioural gain.
+    js_set_prop(g_proto_doc, cast[Ptr[uint8]]("createCDATASection"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATECDATA))
     _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
     _dom_interface(cast[Ptr[uint8]]("XMLDocument"), 11, g_proto_doc)
     _attach_parentnode_mixin(g_proto_frag)
@@ -9413,6 +9751,53 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined')window.CommandEvent=CE;"))
     _pre_nl()
+    # ---- Selection ---------------------------------------------------------
+    # getSelection() did not exist, which is 484 WPT rows on its own:
+    # dom/ranges/Range-mutations.js runs EVERY range-mutation case twice, once
+    # over a bare Range and once over the same range held by the selection, and
+    # the second half died at `getSelection().removeAllRanges()` with
+    # "getSelection is not defined". It is also ordinary page code -- copy
+    # buttons, editors and "did the user select anything" checks all call it.
+    #
+    # A real range STORE, not a stub that reports rangeCount 0: the test has an
+    # explicit escape hatch for browsers that refuse to select, and taking it
+    # would make those rows pass without running a single assertion. Holding
+    # the caller's own Range object means the assertions run against exactly
+    # the object the mutation was applied to.
+    _pre_put(cast[Ptr[uint8]]("function Sel(){this._r=[];}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.removeAllRanges=function(){this._r=[];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.empty=Sel.prototype.removeAllRanges;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.addRange=function(r){this._r=[r];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.removeRange=function(r){var i=this._r.indexOf(r);if(i>=0)this._r.splice(i,1);};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.getRangeAt=function(i){if(i<0||i>=this._r.length)ierr();return this._r[i];};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'rangeCount',function(){return this._r.length;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'anchorNode',function(){return this._r.length?this._r[0].startContainer:null;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'anchorOffset',function(){return this._r.length?this._r[0].startOffset:0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'focusNode',function(){return this._r.length?this._r[0].endContainer:null;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'focusOffset',function(){return this._r.length?this._r[0].endOffset:0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(Sel.prototype,'isCollapsed',function(){return this._r.length?this._r[0].collapsed:true;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Sel.prototype.toString=function(){return this._r.length?String(this._r[0]):'';};"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Selection=Sel;var _sel=new Sel();function gsel(){return _sel;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("getSelection=gsel;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined'){window.Selection=Sel;window.getSelection=gsel;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof document!=='undefined')document.getSelection=gsel;"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("})();"))
     _pre_nl()
     js_eval_nested(&hb_pre_buf[0], cast[uint64](hb_pre_w))
@@ -9535,10 +9920,57 @@ def _js_build_document():
     js_define_accessor(doc, cast[Ptr[uint8]]("currentScript"), 13, \
                        js_new_native_fn(js_hbase + NID_CURSCRIPT_ACC), \
                        js_new_native_fn(js_hbase + NID_CURSCRIPT_SET))
+    # document.doctype — a real DocumentType node when the source opens with a
+    # <!DOCTYPE ...>, null otherwise. It was simply absent, so `doctype` read
+    # back as UNDEFINED: dom/common.js puts `document.doctype` in its testNodes
+    # list, so every range and every traversal test that walks that list hit an
+    # undefined node instead of a DocumentType.
+    js_set_prop(doc, cast[Ptr[uint8]]("doctype"), 7, _scan_doctype())
     _doc_set_el(doc, cast[Ptr[uint8]]("documentElement"), 15, \
                 cast[Ptr[uint8]]("html"))
     _doc_set_el(doc, cast[Ptr[uint8]]("body"), 4, cast[Ptr[uint8]]("body"))
     _doc_set_el(doc, cast[Ptr[uint8]]("head"), 4, cast[Ptr[uint8]]("head"))
+    # <html>'s parent is the DOCUMENT, and the document's child list names it.
+    # Both read back empty, so the document was not the root of its own tree.
+    # That is invisible while the pre-insertion reference check is a childNodes
+    # MEMBERSHIP SEARCH (an empty list and a wrong parent link fail the same
+    # way for a different reason); once c32c379f made it the spec's PARENT-LINK
+    # comparison, `document.insertBefore(x, document.documentElement)` answered
+    # NotFoundError where the spec wants the later HierarchyRequestError.
+    dehtml: int32 = js_get_prop(doc, cast[Ptr[uint8]]("documentElement"), 15)
+    if js_type_of(dehtml) == TAG_OBJ:
+        js_set_prop(dehtml, cast[Ptr[uint8]]("parentNode"), 10, doc)
+        js_set_prop(dehtml, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+        dekids: int32 = js_new_array_v()
+        dtv2: int32 = js_get_prop(doc, cast[Ptr[uint8]]("doctype"), 7)
+        if js_type_of(dtv2) == TAG_OBJ:
+            js_array_push(dekids, dtv2)
+        js_array_push(dekids, dehtml)
+        js_set_own(doc, cast[Ptr[uint8]]("childNodes"), 10, dekids)
+        dech2: int32 = js_new_array_v()
+        js_array_push(dech2, dehtml)
+        js_set_own(doc, cast[Ptr[uint8]]("children"), 8, dech2)
+        js_set_prop(doc, cast[Ptr[uint8]]("firstChild"), 10, \
+                    js_array_get(dekids, 0))
+        js_set_prop(doc, cast[Ptr[uint8]]("lastChild"), 9, dehtml)
+        # ... and the SIBLING links across them, so a backwards walk from
+        # anywhere in the page reaches the doctype. WPT's
+        # Node-compareDocumentPosition.html derives its expectation by walking
+        # previousSibling/lastChild; with <html>.previousSibling null the walk
+        # stopped one node short of the doctype and expected FOLLOWING where
+        # the engine (correctly) said PRECEDING.
+        if js_type_of(dtv2) == TAG_OBJ:
+            js_set_prop(dtv2, cast[Ptr[uint8]]("nextSibling"), 11, dehtml)
+            js_set_prop(dehtml, cast[Ptr[uint8]]("previousSibling"), 15, dtv2)
+        else:
+            js_set_prop(dehtml, cast[Ptr[uint8]]("previousSibling"), 15, js_null())
+        js_set_prop(dehtml, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+    # COST, measured, because it is not obvious: once `document` has a child
+    # list, a NodeIterator or TreeWalker rooted at it really does traverse the
+    # page, and dom/traversal/NodeIterator.html + TreeWalker.html ran out of
+    # STRING POOL part way through -- 738 subtests lost to a truncated file.
+    # That is what raised SP_CAP 16 -> 32 MiB (see lib/web/js/state.ad); the
+    # DOM shape here is correct and the ceiling was the thing that was wrong.
     # document.fonts — a minimal FontFaceSet. Init code (google's emoji probe,
     # webfont loaders) calls .load()/.check() and awaits `.ready`; headless has
     # every font available synchronously, so load()/ready resolve immediately.
@@ -12077,6 +12509,10 @@ def _dispatch_generic(target_el: int32, typp: Ptr[uint8], typn: int32, \
 # parentNode chain. This is the Phase-0 programmatic-event path (target + bubble
 # over the live tree) — distinct from the coordinate-driven he_dom_click path.
 g_lp_buf: Array[288, uint8]
+# The event path for a programmatic dispatch: the target's ancestors, innermost
+# first. Walked in reverse for the capture descent, forward for the bubble.
+EVPATH_MAX: int32 = 256
+g_evpath: Array[256, int32]
 
 
 def _obj_lp_name(typep: Ptr[uint8], typen: int32) -> int32:
@@ -12102,52 +12538,193 @@ def _obj_has_listener(obj: int32, typep: Ptr[uint8], typen: int32) -> int32:
     return 1
 
 
-def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+# The per-listener FLAGS array that runs parallel to "@L:<type>", one number
+# per registered callback: bit 0 = {once:true}, bit 1 = {capture:true}.
+#
+# The object-stored registry (every node built by createElement/innerHTML —
+# i.e. every node a live page makes) carried the callback and NOTHING ELSE, so
+# `once` and `capture` were silently dropped for exactly the nodes script
+# creates. `once` being dropped is not a cosmetic loss: a listener that
+# re-dispatches its own event, which the spec makes terminate because a once
+# listener is removed BEFORE it is invoked, instead recursed until the engine
+# died with "gc root stack overflow".
+def _obj_lf_name(typep: Ptr[uint8], typen: int32) -> int32:
+    g_lp_buf[0] = 64                                       # '@'
+    g_lp_buf[1] = 76                                       # 'L'
+    g_lp_buf[2] = 70                                       # 'F'
+    g_lp_buf[3] = 58                                       # ':'
+    i: int32 = 0
+    while i < typen and i < 250:
+        g_lp_buf[4 + i] = typep[i]
+        i = i + 1
+    g_lp_buf[4 + i] = 0
+    return 4 + i
+
+
+def _obj_flags_arr(obj: int32, typep: Ptr[uint8], typen: int32, \
+                   make: int32) -> int32:
+    fl: int32 = _obj_lf_name(typep, typen)
+    fa: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](fl))
+    if js_is_array(fa) == 0:
+        if make == 0:
+            return -1
+        fa = js_new_array_v()
+        js_set_prop(obj, &g_lp_buf[0], cast[uint64](fl), fa)
+    return fa
+
+
+def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                      oncef: int32, capf: int32):
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 1)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) == 0:
         arr = js_new_array_v()
         js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), arr)
+    flags: int32 = 0
+    if oncef != 0:
+        flags = flags + 1
+    if capf != 0:
+        flags = flags + 2
+    # Defensive: a listener array that predates the flags array (or any other
+    # way the two could drift) would index the wrong flag, which is worse than
+    # no flag at all. Re-align by padding rather than trusting the pairing.
+    while js_array_len(fa) < js_array_len(arr):
+        js_array_push(fa, js_number(0.0))
     i: int32 = 0
     n: int32 = js_array_len(arr)
     while i < n:
         if js_array_get(arr, i) == fn:
-            return                                        # de-dupe (spec)
+            # The spec's duplicate test is (type, callback, CAPTURE) — a
+            # capturing and a bubbling registration of the same function are
+            # two distinct listeners.
+            if (cast[int32](js_to_number(js_array_get(fa, i))) / 2) == \
+               (flags / 2):
+                return                                    # de-dupe (spec)
         i = i + 1
     js_array_push(arr, fn)
+    js_array_push(fa, js_number(cast[float64](flags)))
 
 
-def _obj_remove_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+def _obj_remove_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                         capf: int32):
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) == 0:
         return
     nw: int32 = js_new_array_v()
+    nf: int32 = js_new_array_v()
     i: int32 = 0
     n: int32 = js_array_len(arr)
     while i < n:
         ev: int32 = js_array_get(arr, i)
-        if ev != fn:
+        fv: int32 = js_number(0.0)
+        if fa >= 0 and i < js_array_len(fa):
+            fv = js_array_get(fa, i)
+        drop: int32 = 0
+        if ev == fn:
+            # removeEventListener's identity is (type, callback, capture) too.
+            cw: int32 = 0
+            if capf != 0:
+                cw = 1
+            if ((cast[int32](js_to_number(fv)) / 2) % 2) == cw:
+                drop = 1
+        if drop == 0:
             js_array_push(nw, ev)
+            js_array_push(nf, fv)
         i = i + 1
     js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), nw)
+    fl2: int32 = _obj_lf_name(typep, typen)
+    js_set_prop(obj, &g_lp_buf[0], cast[uint64](fl2), nf)
 
 
 # Fire object-stored listeners of `type` on `obj` (+ its inline on<type> prop).
 def _obj_fire_type(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> int32:
+    return _obj_fire_type_ph(obj, typep, typen, evo, EPHASE_TARGET)
+
+
+# One capture/target/bubble pass over an object's stored listeners.
+#
+# THREE SPEC RULES THIS ENFORCES, all of which the old straight-line loop broke
+# and all of which WPT dom/events/remove-all-listeners.html and
+# EventTarget-dispatchEvent.html assert:
+#
+#  1. The callback list is SNAPSHOTTED before the first invocation. A listener
+#     added during the dispatch does not run in this dispatch.
+#  2. A listener REMOVED during the dispatch does not run, even though it was
+#     in the snapshot — so each candidate is re-checked against the live array.
+#  3. A {once:true} listener is removed BEFORE it is invoked, not after. That
+#     ordering is what makes a listener that re-dispatches its own event
+#     terminate; removing afterwards recursed until the root stack overflowed.
+#
+# Is (type, callback, capture) still registered on `obj` right now? Rule 2
+# above: a snapshot entry that a previous callback removed must be skipped.
+def _obj_listener_live(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                       is_cap: int32) -> int32:
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        return 0
+    i: int32 = 0
+    n: int32 = js_array_len(arr)
+    while i < n:
+        if js_array_get(arr, i) == fn:
+            c: int32 = 0
+            if fa >= 0 and i < js_array_len(fa):
+                c = (cast[int32](js_to_number(js_array_get(fa, i))) / 2) % 2
+            if c == is_cap:
+                return 1
+        i = i + 1
+    return 0
+
+
+def _obj_fire_type_ph(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32, \
+                      phase: int32) -> int32:
     ran: int32 = 0
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) != 0:
-        i: int32 = 0
-        n: int32 = js_array_len(arr)
-        while i < n and g_stop_immediate == 0:
-            fn: int32 = js_array_get(arr, i)
-            if js_is_callable(fn) != 0:
-                g_argv1[0] = evo
-                js_call_fn(fn, obj, &g_argv1[0], 1)
-                ran = 1
-            i = i + 1
+        snap: int32 = js_new_array_v()
+        snf: int32 = js_new_array_v()
+        i0: int32 = 0
+        n0: int32 = js_array_len(arr)
+        while i0 < n0:
+            js_array_push(snap, js_array_get(arr, i0))
+            if fa >= 0 and i0 < js_array_len(fa):
+                js_array_push(snf, js_array_get(fa, i0))
+            else:
+                js_array_push(snf, js_number(0.0))
+            i0 = i0 + 1
+        # At the TARGET the event path is walked twice, so a capturing listener
+        # on the target itself runs in the capture sweep and a bubbling one in
+        # the bubble sweep — which is why chromium reports [1, 3, 2] for
+        # capture/bubble/capture registered in that order.
+        pass_i: int32 = 0
+        n_pass: int32 = 1
+        if phase == EPHASE_TARGET:
+            n_pass = 2
+        while pass_i < n_pass and g_stop_immediate == 0:
+            want_cap: int32 = 0
+            if phase == EPHASE_CAPTURE or (phase == EPHASE_TARGET and pass_i == 0):
+                want_cap = 1
+            i: int32 = 0
+            n: int32 = js_array_len(snap)
+            while i < n and g_stop_immediate == 0:
+                fn: int32 = js_array_get(snap, i)
+                fl: int32 = cast[int32](js_to_number(js_array_get(snf, i)))
+                is_cap: int32 = (fl / 2) % 2
+                if js_is_callable(fn) != 0 and is_cap == want_cap and \
+                   _obj_listener_live(obj, typep, typen, fn, is_cap) != 0:
+                    if (fl % 2) != 0:
+                        _obj_remove_listener(obj, typep, typen, fn, is_cap)
+                    g_argv1[0] = evo
+                    js_call_fn(fn, obj, &g_argv1[0], 1)
+                    ran = 1
+                i = i + 1
+            pass_i = pass_i + 1
     # inline on<type> handler property (el.onclick = fn)
     onm: Array[64, uint8]
     onm[0] = 111                                           # 'o'
@@ -12232,7 +12809,7 @@ def _obj_fire_hop(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32, \
         if kind >= 0:
             return _fire_handler(el, kind, evo, phase)
         return _fire_generic(el, typep, typen, evo, phase)
-    return _obj_fire_type(obj, typep, typen, evo)
+    return _obj_fire_type_ph(obj, typep, typen, evo, phase)
 
 
 # Dispatch event `evo` of `type` at node `targetobj` — a created node OR a
@@ -12257,6 +12834,33 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
         js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
     ran: int32 = 0
     kind: int32 = _evt_std_kind(typep, typen)
+    # CAPTURE phase — the descent that was simply absent. Without it a
+    # {capture:true} listener on an ancestor never fired for a dispatch on a
+    # descendant, which is what dom/events/EventTarget-dispatchEvent.html's
+    # "Event listeners added during dispatch should be called" checks. The
+    # event path is built first (ancestors, innermost..outermost) and then
+    # walked OUTERMOST-first, exactly as the spec reverses it.
+    n_path: int32 = 0
+    pcur: int32 = targetobj
+    while n_path < EVPATH_MAX:
+        ppv: int32 = js_get_prop(pcur, cast[Ptr[uint8]]("parentNode"), 10)
+        if js_type_of(ppv) != 5 or ppv == js_doc:
+            n_path = n_path                                # path complete
+            break
+        g_evpath[n_path] = ppv
+        pcur = ppv
+        n_path = n_path + 1
+    _set_ephase(evo, EPHASE_CAPTURE)
+    pi: int32 = n_path - 1
+    while pi >= 0 and g_stop_prop == 0:
+        g_stop_immediate = 0
+        if evo >= 0:
+            js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, g_evpath[pi])
+        if _obj_fire_hop(g_evpath[pi], typep, typen, evo, kind, \
+                         EPHASE_CAPTURE) != 0:
+            ran = 1
+        pi = pi - 1
+    g_stop_immediate = 0
     # target phase
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, targetobj)
@@ -12691,6 +13295,11 @@ def _blank_event(flavor: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_STOPIMMED))
     js_set_prop(ev, cast[Ptr[uint8]]("initEvent"), 9, \
                 js_new_native_fn(js_hbase + NID_INITEVENT))
+    # An event minted by document.createEvent() is NOT initialized until
+    # initEvent() runs, and dispatching an uninitialized event is an
+    # InvalidStateError (dom/events/EventTarget-dispatchEvent.html spends 15 of
+    # its rows on exactly that, one per createEvent alias).
+    js_set_prop(ev, cast[Ptr[uint8]]("@uninit"), 7, js_bool(1))
     if flavor == 1:
         js_set_prop(ev, cast[Ptr[uint8]]("initCustomEvent"), 15, \
                     js_new_native_fn(js_hbase + NID_INITCUSTOMEV))
@@ -12723,6 +13332,7 @@ def _init_event(with_detail: int32) -> int32:
     # cancelBubble back to false).
     js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
     js_set_prop(ev, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("@uninit"), 7, js_bool(0))
     if with_detail != 0:
         dv: int32 = js_null()
         if js_arg_count() >= 4:
