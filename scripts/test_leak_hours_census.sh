@@ -318,7 +318,13 @@ echo "$TAG idling ${GAP_S}s between samples (nothing launched, nothing closed)"
 hb=0
 gap_end=$(( SECONDS + GAP_S ))
 while [ "$SECONDS" -lt "$gap_end" ]; do
-    sleep 300
+    # Sleep only as far as the deadline, never past it. A flat `sleep 300`
+    # overshoots GAP_S by up to five minutes; the gap the verdict uses is the
+    # MEASURED one from the timestamps either way, so this is about the gate
+    # doing what its knob says, not about honesty of the number.
+    left=$(( gap_end - SECONDS ))
+    [ "$left" -gt 300 ] && left=300
+    [ "$left" -gt 0 ] && sleep "$left"
     hb=$(( hb + 1 ))
     printf 'echo HC_ALIVE %d\n' "$hb" >&3
     sleep 2
