@@ -8169,11 +8169,354 @@ def _css_rule_end(p: Ptr[uint8], s: int32, n: int32) -> int32:
     return n
 
 
+# ---- @scope: prelude parsing + CSSOM serialisation ---------------------------
+#
+# `rule.cssText` has been the RAW SOURCE SLICE of the rule. For an ordinary
+# style rule that is close enough to the CSSOM serialisation that nothing
+# noticed. For `@scope` it is not, and the gap is the whole of
+# css/css-cascade/at-scope-parsing.html (43 subtests, 0 passing):
+#
+#   authored   @scope (.a){}
+#   we said    "@scope (.a){}"
+#   spec       "@scope (.a) {\n}"          (verified: chromium --headless)
+#
+# Half that file is serialisation; the other half is PRELUDE VALIDATION — an
+# `@scope` whose prelude does not parse is not a rule at all and must leave
+# `sheet.rules.length` at 0, where we produced a rule for every one of them.
+#
+# The grammar (css-cascade-6 §scope-atrule) is small enough to parse exactly:
+#
+#   @scope [ '(' <scope-start> ')' ]? [ 'to' '(' <scope-end> ')' ]? '{' … '}'
+#
+# so the serialised prelude is REBUILT from the parse rather than copied, which
+# is what normalises `@scope (.a)to (.b)` to `@scope (.a) to (.b)`.
+SCOPE_BUF_CAP: int32 = 8192
+scope_buf:     Array[8192, uint8]
+scope_len:     int32 = 0
+
+
+def _scb(c: uint8):
+    if scope_len < SCOPE_BUF_CAP:
+        scope_buf[scope_len] = c
+        scope_len = scope_len + 1
+
+
+def _scb_cstr(s: Ptr[uint8]):
+    i: int32 = 0
+    while s[i] != 0:
+        _scb(s[i])
+        i = i + 1
+
+
+def _scb_range(p: Ptr[uint8], s: int32, e: int32):
+    i: int32 = s
+    while i < e:
+        _scb(p[i])
+        i = i + 1
+
+
+def _css_is_ws(c: uint8) -> int32:
+    if c == 32 or c == 9 or c == 10 or c == 12 or c == 13:
+        return 1
+    return 0
+
+
+def _css_skip_ws(p: Ptr[uint8], i: int32, n: int32) -> int32:
+    while i < n and _css_is_ws(p[i]) != 0:
+        i = i + 1
+    return i
+
+
+# Index just past the ')' that closes the '(' at p[i]; -1 if it never closes.
+def _css_paren_end(p: Ptr[uint8], i: int32, n: int32) -> int32:
+    d: int32 = 0
+    while i < n:
+        if p[i] == 40:
+            d = d + 1
+        elif p[i] == 41:
+            d = d - 1
+            if d == 0:
+                return i + 1
+        i = i + 1
+    return -1
+
+
+def _css_ident_ch(c: uint8) -> int32:
+    if (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or \
+       (c >= 48 and c <= 57) or c == 45 or c == 95:
+        return 1
+    return 0
+
+
+# Is ONE complex selector p[s..e) usable as an @scope <scope-start> /
+# <scope-end>? Deliberately a REJECTOR, not a full selector parser: it says no
+# to the constructs at-scope-parsing.html requires to be rejected and yes to
+# everything else, so a selector the rest of the engine understands is never
+# thrown away by this check.
+def _scope_sel_ok(p: Ptr[uint8], s: int32, e: int32) -> int32:
+    # trim
+    while s < e and _css_is_ws(p[s]) != 0:
+        s = s + 1
+    while e > s and _css_is_ws(p[e - 1]) != 0:
+        e = e - 1
+    if e <= s:
+        return 0                                  # empty compound
+    i: int32 = s
+    depth: int32 = 0
+    prev_comb: int32 = 0        # a LEADING combinator is fine (relative selector)
+    saw_unit: int32 = 0
+    while i < e:
+        c: uint8 = p[i]
+        if c == 60:                               # '<' is not a selector character
+            return 0
+        if c == 40:
+            depth = depth + 1
+            i = i + 1
+            continue
+        if c == 41:
+            depth = depth - 1
+            if depth < 0:
+                return 0
+            i = i + 1
+            continue
+        if depth > 0:
+            i = i + 1
+            continue
+        if c == 58 and i + 1 < e and p[i + 1] == 58:
+            return 0                              # ::pseudo-element
+        if c == 62 or c == 43 or c == 126:        # '>' '+' '~'
+            if prev_comb != 0:
+                return 0                          # two combinators in a row ('>>')
+            prev_comb = 1
+            saw_unit = 0
+            i = i + 1
+            continue
+        if _css_is_ws(c) != 0:
+            i = i + 1
+            continue
+        # a bare function call (`slotted(div)`) is not a selector; a functional
+        # PSEUDO (`:is(...)`, `::slotted(...)`) is, and those start at a ':'.
+        # The test only applies at the START of an identifier run — inside
+        # `:is(` the run is `is`, whose first byte follows the ':'.
+        if _css_ident_ch(c) != 0 and \
+           (i == s or (_css_ident_ch(p[i - 1]) == 0 and p[i - 1] != 58)):
+            j: int32 = i
+            while j < e and _css_ident_ch(p[j]) != 0:
+                j = j + 1
+            if j < e and p[j] == 40:
+                return 0
+        prev_comb = 0
+        saw_unit = 1
+        i = i + 1
+    if depth != 0:
+        return 0
+    if prev_comb != 0 or saw_unit == 0:
+        return 0                                  # trailing combinator
+    return 1
+
+
+# A comma-separated <selector-list> for @scope: every member must be usable.
+def _scope_sel_list_ok(p: Ptr[uint8], s: int32, e: int32) -> int32:
+    if _css_skip_ws(p, s, e) >= e:
+        return 0                                  # `@scope ()`
+    i: int32 = s
+    start: int32 = s
+    depth: int32 = 0
+    while i < e:
+        c: uint8 = p[i]
+        if c == 40 or c == 91:
+            depth = depth + 1
+        elif c == 41 or c == 93:
+            depth = depth - 1
+        elif c == 44 and depth == 0:
+            if _scope_sel_ok(p, start, i) == 0:
+                return 0
+            start = i + 1
+        i = i + 1
+    return _scope_sel_ok(p, start, e)
+
+
+# Does rule text p[0..n) open with the `@scope` at-keyword?
+def _rule_is_at_scope(p: Ptr[uint8], n: int32) -> int32:
+    if n < 6 or p[0] != 64:
+        return 0
+    i: int32 = 1
+    lit: Ptr[uint8] = cast[Ptr[uint8]]("scope")
+    k: int32 = 0
+    while k < 5:
+        if i + k >= n or _hx_lower(p[i + k]) != lit[k]:
+            return 0
+        k = k + 1
+    i = i + 5
+    if i >= n:
+        return 1
+    c: uint8 = p[i]
+    if _css_is_ws(c) != 0 or c == 40 or c == 123:
+        return 1
+    return 0
+
+
+# Serialise ONE declaration block body p[s..e) (no braces) the way the CSSOM
+# does: `prop: value; prop: value;`, one space after each colon, every
+# declaration terminated. Emits nothing for an all-whitespace body.
+def _scope_emit_decls(p: Ptr[uint8], s: int32, e: int32) -> int32:
+    i: int32 = s
+    emitted: int32 = 0
+    while i < e:
+        i = _css_skip_ws(p, i, e)
+        ds: int32 = i
+        while i < e and p[i] != 59:
+            i = i + 1
+        de: int32 = i
+        if i < e:
+            i = i + 1
+        while de > ds and _css_is_ws(p[de - 1]) != 0:
+            de = de - 1
+        if de <= ds:
+            continue
+        col: int32 = ds
+        while col < de and p[col] != 58:
+            col = col + 1
+        if col >= de:
+            continue                              # no ':' — not a declaration
+        pe: int32 = col
+        while pe > ds and _css_is_ws(p[pe - 1]) != 0:
+            pe = pe - 1
+        vs: int32 = _css_skip_ws(p, col + 1, de)
+        if pe <= ds or vs >= de:
+            continue
+        if emitted != 0:
+            _scb(32)
+        _scb_range(p, ds, pe)
+        _scb_cstr(cast[Ptr[uint8]](": "))
+        _scb_range(p, vs, de)
+        _scb(59)
+        emitted = 1
+    return emitted
+
+
+# Serialise the RULES nested inside an @scope body p[s..e), each on its own line
+# indented two spaces, as CSSOM grouping-rule serialisation requires. Returns
+# the number of rules emitted.
+def _scope_emit_body(p: Ptr[uint8], s: int32, e: int32) -> int32:
+    cnt: int32 = 0
+    i: int32 = s
+    while i < e:
+        i = _css_skip_ws(p, i, e)
+        if i >= e:
+            break
+        rs: int32 = i
+        re2: int32 = _css_rule_end(p, i, e)
+        if re2 <= rs:
+            break
+        # prelude / body split
+        bo: int32 = rs
+        while bo < re2 and p[bo] != 123:
+            bo = bo + 1
+        pe: int32 = bo
+        while pe > rs and _css_is_ws(p[pe - 1]) != 0:
+            pe = pe - 1
+        bc: int32 = re2
+        while bc > bo and p[bc - 1] != 125:
+            bc = bc - 1
+        if bc > bo:
+            bc = bc - 1                           # drop the closing '}'
+        if pe > rs and bo < re2:
+            _scb_cstr(cast[Ptr[uint8]]("  "))
+            _scb_range(p, rs, pe)
+            _scb_cstr(cast[Ptr[uint8]](" { "))
+            if _scope_emit_decls(p, bo + 1, bc) == 0:
+                scope_len = scope_len - 1         # `sel { }`, not `sel {  }`
+            _scb_cstr(cast[Ptr[uint8]]("}\n"))
+            cnt = cnt + 1
+        i = re2
+    return cnt
+
+
+# Parse + serialise an `@scope` rule. On success scope_buf[0..scope_len) holds
+# the CSSOM cssText and this returns 1; an unparseable prelude returns 0, and
+# the caller must then contribute NO rule at all (spec: an invalid at-rule is
+# dropped).
+def _scope_rule_serialize(p: Ptr[uint8], n: int32) -> int32:
+    scope_len = 0
+    i: int32 = _css_skip_ws(p, 6, n)              # past "@scope"
+    _scb_cstr(cast[Ptr[uint8]]("@scope"))
+    if i < n and p[i] == 40:
+        pe: int32 = _css_paren_end(p, i, n)
+        if pe < 0:
+            return 0
+        if _scope_sel_list_ok(p, i + 1, pe - 1) == 0:
+            return 0
+        _scb(32)
+        _scb(40)
+        s2: int32 = _css_skip_ws(p, i + 1, pe - 1)
+        e2: int32 = pe - 1
+        while e2 > s2 and _css_is_ws(p[e2 - 1]) != 0:
+            e2 = e2 - 1
+        _scb_range(p, s2, e2)
+        _scb(41)
+        i = _css_skip_ws(p, pe, n)
+    if i < n and p[i] != 123:
+        # the only thing that may follow <scope-start> is the `to` keyword
+        if i + 2 > n or _hx_lower(p[i]) != 116 or _hx_lower(p[i + 1]) != 111:
+            return 0
+        if i + 2 < n and _css_ident_ch(p[i + 2]) != 0:
+            return 0                              # `to` must be a whole ident
+        i = _css_skip_ws(p, i + 2, n)
+        if i >= n or p[i] != 40:
+            return 0
+        pe3: int32 = _css_paren_end(p, i, n)
+        if pe3 < 0:
+            return 0
+        if _scope_sel_list_ok(p, i + 1, pe3 - 1) == 0:
+            return 0
+        _scb_cstr(cast[Ptr[uint8]](" to ("))
+        s3: int32 = _css_skip_ws(p, i + 1, pe3 - 1)
+        e3: int32 = pe3 - 1
+        while e3 > s3 and _css_is_ws(p[e3 - 1]) != 0:
+            e3 = e3 - 1
+        _scb_range(p, s3, e3)
+        _scb(41)
+        i = _css_skip_ws(p, pe3, n)
+    if i >= n or p[i] != 123:
+        return 0
+    bend: int32 = n
+    while bend > i and p[bend - 1] != 125:
+        bend = bend - 1
+    if bend <= i:
+        return 0                                  # never closed
+    _scb_cstr(cast[Ptr[uint8]](" {\n"))
+    _scope_emit_body(p, i + 1, bend - 1)
+    _scb(125)
+    return 1
+
+
+# Does rule text p[0..n) have an EMPTY prelude (`{}` with no selector)? Such a
+# ruleset is invalid CSS and contributes no CSSOM rule. It shows up as the
+# leftover of a dropped at-rule: `@scope ( {}` splits into `@scope ( {}` plus a
+# bare `{}`, and chromium reports zero rules for the pair.
+def _rule_prelude_empty(p: Ptr[uint8], n: int32) -> int32:
+    i: int32 = 0
+    while i < n and p[i] != 123:
+        if _css_is_ws(p[i]) == 0:
+            return 0
+        i = i + 1
+    if i >= n:
+        return 0                                  # no '{' at all: not a ruleset
+    return 1
+
+
 # Build a CSSRule-ish JS object for rule text p[0..n): { cssText, selectorText,
 # type }. selectorText is the prelude up to the first '{' (trimmed).
 def _cssom_ruleobj(p: Ptr[uint8], n: int32) -> int32:
+    return _cssom_ruleobj_text(p, n, p, n)
+
+
+# As _cssom_ruleobj, but with cssText taken from a SEPARATE serialisation
+# (`ct[0..ctn)`) while selectorText still comes from the source prelude.
+def _cssom_ruleobj_text(p: Ptr[uint8], n: int32, ct: Ptr[uint8], ctn: int32) -> int32:
     o: int32 = js_new_object_v()
-    js_set_prop(o, cast[Ptr[uint8]]("cssText"), 7, js_new_string(p, cast[uint64](n)))
+    js_set_prop(o, cast[Ptr[uint8]]("cssText"), 7, js_new_string(ct, cast[uint64](ctn)))
     sl: int32 = 0
     while sl < n and p[sl] != 123:
         sl = sl + 1
@@ -8200,6 +8543,23 @@ def _sheet_split_load(sid: int32, arr: int32, to_model: int32, \
         re: int32 = _css_rule_end(p, i, n)
         if re <= rs:
             break
+        # An at-rule or ruleset that does not PARSE is not a rule: it must not
+        # appear in cssRules and must not reach the cascade model. Only the two
+        # cases we can decide are decided here — everything else is unchanged.
+        if _rule_is_at_scope(&p[rs], re - rs) != 0:
+            if _scope_rule_serialize(&p[rs], re - rs) == 0:
+                i = re
+                continue
+            if to_model != 0:
+                _cssom_insert_rule(sid, cssom_sheet_nrules[sid], &p[rs], re - rs)
+            js_array_push(arr, _cssom_ruleobj_text(&p[rs], re - rs, \
+                                                   &scope_buf[0], scope_len))
+            count = count + 1
+            i = re
+            continue
+        if _rule_prelude_empty(&p[rs], re - rs) != 0:
+            i = re
+            continue
         if to_model != 0:
             _cssom_insert_rule(sid, cssom_sheet_nrules[sid], &p[rs], re - rs)
         js_array_push(arr, _cssom_ruleobj(&p[rs], re - rs))
