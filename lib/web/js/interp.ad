@@ -75,6 +75,27 @@ def to_uint32(h: int32) -> uint32:
     return cast[uint32](to_int32(h))
 
 
+# Nesting depth of the console-inspect renderer (display_val/display_obj).
+#
+# WHY A CAP IS LOAD-BEARING, NOT COSMETIC
+# =======================================
+# display_obj walks an object's own properties and inspects each value in turn.
+# On a DOM object that graph is CYCLIC and effectively unbounded: an element
+# holds parentNode / ownerDocument / previousElementSibling, the document holds
+# body / documentElement / currentScript, and any of those paths returns to
+# where it started. Inspecting one element therefore recursed until the native
+# stack was gone — a SIGSEGV that killed the process, not a JS exception the
+# page could catch, and it took out an entire WPT file's results with it.
+# (Reproduced the moment document.currentScript began answering an element:
+# testharness.js formats the actual value into its failure message.)
+#
+# Real consoles cap the same way — node and Chromium print [Object] past their
+# nesting limit rather than serialising a cycle. 6 is deep enough that every
+# plain data structure a page logs prints in full.
+DISP_MAX_DEPTH: int32 = 6
+disp_depth: int32 = 0
+
+
 # display: append a value's string form via emit_c (uses current emit_tgt)
 def display_val(h: int32):
     t: int32 = tag_of(h)
@@ -99,6 +120,17 @@ def display_val(h: int32):
 
 def display_obj(h: int32):
     o: int32 = objid_of(h)
+    if disp_depth >= DISP_MAX_DEPTH:
+        # Past the nesting limit: name the shape, do not descend. Arrays and
+        # functions keep their own labels so the placeholder still tells the
+        # reader what was there.
+        if cast[int32](obj_kind[o]) == OK_ARRAY:
+            emit_cstr(cast[Ptr[uint8]]("[Array]"))
+        elif cast[int32](obj_kind[o]) == OK_FUNC:
+            emit_cstr(cast[Ptr[uint8]]("function"))
+        else:
+            emit_cstr(cast[Ptr[uint8]]("[Object]"))
+        return
     # A Symbol is a TAG_OBJ under the hood but is a PRIMITIVE: ToPrimitive skips
     # it, so it lands here. Render it as its SymbolDescriptiveString ("Symbol(d)",
     # ES 20.4.3.3) — node's console.log and String(sym) both print that. Falling
@@ -126,12 +158,14 @@ def display_obj(h: int32):
         # console.log prints arrays as: [ a, b, c ] — but our gate uses join;
         # for plain display use comma-separated bracketed form.
         emit_c(91)
+        disp_depth = disp_depth + 1
         i: int32 = 0
         while i < arr_len[o]:
             if i > 0:
                 emit_cstr(cast[Ptr[uint8]](", "))
             display_val_quoted(arr_get(o, i))
             i = i + 1
+        disp_depth = disp_depth - 1
         emit_c(93)
         return
     # error-like object (has both name and message): print "Name: message".
@@ -152,7 +186,9 @@ def display_obj(h: int32):
     p: int32 = obj_head[o]
     first: int32 = 1
     # props are stored newest-first; reverse for stable output
+    disp_depth = disp_depth + 1
     display_obj_props(o)
+    disp_depth = disp_depth - 1
     emit_cstr(cast[Ptr[uint8]](" }"))
 
 
@@ -320,6 +356,7 @@ def to_string_val(h: int32) -> int32:
     save: int32 = emit_tgt
     emit_tgt = 0
     bld_begin()
+    disp_depth = 0
     display_val(p)
     id: int32 = bld_end()
     emit_tgt = save
@@ -3113,8 +3150,25 @@ def exec_forin(node: int32, env: int32):
                 forin_after()
                 i = i + 1
         else:
-            # iterate props in insertion order (reverse the newest-first chain)
-            forin_props(obj_head[o], name, node, loopenv, env)
+            # ES 14.7.5.9 EnumerateObjectProperties: own enumerable string keys
+            # first, then each PROTOTYPE's, with any name already visited at a
+            # nearer level suppressed. See the fi_seen_* note.
+            fi_save_lo: int32 = fi_seen_lo
+            fi_save_n: int32 = fi_seen_n
+            fi_seen_lo = fi_seen_n
+            fi_seen_ok = 1
+            lvl: int32 = o
+            fihops: int32 = 0
+            while lvl >= 0 and ctl == CTL_NONE and fihops < 64:
+                # iterate props in insertion order (reverse the newest-first chain)
+                forin_props(obj_head[lvl], name, node, loopenv, env)
+                if fi_seen_ok == 0:
+                    lvl = -1                  # seen-set overflowed: stop here
+                else:
+                    lvl = obj_proto[lvl]
+                fihops = fihops + 1
+            fi_seen_n = fi_save_n
+            fi_seen_lo = fi_save_lo
     elif tag_of(objv) == TAG_STR:
         sid: int32 = strid_of(objv)
         i2: int32 = 0
@@ -3132,6 +3186,49 @@ def exec_forin(node: int32, env: int32):
     gc_popto(gsfi)
 
 
+# SHADOW SUPPRESSION for the for-in prototype walk.
+#
+# for-in yields each name AT MOST ONCE, and it is the NEAREST definition that
+# decides whether the name is visited at all. A non-enumerable own property
+# therefore hides an enumerable one of the same name further up the chain —
+# which is exactly how `toString` stays out of every for-in over a plain
+# object even though Object.prototype has one. So the visited set records
+# EVERY own name seen at each level, enumerable or not, and the enumerability
+# test happens after the shadow test, not before it.
+#
+# Fixed capacity: a walk that would exceed it stops at the current level rather
+# than emitting duplicates. 512 covers every real prototype chain (a DOM
+# element's is ~120 names); fi_seen_ok says whether the answer was complete.
+# The set is a STACK, not a single buffer: a for-in nested inside another
+# for-in's body pushes its own region above the outer walk's and pops back on
+# exit, so the two cannot see or clobber each other's names.
+FI_SEEN_CAP: int32 = 512
+fi_seen: Array[512, int32]
+fi_seen_lo: int32 = 0                  # base of the CURRENT walk's region
+fi_seen_n: int32 = 0
+fi_seen_ok: int32 = 1
+
+
+# Has `sid` been visited already in THIS walk? Records it when not.
+# Returns 1 = suppress.
+def fi_seen_hit(sid: int32) -> int32:
+    # Compared by CONTENT, not by string id: the pool does not intern, so the
+    # "x" installed on a prototype and the "x" later assigned on the instance
+    # are two different ids for the same property name. Comparing ids let both
+    # through and for-in reported `x` twice.
+    i: int32 = fi_seen_lo
+    while i < fi_seen_n:
+        if str_eq(fi_seen[i], sid) != 0:
+            return 1
+        i = i + 1
+    if fi_seen_n >= FI_SEEN_CAP:
+        fi_seen_ok = 0
+        return 0
+    fi_seen[fi_seen_n] = sid
+    fi_seen_n = fi_seen_n + 1
+    return 0
+
+
 def forin_props(p: int32, name: int32, node: int32, loopenv: int32, env: int32):
     if p < 0:
         return
@@ -3140,7 +3237,9 @@ def forin_props(p: int32, name: int32, node: int32, loopenv: int32, env: int32):
         return
     if is_hidden_key(p_key[p]) != 0:       # skip private/#... and @@symbol keys
         return
-    if prop_is_enum(p) == 0:               # for-in visits ENUMERABLE own keys only
+    if fi_seen_hit(p_key[p]) != 0:         # shadowed by a nearer definition
+        return
+    if prop_is_enum(p) == 0:               # for-in visits ENUMERABLE keys only
         return
     keyv: int32 = v_string_id(p_key[p])
     forin_bind(name, keyv, loopenv, env)

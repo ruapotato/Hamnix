@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 3121
+#!PASS_FLOOR 3199
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-parsing.html	@scope ( is not valid
@@ -220,7 +220,11 @@ css/css-cascade/scope-cssom.html	CSSScopeRule.start, implicit scope
 css/css-cascade/scope-cssom.html	CSSScopeRule.start, limit only
 css/css-cascade/scope-cssom.html	CSSScopeRule.start, root and limit
 css/css-cascade/scope-cssom.html	CSSScopeRule.start, root only
-css/css-cascade/scope-declarations.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-declarations.html	Declarations are parsed into CSSNestedDeclarations, prelude=
+css/css-cascade/scope-declarations.html	Declarations are parsed into CSSNestedDeclarations, prelude=(.a)
+css/css-cascade/scope-declarations.html	Scoped declarations apply to implicit scoping root
+css/css-cascade/scope-declarations.html	Scoped declarations apply to the scoping root
+css/css-cascade/scope-declarations.html	Scoped declarations apply with zero specificity
 css/css-cascade/scope-deep.html	Deep @scope nesting
 css/css-cascade/scope-evaluation.html	:scope direct adjacent sibling
 css/css-cascade/scope-evaluation.html	:scope in two different compounds
@@ -246,7 +250,17 @@ css/css-cascade/scope-evaluation.html	Single scope, :scope pseudo in main select
 css/css-cascade/scope-evaluation.html	Single scope, :scope pseudo in to-selector
 css/css-cascade/scope-evaluation.html	The scoping limit is not in scope
 css/css-cascade/scope-implicit-external.html	<FILE PRODUCED NO RESULTS>
-css/css-cascade/scope-implicit.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-implicit.html	:scope can style implicit root
+css/css-cascade/scope-implicit.html	@scope with effectively empty :is() must not match anything
+css/css-cascade/scope-implicit.html	@scope without prelude implicitly scopes to parent of owner node
+css/css-cascade/scope-implicit.html	@scope works with two identical stylesheets
+css/css-cascade/scope-implicit.html	Implicit @scope has implicitly added :scope descendant combinator
+css/css-cascade/scope-implicit.html	Implicit @scope sandwiched between non-implicit scopes
+css/css-cascade/scope-implicit.html	Implicit @scope sandwiched right under an explicit scope
+css/css-cascade/scope-implicit.html	Implicit @scope with inner nesting selector
+css/css-cascade/scope-implicit.html	Implicit @scope with inner relative selector
+css/css-cascade/scope-implicit.html	Implicit @scope with limit
+css/css-cascade/scope-implicit.html	Proximity calculation of multiple implicit @scope
 css/css-cascade/scope-import-implicit.html	Scope-imported rule applies within implicit scope
 css/css-cascade/scope-import-inner-scope.html	@scope within scope-imported stylesheet matches
 css/css-cascade/scope-import-multiple.html	A stylesheet may be imported multiple times, and scoped differently
@@ -286,8 +300,33 @@ css/css-cascade/scope-invalidation.html	Subject element becoming scope limit
 css/css-cascade/scope-invalidation.html	Toggling inner/outer scope roots
 css/css-cascade/scope-layer.html	Style rules within @layer are scoped
 css/css-cascade/scope-media.html	Style rules within @media are scoped
-css/css-cascade/scope-name-defining-rules.html	<FILE PRODUCED NO RESULTS>
-css/css-cascade/scope-nesting.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-name-defining-rules.html	@keyframes is unaffected by @scope
+css/css-cascade/scope-name-defining-rules.html	@keyframes is unaffected by non-matching @scope
+css/css-cascade/scope-name-defining-rules.html	@property is unaffected by @scope
+css/css-cascade/scope-name-defining-rules.html	@property is unaffected by non-matching @scope
+css/css-cascade/scope-nesting.html	:scope within nested and scoped rule
+css/css-cascade/scope-nesting.html	:scope within nested and scoped rule (implied &)
+css/css-cascade/scope-nesting.html	:scope within nested and scoped rule (relative)
+css/css-cascade/scope-nesting.html	@scope nested within style rule
+css/css-cascade/scope-nesting.html	Implicit (prelude-less) @scope as a nested group rule
+css/css-cascade/scope-nesting.html	Implicit :scope in <scope-end>
+css/css-cascade/scope-nesting.html	Implicit rule within nested @scope 
+css/css-cascade/scope-nesting.html	Implicit rule within nested @scope (proximity)
+css/css-cascade/scope-nesting.html	Insert a CSSNestedDeclarations rule directly in top-level @scope
+css/css-cascade/scope-nesting.html	Insert a nested style rule within @scope, &
+css/css-cascade/scope-nesting.html	Insert a nested style rule within @scope, :scope
+css/css-cascade/scope-nesting.html	Modifying selectorText invalidates inner scoped rules
+css/css-cascade/scope-nesting.html	Modifying selectorText invalidates inner scoped rules (nested declarations)
+css/css-cascade/scope-nesting.html	Mutating selectorText on outer style rule causes correct inner specificity
+css/css-cascade/scope-nesting.html	Nested :scope inside an :is
+css/css-cascade/scope-nesting.html	Nested nesting-selectors within scope's <stylesheet> select inclusive descendants of the scope root
+css/css-cascade/scope-nesting.html	Nesting-selector in <scope-end>
+css/css-cascade/scope-nesting.html	Nesting-selector within :scope rule
+css/css-cascade/scope-nesting.html	Nesting-selector within :scope rule (double nested)
+css/css-cascade/scope-nesting.html	Parent pseudo class within scope-start
+css/css-cascade/scope-nesting.html	Relative selectors in <scope-end>
+css/css-cascade/scope-nesting.html	Scoped nested group rule
+css/css-cascade/scope-nesting.html	Scoped nested within another scope
 css/css-cascade/scope-overlapping-has.html	:has() with inner :scope works when scopes overlap
 css/css-cascade/scope-proximity.html	Alternating light/dark
 css/css-cascade/scope-proximity.html	Identical root with further proximity is not ignored
@@ -315,10 +354,49 @@ css/css-cascade/scope-specificity.html	@scope (#main) { div.b {  } } and div.b
 css/css-cascade/scope-specificity.html	@scope (#main, .foo, .bar) { #a {  } } and #a
 css/css-cascade/scope-specificity.html	@scope { & .b {  } } and :where(:scope) .b
 css/css-cascade/scope-starting-style.html	Style rules within @starting-style are scoped
-css/css-cascade/scope-style-sharing-001.html	<FILE PRODUCED NO RESULTS>
-css/css-cascade/scope-style-sharing-002.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling enters scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling enters scope with :has
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling enters scope with ID selector
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling exits implicit scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling has implicit scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, first sibling matches scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling enters scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling enters scope with :has
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling enters scope with ID selector
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling exits implicit scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling exits scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, second sibling has implicit scope
+css/css-cascade/scope-style-sharing-001.html	@scope with sibling style sharing, with child relative implicit scope selector
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling does not have implicit scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling enters scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling enters scope ID selector
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling enters scope with :has
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling exits scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, first sibling parent does not have implicit scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling does not have implicit scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling enters scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling enters scope ID selector
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling enters scope with :has
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling exits scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, second sibling parent does not have implicit scope
+css/css-cascade/scope-style-sharing-002.html	@scope with cousin style sharing, with child relative implicit scope selector
 css/css-cascade/scope-supports.html	Style rules within @supports are scoped
-css/css-cascade/scope-visited-cssom.html	<FILE PRODUCED NO RESULTS>
+css/css-cascade/scope-visited-cssom.html	:link as scoped selector
+css/css-cascade/scope-visited-cssom.html	:link as scoping limit
+css/css-cascade/scope-visited-cssom.html	:link as scoping root
+css/css-cascade/scope-visited-cssom.html	:link as scoping root, :scope
+css/css-cascade/scope-visited-cssom.html	:not(:link) as scoped selector
+css/css-cascade/scope-visited-cssom.html	:not(:link) as scoping limit
+css/css-cascade/scope-visited-cssom.html	:not(:link) as scoping root
+css/css-cascade/scope-visited-cssom.html	:not(:link) as scoping root, :scope
+css/css-cascade/scope-visited-cssom.html	:not(:visited) as scoped selector
+css/css-cascade/scope-visited-cssom.html	:not(:visited) as scoping limit
+css/css-cascade/scope-visited-cssom.html	:not(:visited) as scoping root
+css/css-cascade/scope-visited-cssom.html	:not(:visited) as scoping root, :scope
+css/css-cascade/scope-visited-cssom.html	:visited as scoped selector
+css/css-cascade/scope-visited-cssom.html	:visited as scoping limit
+css/css-cascade/scope-visited-cssom.html	:visited as scoping root
+css/css-cascade/scope-visited-cssom.html	:visited as scoping root, :scope
 css/css-cascade/unset-value-storage.html	Storage of "unset" value
 dom/abort/abort-signal-timeout.html	Signal returned by AbortSignal.timeout() is not aborted after frame detach
 dom/abort/reason-constructor.html	AbortSignal.reason.constructor should be from iframe
@@ -353,18 +431,6 @@ dom/collections/domstringmap-supported-property-names.html	Object.getOwnProperty
 dom/collections/namednodemap-supported-property-names.html	Object.getOwnPropertyNames on NamedNodeMap
 dom/collections/namednodemap-supported-property-names.html	Object.getOwnPropertyNames on NamedNodeMap after attribute removal
 dom/collections/namednodemap-supported-property-names.html	Object.getOwnPropertyNames on NamedNodeMap of input
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onscroll
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onblur
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onerror
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onfocus
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onload
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onresize
-dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onscroll
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLBodyElement.onblur to Window
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLBodyElement.onerror to Window
 dom/events/Body-FrameSet-Event-Handlers.html	Forward HTMLBodyElement.onfocus to Window
@@ -941,7 +1007,17 @@ dom/nodes/NodeList-static-length-getter-tampered-3.html	<FILE PRODUCED NO RESULT
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-1.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-2.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/NodeList-static-length-getter-tampered-indexOf-3.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/ParentNode-append.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/ParentNode-append.html	DocumentFragment.append() with the same element twice.
+dom/nodes/ParentNode-append.html	Element.append() with the same element twice.
+dom/nodes/ParentNode-append.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a doctype and parent is a document with an element, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a doctype and parent is a document with another doctype, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a doctype and parent is not a document, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is a host-including inclusive ancestor of parent, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is an Element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
+dom/nodes/ParentNode-append.html	If node is not a DocumentFragment, DocumentType, Element, Text, ProcessingInstruction, or Comment node, then throw a HierarchyRequestError DOMException.
 dom/nodes/ParentNode-children.html	ParentNode.children should be a live collection
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with null as an argument, on a parent having a child.
 dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() with null as an argument, on a parent having no child.
@@ -1081,7 +1157,6 @@ dom/nodes/insertion-removing-steps/Node-appendChild-text-and-script-in-style.htm
 dom/nodes/insertion-removing-steps/Node-appendChild-text-in-script.html	Node.appendChild: inserting two text nodes in an empty script
 dom/nodes/insertion-removing-steps/Node-appendChild-three-scripts-from-fragment.html	Node.appendChild: inserting three scripts from a document fragment
 dom/nodes/insertion-removing-steps/Node-appendChild-three-scripts.html	Node.appendChild: inserting three scripts from a div
-dom/nodes/insertion-removing-steps/later-script-removed-by-earlier-script.html	<FILE PRODUCED NO RESULTS>
 dom/nodes/moveBefore/Node-moveBefore.html	If node is a DocumentFragment with an element and parent is a document with another element, then throw a HierarchyRequestError DOMException.
 dom/nodes/moveBefore/Node-moveBefore.html	If node is a DocumentFragment with multiple elements and parent is a document, then throw a HierarchyRequestError DOMException.
 dom/nodes/moveBefore/Node-moveBefore.html	If node is a Text node and parent is a document, then throw a HierarchyRequestError DOMException.
@@ -1124,9 +1199,20 @@ dom/nodes/moveBefore/custom-element-move-reactions.html	the disconnected/connect
 dom/nodes/moveBefore/custom-element-move-reactions.html	the element should stay connected during the callbacks
 dom/nodes/moveBefore/fieldset-child-blur-event.html	The 'blur' event is not fired on children of HTMLFieldSetElement during moveBefore()
 dom/nodes/moveBefore/fieldset-child-date-input-blur-event.html	Neither 'blur' nor 'focusout' is fired on a focused <input type=date> child of HTMLFieldSetElement during moveBefore()
-dom/nodes/moveBefore/fire-focusin-focusout.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/focus-preserve.html	<FILE PRODUCED NO RESULTS>
-dom/nodes/moveBefore/focus-within.html	<FILE PRODUCED NO RESULTS>
+dom/nodes/moveBefore/fire-focusin-focusout.html	Don't fire focusin and then correct when moving to a tree that is made inert using style
+dom/nodes/moveBefore/fire-focusin-focusout.html	Don't fire focusin and then correct when moving to an inert subtree
+dom/nodes/moveBefore/fire-focusin-focusout.html	Don't fire focusin/out when moving to the same parent
+dom/nodes/moveBefore/fire-focusin-focusout.html	Don't fire focusin/out when reparenting an element that has focus within
+dom/nodes/moveBefore/fire-focusin-focusout.html	Don't fire focusin/out when reparenting focused element directly
+dom/nodes/moveBefore/focus-preserve.html	when reparenting a focused element into a hidden parent, reset the document focus
+dom/nodes/moveBefore/focus-preserve.html	when reparenting a focused element into an inert parent, reset the document focus
+dom/nodes/moveBefore/focus-preserve.html	when reparenting an ancestor of an focused element into a hidden parent, reset the document focus
+dom/nodes/moveBefore/focus-preserve.html	when reparenting an element, don't automatically reset the document focus
+dom/nodes/moveBefore/focus-within.html	:focus-within should be eventually up to date when moving to a subtree that would become inert via style
+dom/nodes/moveBefore/focus-within.html	:focus-within should be eventually up to date when moving to an inert subtree
+dom/nodes/moveBefore/focus-within.html	focus-within should be updated when reparenting an element that has focus within
+dom/nodes/moveBefore/focus-within.html	focus-within should be updated when reparenting focused element directly
+dom/nodes/moveBefore/focus-within.html	focus-within should remain the same when moving to the same parent
 dom/nodes/moveBefore/listed-form-element-reset.html	Listed form element form owner is reset when a new form is moved closer before the listed element
 dom/nodes/moveBefore/live-range-updates.html	moveBefore still causes range endContainer to snap up to parent, when endContainer ancestor is moved
 dom/nodes/moveBefore/live-range-updates.html	moveBefore still causes range startContainer to snap up to parent, when startContainer ancestor is moved
@@ -2063,56 +2149,7 @@ html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.h
 html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.html	setting custom command property to --foo- (must include dash) sets event command
 html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.html	setting custom command property to --show-picker (must include dash) sets event command
 html/semantics/the-button-element/command-and-commandfor/button-type-behavior.html	Button type=reset in form should trigger form reset and not toggle popover
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-attr-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-in-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-outside-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form-command-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form-commandfor-only should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-attr-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-in-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-outside-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-attr-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-in-form should reflect type correctly
-html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-outside-form should reflect type correctly
 html/semantics/the-button-element/command-and-commandfor/event-dispatch-shadow.html	cross shadow CommandEvent retargets source to host element
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value 2
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value 3
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command explicitly set to empty string
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command is a readonly defaulting to ''
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command reflects initialized attribute
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to [1, 2, 3]
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to []
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to a number
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to an object
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to an object with a toString function
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to false
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to null
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to true
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to undefined
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source is readonly defaulting to null
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to false
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to non-Element EventTarget
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to null
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to true
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to undefined
-html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to {}
 html/semantics/the-button-element/command-and-commandfor/interface.html	command reflects '' when attribute set to []
 html/semantics/the-button-element/command-and-commandfor/interface.html	command reflects correctly for invalid
 html/semantics/the-button-element/command-and-commandfor/interface.html	command reflects correctly for invalid when array
@@ -2205,6 +2242,7 @@ url/failure.html	Loading data…
 +css/css-cascade/scope-import-multiple.html	Scope-imported rule does not apply outside of scope
 +css/css-cascade/scope-import-scope-end.html	Scope-imported rule does not apply below limit
 +css/css-cascade/scope-import-scope-start.html	Scope-imported rule does not apply outside of scope
++css/css-cascade/scope-nesting.html	Parent pseudo class within body of nested @scope
 +dom/attributes-are-nodes.html	Attrs are subclasses of Nodes
 +dom/attributes-are-nodes.html	appendChild with an attribute as the child should fail
 +dom/attributes-are-nodes.html	insertBefore with an attribute as the child should fail
@@ -2227,6 +2265,18 @@ url/failure.html	Loading data…
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, empty data attribute
 +dom/collections/domstringmap-supported-property-names.html	Object.getOwnPropertyNames on DOMStringMap, multiple data attributes
 +dom/eventPathRemoved.html	Event.prototype should not have property named 'path'
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLBodyElement.onscroll
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onblur
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onerror
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onfocus
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onload
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onresize
++dom/events/Body-FrameSet-Event-Handlers.html	Enumerate HTMLFrameSetElement.onscroll
 +dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onblur
 +dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onerror
 +dom/events/Body-FrameSet-Event-Handlers.html	Reflect HTMLBodyElement.onfocus
@@ -4413,6 +4463,20 @@ url/failure.html	Loading data…
 +dom/nodes/NodeList-Iterable.html	NodeList is iterable via for-of loop.
 +dom/nodes/NodeList-Iterable.html	NodeList responds to Object.keys correctly
 +dom/nodes/NodeList-Iterable.html	live NodeLists are for-of iterable and update appropriately
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with null as an argument, on a parent having a child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with null as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with one element and text as argument, on a parent having a child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with only one element as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with only text as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() with undefined as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	DocumentFragment.append() without any argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	Element.append() with null as an argument, on a parent having a child.
++dom/nodes/ParentNode-append.html	Element.append() with null as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	Element.append() with one element and text as argument, on a parent having a child.
++dom/nodes/ParentNode-append.html	Element.append() with only one element as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	Element.append() with only text as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	Element.append() with undefined as an argument, on a parent having no child.
++dom/nodes/ParentNode-append.html	Element.append() without any argument, on a parent having no child.
 +dom/nodes/ParentNode-prepend.html	DocumentFragment.prepend() without any argument, on a parent having no child.
 +dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having a child.
 +dom/nodes/ParentNode-prepend.html	Element.prepend() with null as an argument, on a parent having no child.
@@ -4894,6 +4958,8 @@ url/failure.html	Loading data…
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH NON-JOINER to getElementsByClassName still finds the span
 +dom/nodes/getElementsByClassName-whitespace-class-names.html	Passing a ZERO WIDTH SPACE to getElementsByClassName still finds the span
 +dom/nodes/insert-adjacent.html	invalid object argument insertAdjacentElement
++dom/nodes/insertion-removing-steps/later-script-removed-by-earlier-script.html	A later-inserted script removed by an earlier-inserted script in the same append() call should not run
++dom/nodes/insertion-removing-steps/later-script-removed-by-earlier-script.html	A later-inserted script removed by an earlier-inserted script in the same document fragment should not run
 +dom/nodes/moveBefore/Node-moveBefore.html	Calling moveBefore with a non-Node first argument must throw TypeError.
 +dom/nodes/moveBefore/Node-moveBefore.html	Calling moveBefore with second argument missing, or other than Node, null, or undefined, must throw TypeError.
 +dom/nodes/moveBefore/Node-moveBefore.html	Invalid node hierarchy with null old parent does not crash
@@ -5198,6 +5264,55 @@ url/failure.html	Loading data…
 +html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.html	setting custom command property to foo-bar (no dash) did not dispatch an event
 +html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.html	setting custom command property to hidedocument (no dash) did not dispatch an event
 +html/semantics/the-button-element/command-and-commandfor/button-event-dispatch.html	setting custom command property to —-emdash (no dash) did not dispatch an event
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-attr-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-in-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id button-outside-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-attr-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-in-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id invalid-outside-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-attr-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-in-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form-command-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id missing-outside-form-commandfor-only should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-attr-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-in-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id reset-outside-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-attr-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-in-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/button-type-reflection.html	Button with id submit-outside-form should reflect type correctly
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value 2
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	CommandEventInit properties set value 3
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command explicitly set to empty string
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command is a readonly defaulting to ''
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command reflects initialized attribute
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to [1, 2, 3]
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to []
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to a number
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to an object
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to an object with a toString function
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to false
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to null
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to true
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	command set to undefined
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source is readonly defaulting to null
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to false
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to non-Element EventTarget
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to null
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to true
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to undefined
++html/semantics/the-button-element/command-and-commandfor/event-interface.html	source set to {}
 +html/semantics/the-button-element/command-and-commandfor/interface.html	command reflects '' when attribute empty, IDL version
 +html/semantics/the-button-element/command-and-commandfor/interface.html	command reflects '' when attribute empty, setAttribute version
 +html/semantics/the-button-element/command-and-commandfor/on-popover-behavior.html	invoking (as hide-popover) closed popover is noop

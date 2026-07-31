@@ -735,6 +735,7 @@ def js_to_display(val: int32) -> Ptr[uint8]:
     # render into out_buf temporarily then copy into this call's ring slot.
     emit_tgt = 1
     tmpstart: int32 = out_top
+    disp_depth = 0
     display_val(val)
     ln: int32 = out_top - tmpstart
     slot: int32 = scratch_slot

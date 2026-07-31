@@ -4723,6 +4723,10 @@ def _js_host_dispatch(id: int32) -> int32:
         return _feat_accessor(rel)
     if rel == NID_SHEET_ACC or rel == NID_SHEET_ACC_S:
         return _sheet_accessor(rel)
+    if rel == NID_CURSCRIPT_ACC:
+        return _cur_script_el()
+    if rel == NID_CURSCRIPT_SET:
+        return js_undefined()
     if rel >= NID_IMPL_HASFEAT and rel <= NID_IMPL_CREDOCT:
         return _impl_dispatch(rel)
     if rel >= NID_SETATTRNS and rel <= NID_GETBYTAGNS:
@@ -8140,6 +8144,38 @@ def _style_sheet_build(p: Ptr[uint8], n: int32) -> int32:
     return o
 
 
+# Source offset of the '<' of the <script> element whose classic body is
+# executing right now, or -1 when no classic script is on the stack. Written by
+# _run_scripts around each eval; read by _cur_script_el.
+g_cur_script_lt: int64 = -1
+
+
+# document.currentScript getter. Registers the executing <script> element on
+# READ — see NID_CURSCRIPT_ACC for why this is not stamped eagerly. The scan
+# writes the SHARED g_el_* / g_close_* tag cursor, so it is saved and restored:
+# this is a lookup in the middle of the parse loop, and it must leave no trace.
+def _cur_script_el() -> int32:
+    if g_cur_script_lt < 0:
+        return js_null()
+    sv_lt: uint64 = g_el_lt
+    sv_ns: uint64 = g_el_ns
+    sv_nl: uint64 = g_el_nl
+    sv_cs: uint64 = g_el_cs
+    sv_ce: uint64 = g_el_ce
+    sv_clt: uint64 = g_close_lt
+    sv_cend: uint64 = g_close_end
+    _scan_start_tag(cast[uint64](g_cur_script_lt))
+    r: int32 = _dom_register_el()
+    g_el_lt = sv_lt
+    g_el_ns = sv_ns
+    g_el_nl = sv_nl
+    g_el_cs = sv_cs
+    g_el_ce = sv_ce
+    g_close_lt = sv_clt
+    g_close_end = sv_cend
+    return r
+
+
 def _sheet_accessor(rel: int32) -> int32:
     thisv: int32 = js_this()
     if rel == NID_SHEET_ACC_S:
@@ -8611,6 +8647,53 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("}"))
     _pre_nl()
+    # CommandEvent (HTML "invokers"): the event a <button command=...
+    # commandfor=...> dispatches at its target. Engine-authored rather than
+    # native because it is pure IDL — an Event subclass with two readonly
+    # members and one type check — and the prelude already owns that shape.
+    #   command  DOMString, default "". A dictionary member that is PRESENT
+    #            but not undefined is stringified, so {command:null} is "null"
+    #            and {command:[1,2,3]} is "1,2,3"; absent or undefined is "".
+    #   source   Element?, default null. Anything present, non-null and not an
+    #            Element is a TypeError — that is what rejects {} and an
+    #            XMLHttpRequest (an EventTarget, but not a node).
+    # Both are non-writable, so a page assigning to them is a silent no-op in
+    # sloppy mode, as the readonly IDL attributes are.
+    _pre_put(cast[Ptr[uint8]]("function CE(t,init){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var e=new Event(t,init||{});Object.setPrototypeOf(e,CE.prototype);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var c='',s=null;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(init!==null&&init!==undefined){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(init.command!==undefined)c=''+init.command;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("var v=init.source;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(v!==undefined&&v!==null){"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof v!=='object'||v.nodeType!==1)throw new TypeError('source is not an Element');"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("s=v;}}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Object.defineProperty(e,'command',{value:c,enumerable:true,configurable:true});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("Object.defineProperty(e,'source',{value:s,enumerable:true,configurable:true});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("return e;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("CE.prototype=Object.create(Event.prototype);"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("CE.prototype.constructor=CE;"))
+    _pre_nl()
+    # Exported by BARE assignment (a global in sloppy mode) as well as onto
+    # window: the prelude body is an IIFE, so a function declaration inside it
+    # is invisible to the page.
+    _pre_put(cast[Ptr[uint8]]("CommandEvent=CE;"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("if(typeof window!=='undefined')window.CommandEvent=CE;"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("})();"))
     _pre_nl()
     js_eval_nested(&hb_pre_buf[0], cast[uint64](hb_pre_w))
@@ -8726,6 +8809,13 @@ def _js_build_document():
     # `.classList` and `document.documentElement.classList` work. Each is the
     # SAME registered object getElementById/querySelector return, so mutations
     # (appendChild, style, className) reach the live tree + render.
+    # document.currentScript is null except while a classic <script> body is
+    # executing (set/cleared around each eval in _run_scripts). Defined here so
+    # `'currentScript' in document` is true and a read outside script execution
+    # answers null rather than undefined, as in Chromium.
+    js_define_accessor(doc, cast[Ptr[uint8]]("currentScript"), 13, \
+                       js_new_native_fn(js_hbase + NID_CURSCRIPT_ACC), \
+                       js_new_native_fn(js_hbase + NID_CURSCRIPT_SET))
     _doc_set_el(doc, cast[Ptr[uint8]]("documentElement"), 15, \
                 cast[Ptr[uint8]]("html"))
     _doc_set_el(doc, cast[Ptr[uint8]]("body"), 4, cast[Ptr[uint8]]("body"))
@@ -9656,6 +9746,21 @@ def _run_scripts() -> int32:
                 # The host prelude goes in immediately before the page's FIRST
                 # executed script, so a script-free page never pays for it.
                 _js_install_prelude()
+                # document.currentScript — the <script> element whose body is
+                # executing right now, null outside classic-script execution
+                # AND during module evaluation (HTML §"prepare the script
+                # element": the "current script" is only set for classic
+                # scripts). Tests reach their own markup through it —
+                # `document.currentScript.previousElementSibling` is the
+                # standard way a WPT file names the <template> that belongs to
+                # it, and with the property absent every such assertion threw
+                # on null before it ever reached the behaviour under test.
+                # Only the source OFFSET is recorded here; the element is
+                # registered on READ (NID_CURSCRIPT_ACC), so it is the SAME
+                # object querySelector('script') hands back but no page pays a
+                # registration for a property it never touches. See that NID.
+                if is_mod == 0:
+                    g_cur_script_lt = cast[int64](i)
                 if is_mod != 0:
                     # `<script type=module>`: evaluate as an ES module (own scope,
                     # deferred-style, imports resolved through the browser's module
@@ -9666,6 +9771,10 @@ def _run_scripts() -> int32:
                     js_eval(&src_ptr[bs], be - bs)
                 if js_error() != 0:
                     js_had_error = 1
+                # Execution finished: the stack of scripts is empty again, so
+                # currentScript reverts to null (a page reading it from a
+                # timer/event callback must NOT see the last parsed script).
+                g_cur_script_lt = -1
             # continue past </script>
             i = be
             i = _hx_tag_end_p(src_ptr, src_len, i)

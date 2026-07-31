@@ -1347,6 +1347,17 @@ NID_ABORT_THROW:  int32 = 257        # signal.throwIfAborted()
 # <style>, which is what chromium does, so `if (el.sheet)` still discriminates.
 NID_SHEET_ACC:    int32 = 258        # get el.sheet
 NID_SHEET_ACC_S:  int32 = 259        # set el.sheet (polyfill escape hatch)
+# --- document.currentScript --------------------------------------------------
+# An ACCESSOR, not a stamped value, and the reason is a measured one.
+# Registering the executing <script> eagerly cost 8,189 element registrations
+# on a 9,000-element page: _dom_register_el wires the new node's parent, and
+# wiring <body> materialises its ENTIRE child list. That blew through DOM_MAX
+# before the page's own first getElementById ran, and `#e0` — the FIRST element
+# in the document — came back undefined. currentScript is read by a small
+# minority of scripts; no page should pay a full-tree registration for a
+# property it never touches. Resolved from a saved source offset on read.
+NID_CURSCRIPT_ACC: int32 = 260       # get document.currentScript
+NID_CURSCRIPT_SET: int32 = 261       # set document.currentScript (inert)
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
