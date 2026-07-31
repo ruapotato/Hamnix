@@ -19,7 +19,7 @@
 #
 # A line reading '<FILE PRODUCED NO RESULTS>' means the whole file produced
 # no harness output at all.
-#!PASS_FLOOR 13749
+#!PASS_FLOOR 13945
 css/css-cascade/all-prop-initial-xml.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/all-prop-revert-layer.html	<FILE PRODUCED NO RESULTS>
 css/css-cascade/at-scope-relative-syntax.html	> .foo in .nest,@scope created by insertRule valid
@@ -682,12 +682,8 @@ dom/nodes/Document-getElementsByTagName.html	Element in non-HTML namespace, pref
 dom/nodes/Document-getElementsByTagName.html	Element in non-HTML namespace, prefix, uppercase name
 dom/nodes/Document-getElementsByTagName.html	Shouldn't be able to set unsigned properties on a HTMLCollection (non-strict mode)
 dom/nodes/Document-getElementsByTagName.html	Shouldn't be able to set unsigned properties on a HTMLCollection (strict mode)
-dom/nodes/Document-getElementsByTagName.html	getElementsByTagName('*')
 dom/nodes/Document-getElementsByTagName.html	getElementsByTagName() should be a live collection
 dom/nodes/Document-getElementsByTagName.html	hasOwnProperty, getOwnPropertyDescriptor, getOwnPropertyNames
-dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', '*')
-dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', 'body')
-dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('http://www.w3.org/1999/xhtml', '*')
 dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS() should be a live collection
 dom/nodes/Document-importNode.html	False 'deep' argument.
 dom/nodes/Document-importNode.html	Import an Attr node with namespace/prefix correctly.
@@ -853,7 +849,6 @@ dom/nodes/Node-nodeValue.html	Element.nodeValue
 dom/nodes/Node-nodeValue.html	ProcessingInstruction.nodeValue
 dom/nodes/Node-nodeValue.html	Text.nodeValue
 dom/nodes/Node-normalize.html	Non-text nodes with empty textContent values.
-dom/nodes/Node-parentNode.html	Root element
 dom/nodes/Node-properties.html	comment.childNodes.length
 dom/nodes/Node-properties.html	comment.firstChild
 dom/nodes/Node-properties.html	comment.lastChild
@@ -924,21 +919,14 @@ dom/nodes/Node-properties.html	docfrag.nextSibling
 dom/nodes/Node-properties.html	docfrag.previousSibling
 dom/nodes/Node-properties.html	doctype.firstChild
 dom/nodes/Node-properties.html	doctype.lastChild
-dom/nodes/Node-properties.html	doctype.nextSibling
 dom/nodes/Node-properties.html	doctype.previousSibling
 dom/nodes/Node-properties.html	document.URL
 dom/nodes/Node-properties.html	document.characterSet
 dom/nodes/Node-properties.html	document.charset
-dom/nodes/Node-properties.html	document.childNodes.length
-dom/nodes/Node-properties.html	document.childNodes[0]
-dom/nodes/Node-properties.html	document.childNodes[1]
 dom/nodes/Node-properties.html	document.compatMode
 dom/nodes/Node-properties.html	document.contentType
 dom/nodes/Node-properties.html	document.documentURI
-dom/nodes/Node-properties.html	document.firstChild
-dom/nodes/Node-properties.html	document.hasChildNodes()
 dom/nodes/Node-properties.html	document.inputEncoding
-dom/nodes/Node-properties.html	document.lastChild
 dom/nodes/Node-properties.html	document.nextSibling
 dom/nodes/Node-properties.html	document.nodeValue
 dom/nodes/Node-properties.html	document.previousSibling
@@ -1490,7 +1478,6 @@ dom/nodes/remove-unscopable.html	prepend() should be unscopable
 dom/nodes/remove-unscopable.html	remove() should be unscopable
 dom/nodes/remove-unscopable.html	replaceWith() should be unscopable
 dom/nodes/rootNode.html	getRootNode() must return context object's shadow-including root if options's composed is true, and context object's root otherwise
-dom/nodes/rootNode.html	getRootNode() must return the document when a node is in document
 dom/ranges/Range-adopt-test.html	Parented range container moved to another document with appendChild: Moving the element to the other document must collapse the range
 dom/ranges/Range-adopt-test.html	Parentless range container moved to another document with appendChild: Removing the only element in the range must collapse the range
 dom/ranges/Range-adopt-test.html	Range container's parentless container moved to another document with appendChild: Removing the only element in the range must collapse the range
@@ -1501,31 +1488,21 @@ dom/ranges/Range-attribute-nodes.html	compareBoundaryPoints() between two ranges
 dom/ranges/Range-attribute-nodes.html	extractContents() on an Attr-rooted range returns an empty fragment
 dom/ranges/Range-attribute-nodes.html	insertNode() into an Attr-rooted range throws HierarchyRequestError
 dom/ranges/Range-attribute-nodes.html	insertNode() with an Attr node argument throws HierarchyRequestError
-dom/ranges/Range-attribute-nodes.html	intersectsNode() with an Attr node sharing the range's root returns true
 dom/ranges/Range-attribute-nodes.html	isPointInRange() with an Attr node sharing the range's root
 dom/ranges/Range-attribute-nodes.html	surroundContents() on an Attr-rooted range throws HierarchyRequestError
 dom/ranges/Range-cloneContents.html	Range.detach()
 dom/ranges/Range-cloneRange.html	Range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-cloneRange.html	Range 25 [document, 0, document, 1]
-dom/ranges/Range-cloneRange.html	Range 26 [document, 0, document, 2]
 dom/ranges/Range-cloneRange.html	Range 29 [foreignDoc, 1, foreignComment, 2]
 dom/ranges/Range-cloneRange.html	Range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-cloneRange.html	Range 31 [xmlDoc, 1, xmlComment, 0]
 dom/ranges/Range-cloneRange.html	Range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-cloneRange.html	Range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-cloneRange.html	Range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-cloneRange.html	Range 51 [document, 1, document, 2]
 dom/ranges/Range-cloneRange.html	Range 54 [foreignDoc, 0, foreignDoc, 0]
 dom/ranges/Range-cloneRange.html	Range 55 [xmlDoc, 0, xmlDoc, 0]
 dom/ranges/Range-collapse.html	Range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1], toStart false
 dom/ranges/Range-collapse.html	Range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1], toStart omitted
 dom/ranges/Range-collapse.html	Range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1], toStart true
-dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart false
-dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart omitted
-dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart true
-dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart false
-dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart omitted
-dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart true
 dom/ranges/Range-collapse.html	Range 30 [foreignDoc.body, 0, foreignTextNode, 36], toStart false
 dom/ranges/Range-collapse.html	Range 30 [foreignDoc.body, 0, foreignTextNode, 36], toStart omitted
 dom/ranges/Range-collapse.html	Range 30 [foreignDoc.body, 0, foreignTextNode, 36], toStart true
@@ -1538,17 +1515,11 @@ dom/ranges/Range-collapse.html	Range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-collapse.html	Range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0], toStart false
 dom/ranges/Range-collapse.html	Range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0], toStart omitted
 dom/ranges/Range-collapse.html	Range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0], toStart true
-dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart false
-dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart omitted
-dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart true
 dom/ranges/Range-commonAncestorContainer.html	18: range [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-commonAncestorContainer.html	26: range [document, 0, document, 1]
-dom/ranges/Range-commonAncestorContainer.html	27: range [document, 0, document, 2]
 dom/ranges/Range-commonAncestorContainer.html	31: range [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-commonAncestorContainer.html	45: range [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-commonAncestorContainer.html	46: range [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-commonAncestorContainer.html	51: range [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-commonAncestorContainer.html	52: range [document, 1, document, 2]
 dom/ranges/Range-compareBoundaryPoints.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/Range-comparePoint-2.html	Range.comparePoint
 dom/ranges/Range-comparePoint-2.html	Range.comparePoint 1
@@ -1559,209 +1530,135 @@ dom/ranges/Range-insertNode.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/Range-intersectsNode-binding.html	Calling intersectsNode without an argument or with an invalid argument should throw a TypeError.
 dom/ranges/Range-intersectsNode-shadow.html	Range.intersectsNode() doesn't return true for shadow children in other trees
 dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
+dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
+dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
+dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 51 [document, 1, document, 2]
 dom/ranges/Range-isPointInRange.html	Set up for range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-isPointInRange.html	Set up for range 25 [document, 0, document, 1]
-dom/ranges/Range-isPointInRange.html	Set up for range 26 [document, 0, document, 2]
 dom/ranges/Range-isPointInRange.html	Set up for range 30 [foreignDoc.body, 0, foreignTextNode, 36]
 dom/ranges/Range-isPointInRange.html	Set up for range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
 dom/ranges/Range-isPointInRange.html	Set up for range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
 dom/ranges/Range-isPointInRange.html	Set up for range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-dom/ranges/Range-isPointInRange.html	Set up for range 51 [document, 1, document, 2]
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with selected range collapsed at (detachedDiv, detachedDiv.childNodes.length)
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with selected range collapsed at (detachedDiv.lastChild, 0)
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with selected range collapsed at (detachedDiv.lastChild, 1)
@@ -1774,8 +1671,6 @@ dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with unselected range on detachedDiv from detachedDiv.childNodes.length - 1 to detachedDiv.childNodes.length
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with unselected range on detachedDiv from detachedDiv.childNodes.length - 2 to detachedDiv.childNodes.length
 dom/ranges/Range-mutations-appendChild.html	detachedDiv.appendChild(detachedDiv.lastChild), with unselected range on detachedDiv.lastChild from 0 to 1
-dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document.doctype), with selected range on paras[0] from 0 to 1
-dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document.doctype), with unselected range on paras[0] from 0 to 1
 dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(paras[1]), with selected range on testDiv from 0 to 2
 dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(paras[1]), with selected range on testDiv from 1 to 2
 dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(paras[1]), with unselected range on testDiv from 0 to 2
@@ -1874,8 +1769,6 @@ dom/ranges/Range-mutations-deleteData.html	paras[1].firstChild.deleteData(2, 2),
 dom/ranges/Range-mutations-deleteData.html	paras[1].firstChild.deleteData(2, 2), with unselected range on paras[1].firstChild from 1 to 3
 dom/ranges/Range-mutations-deleteData.html	paras[1].firstChild.deleteData(2, 631), with selected range on paras[1].firstChild from 1 to 3
 dom/ranges/Range-mutations-deleteData.html	paras[1].firstChild.deleteData(2, 631), with unselected range on paras[1].firstChild from 1 to 3
-dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document.doctype, paras[0].firstChild), with selected range on paras[0] from 0 to 1
-dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document.doctype, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(paras[1], null), with selected range on testDiv from 0 to 2
 dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(paras[1], null), with selected range on testDiv from 1 to 2
 dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(paras[1], null), with unselected range on testDiv from 0 to 2
@@ -1948,8 +1841,6 @@ dom/ranges/Range-mutations-replaceChild.html	foreignDoc.replaceChild(detachedCom
 dom/ranges/Range-mutations-replaceChild.html	foreignDoc.replaceChild(detachedComment, foreignDoc.doctype), with unselected range on foreignDoc from 0 to 2
 dom/ranges/Range-mutations-replaceChild.html	foreignDoc.replaceChild(detachedComment, foreignDoc.documentElement), with selected range on foreignDoc from 0 to 2
 dom/ranges/Range-mutations-replaceChild.html	foreignDoc.replaceChild(detachedComment, foreignDoc.documentElement), with unselected range on foreignDoc from 0 to 2
-dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document.doctype, paras[0].firstChild), with selected range on paras[0] from 0 to 1
-dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document.doctype, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(paras[1], paras[0].firstChild), with selected range collapsed at (paras[0], 1)
 dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(paras[1], paras[0].firstChild), with selected range on paras[0] from 0 to 1
 dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(paras[1], paras[0].firstChild), with selected range on testDiv from 0 to 2
@@ -2040,60 +1931,37 @@ dom/ranges/Range-mutations-splitText.html	xmlTextNode.splitText(2), with selecte
 dom/ranges/Range-mutations-splitText.html	xmlTextNode.splitText(2), with unselected range on xmlTextNode from 1 to 3
 dom/ranges/Range-selectNode.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/Range-set.html	Set up range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-dom/ranges/Range-set.html	Set up range 25 [document, 0, document, 1]
-dom/ranges/Range-set.html	Set up range 26 [document, 0, document, 2]
 dom/ranges/Range-set.html	Set up range 30 [foreignDoc.body, 0, foreignTextNode, 36]
-dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 29 [document.documentElement, 2]
-dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 48 [document, 0]
-dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 49 [document, 1]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 50 [document, 2]
-dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 51 [document, 3]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 85 [doctype, 0]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 86 [doctype, -17]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 87 [doctype, 1]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 88 [foreignDoctype, 0]
 dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 89 [xmlDoctype, 0]
-dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 29 [document.documentElement, 2]
-dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 48 [document, 0]
-dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 49 [document, 1]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 50 [document, 2]
-dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 51 [document, 3]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 85 [doctype, 0]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 86 [doctype, -17]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 87 [doctype, 1]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 88 [foreignDoctype, 0]
 dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 89 [xmlDoctype, 0]
-dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 29 [document.documentElement, 2]
-dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 48 [document, 0]
-dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 49 [document, 1]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 50 [document, 2]
-dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 51 [document, 3]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 85 [doctype, 0]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 86 [doctype, -17]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 87 [doctype, 1]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 88 [foreignDoctype, 0]
 dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 89 [xmlDoctype, 0]
-dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 29 [document.documentElement, 2]
-dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 48 [document, 0]
-dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 49 [document, 1]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 50 [document, 2]
-dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 51 [document, 3]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 85 [doctype, 0]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 86 [doctype, -17]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 87 [doctype, 1]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 88 [foreignDoctype, 0]
 dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 89 [xmlDoctype, 0]
-dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 29 [document.documentElement, 2]
-dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 48 [document, 0]
-dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 49 [document, 1]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 50 [document, 2]
-dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 51 [document, 3]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 85 [doctype, 0]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 86 [doctype, -17]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 87 [doctype, 1]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 88 [foreignDoctype, 0]
 dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 89 [xmlDoctype, 0]
-dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 29 [document.documentElement, 2]
 dom/ranges/Range-stringifier.html	Node contents of a single div
 dom/ranges/Range-surroundContents.html	<FILE PRODUCED NO RESULTS>
 dom/ranges/StaticRange-constructor.html	Construct collapsed static range
@@ -2281,6 +2149,7 @@ dom/traversal/NodeIterator-removal.html	Test removing node detachedPara1
 dom/traversal/NodeIterator-removal.html	Test removing node detachedPara1.firstChild
 dom/traversal/NodeIterator-removal.html	Test removing node detachedPara2
 dom/traversal/NodeIterator-removal.html	Test removing node detachedPara2.firstChild
+dom/traversal/NodeIterator-removal.html	Test removing node doctype
 dom/traversal/NodeIterator-removal.html	Test removing node foreignDoctype
 dom/traversal/NodeIterator-removal.html	Test removing node foreignPara1.firstChild
 dom/traversal/NodeIterator-removal.html	Test removing node paras[0]
@@ -2288,6 +2157,7 @@ dom/traversal/NodeIterator-removal.html	Test removing node paras[0].firstChild
 dom/traversal/NodeIterator-removal.html	Test removing node paras[1]
 dom/traversal/NodeIterator-removal.html	Test removing node paras[1].firstChild
 dom/traversal/NodeIterator-removal.html	Test removing node paras[5].firstChild
+dom/traversal/NodeIterator-removal.html	Test removing node testDiv
 dom/traversal/NodeIterator-removal.html	Test removing node xmlDoctype
 dom/traversal/NodeIterator-removal.html	Test removing node xmlTextNode
 dom/traversal/NodeIterator.html	Recursive filters need to throw
@@ -2333,7 +2203,17 @@ dom/traversal/NodeIterator.html	document.createNodeIterator(docfrag, 0xFFFFFFFF,
 dom/traversal/NodeIterator.html	document.createNodeIterator(doctype, 0xFFFFFFFF, (function(node) { return false }))
 dom/traversal/NodeIterator.html	document.createNodeIterator(doctype, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
 dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, (function(node) { return false }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, (function(node) { return true }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, null)
 dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return false }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return node.nodeName[0] == '#' }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return true }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, null)
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return false }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return node.nodeName[0] == '#' }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return true }))
+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, null)
 dom/traversal/NodeIterator.html	document.createNodeIterator(foreignComment, 0xFFFFFFFF, (function(node) { return false }))
 dom/traversal/NodeIterator.html	document.createNodeIterator(foreignDoc, 0xFFFFFFFF, (function(node) { return false }))
 dom/traversal/NodeIterator.html	document.createNodeIterator(foreignDoc, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
@@ -2475,6 +2355,12 @@ dom/traversal/TreeWalker.html	document.createTreeWalker(doctype, NodeFilter.SHOW
 dom/traversal/TreeWalker.html	document.createTreeWalker(doctype, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return node.nodeName[0] == '#' }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(doctype, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return true }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(doctype, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, null)
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, (function(node) { return false }))
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return false }))
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return node.nodeName[0] == '#' }))
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, (function(node) { return false }))
+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, (function(node) { return node.nodeName[0] == '#' }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(foreignDoc, 0xFFFFFFFF, (function(node) { return false }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(foreignDoc, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(foreignDoc, 0xFFFFFFFF, (function(node) { return true }))
@@ -2538,7 +2424,6 @@ dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], 0xFFFFFFFF, (f
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], 0xFFFFFFFF, (function(node) { return true }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], 0xFFFFFFFF, null)
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], NodeFilter.SHOW_ELEMENT, (function(node) { return false }))
-dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], NodeFilter.SHOW_ELEMENT, (function(node) { return node.nodeName[0] == '#' }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], NodeFilter.SHOW_ELEMENT, (function(node) { return true }))
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1], NodeFilter.SHOW_ELEMENT, null)
 dom/traversal/TreeWalker.html	document.createTreeWalker(paras[1].firstChild, 0xFFFFFFFF, (function(node) { return false }))
@@ -2958,7 +2843,6 @@ html/semantics/tabular-data/processing-model-1/rowspan-0.html	rowSpan
 html/semantics/tabular-data/the-caption-element/caption_001.html	dynamically removing caption on a table
 html/semantics/tabular-data/the-caption-element/caption_001.html	first caption element child of the first table element
 html/semantics/tabular-data/the-caption-element/caption_001.html	setting caption on a table
-html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a foreign caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a non-caption to table.caption
 html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning the caption already in the table to table.caption
@@ -4998,6 +4882,7 @@ url/failure.html	Loading data…
 +dom/nodes/Document-getElementsByTagName.html	Interfaces
 +dom/nodes/Document-getElementsByTagName.html	Should be able to set expando shadowing a proto prop (item)
 +dom/nodes/Document-getElementsByTagName.html	Should be able to set expando shadowing a proto prop (namedItem)
++dom/nodes/Document-getElementsByTagName.html	getElementsByTagName('*')
 +dom/nodes/Document-getElementsByTagNameNS.html	ABC element in html namespace
 +dom/nodes/Document-getElementsByTagNameNS.html	AÇ, case sensitivity
 +dom/nodes/Document-getElementsByTagNameNS.html	BODY element in test namespace, no prefix
@@ -5008,6 +4893,9 @@ url/failure.html	Loading data…
 +dom/nodes/Document-getElementsByTagNameNS.html	abc element in html namespace
 +dom/nodes/Document-getElementsByTagNameNS.html	body element in test namespace, no prefix
 +dom/nodes/Document-getElementsByTagNameNS.html	body element in test namespace, prefix
++dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', '*')
++dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('*', 'body')
++dom/nodes/Document-getElementsByTagNameNS.html	getElementsByTagNameNS('http://www.w3.org/1999/xhtml', '*')
 +dom/nodes/Document-implementation.html	Getting implementation off different documents
 +dom/nodes/Document-implementation.html	Getting implementation off the same document
 +dom/nodes/DocumentFragment-querySelectorAll-after-modification.html	querySelectorAll should still work on DocumentFragments after they are modified
@@ -8339,6 +8227,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-parentNode.html	Doctype
 +dom/nodes/Node-parentNode.html	Document
 +dom/nodes/Node-parentNode.html	Element
++dom/nodes/Node-parentNode.html	Root element
 +dom/nodes/Node-properties.html	comment.data
 +dom/nodes/Node-properties.html	comment.hasChildNodes()
 +dom/nodes/Node-properties.html	comment.length
@@ -8515,6 +8404,7 @@ url/failure.html	Loading data…
 +dom/nodes/Node-properties.html	doctype.childNodes.length
 +dom/nodes/Node-properties.html	doctype.hasChildNodes()
 +dom/nodes/Node-properties.html	doctype.name
++dom/nodes/Node-properties.html	doctype.nextSibling
 +dom/nodes/Node-properties.html	doctype.nodeName
 +dom/nodes/Node-properties.html	doctype.nodeType
 +dom/nodes/Node-properties.html	doctype.nodeValue
@@ -8524,7 +8414,13 @@ url/failure.html	Loading data…
 +dom/nodes/Node-properties.html	doctype.publicId
 +dom/nodes/Node-properties.html	doctype.systemId
 +dom/nodes/Node-properties.html	doctype.textContent
++dom/nodes/Node-properties.html	document.childNodes.length
++dom/nodes/Node-properties.html	document.childNodes[0]
++dom/nodes/Node-properties.html	document.childNodes[1]
 +dom/nodes/Node-properties.html	document.doctype
++dom/nodes/Node-properties.html	document.firstChild
++dom/nodes/Node-properties.html	document.hasChildNodes()
++dom/nodes/Node-properties.html	document.lastChild
 +dom/nodes/Node-properties.html	document.nodeName
 +dom/nodes/Node-properties.html	document.nodeType
 +dom/nodes/Node-properties.html	document.ownerDocument
@@ -9508,6 +9404,7 @@ url/failure.html	Loading data…
 +dom/nodes/remove-next-sibling-during-replace-with.html	
 +dom/nodes/rootNode.html	getRootNode() must return a document fragment when a node is in the fragment
 +dom/nodes/rootNode.html	getRootNode() must return the context object when it does not have any parent
++dom/nodes/rootNode.html	getRootNode() must return the document when a node is in document
 +dom/nodes/rootNode.html	getRootNode() must return the parent node of the context object when the context object has a single ancestor not in a document
 +dom/nodes/svg-template-querySelector.html	querySelector works on template contents fragments with HTML elements (sanity check)
 +dom/nodes/svg-template-querySelector.html	querySelector works on template contents fragments with SVG elements
@@ -9517,6 +9414,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-attribute-nodes.html	comparePoint() with an Attr node sharing the range's root
 +dom/ranges/Range-attribute-nodes.html	deleteContents() on an Attr-rooted range is a no-op
 +dom/ranges/Range-attribute-nodes.html	intersectsNode() with an Attr node not sharing the range's root returns false
++dom/ranges/Range-attribute-nodes.html	intersectsNode() with an Attr node sharing the range's root returns true
 +dom/ranges/Range-attribute-nodes.html	isPointInRange() with an Attr node not sharing the range's root returns false
 +dom/ranges/Range-attribute-nodes.html	selectNode() with an Attr node throws InvalidNodeTypeError (null parent)
 +dom/ranges/Range-attribute-nodes.html	selectNodeContents() on an Attr node selects an empty range rooted at the Attr
@@ -9547,6 +9445,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-cloneRange.html	Range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-cloneRange.html	Range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-cloneRange.html	Range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-cloneRange.html	Range 25 [document, 0, document, 1]
++dom/ranges/Range-cloneRange.html	Range 26 [document, 0, document, 2]
 +dom/ranges/Range-cloneRange.html	Range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-cloneRange.html	Range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-cloneRange.html	Range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9]
@@ -9568,6 +9468,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-cloneRange.html	Range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-cloneRange.html	Range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-cloneRange.html	Range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-cloneRange.html	Range 51 [document, 1, document, 2]
 +dom/ranges/Range-cloneRange.html	Range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-cloneRange.html	Range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-cloneRange.html	Range 56 [detachedForeignTextNode, 7, detachedForeignTextNode, 7]
@@ -9631,6 +9532,12 @@ url/failure.html	Loading data…
 +dom/ranges/Range-collapse.html	Range 24 [testDiv, 2, paras[4], 1], toStart false
 +dom/ranges/Range-collapse.html	Range 24 [testDiv, 2, paras[4], 1], toStart omitted
 +dom/ranges/Range-collapse.html	Range 24 [testDiv, 2, paras[4], 1], toStart true
++dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart false
++dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart omitted
++dom/ranges/Range-collapse.html	Range 25 [document, 0, document, 1], toStart true
++dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart false
++dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart omitted
++dom/ranges/Range-collapse.html	Range 26 [document, 0, document, 2], toStart true
 +dom/ranges/Range-collapse.html	Range 27 [comment, 2, comment, 3], toStart false
 +dom/ranges/Range-collapse.html	Range 27 [comment, 2, comment, 3], toStart omitted
 +dom/ranges/Range-collapse.html	Range 27 [comment, 2, comment, 3], toStart true
@@ -9700,6 +9607,9 @@ url/failure.html	Loading data…
 +dom/ranges/Range-collapse.html	Range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], toStart false
 +dom/ranges/Range-collapse.html	Range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], toStart omitted
 +dom/ranges/Range-collapse.html	Range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], toStart true
++dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart false
++dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart omitted
++dom/ranges/Range-collapse.html	Range 51 [document, 1, document, 2], toStart true
 +dom/ranges/Range-collapse.html	Range 52 [paras[2].firstChild, 4, comment, 2], toStart false
 +dom/ranges/Range-collapse.html	Range 52 [paras[2].firstChild, 4, comment, 2], toStart omitted
 +dom/ranges/Range-collapse.html	Range 52 [paras[2].firstChild, 4, comment, 2], toStart true
@@ -9765,6 +9675,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-commonAncestorContainer.html	23: range [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-commonAncestorContainer.html	24: range [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-commonAncestorContainer.html	25: range [testDiv, 2, paras[4], 1]
++dom/ranges/Range-commonAncestorContainer.html	26: range [document, 0, document, 1]
++dom/ranges/Range-commonAncestorContainer.html	27: range [document, 0, document, 2]
 +dom/ranges/Range-commonAncestorContainer.html	28: range [comment, 2, comment, 3]
 +dom/ranges/Range-commonAncestorContainer.html	29: range [testDiv, 0, comment, 5]
 +dom/ranges/Range-commonAncestorContainer.html	2: range [paras[0].firstChild, 0, paras[0].firstChild, 1]
@@ -9788,6 +9700,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-commonAncestorContainer.html	49: range [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-commonAncestorContainer.html	4: range [paras[0].firstChild, 2, paras[0].firstChild, 9]
 +dom/ranges/Range-commonAncestorContainer.html	50: range [document.documentElement, 1, document.body, 0]
++dom/ranges/Range-commonAncestorContainer.html	52: range [document, 1, document, 2]
 +dom/ranges/Range-commonAncestorContainer.html	53: range [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-commonAncestorContainer.html	54: range [paras[3], 1, comment, 8]
 +dom/ranges/Range-commonAncestorContainer.html	55: range [foreignDoc, 0, foreignDoc, 0]
@@ -10843,71 +10756,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 51 [document, 1, document, 2]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 52 [paras[2].firstChild, 4, comment, 2]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 53 [paras[3], 1, comment, 8]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 54 [foreignDoc, 0, foreignDoc, 0]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 55 [xmlDoc, 0, xmlDoc, 0]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 56 [detachedForeignTextNode, 7, detachedForeignTextNode, 7]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 57 [detachedXmlTextNode, 7, detachedXmlTextNode, 7]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 58 [detachedComment, 5, detachedComment, 5]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 59 [detachedForeignComment, 4, detachedForeignComment, 4]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 60 [foreignDocfrag, 0, foreignDocfrag, 0]
-+dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 61 [xmlDocfrag, 0, xmlDocfrag, 0]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
 +dom/ranges/Range-comparePoint.html	Point 23 [foreignPara1.firstChild, 1], range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 10 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 11 [foreignPara1.firstChild, 2, foreignPara1.firstChild, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 12 [document.documentElement, 0, document.documentElement, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 13 [document.documentElement, 0, document.documentElement, 2]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 14 [document.documentElement, 1, document.documentElement, 2]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 15 [document.head, 1, document.head, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 16 [document.body, 4, document.body, 5]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 18 [paras[0], 0, paras[0], 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 19 [detachedPara1, 0, detachedPara1, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 20 [paras[0].firstChild, 0, paras[1].firstChild, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 21 [paras[0].firstChild, 0, paras[1].firstChild, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 22 [paras[0].firstChild, 3, paras[3], 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 23 [paras[0], 0, paras[0].firstChild, 7]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 24 [testDiv, 2, paras[4], 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 25 [document, 0, document, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 26 [document, 0, document, 2]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 27 [comment, 2, comment, 3]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 28 [testDiv, 0, comment, 5]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 29 [foreignDoc, 1, foreignComment, 2]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 30 [foreignDoc.body, 0, foreignTextNode, 36]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 31 [xmlDoc, 1, xmlComment, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 32 [detachedTextNode, 0, detachedTextNode, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 33 [detachedForeignTextNode, 0, detachedForeignTextNode, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 34 [detachedXmlTextNode, 0, detachedXmlTextNode, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 35 [detachedComment, 3, detachedComment, 4]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 36 [detachedForeignComment, 0, detachedForeignComment, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 37 [detachedXmlComment, 2, detachedXmlComment, 6]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 38 [docfrag, 0, docfrag, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 39 [processingInstruction, 0, processingInstruction, 4]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 40 [paras[1].firstChild, 0, paras[1].firstChild, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 41 [paras[1].firstChild, 2, paras[1].firstChild, 8]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 42 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 43 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 46 [paras[0], 0, paras[0], 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 47 [detachedPara1, 0, detachedPara1, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 48 [testDiv, 1, paras[2].firstChild, 5]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 49 [document.documentElement, 1, document.body, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
-+dom/ranges/Range-comparePoint.html	Point 24 [foreignPara1.firstChild, 8], range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
 +dom/ranges/Range-comparePoint.html	Point 3 [paras[0].firstChild, 2], range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
 +dom/ranges/Range-comparePoint.html	Point 3 [paras[0].firstChild, 2], range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
 +dom/ranges/Range-comparePoint.html	Point 3 [paras[0].firstChild, 2], range 10 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 0]
@@ -12453,10 +12305,149 @@ url/failure.html	Loading data…
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 54 [foreignDoc, 0, foreignDoc, 0]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 55 [xmlDoc, 0, xmlDoc, 0]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 56 [detachedForeignTextNode, 7, detachedForeignTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 57 [detachedXmlTextNode, 7, detachedXmlTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 58 [detachedComment, 5, detachedComment, 5]
++dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 59 [detachedForeignComment, 4, detachedForeignComment, 4]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
++dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 60 [foreignDocfrag, 0, foreignDocfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 61 [xmlDocfrag, 0, xmlDocfrag, 0]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
 +dom/ranges/Range-intersectsNode.html	Node 24 detachedPara2, range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 10 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 11 [foreignPara1.firstChild, 2, foreignPara1.firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 12 [document.documentElement, 0, document.documentElement, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 13 [document.documentElement, 0, document.documentElement, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 14 [document.documentElement, 1, document.documentElement, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 15 [document.head, 1, document.head, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 16 [document.body, 4, document.body, 5]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 18 [paras[0], 0, paras[0], 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 19 [detachedPara1, 0, detachedPara1, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 20 [paras[0].firstChild, 0, paras[1].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 21 [paras[0].firstChild, 0, paras[1].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 22 [paras[0].firstChild, 3, paras[3], 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 23 [paras[0], 0, paras[0].firstChild, 7]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 25 [document, 0, document, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 26 [document, 0, document, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 27 [comment, 2, comment, 3]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 28 [testDiv, 0, comment, 5]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 29 [foreignDoc, 1, foreignComment, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 30 [foreignDoc.body, 0, foreignTextNode, 36]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 31 [xmlDoc, 1, xmlComment, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 32 [detachedTextNode, 0, detachedTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 33 [detachedForeignTextNode, 0, detachedForeignTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 34 [detachedXmlTextNode, 0, detachedXmlTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 35 [detachedComment, 3, detachedComment, 4]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 36 [detachedForeignComment, 0, detachedForeignComment, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 37 [detachedXmlComment, 2, detachedXmlComment, 6]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 38 [docfrag, 0, docfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 39 [processingInstruction, 0, processingInstruction, 4]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 40 [paras[1].firstChild, 0, paras[1].firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 41 [paras[1].firstChild, 2, paras[1].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 42 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 43 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 46 [paras[0], 0, paras[0], 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 47 [detachedPara1, 0, detachedPara1, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 48 [testDiv, 1, paras[2].firstChild, 5]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 49 [document.documentElement, 1, document.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 51 [document, 1, document, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 52 [paras[2].firstChild, 4, comment, 2]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 53 [paras[3], 1, comment, 8]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 54 [foreignDoc, 0, foreignDoc, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 55 [xmlDoc, 0, xmlDoc, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 56 [detachedForeignTextNode, 7, detachedForeignTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 57 [detachedXmlTextNode, 7, detachedXmlTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 58 [detachedComment, 5, detachedComment, 5]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 59 [detachedForeignComment, 4, detachedForeignComment, 4]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 60 [foreignDocfrag, 0, foreignDocfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 61 [xmlDocfrag, 0, xmlDocfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 25 detachedPara2.firstChild, range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 10 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 11 [foreignPara1.firstChild, 2, foreignPara1.firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 12 [document.documentElement, 0, document.documentElement, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 13 [document.documentElement, 0, document.documentElement, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 14 [document.documentElement, 1, document.documentElement, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 15 [document.head, 1, document.head, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 16 [document.body, 4, document.body, 5]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 17 [foreignDoc.documentElement, 0, foreignDoc.documentElement, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 18 [paras[0], 0, paras[0], 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 19 [detachedPara1, 0, detachedPara1, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 20 [paras[0].firstChild, 0, paras[1].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 21 [paras[0].firstChild, 0, paras[1].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 22 [paras[0].firstChild, 3, paras[3], 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 23 [paras[0], 0, paras[0].firstChild, 7]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 25 [document, 0, document, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 26 [document, 0, document, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 27 [comment, 2, comment, 3]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 28 [testDiv, 0, comment, 5]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 29 [foreignDoc, 1, foreignComment, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 30 [foreignDoc.body, 0, foreignTextNode, 36]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 31 [xmlDoc, 1, xmlComment, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 32 [detachedTextNode, 0, detachedTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 33 [detachedForeignTextNode, 0, detachedForeignTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 34 [detachedXmlTextNode, 0, detachedXmlTextNode, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 35 [detachedComment, 3, detachedComment, 4]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 36 [detachedForeignComment, 0, detachedForeignComment, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 37 [detachedXmlComment, 2, detachedXmlComment, 6]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 38 [docfrag, 0, docfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 39 [processingInstruction, 0, processingInstruction, 4]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 40 [paras[1].firstChild, 0, paras[1].firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 41 [paras[1].firstChild, 2, paras[1].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 42 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 43 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 44 [foreignDoc.head, 1, foreignDoc.head, 1]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 45 [foreignDoc.body, 0, foreignDoc.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 46 [paras[0], 0, paras[0], 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 47 [detachedPara1, 0, detachedPara1, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 48 [testDiv, 1, paras[2].firstChild, 5]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 49 [document.documentElement, 1, document.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 50 [foreignDoc.documentElement, 1, foreignDoc.body, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 51 [document, 1, document, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 52 [paras[2].firstChild, 4, comment, 2]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 53 [paras[3], 1, comment, 8]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 54 [foreignDoc, 0, foreignDoc, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 55 [xmlDoc, 0, xmlDoc, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 56 [detachedForeignTextNode, 7, detachedForeignTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 57 [detachedXmlTextNode, 7, detachedXmlTextNode, 7]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 58 [detachedComment, 5, detachedComment, 5]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 59 [detachedForeignComment, 4, detachedForeignComment, 4]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 60 [foreignDocfrag, 0, foreignDocfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 61 [xmlDocfrag, 0, xmlDocfrag, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 26 testDiv, range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 8 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 0]
++dom/ranges/Range-intersectsNode.html	Node 27 detachedXmlElement, range 9 [detachedPara1.firstChild, 2, detachedPara1.firstChild, 8]
 +dom/ranges/Range-intersectsNode.html	Node 3 paras[5].firstChild, range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0]
 +dom/ranges/Range-intersectsNode.html	Node 3 paras[5].firstChild, range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1]
 +dom/ranges/Range-intersectsNode.html	Node 3 paras[5].firstChild, range 10 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 0]
@@ -12908,6 +12899,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -12931,6 +12924,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 0 [paras[0].firstChild, -1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -12963,6 +12957,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -12986,6 +12982,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 1 [paras[0].firstChild, 0], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13018,6 +13015,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13041,6 +13040,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 10 [paras[1].firstChild, 1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13073,6 +13073,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13096,6 +13098,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 11 [paras[1].firstChild, 2], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13128,6 +13131,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13151,6 +13156,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 12 [paras[1].firstChild, 8], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13183,6 +13189,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13206,6 +13214,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 13 [paras[1].firstChild, 9], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13238,6 +13247,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13261,6 +13272,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 14 [paras[1].firstChild, 10], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13293,6 +13305,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13316,6 +13330,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 15 [paras[1].firstChild, 65535], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13348,6 +13363,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13371,6 +13388,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 16 [paras[5].firstChild, 2], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13403,6 +13421,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13426,6 +13446,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 17 [paras[5].firstChild, 20], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13458,6 +13479,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13481,6 +13504,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 18 [detachedPara1.firstChild, 0], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13513,6 +13537,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13536,6 +13562,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 19 [detachedPara1.firstChild, 1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13568,6 +13595,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13591,6 +13620,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 2 [paras[0].firstChild, 1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13623,6 +13653,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13646,6 +13678,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 20 [detachedPara1.firstChild, 8], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13678,6 +13711,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13701,6 +13736,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 21 [detachedPara1.firstChild, 9], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13733,6 +13769,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13756,6 +13794,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 22 [foreignPara1.firstChild, 0], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13788,6 +13827,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13811,6 +13852,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 23 [foreignPara1.firstChild, 1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13843,6 +13885,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13861,6 +13905,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 41 [paras[1].firstChild, 2, paras[1].firstChild, 8]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 42 [detachedPara1.firstChild, 0, detachedPara1.firstChild, 1]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 43 [foreignPara1.firstChild, 0, foreignPara1.firstChild, 1]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 46 [paras[0], 0, paras[0], 0]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 47 [detachedPara1, 0, detachedPara1, 0]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 48 [testDiv, 1, paras[2].firstChild, 5]
++dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 6 [paras[5].firstChild, 2, paras[5].lastChild, 4]
 +dom/ranges/Range-isPointInRange.html	Point 24 [foreignPara1.firstChild, 8], range 7 [paras[5].firstChild, 1, paras[5].firstChild, 3]
@@ -13883,6 +13931,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13906,6 +13956,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 3 [paras[0].firstChild, 2], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13938,6 +13989,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -13961,6 +14014,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 4 [paras[0].firstChild, 8], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -13993,6 +14047,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14016,6 +14072,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 5 [paras[0].firstChild, 9], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14048,6 +14105,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14071,6 +14130,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 6 [paras[0].firstChild, 10], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14103,6 +14163,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14126,6 +14188,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 7 [paras[0].firstChild, 65535], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14158,6 +14221,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14181,6 +14246,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 8 [paras[1].firstChild, -1], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14213,6 +14279,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14236,6 +14304,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Point 9 [paras[1].firstChild, 0], range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14268,6 +14337,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Set up for range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-isPointInRange.html	Set up for range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-isPointInRange.html	Set up for range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-isPointInRange.html	Set up for range 25 [document, 0, document, 1]
++dom/ranges/Range-isPointInRange.html	Set up for range 26 [document, 0, document, 2]
 +dom/ranges/Range-isPointInRange.html	Set up for range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-isPointInRange.html	Set up for range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-isPointInRange.html	Set up for range 29 [foreignDoc, 1, foreignComment, 2]
@@ -14291,6 +14362,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-isPointInRange.html	Set up for range 48 [testDiv, 1, paras[2].firstChild, 5]
 +dom/ranges/Range-isPointInRange.html	Set up for range 49 [document.documentElement, 1, document.body, 0]
 +dom/ranges/Range-isPointInRange.html	Set up for range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9]
++dom/ranges/Range-isPointInRange.html	Set up for range 51 [document, 1, document, 2]
 +dom/ranges/Range-isPointInRange.html	Set up for range 52 [paras[2].firstChild, 4, comment, 2]
 +dom/ranges/Range-isPointInRange.html	Set up for range 53 [paras[3], 1, comment, 8]
 +dom/ranges/Range-isPointInRange.html	Set up for range 54 [foreignDoc, 0, foreignDoc, 0]
@@ -14320,6 +14392,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-mutations-appendChild.html	foreignDoc.appendChild(detachedComment), with unselected range on foreignDoc from foreignDoc.childNodes.length - 1 to foreignDoc.childNodes.length
 +dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document), with unselected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document.doctype), with selected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(document.doctype), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(foreignDoc), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(foreignDoc), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-appendChild.html	paras[0].appendChild(paras[0]), with selected range on paras[0] from 0 to 1
@@ -14631,6 +14705,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-mutations-insertBefore.html	foreignDoc.insertBefore(detachedComment, null), with unselected range on foreignDoc from 0 to 1
 +dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document, paras[0].firstChild), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document.doctype, paras[0].firstChild), with selected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(document.doctype, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(foreignDoc, paras[0].firstChild), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(foreignDoc, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-insertBefore.html	paras[0].insertBefore(paras[0], paras[0].firstChild), with selected range on paras[0] from 0 to 1
@@ -14665,7 +14741,6 @@ url/failure.html	Loading data…
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(1, "foo"), with unselected range collapsed at (detachedTextNode, 1)
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(3, "foo"), with selected range on detachedTextNode from 1 to 3
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(3, "foo"), with unselected range on detachedTextNode from 1 to 3
-+dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(376, ""), with unselected range on detachedTextNode from 0 to 1
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(376, "foo"), with selected range on detachedTextNode from 0 to 1
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(376, "foo"), with unselected range on detachedTextNode from 0 to 1
 +dom/ranges/Range-mutations-insertData.html	detachedTextNode.insertData(detachedTextNode.length, "foo"), with selected range collapsed at (detachedTextNode, detachedTextNode.length)
@@ -14778,6 +14853,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-mutations-replaceChild.html	foreignDoc.replaceChild(detachedComment, foreignDoc.documentElement), with unselected range on foreignDoc from 0 to 1
 +dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document, paras[0].firstChild), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document.doctype, paras[0].firstChild), with selected range on paras[0] from 0 to 1
++dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(document.doctype, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(foreignDoc, paras[0].firstChild), with selected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(foreignDoc, paras[0].firstChild), with unselected range on paras[0] from 0 to 1
 +dom/ranges/Range-mutations-replaceChild.html	paras[0].replaceChild(paras[0], paras[0].firstChild), with selected range on paras[0] from 0 to 1
@@ -14979,6 +15056,8 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	Set up range 22 [paras[0].firstChild, 3, paras[3], 1]
 +dom/ranges/Range-set.html	Set up range 23 [paras[0], 0, paras[0].firstChild, 7]
 +dom/ranges/Range-set.html	Set up range 24 [testDiv, 2, paras[4], 1]
++dom/ranges/Range-set.html	Set up range 25 [document, 0, document, 1]
++dom/ranges/Range-set.html	Set up range 26 [document, 0, document, 2]
 +dom/ranges/Range-set.html	Set up range 27 [comment, 2, comment, 3]
 +dom/ranges/Range-set.html	Set up range 28 [testDiv, 0, comment, 5]
 +dom/ranges/Range-set.html	Set up range 29 [foreignDoc, 1, foreignComment, 2]
@@ -15020,6 +15099,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 31 [document.head, 1]
@@ -15040,7 +15120,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 45 [testDiv, 0]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 46 [testDiv, 3]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 47 [document, -1]
++dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 48 [document, 0]
++dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 49 [document, 1]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 5 [paras[0].firstChild, 9]
++dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 51 [document, 3]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 52 [comment, -1]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 53 [comment, 0]
 +dom/ranges/Range-set.html	setStart() with range 0 [paras[0].firstChild, 0, paras[0].firstChild, 0], point 54 [comment, 4]
@@ -15100,6 +15183,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 31 [document.head, 1]
@@ -15120,7 +15204,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 45 [testDiv, 0]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 46 [testDiv, 3]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 47 [document, -1]
++dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 48 [document, 0]
++dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 49 [document, 1]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 5 [paras[0].firstChild, 9]
++dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 51 [document, 3]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 52 [comment, -1]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 53 [comment, 0]
 +dom/ranges/Range-set.html	setStart() with range 1 [paras[0].firstChild, 0, paras[0].firstChild, 1], point 54 [comment, 4]
@@ -15180,6 +15267,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 31 [document.head, 1]
@@ -15200,7 +15288,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 45 [testDiv, 0]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 46 [testDiv, 3]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 47 [document, -1]
++dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 48 [document, 0]
++dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 49 [document, 1]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 5 [paras[0].firstChild, 9]
++dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 51 [document, 3]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 52 [comment, -1]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 53 [comment, 0]
 +dom/ranges/Range-set.html	setStart() with range 2 [paras[0].firstChild, 2, paras[0].firstChild, 8], point 54 [comment, 4]
@@ -15260,6 +15351,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 31 [document.head, 1]
@@ -15280,7 +15372,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 45 [testDiv, 0]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 46 [testDiv, 3]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 47 [document, -1]
++dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 48 [document, 0]
++dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 49 [document, 1]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 5 [paras[0].firstChild, 9]
++dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 51 [document, 3]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 52 [comment, -1]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 53 [comment, 0]
 +dom/ranges/Range-set.html	setStart() with range 3 [paras[0].firstChild, 2, paras[0].firstChild, 9], point 54 [comment, 4]
@@ -15340,6 +15435,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 31 [document.head, 1]
@@ -15360,7 +15456,10 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 45 [testDiv, 0]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 46 [testDiv, 3]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 47 [document, -1]
++dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 48 [document, 0]
++dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 49 [document, 1]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 5 [paras[0].firstChild, 9]
++dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 51 [document, 3]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 52 [comment, -1]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 53 [comment, 0]
 +dom/ranges/Range-set.html	setStart() with range 4 [paras[1].firstChild, 0, paras[1].firstChild, 0], point 54 [comment, 4]
@@ -15420,6 +15519,7 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 26 [document.documentElement, -1]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 27 [document.documentElement, 0]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 28 [document.documentElement, 1]
++dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 29 [document.documentElement, 2]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 3 [paras[0].firstChild, 2]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 30 [document.documentElement, 7]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 31 [document.head, 1]
@@ -15433,9 +15533,6 @@ url/failure.html	Loading data…
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 39 [paras[0], 2]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 4 [paras[0].firstChild, 8]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 40 [paras[1], 0]
-+dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 41 [paras[1], 1]
-+dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 42 [paras[1], 2]
-+dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 43 [detachedPara1, 0]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 5 [paras[0].firstChild, 9]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 6 [paras[0].firstChild, 10]
 +dom/ranges/Range-set.html	setStart() with range 5 [paras[1].firstChild, 2, paras[1].firstChild, 9], point 7 [paras[0].firstChild, 65535]
@@ -15450,8 +15547,6 @@ url/failure.html	Loading data…
 +dom/traversal/NodeFilter-constants.html	Constants for whatToShow on NodeFilter interface object.
 +dom/traversal/NodeIterator-removal-during-filtering.html	Removing an already-visited subtree during filtering does not disrupt forward traversal
 +dom/traversal/NodeIterator-removal-during-filtering.html	referenceNode during filtering reflects the last accepted node, not the candidate
-+dom/traversal/NodeIterator-removal.html	Test removing node doctype
-+dom/traversal/NodeIterator-removal.html	Test removing node testDiv
 +dom/traversal/NodeIterator.html	Propagate exception from filter function
 +dom/traversal/NodeIterator.html	detach() should be a no-op
 +dom/traversal/NodeIterator.html	document.createNodeIterator(comment, 0, (function(node) { return false }))
@@ -15740,20 +15835,10 @@ url/failure.html	Loading data…
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0, (function(node) { return true }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0, null)
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, (function(node) { return true }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, 0xFFFFFFFF, null)
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return false }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return true }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ATTRIBUTE, null)
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return node.nodeName[0] == '#' }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return true }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, null)
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return false }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return node.nodeName[0] == '#' }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, (function(node) { return true }))
-+dom/traversal/NodeIterator.html	document.createNodeIterator(document, NodeFilter.SHOW_ELEMENT, null)
 +dom/traversal/NodeIterator.html	document.createNodeIterator(foreignComment, 0, (function(node) { return false }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(foreignComment, 0, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/NodeIterator.html	document.createNodeIterator(foreignComment, 0, (function(node) { return true }))
@@ -16265,20 +16350,14 @@ url/failure.html	Loading data…
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0, (function(node) { return true }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0, null)
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, (function(node) { return false }))
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, (function(node) { return true }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, 0xFFFFFFFF, null)
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return false }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ATTRIBUTE, (function(node) { return true }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ATTRIBUTE, null)
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return false }))
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, (function(node) { return true }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT, null)
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, (function(node) { return false }))
-+dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, (function(node) { return node.nodeName[0] == '#' }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, (function(node) { return true }))
 +dom/traversal/TreeWalker.html	document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, null)
 +dom/traversal/TreeWalker.html	document.createTreeWalker(foreignDoc, 0, (function(node) { return false }))
@@ -16584,6 +16663,7 @@ url/failure.html	Loading data…
 +html/semantics/tabular-data/processing-model-1/span-limits.html	colspan of 1001 must be treated as 1000
 +html/semantics/tabular-data/the-caption-element/caption_001.html	caption IDL attribute is null
 +html/semantics/tabular-data/the-caption-element/caption_001.html	caption of the third table element should be null
++html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning a caption to table.caption
 +html/semantics/tabular-data/the-table-element/caption-methods.html	Assigning null to table.caption
 +html/semantics/tabular-data/the-table-element/caption-methods.html	Set table.caption when the table doesn't already have a caption
 +html/semantics/tabular-data/the-table-element/caption-methods.html	createCaption method creates a new caption and inserts it as the first node of the table element

@@ -1566,8 +1566,19 @@ def _attach_el_natives(o: int32):
 #   mode 2 = insert `newv` before `oldv` (js_null() appends)
 def _dom_nodes_edit(parentv: int32, oldv: int32, newv: int32, mode: int32, \
                     prev_kids: int32, nw_kids: int32):
-    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
-        return
+    # MATERIALISE, do not bail. This used to `return` unless childNodes was
+    # already an OWN property, on the reasoning that an untouched element
+    # "rebuilds it correctly on next access". It does not: _dom_node_kids
+    # rebuilds the list FROM THE tx TREE, which knows only what the parser saw,
+    # so a script-inserted node was dropped on the floor and never appeared in
+    # the node view at all. The bug was invisible while the pre-insertion check
+    # was a childNodes membership search, because that search read childNodes
+    # and so materialised it as a side effect; c32c379f correctly replaced the
+    # search with a parent-link comparison and the accidental materialisation
+    # went with it, taking insertAdjacentText("beforebegin") with it.
+    #
+    # Forcing the accessor here is bounded: it builds ONE level of ONE parent,
+    # once, and only for a parent something is actually mutating.
     old: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
     if js_is_array(old) == 0:
         return
@@ -1607,8 +1618,8 @@ def _dom_nodes_edit(parentv: int32, oldv: int32, newv: int32, mode: int32, \
 # a NodeList a page is already iterating stays LIVE across an appendChild
 # (dom/nodes/NodeList-Iterable.html appends while iterating container.childNodes).
 def _dom_nodes_push(parentv: int32, childv: int32):
-    if js_has_own(parentv, cast[Ptr[uint8]]("childNodes"), 10) == 0:
-        return
+    # Materialise rather than bail -- see _dom_nodes_edit above for why the
+    # "it rebuilds on next access" assumption is false.
     nd: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("childNodes"), 10)
     # A CREATED node's children and childNodes are the SAME array object (it has
     # no source span, so there is nothing to interleave). Pushing again would
@@ -1869,7 +1880,19 @@ def _node_children_of_tx(t: int32, parentv: int32, arr: int32) -> int32:
                 if js_type_of(tn) == TAG_OBJ:
                     js_array_push(arr, tn)
                     n = n + 1
-            js_array_push(arr, _dom_register_tx(k))
+            # Give the element child its PARENT LINK here. _dom_register_tx
+            # mints the object; the link was left to the lazy _dom_wire_tree,
+            # so an element first reached THROUGH its parent's childNodes had
+            # parentNode == null while sitting in that very list. Invisible
+            # while the pre-insertion reference check was a childNodes
+            # membership search; the moment c32c379f made it the spec's
+            # parent-link comparison, documentElement.insertAdjacentText(
+            # "afterbegin", ...) threw NotFoundError because
+            # documentElement.firstChild (<head>) claimed no parent at all.
+            ekv: int32 = _dom_register_tx(k)
+            js_set_prop(ekv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+            js_set_prop(ekv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+            js_array_push(arr, ekv)
             n = n + 1
             pos = _tx_elem_end(k)
         k = k + 1
@@ -1896,6 +1919,15 @@ def _dom_wire_tree(idx: int32):
     if t < 0:
         return
     o: int32 = dom_obj[idx]
+    # ONCE. This installs `children` as an OWN array rebuilt from the tx tree,
+    # so a second run THROWS AWAY every script-inserted child. It used to be
+    # reached only through the lazy accessor (which the own property then
+    # shadows), but a childNodes read re-enters it, and the moment a mutation
+    # forces childNodes to materialise, `appendChild` then `childNodes` wiped
+    # the append: parentEl.children went back to 0 with the new element still
+    # in childNodes. The wiring is a one-time bootstrap, not a rebuild.
+    if js_has_own(o, cast[Ptr[uint8]]("children"), 8) != 0:
+        return
     # parent
     par: int32 = tx_parent[t]
     if par >= 0:
@@ -1906,7 +1938,16 @@ def _dom_wire_tree(idx: int32):
         # parent element (nearest ancestor); a root element / body reports null.
         js_set_prop(o, cast[Ptr[uint8]]("offsetParent"), 12, pv)
     else:
-        js_set_prop(o, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+        # A tx ROOT is the document element, and its parent is the DOCUMENT --
+        # not null. This ran lazily and therefore OVERWROTE the parentNode the
+        # document build had already set, so `document.documentElement.parentNode
+        # === document` was true right after load and false again the moment
+        # anything wired the tree. parentElement stays null (a Document is not
+        # an Element).
+        dpv: int32 = js_null()
+        if js_doc != 0:
+            dpv = js_doc
+        js_set_prop(o, cast[Ptr[uint8]]("parentNode"), 10, dpv)
         js_set_prop(o, cast[Ptr[uint8]]("parentElement"), 13, js_null())
         js_set_prop(o, cast[Ptr[uint8]]("offsetParent"), 12, js_null())
     # siblings (same parent, document order == tx order)

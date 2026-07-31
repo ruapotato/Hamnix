@@ -4875,6 +4875,19 @@ def _rng_method(rel: int32, r: int32) -> int32:
         if cpo < 0.0 or cpo > cast[float64](_rng_node_len(a0)):
             return _throw_domexc(cast[Ptr[uint8]]("IndexSizeError"), 14, \
                                  cast[Ptr[uint8]]("offset is out of bounds"), 23)
+    if rel == NID_RNG_INTERSECTS:
+        # intersectsNode has TWO distinct "no comparison possible" cases and
+        # they answer OPPOSITELY. A node in a DIFFERENT tree is false; a node
+        # in the same tree with NO PARENT (i.e. the root itself) is TRUE. Both
+        # were answered false, which was invisible only while
+        # documentElement.parentNode was null -- `document` then looked like a
+        # different tree from everything in it, so the false came out right for
+        # the wrong reason. 62 rows of Range-intersectsNode.html are exactly
+        # `intersectsNode(document)`.
+        if _nd_root(a0) != _nd_root(_rng_get(r, cast[Ptr[uint8]]("startContainer"), 14)):
+            return js_bool(0)
+        if js_type_of(_nd_parent(a0)) != TAG_OBJ:
+            return js_bool(1)
     par: int32 = _nd_parent(a0)
     if js_type_of(par) != TAG_OBJ:
         if rel == NID_RNG_INTERSECTS or rel == NID_RNG_ISPOINTIN:
@@ -9917,6 +9930,47 @@ def _js_build_document():
                 cast[Ptr[uint8]]("html"))
     _doc_set_el(doc, cast[Ptr[uint8]]("body"), 4, cast[Ptr[uint8]]("body"))
     _doc_set_el(doc, cast[Ptr[uint8]]("head"), 4, cast[Ptr[uint8]]("head"))
+    # <html>'s parent is the DOCUMENT, and the document's child list names it.
+    # Both read back empty, so the document was not the root of its own tree.
+    # That is invisible while the pre-insertion reference check is a childNodes
+    # MEMBERSHIP SEARCH (an empty list and a wrong parent link fail the same
+    # way for a different reason); once c32c379f made it the spec's PARENT-LINK
+    # comparison, `document.insertBefore(x, document.documentElement)` answered
+    # NotFoundError where the spec wants the later HierarchyRequestError.
+    dehtml: int32 = js_get_prop(doc, cast[Ptr[uint8]]("documentElement"), 15)
+    if js_type_of(dehtml) == TAG_OBJ:
+        js_set_prop(dehtml, cast[Ptr[uint8]]("parentNode"), 10, doc)
+        js_set_prop(dehtml, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+        dekids: int32 = js_new_array_v()
+        dtv2: int32 = js_get_prop(doc, cast[Ptr[uint8]]("doctype"), 7)
+        if js_type_of(dtv2) == TAG_OBJ:
+            js_array_push(dekids, dtv2)
+        js_array_push(dekids, dehtml)
+        js_set_own(doc, cast[Ptr[uint8]]("childNodes"), 10, dekids)
+        dech2: int32 = js_new_array_v()
+        js_array_push(dech2, dehtml)
+        js_set_own(doc, cast[Ptr[uint8]]("children"), 8, dech2)
+        js_set_prop(doc, cast[Ptr[uint8]]("firstChild"), 10, \
+                    js_array_get(dekids, 0))
+        js_set_prop(doc, cast[Ptr[uint8]]("lastChild"), 9, dehtml)
+        # ... and the SIBLING links across them, so a backwards walk from
+        # anywhere in the page reaches the doctype. WPT's
+        # Node-compareDocumentPosition.html derives its expectation by walking
+        # previousSibling/lastChild; with <html>.previousSibling null the walk
+        # stopped one node short of the doctype and expected FOLLOWING where
+        # the engine (correctly) said PRECEDING.
+        if js_type_of(dtv2) == TAG_OBJ:
+            js_set_prop(dtv2, cast[Ptr[uint8]]("nextSibling"), 11, dehtml)
+            js_set_prop(dehtml, cast[Ptr[uint8]]("previousSibling"), 15, dtv2)
+        else:
+            js_set_prop(dehtml, cast[Ptr[uint8]]("previousSibling"), 15, js_null())
+        js_set_prop(dehtml, cast[Ptr[uint8]]("nextSibling"), 11, js_null())
+    # COST, measured, because it is not obvious: once `document` has a child
+    # list, a NodeIterator or TreeWalker rooted at it really does traverse the
+    # page, and dom/traversal/NodeIterator.html + TreeWalker.html ran out of
+    # STRING POOL part way through -- 738 subtests lost to a truncated file.
+    # That is what raised SP_CAP 16 -> 32 MiB (see lib/web/js/state.ad); the
+    # DOM shape here is correct and the ceiling was the thing that was wrong.
     # document.fonts — a minimal FontFaceSet. Init code (google's emoji probe,
     # webfont loaders) calls .load()/.check() and awaits `.ready`; headless has
     # every font available synchronously, so load()/ready resolve immediately.
