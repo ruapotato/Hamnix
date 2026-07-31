@@ -4716,3 +4716,20 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_a12_addrspace.sh
 # 300,000-scope Function.prototype.call loop that completes only because the
 # arena is swept and refilled.
 bash scripts/test_hambrowse_rawtext_layout_host.sh
+# test_arm64_a13_demand: A13 -- DEMAND PAGING on the aarch64 LLVM lane. Through
+# A12 an address space had to be FULLY PRE-POPULATED, because a Data Abort from
+# EL0 was not serviceable -- and was not even recognised: el0.S dispatched EVERY
+# synchronous exception from EL0 into the SYSCALL handler without reading
+# ESR_EL1.EC, so an abort was decoded as a syscall numbered by whatever was in
+# x8, answered in x0, and resumed. el0.S now decodes EC; aborts reach a handler
+# whose POLICY is emitted Adder (walk the LIVE TTBR0 tables, allocate, zero,
+# stamp) and whose retry erets with ELR_EL1 untouched. The gate refuses to pass
+# vacuously: the leaves are read INVALID before the run, EXACTLY one fault per
+# page at the expected VAs must occur, the frames must all differ, EL0's stores
+# are re-read at the frames' IDENTITY PAs (not through the task's mapping), and
+# the printed sum + exit status are recomputed independently in python. The
+# negative control is EXECUTED, not inspected: a second program stores to
+# EL1-only RAM, the kernel refuses it and kills the TASK with 139, and the boot
+# continues. nG=1 stays an INSPECTION assertion (TCG flushes globals on an ASID
+# change and cannot discriminate the bit) -- same boundary as the A12 gate.
+bash scripts/ci_run_gate.sh scripts/test_arm64_a13_demand.sh
