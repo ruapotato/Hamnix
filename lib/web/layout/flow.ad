@@ -474,16 +474,24 @@ def _apply_positioned():
             icb = 1
         if icb != 0 and pos_t[i] >= 0 and pos_scroll_y == 0:
             oof_pxy = pos_t[i]
-        # Explicit CSS height in REAL px, recovered from the box's own height pin
-        # (kind 0 = `height`). The row span is a 16px-grid rounding of it; the pin
-        # is the only place the declared value survives.
-        oof_pxh: int32 = -1
+        # Explicit CSS height in REAL px, per fill, recovered from the height pin
+        # (kind 0 = `height`) whose row span IS that fill's row span. The run
+        # covers the box AND its descendants — an abspos box's in-flow children
+        # emit their own fills and their own pins inside the same run — so the
+        # pin has to be matched to the fill it sizes; taking any pin in the run
+        # sized a 4em parent by its 50% child's pin. Matched BEFORE the
+        # relocation loop below, while fills and pins still share a row frame.
         if oofk != 0:
-            hq: int32 = pos_hp0[i]
-            while hq < pos_hp1[i]:
-                if hpin_kind[hq] == 0 and hpin_px[hq] > 0:
-                    oof_pxh = hpin_px[hq]
-                hq = hq + 1
+            bfm: int32 = pos_bf0[i]
+            while bfm < pos_bf1[i]:
+                hq: int32 = pos_hp0[i]
+                while hq < pos_hp1[i]:
+                    if hpin_kind[hq] == 0 and hpin_px[hq] > 0 and \
+                       hpin_r0[hq] == bfill_top[bfm] and \
+                       hpin_r1[hq] == bfill_bot[bfm]:
+                        bfill_pxh[bfm] = hpin_px[hq]
+                    hq = hq + 1
+                bfm = bfm + 1
         # Relocate the box's background fill(s) by the same delta and stamp the
         # stacking order so the paint pass can sort positioned boxes by z-index.
         bf: int32 = pos_bf0[i]
@@ -508,9 +516,16 @@ def _apply_positioned():
                     total_rows = cast[uint64](nb)
             bfill_z[bf] = pos_z[i]
             if oofk != 0:
+                # EVERY fill in the run is out of flow for painting purposes:
+                # an in-flow child of an abspos box is laid out inside a box the
+                # flow grid does not contain either, so its fill must not be
+                # dropped for naming a row past the flow. Only the box's OWN
+                # background (pos_bf0, the first fill of the run — the same one
+                # the shrink-to-fit and left+right stretch paths take) carries
+                # the run's declared `top`; a descendant's y stays row-derived.
                 bfill_oof[bf] = cast[uint8](oofk)
-                bfill_pxy[bf] = oof_pxy
-                bfill_pxh[bf] = oof_pxh
+                if bf == pos_bf0[i]:
+                    bfill_pxy[bf] = oof_pxy
             bf = bf + 1
         # Move this box's explicit-height PIXEL PINS with it. A pin names ROW
         # INDICES, and the box was just relocated by `drow` rows; a pin left behind
