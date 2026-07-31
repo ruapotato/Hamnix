@@ -124,6 +124,10 @@ from arch.x86.kernel.apic import lapic_timer_set_oneshot_ns
 # logic knows the valid logical-CPU id range to spread runnable work over.
 from arch.x86.kernel.smp import get_cpus_online
 from kernel.panic import panic
+# Leak pass 20: the cBPF seccomp pool scrub on task-slot reuse. This is the
+# same mutual-import shape kernel.sched.loadavg already has with this module
+# (seccomp_bpf imports NTASKS from here), which the compiler accepts.
+from kernel.seccomp_bpf import bpf_task_scrub
 # SMAP-v3: install fresh user stacks with an EXPLICIT US=1 PTE in the
 # child's PML4 so the stack does not depend on the identity-backfill
 # leaves being US=1. Unblocks _build_identity_pd/_pt going US=0 and
@@ -1624,15 +1628,19 @@ freelist_lock: uint32 = 0
 
 # --- (2) pid -> slot hash -------------------------------------------
 # Open-addressed (linear-probe) hash sized at 2*NTASKS so the load factor
-# stays <= 0.5 (cheap probes). Each bucket holds a pid (PIDH_EMPTY = vacant,
-# PIDH_DELE = tombstone) and the slot it maps to. Lifetime: inserted when a
-# task's pid is stamped (_task_set_pid), removed when its slot frees
-# (_task_clear_pid). task_lookup_by_pid probes here first; on any miss it
-# falls back to the legacy linear scan so a maintenance gap can never break
-# /proc / waitpid / signal delivery — it only loses the speed-up.
+# stays <= 0.5 (cheap probes). Each bucket holds a pid (PIDH_EMPTY = vacant)
+# and the slot it maps to. Lifetime: inserted when a task's pid is stamped
+# (_task_set_pid), removed when its slot frees (_task_clear_pid).
+# task_lookup_by_pid probes here first; on any miss it falls back to the
+# legacy linear scan so a maintenance gap can never break /proc / waitpid /
+# signal delivery — it only loses the speed-up.
+#
+# THERE ARE NO TOMBSTONES (leak pass 20). Removal backward-shifts instead, so
+# probe chains stay contiguous and PIDH_EMPTY keeps its meaning for the life
+# of the machine. The tombstone version degraded permanently after ~PIDH_SIZE
+# cumulative exits — see the note on _pidh_remove.
 PIDH_SIZE:   uint64 = 1024                   # 2 * NTASKS
 PIDH_EMPTY:  uint64 = 0                       # pid 0 is never a real task pid
-PIDH_DELE:   uint64 = 0xFFFFFFFFFFFFFFFF      # tombstone sentinel
 pidh_pid:    Array[1024, uint64]            # PIDH_SIZE
 pidh_slot:   Array[1024, uint64]           # PIDH_SIZE
 pidh_inited: uint64 = 0
@@ -5142,17 +5150,19 @@ def _pidh_init():
 
 
 def _pidh_insert(pid: uint64, slot: uint64):
-    # Insert (pid -> slot). Linear-probe over the first vacant-or-tombstone
-    # bucket. If `pid` is already present (a re-stamp of the same pid, or a
-    # pid wrap-around onto a stale tombstone) the existing bucket is updated.
-    # pid 0 is never inserted (it is PIDH_EMPTY). Load factor stays <= 0.5,
-    # so a free bucket always exists.
+    # Insert (pid -> slot). Linear-probe to the first vacant bucket. If `pid`
+    # is already present (a re-stamp of the same pid) the bucket is updated in
+    # place. pid 0 is never inserted (it is PIDH_EMPTY). Load factor stays
+    # <= 0.5, so a vacant bucket always exists.
+    #
+    # There is no tombstone case any more: _pidh_remove backward-shifts, so
+    # every probe chain is contiguous and PIDH_EMPTY always means "end of
+    # chain". See the note there for the uptime bug tombstones caused.
     if pid == 0:
         return
     _pidh_init()
     h: uint64 = (pid * 2654435761) % PIDH_SIZE
     probes: uint64 = 0
-    first_free: uint64 = PIDH_SIZE          # remember a tombstone to reuse
     while probes < PIDH_SIZE:
         b: uint64 = (h + probes) % PIDH_SIZE
         bp: uint64 = pidh_pid[b]
@@ -5160,41 +5170,92 @@ def _pidh_insert(pid: uint64, slot: uint64):
             pidh_slot[b] = slot              # update in place
             return
         if bp == PIDH_EMPTY:
-            # End of probe chain: insert here, or at an earlier tombstone.
-            if first_free != PIDH_SIZE:
-                pidh_pid[first_free]  = pid
-                pidh_slot[first_free] = slot
-            else:
-                pidh_pid[b]  = pid
-                pidh_slot[b] = slot
+            pidh_pid[b]  = pid
+            pidh_slot[b] = slot
             return
-        if bp == PIDH_DELE and first_free == PIDH_SIZE:
-            first_free = b
         probes = probes + 1
-    # Table full (should never happen at load <= 0.5): fall back to the
-    # tombstone slot if we found one. A miss here is non-fatal — lookup
-    # has a linear fallback.
-    if first_free != PIDH_SIZE:
-        pidh_pid[first_free]  = pid
-        pidh_slot[first_free] = slot
+    # Table full (should never happen at load <= 0.5). A miss here is
+    # non-fatal — lookup has a linear fallback.
 
 
 def _pidh_remove(pid: uint64):
-    # Tombstone the bucket holding `pid` so probe chains past it survive.
+    # Remove `pid` by BACKWARD-SHIFT, not by tombstoning.
+    #
+    # WHY THIS CHANGED (leak pass 20, 2026-07-31)
+    # ===========================================
+    # This used to write a PIDH_DELE tombstone. Nothing ever converted a
+    # tombstone back to PIDH_EMPTY — there was no rehash, no compaction, and
+    # `next_pid` is strictly monotonic (it only resets in sched_init), so a
+    # tombstoned bucket was never reclaimed by a re-insert of the same pid
+    # either. Inserts coped, because _pidh_insert reuses tombstones. LOOKUPS
+    # did not: _pidh_get terminates a probe only on a match or on PIDH_EMPTY.
+    #
+    # So after roughly PIDH_SIZE (1024) cumulative process exits — a few hours
+    # on a desktop that launches apps — no bucket anywhere was PIDH_EMPTY any
+    # more, and every hash MISS walked all 1024 buckets before falling back to
+    # the legacy O(NTASKS) linear scan. task_lookup_by_pid is on the signal,
+    # waitpid, /proc and devwsys-prune paths, so the whole machine quietly got
+    # slower with uptime and never got faster again. It leaks no memory; it
+    # just permanently stops being a hash. That is the same "bounded thing
+    # silently stops working over hours" class as the devwsys per-pid window
+    # table, and it is exactly what a months-of-uptime bar cannot afford.
+    #
+    # Backward-shift deletion removes the tombstone concept outright: after a
+    # removal every probe chain is contiguous again, so PIDH_EMPTY keeps its
+    # meaning forever and both lookup and insert stay O(1) amortised for the
+    # life of the machine.
+    #
+    # The move rule is the standard one for linear probing. For a candidate at
+    # `j` with home bucket `kh`, measuring forward-cyclic distances from the
+    # hole at `i`:
+    #     di = (j - i) mod SIZE      distance from the hole to the candidate
+    #     dk = (j - kh) mod SIZE     how far the candidate already sits past
+    #                                its own home
+    # the candidate may move into the hole iff dk >= di, i.e. its home lies at
+    # or before the hole, so shifting it back can never put it in front of its
+    # own home and break some other chain.
     if pid == 0 or pidh_inited == 0:
         return
     h: uint64 = (pid * 2654435761) % PIDH_SIZE
     probes: uint64 = 0
+    i: uint64 = PIDH_SIZE                     # bucket holding `pid`, if any
     while probes < PIDH_SIZE:
         b: uint64 = (h + probes) % PIDH_SIZE
         bp: uint64 = pidh_pid[b]
         if bp == pid:
-            pidh_pid[b]  = PIDH_DELE
-            pidh_slot[b] = 0
-            return
-        if bp == PIDH_EMPTY:
-            return                            # not present
-        probes = probes + 1
+            i = b
+            probes = PIDH_SIZE                # found; leave the loop
+        else:
+            if bp == PIDH_EMPTY:
+                return                        # not present
+            probes = probes + 1
+    if i == PIDH_SIZE:
+        return
+    # Punch the hole, then pull back any later entry whose home is at or
+    # before it, repeating from that entry's vacated bucket.
+    moving: uint64 = 1
+    while moving == 1:
+        pidh_pid[i]  = PIDH_EMPTY
+        pidh_slot[i] = 0
+        moving = 0
+        j: uint64 = i
+        steps: uint64 = 0
+        while steps < PIDH_SIZE:
+            j = (j + 1) % PIDH_SIZE
+            steps = steps + 1
+            jp: uint64 = pidh_pid[j]
+            if jp == PIDH_EMPTY:
+                steps = PIDH_SIZE             # chain ended; nothing to pull
+            else:
+                kh: uint64 = (jp * 2654435761) % PIDH_SIZE
+                di: uint64 = (j + PIDH_SIZE - i) % PIDH_SIZE
+                dk: uint64 = (j + PIDH_SIZE - kh) % PIDH_SIZE
+                if dk >= di:
+                    pidh_pid[i]  = jp
+                    pidh_slot[i] = pidh_slot[j]
+                    i = j
+                    moving = 1
+                    steps = PIDH_SIZE         # restart the scan from the new hole
 
 
 def _pidh_get(pid: uint64) -> int32:
@@ -5966,6 +6027,14 @@ def create_user_thread(entry: uint64, name0: uint64,
     while snfi < 4:
         task_table[s].seccomp_native_filter[snfi] = 0
         snfi = snfi + 1
+    # Leak pass 20: the SAME scrub for the cBPF (Linux seccomp(2)) filters.
+    # The two scrubs above cover the Layer-2 and native filters, which live
+    # in task_table; the cBPF programs live in kernel/seccomp_bpf.ad's own
+    # pool and were never scrubbed, so a recycled slot kept running a DEAD
+    # task's filter — and the pool, never returned to, was a lifetime cap
+    # that stopped sandboxing machine-wide once exhausted. See the long note
+    # on bpf_task_scrub.
+    bpf_task_scrub(s)
     # Phase B / M16.93: every freshly-created user task starts with a
     # zeroed Plan 9 errstr buffer. Plan 9 semantics: errstr is per-task
     # and NOT inherited across rfork/fork (each child sees "no error"),

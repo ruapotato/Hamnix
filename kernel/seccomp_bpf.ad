@@ -472,6 +472,51 @@ def bpf_run_all(slot: uint64, sd: Ptr[uint8]) -> uint32:
     return best
 
 
+def bpf_task_scrub(slot: uint64):
+    # Release every cBPF program this task slot holds and empty its row.
+    #
+    # #160 / F10-8 scrubbed `seccomp_mode`/`seccomp_filter` and the NATIVE
+    # filter on slot reuse for exactly this reason, but the cBPF pool lives
+    # in THIS module and was never wired into that scrub — so it kept the
+    # bug the other two had fixed:
+    #
+    #   * `bpf_task_has_filter(slot)` is a bare `_bpf_task_count[slot]` with
+    #     no liveness or generation check, and task_reap leaves the slot body
+    #     intact. A task that installed a filter, exited, and had its slot
+    #     recycled left the count at 1 — so the syscall gate in
+    #     linux_abi/u_syscalls.ad ran a DEAD task's program against the new
+    #     tenant, and could EPERM or KILL its syscalls with nothing logged.
+    #     That is the same "kill the new task on its first non-allowed
+    #     syscall" failure #160 names, reached by the other door.
+    #   * `bpf_inherit_to_child` appends at `ci = _bpf_task_count[child_slot]`
+    #     (never zero-based), so a stale count of 2 made it write past the
+    #     intended MAX_FILTERS_PER_TASK row.
+    #   * the 1024-entry pool was a LIFETIME cap, not a concurrency cap:
+    #     nothing ever returned an entry, so after enough sandboxed launches
+    #     bpf_install_filter returned -ENOMEM forever and sandboxing stopped
+    #     working machine-wide. That is the devwsys per-pid window table
+    #     shape, and it is fatal to long uptime on its own.
+    #
+    # Called from the task-slot scrub in kernel/sched/core.ad beside the
+    # other two. do_clone re-copies the parent's filters AFTER create
+    # returns (bpf_inherit_to_child), so scrubbing here is correct and also
+    # gives that append a zero base to start from.
+    if slot >= NTASKS:
+        return
+    n: uint64 = _bpf_task_count[slot]
+    if n > MAX_FILTERS_PER_TASK:
+        n = MAX_FILTERS_PER_TASK
+    i: uint64 = 0
+    while i < n:
+        _bpf_pool_free(_bpf_task_progs[slot][i])
+        i = i + 1
+    j: uint64 = 0
+    while j < MAX_FILTERS_PER_TASK:
+        _bpf_task_progs[slot][j] = BPF_SLOT_NONE
+        j = j + 1
+    _bpf_task_count[slot] = 0
+
+
 def bpf_task_has_filter(slot: uint64) -> uint64:
     if slot >= NTASKS:
         return 0
