@@ -29,6 +29,36 @@
 #
 # This is a fast, deterministic, grep-only guard (NO QEMU boot).
 #
+# 2026-07-31 -- WHY THIS FILE USES HERESTRINGS, NOT `echo ... | grep`.
+# Links 3, 4 and 5 used to pipe an extracted function body into `grep -q`.
+# `grep -q` exits the instant it matches; with a 16.9 KB body and the match near
+# the TOP, the upstream `echo` then dies of SIGPIPE, and `set -o pipefail` makes
+# the whole pipeline report 141. So the pipeline reported FAILURE precisely when
+# the pattern WAS present:
+#
+#   link 4  `if ! echo "$frame_body" | grep -q "$hook"`  -> false RED
+#           (all four hooks present in daemon_frame, all four reported missing)
+#   link 3  `if echo "$pixel_body" | grep -q "imin(DRAG_X0"` -> latent false
+#           GREEN. Same construct, inverted sense: a 141 reads as "pattern
+#           absent", so the forbidden per-pixel test could come back and this
+#           link would say nothing. Measured on this tree it does NOT misfire
+#           yet -- daemon_pixel's body is 9147 bytes and the pipeline returns 0
+#           cleanly, whereas daemon_frame's 16901-byte body returns 141 ten
+#           times out of ten. The hazard is a function of body size, so link 3
+#           was one refactor away from silently going blind. That is the worse
+#           of the two failure modes and it is why this was worth fixing
+#           properly rather than just unbreaking link 4.
+#
+# The gate stayed green for as long as grep happened to drain the pipe before
+# exiting. Code motion inside daemon_frame moved the damage_*_old_new calls
+# nearer the top, grep started matching (and exiting) early, and the gate turned
+# red. The rc=141 was structural and reproducible on an IDLE host -- not the
+# loaded-host SIGPIPE flake it looked like.
+#
+# A herestring is not a pipeline: there is no upstream process to kill, so
+# grep's early exit is harmless and `pipefail` has nothing to poison. Do not
+# reintroduce `echo "$body" | grep` here.
+#
 # Pass marker:  PASS: DE damage-clip / rubber-band hoist intact
 # Fail marker:  FAIL: <which link broke>
 
@@ -84,11 +114,11 @@ pixel_body=$(awk '
 ' "$UID_SRC")
 # A signature snippet of the OLD inline test: `imin(DRAG_X0, CUR_X)` only
 # ever appears inside the rubber-band per-pixel test in daemon_pixel.
-if echo "$pixel_body" | grep -q "imin(DRAG_X0"; then
+if grep -q "imin(DRAG_X0" <<<"$pixel_body"; then
     fail_link "link 3 (hamUId.ad): rubber-band coord computation (imin(DRAG_X0, ...)) is STILL inside daemon_pixel - the per-pixel edge-test wasn't hoisted out"
 fi
 # And the DRAG_ACTIVE-gated outline branch must be gone from daemon_pixel.
-if echo "$pixel_body" | grep -qE "^[[:space:]]+if[[:space:]]+DRAG_ACTIVE"; then
+if grep -qE "^[[:space:]]+if[[:space:]]+DRAG_ACTIVE" <<<"$pixel_body"; then
     fail_link "link 3 (hamUId.ad): a DRAG_ACTIVE branch survives in daemon_pixel - the rubber-band paint still runs per-pixel"
 fi
 
@@ -100,7 +130,7 @@ frame_body=$(awk '
 ' "$UID_SRC")
 for hook in damage_move_old_new damage_resize_old_new \
             damage_rb_old_new damage_popup_old_new; do
-    if ! echo "$frame_body" | grep -q "$hook"; then
+    if ! grep -q "$hook" <<<"$frame_body"; then
         fail_link "link 4 (hamUId.ad): daemon_frame does NOT call $hook - interactive damage is not being clipped"
     fi
 done
@@ -114,12 +144,12 @@ done
 # Heuristic: extract the block after `if MOUSE_SCENE_DIRTY != 0:` from the
 # frame body and assert it contains at least one damage_*_old_new call
 # before damage_full.
-msdb=$(echo "$frame_body" | awk '
+msdb=$(awk '
     /if[[:space:]]+MOUSE_SCENE_DIRTY[[:space:]]*!=[[:space:]]*0/ { inside=1; out=""; next }
     inside && /MOUSE_SCENE_DIRTY[[:space:]]*=[[:space:]]*0/ { print out; exit }
     inside { out = out $0 "\n" }
-')
-if ! echo "$msdb" | grep -q "damage_.*_old_new"; then
+' <<<"$frame_body")
+if ! grep -q "damage_.*_old_new" <<<"$msdb"; then
     fail_link "link 5 (hamUId.ad): MOUSE_SCENE_DIRTY branch in daemon_frame still escalates straight to damage_full - per-state damage-clip not wired"
 fi
 
