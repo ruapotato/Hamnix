@@ -7494,6 +7494,18 @@ def _collect_css():
                 if _hx_find_attr(k, tag_end, cast[Ptr[uint8]]("media")) != 0 and \
                    g_attr_end > g_attr_start:
                     media_ok = _media_matches(g_attr_start, g_attr_end)
+                # HTML "update a style block": the element's type attribute must
+                # be absent, EMPTY, or an ASCII case-insensitive match for
+                # "text/css" — exactly, with no surrounding whitespace and no
+                # MIME parameters. `type=" text/css "` and
+                # `type="text/css; charset=utf-8"` both mean the block does NOT
+                # apply. We honoured every <style> regardless.
+                if media_ok != 0 and \
+                   _hx_find_attr(k, tag_end, cast[Ptr[uint8]]("type")) != 0 and \
+                   g_attr_end > g_attr_start:
+                    if g_attr_end - g_attr_start != 8 or \
+                       _mq_ci(g_attr_start, cast[Ptr[uint8]]("text/css"), 8) == 0:
+                        media_ok = 0
                 # parse rulesets within [body,e)
                 if media_ok != 0:
                     _parse_sheet(body, e)
