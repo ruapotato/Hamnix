@@ -4988,6 +4988,85 @@ def _node_generic_dispatch(rel: int32) -> int32:
     return js_bool(0)
 
 
+# The dispatchEvent body proper, once the spec preconditions above have
+# passed. Lifted out of the dispatcher so the DISPATCH FLAG can be set
+# around it and cleared on EVERY exit -- it has five return points.
+def _dispatch_event_arg() -> int32:
+    dspel: int32 = _find_el_by_obj(js_this())
+    # document.dispatchEvent(ev) / window.dispatchEvent(ev): neither is a
+    # registered element, so fire the DOC_EL-sentinel listeners directly
+    # with the caller's event object. Guarded ABOVE the created-node path so
+    # a document dispatch never mis-routes through _find_cre_by_obj.
+    if dspel < 0 and (js_this() == js_doc or js_this() == js_win) and \
+       js_arg_count() >= 1:
+        ddvo: int32 = js_arg(0)
+        ddtp: int32 = js_get_prop(ddvo, cast[Ptr[uint8]]("type"), 4)
+        ddsrc: Ptr[uint8] = js_str_ptr(ddtp)
+        ddbuf: Array[128, uint8]
+        ddn: int32 = 0
+        while ddsrc[ddn] != 0 and ddn < 127:
+            ddbuf[ddn] = ddsrc[ddn]
+            ddn = ddn + 1
+        ddbuf[ddn] = 0
+        return js_bool(_fire_document_ev(ddvo, &ddbuf[0], ddn))
+    if dspel < 0 and js_arg_count() >= 1:
+        # created/dynamic node: object-dispatch along the live parentNode
+        # chain (the source-tree path below can't reach it).
+        dcid: int32 = _find_cre_by_obj(js_this())
+        if dcid >= 0:
+            devo: int32 = js_arg(0)
+            js_set_prop(devo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                        js_new_native_fn(js_hbase + NID_PREVENT))
+            js_set_prop(devo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                        js_new_native_fn(js_hbase + NID_STOPPROP))
+            js_set_prop(devo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
+                        js_new_native_fn(js_hbase + NID_STOPIMMED))
+            dtp: int32 = js_get_prop(devo, cast[Ptr[uint8]]("type"), 4)
+            dtpp: Ptr[uint8] = js_str_ptr(dtp)
+            dtbuf: Array[128, uint8]
+            dtn: int32 = 0
+            while dtpp[dtn] != 0 and dtn < 127:
+                dtbuf[dtn] = dtpp[dtn]
+                dtn = dtn + 1
+            dtbuf[dtn] = 0
+            dbub: int32 = js_to_bool(js_get_prop(devo, cast[Ptr[uint8]]("bubbles"), 7))
+            _obj_dispatch(js_this(), &dtbuf[0], dtn, devo, dbub)
+            if g_prevent_default != 0:
+                return js_bool(0)
+            return js_bool(1)
+    if dspel >= 0 and js_arg_count() >= 1:
+        evo: int32 = js_arg(0)
+        tp: int32 = js_get_prop(evo, cast[Ptr[uint8]]("type"), 4)
+        tpsrc: Ptr[uint8] = js_str_ptr(tp)
+        # Copy the type into a stable buffer: js_set_prop below may move the
+        # JS string heap, invalidating tpsrc.
+        dtyp: Array[128, uint8]
+        tpn: int32 = 0
+        while tpsrc[tpn] != 0 and tpn < 127:
+            dtyp[tpn] = tpsrc[tpn]
+            tpn = tpn + 1
+        dtyp[tpn] = 0
+        dk: int32 = _evt_std_kind(&dtyp[0], tpn)
+        # Enrich a plain {type:...} object into a usable Event: attach the
+        # methods + props handlers read, so `el.dispatchEvent({type:'click'})`
+        # works without an Event constructor. Idempotent for a reused event.
+        js_set_prop(evo, cast[Ptr[uint8]]("preventDefault"), 14, \
+                    js_new_native_fn(js_hbase + NID_PREVENT))
+        js_set_prop(evo, cast[Ptr[uint8]]("stopPropagation"), 15, \
+                    js_new_native_fn(js_hbase + NID_STOPPROP))
+        js_set_prop(evo, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
+        if dk >= 0:
+            _dispatch_event(dspel, dk, evo)
+        else:
+            # any other type (keydown/mouseover/focus/CustomEvent): bubble
+            # through the string-typed listener table.
+            _dispatch_generic(dspel, &dtyp[0], tpn, evo)
+        if g_prevent_default != 0:
+            return js_bool(0)
+        return js_bool(1)
+    return js_bool(1)
+
+
 def _js_host_dispatch(id: int32) -> int32:
     rel: int32 = id - js_hbase
     if rel >= NID_HASKIDS and rel <= NID_ISDEFAULTNS:
@@ -5423,7 +5502,14 @@ def _js_host_dispatch(id: int32) -> int32:
             rvel: int32 = _find_el_by_obj(js_this())
             # created/dynamic node: drop from the object-stored listener array.
             if rvel < 0 and _find_cre_by_obj(js_this()) >= 0:
-                _obj_remove_listener(js_this(), &dom_idtmp[0], rvn, js_arg(1))
+                rc3: int32 = 0
+                if js_arg_count() >= 3:
+                    r3: int32 = js_arg(2)
+                    if js_type_of(r3) == 5:
+                        rc3 = js_to_bool(js_get_prop(r3, cast[Ptr[uint8]]("capture"), 7))
+                    else:
+                        rc3 = js_to_bool(r3)
+                _obj_remove_listener(js_this(), &dom_idtmp[0], rvn, js_arg(1), rc3)
             # document/window removeEventListener targets the DOC_EL sentinel
             # (only GEN_KIND listeners live there — no attribute slots).
             if rvel < 0 and (js_this() == js_doc or js_this() == js_win):
@@ -5480,78 +5566,32 @@ def _js_host_dispatch(id: int32) -> int32:
     if rel == NID_DISPATCH:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
         # returning !defaultPrevented. Reads ev.type to pick the handler.
-        dspel: int32 = _find_el_by_obj(js_this())
-        # document.dispatchEvent(ev) / window.dispatchEvent(ev): neither is a
-        # registered element, so fire the DOC_EL-sentinel listeners directly
-        # with the caller's event object. Guarded ABOVE the created-node path so
-        # a document dispatch never mis-routes through _find_cre_by_obj.
-        if dspel < 0 and (js_this() == js_doc or js_this() == js_win) and \
-           js_arg_count() >= 1:
-            ddvo: int32 = js_arg(0)
-            ddtp: int32 = js_get_prop(ddvo, cast[Ptr[uint8]]("type"), 4)
-            ddsrc: Ptr[uint8] = js_str_ptr(ddtp)
-            ddbuf: Array[128, uint8]
-            ddn: int32 = 0
-            while ddsrc[ddn] != 0 and ddn < 127:
-                ddbuf[ddn] = ddsrc[ddn]
-                ddn = ddn + 1
-            ddbuf[ddn] = 0
-            return js_bool(_fire_document_ev(ddvo, &ddbuf[0], ddn))
-        if dspel < 0 and js_arg_count() >= 1:
-            # created/dynamic node: object-dispatch along the live parentNode
-            # chain (the source-tree path below can't reach it).
-            dcid: int32 = _find_cre_by_obj(js_this())
-            if dcid >= 0:
-                devo: int32 = js_arg(0)
-                js_set_prop(devo, cast[Ptr[uint8]]("preventDefault"), 14, \
-                            js_new_native_fn(js_hbase + NID_PREVENT))
-                js_set_prop(devo, cast[Ptr[uint8]]("stopPropagation"), 15, \
-                            js_new_native_fn(js_hbase + NID_STOPPROP))
-                js_set_prop(devo, cast[Ptr[uint8]]("stopImmediatePropagation"), 24, \
-                            js_new_native_fn(js_hbase + NID_STOPIMMED))
-                dtp: int32 = js_get_prop(devo, cast[Ptr[uint8]]("type"), 4)
-                dtpp: Ptr[uint8] = js_str_ptr(dtp)
-                dtbuf: Array[128, uint8]
-                dtn: int32 = 0
-                while dtpp[dtn] != 0 and dtn < 127:
-                    dtbuf[dtn] = dtpp[dtn]
-                    dtn = dtn + 1
-                dtbuf[dtn] = 0
-                dbub: int32 = js_to_bool(js_get_prop(devo, cast[Ptr[uint8]]("bubbles"), 7))
-                _obj_dispatch(js_this(), &dtbuf[0], dtn, devo, dbub)
-                if g_prevent_default != 0:
-                    return js_bool(0)
-                return js_bool(1)
-        if dspel >= 0 and js_arg_count() >= 1:
-            evo: int32 = js_arg(0)
-            tp: int32 = js_get_prop(evo, cast[Ptr[uint8]]("type"), 4)
-            tpsrc: Ptr[uint8] = js_str_ptr(tp)
-            # Copy the type into a stable buffer: js_set_prop below may move the
-            # JS string heap, invalidating tpsrc.
-            dtyp: Array[128, uint8]
-            tpn: int32 = 0
-            while tpsrc[tpn] != 0 and tpn < 127:
-                dtyp[tpn] = tpsrc[tpn]
-                tpn = tpn + 1
-            dtyp[tpn] = 0
-            dk: int32 = _evt_std_kind(&dtyp[0], tpn)
-            # Enrich a plain {type:...} object into a usable Event: attach the
-            # methods + props handlers read, so `el.dispatchEvent({type:'click'})`
-            # works without an Event constructor. Idempotent for a reused event.
-            js_set_prop(evo, cast[Ptr[uint8]]("preventDefault"), 14, \
-                        js_new_native_fn(js_hbase + NID_PREVENT))
-            js_set_prop(evo, cast[Ptr[uint8]]("stopPropagation"), 15, \
-                        js_new_native_fn(js_hbase + NID_STOPPROP))
-            js_set_prop(evo, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
-            if dk >= 0:
-                _dispatch_event(dspel, dk, evo)
-            else:
-                # any other type (keydown/mouseover/focus/CustomEvent): bubble
-                # through the string-typed listener table.
-                _dispatch_generic(dspel, &dtyp[0], tpn, evo)
-            if g_prevent_default != 0:
-                return js_bool(0)
-            return js_bool(1)
+        #
+        # THE THREE PRECONDITIONS, in the spec's order. The middle one is not a
+        # conformance nicety: without the DISPATCH FLAG a listener that
+        # re-dispatches the event it is handling recurses forever, and the
+        # engine died on a 20,000-frame NATIVE STACK OVERFLOW -- a SIGSEGV, not
+        # a catchable throw, taking the whole file's results with it. It
+        # reproduced only under the 8 MiB stack the python harness runs with
+        # and not under the shell's 64 MiB, which is why a manual run looked
+        # clean.
+        if js_arg_count() >= 1 and js_type_of(js_arg(0)) != TAG_OBJ:
+            js_throw_type_error( \
+                cast[Ptr[uint8]]("dispatchEvent: argument is not an Event"))
+            return js_undefined()
+        if js_arg_count() >= 1:
+            gev: int32 = js_arg(0)
+            if js_to_bool(js_get_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12)) != 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidStateError"), 17, \
+                                     cast[Ptr[uint8]]("event is already being dispatched"), 34)
+            if js_to_bool(js_get_prop(gev, cast[Ptr[uint8]]("@uninit"), 7)) != 0:
+                return _throw_domexc(cast[Ptr[uint8]]("InvalidStateError"), 17, \
+                                     cast[Ptr[uint8]]("event is not initialized"), 23)
+            js_set_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12, js_bool(1))
+            dres: int32 = _dispatch_event_arg()
+            js_set_prop(gev, cast[Ptr[uint8]]("@dispatching"), 12, js_bool(0))
+            js_set_prop(gev, cast[Ptr[uint8]]("eventPhase"), 10, js_number(0.0))
+            return dres
         return js_bool(1)
     if rel == NID_SUBMIT:
         # form.submit() — fire a cancelable, bubbling `submit` event on the form
@@ -6178,7 +6218,16 @@ def _js_host_dispatch(id: int32) -> int32:
             # object, so it does not need a dom_* row.
             if el < 0 and js_type_of(js_this()) == TAG_OBJ and \
                js_is_callable(js_arg(1)) != 0:
-                _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1))
+                oo: int32 = 0
+                oc: int32 = 0
+                if js_arg_count() >= 3:
+                    a3: int32 = js_arg(2)
+                    if js_type_of(a3) == 5:
+                        oo = js_to_bool(js_get_prop(a3, cast[Ptr[uint8]]("once"), 4))
+                        oc = js_to_bool(js_get_prop(a3, cast[Ptr[uint8]]("capture"), 7))
+                    else:
+                        oc = js_to_bool(a3)
+                _obj_add_listener(js_this(), &dom_idtmp[0], evn, js_arg(1), oo, oc)
             if (el >= 0 or el == DOC_EL) and js_is_callable(js_arg(1)) != 0:
                 ek: int32 = _evt_std_kind(&dom_idtmp[0], evn)
                 # A non-standard type (keydown/mouseover/focus/custom) becomes a
@@ -12157,6 +12206,10 @@ def _dispatch_generic(target_el: int32, typp: Ptr[uint8], typn: int32, \
 # parentNode chain. This is the Phase-0 programmatic-event path (target + bubble
 # over the live tree) — distinct from the coordinate-driven he_dom_click path.
 g_lp_buf: Array[288, uint8]
+# The event path for a programmatic dispatch: the target's ancestors, innermost
+# first. Walked in reverse for the capture descent, forward for the bubble.
+EVPATH_MAX: int32 = 256
+g_evpath: Array[256, int32]
 
 
 def _obj_lp_name(typep: Ptr[uint8], typen: int32) -> int32:
@@ -12182,52 +12235,193 @@ def _obj_has_listener(obj: int32, typep: Ptr[uint8], typen: int32) -> int32:
     return 1
 
 
-def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+# The per-listener FLAGS array that runs parallel to "@L:<type>", one number
+# per registered callback: bit 0 = {once:true}, bit 1 = {capture:true}.
+#
+# The object-stored registry (every node built by createElement/innerHTML —
+# i.e. every node a live page makes) carried the callback and NOTHING ELSE, so
+# `once` and `capture` were silently dropped for exactly the nodes script
+# creates. `once` being dropped is not a cosmetic loss: a listener that
+# re-dispatches its own event, which the spec makes terminate because a once
+# listener is removed BEFORE it is invoked, instead recursed until the engine
+# died with "gc root stack overflow".
+def _obj_lf_name(typep: Ptr[uint8], typen: int32) -> int32:
+    g_lp_buf[0] = 64                                       # '@'
+    g_lp_buf[1] = 76                                       # 'L'
+    g_lp_buf[2] = 70                                       # 'F'
+    g_lp_buf[3] = 58                                       # ':'
+    i: int32 = 0
+    while i < typen and i < 250:
+        g_lp_buf[4 + i] = typep[i]
+        i = i + 1
+    g_lp_buf[4 + i] = 0
+    return 4 + i
+
+
+def _obj_flags_arr(obj: int32, typep: Ptr[uint8], typen: int32, \
+                   make: int32) -> int32:
+    fl: int32 = _obj_lf_name(typep, typen)
+    fa: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](fl))
+    if js_is_array(fa) == 0:
+        if make == 0:
+            return -1
+        fa = js_new_array_v()
+        js_set_prop(obj, &g_lp_buf[0], cast[uint64](fl), fa)
+    return fa
+
+
+def _obj_add_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                      oncef: int32, capf: int32):
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 1)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) == 0:
         arr = js_new_array_v()
         js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), arr)
+    flags: int32 = 0
+    if oncef != 0:
+        flags = flags + 1
+    if capf != 0:
+        flags = flags + 2
+    # Defensive: a listener array that predates the flags array (or any other
+    # way the two could drift) would index the wrong flag, which is worse than
+    # no flag at all. Re-align by padding rather than trusting the pairing.
+    while js_array_len(fa) < js_array_len(arr):
+        js_array_push(fa, js_number(0.0))
     i: int32 = 0
     n: int32 = js_array_len(arr)
     while i < n:
         if js_array_get(arr, i) == fn:
-            return                                        # de-dupe (spec)
+            # The spec's duplicate test is (type, callback, CAPTURE) — a
+            # capturing and a bubbling registration of the same function are
+            # two distinct listeners.
+            if (cast[int32](js_to_number(js_array_get(fa, i))) / 2) == \
+               (flags / 2):
+                return                                    # de-dupe (spec)
         i = i + 1
     js_array_push(arr, fn)
+    js_array_push(fa, js_number(cast[float64](flags)))
 
 
-def _obj_remove_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32):
+def _obj_remove_listener(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                         capf: int32):
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) == 0:
         return
     nw: int32 = js_new_array_v()
+    nf: int32 = js_new_array_v()
     i: int32 = 0
     n: int32 = js_array_len(arr)
     while i < n:
         ev: int32 = js_array_get(arr, i)
-        if ev != fn:
+        fv: int32 = js_number(0.0)
+        if fa >= 0 and i < js_array_len(fa):
+            fv = js_array_get(fa, i)
+        drop: int32 = 0
+        if ev == fn:
+            # removeEventListener's identity is (type, callback, capture) too.
+            cw: int32 = 0
+            if capf != 0:
+                cw = 1
+            if ((cast[int32](js_to_number(fv)) / 2) % 2) == cw:
+                drop = 1
+        if drop == 0:
             js_array_push(nw, ev)
+            js_array_push(nf, fv)
         i = i + 1
     js_set_prop(obj, &g_lp_buf[0], cast[uint64](ln), nw)
+    fl2: int32 = _obj_lf_name(typep, typen)
+    js_set_prop(obj, &g_lp_buf[0], cast[uint64](fl2), nf)
 
 
 # Fire object-stored listeners of `type` on `obj` (+ its inline on<type> prop).
 def _obj_fire_type(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32) -> int32:
+    return _obj_fire_type_ph(obj, typep, typen, evo, EPHASE_TARGET)
+
+
+# One capture/target/bubble pass over an object's stored listeners.
+#
+# THREE SPEC RULES THIS ENFORCES, all of which the old straight-line loop broke
+# and all of which WPT dom/events/remove-all-listeners.html and
+# EventTarget-dispatchEvent.html assert:
+#
+#  1. The callback list is SNAPSHOTTED before the first invocation. A listener
+#     added during the dispatch does not run in this dispatch.
+#  2. A listener REMOVED during the dispatch does not run, even though it was
+#     in the snapshot — so each candidate is re-checked against the live array.
+#  3. A {once:true} listener is removed BEFORE it is invoked, not after. That
+#     ordering is what makes a listener that re-dispatches its own event
+#     terminate; removing afterwards recursed until the root stack overflowed.
+#
+# Is (type, callback, capture) still registered on `obj` right now? Rule 2
+# above: a snapshot entry that a previous callback removed must be skipped.
+def _obj_listener_live(obj: int32, typep: Ptr[uint8], typen: int32, fn: int32, \
+                       is_cap: int32) -> int32:
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
+    ln: int32 = _obj_lp_name(typep, typen)
+    arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
+    if js_is_array(arr) == 0:
+        return 0
+    i: int32 = 0
+    n: int32 = js_array_len(arr)
+    while i < n:
+        if js_array_get(arr, i) == fn:
+            c: int32 = 0
+            if fa >= 0 and i < js_array_len(fa):
+                c = (cast[int32](js_to_number(js_array_get(fa, i))) / 2) % 2
+            if c == is_cap:
+                return 1
+        i = i + 1
+    return 0
+
+
+def _obj_fire_type_ph(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32, \
+                      phase: int32) -> int32:
     ran: int32 = 0
+    fa: int32 = _obj_flags_arr(obj, typep, typen, 0)
     ln: int32 = _obj_lp_name(typep, typen)
     arr: int32 = js_get_prop(obj, &g_lp_buf[0], cast[uint64](ln))
     if js_is_array(arr) != 0:
-        i: int32 = 0
-        n: int32 = js_array_len(arr)
-        while i < n and g_stop_immediate == 0:
-            fn: int32 = js_array_get(arr, i)
-            if js_is_callable(fn) != 0:
-                g_argv1[0] = evo
-                js_call_fn(fn, obj, &g_argv1[0], 1)
-                ran = 1
-            i = i + 1
+        snap: int32 = js_new_array_v()
+        snf: int32 = js_new_array_v()
+        i0: int32 = 0
+        n0: int32 = js_array_len(arr)
+        while i0 < n0:
+            js_array_push(snap, js_array_get(arr, i0))
+            if fa >= 0 and i0 < js_array_len(fa):
+                js_array_push(snf, js_array_get(fa, i0))
+            else:
+                js_array_push(snf, js_number(0.0))
+            i0 = i0 + 1
+        # At the TARGET the event path is walked twice, so a capturing listener
+        # on the target itself runs in the capture sweep and a bubbling one in
+        # the bubble sweep — which is why chromium reports [1, 3, 2] for
+        # capture/bubble/capture registered in that order.
+        pass_i: int32 = 0
+        n_pass: int32 = 1
+        if phase == EPHASE_TARGET:
+            n_pass = 2
+        while pass_i < n_pass and g_stop_immediate == 0:
+            want_cap: int32 = 0
+            if phase == EPHASE_CAPTURE or (phase == EPHASE_TARGET and pass_i == 0):
+                want_cap = 1
+            i: int32 = 0
+            n: int32 = js_array_len(snap)
+            while i < n and g_stop_immediate == 0:
+                fn: int32 = js_array_get(snap, i)
+                fl: int32 = cast[int32](js_to_number(js_array_get(snf, i)))
+                is_cap: int32 = (fl / 2) % 2
+                if js_is_callable(fn) != 0 and is_cap == want_cap and \
+                   _obj_listener_live(obj, typep, typen, fn, is_cap) != 0:
+                    if (fl % 2) != 0:
+                        _obj_remove_listener(obj, typep, typen, fn, is_cap)
+                    g_argv1[0] = evo
+                    js_call_fn(fn, obj, &g_argv1[0], 1)
+                    ran = 1
+                i = i + 1
+            pass_i = pass_i + 1
     # inline on<type> handler property (el.onclick = fn)
     onm: Array[64, uint8]
     onm[0] = 111                                           # 'o'
@@ -12312,7 +12506,7 @@ def _obj_fire_hop(obj: int32, typep: Ptr[uint8], typen: int32, evo: int32, \
         if kind >= 0:
             return _fire_handler(el, kind, evo, phase)
         return _fire_generic(el, typep, typen, evo, phase)
-    return _obj_fire_type(obj, typep, typen, evo)
+    return _obj_fire_type_ph(obj, typep, typen, evo, phase)
 
 
 # Dispatch event `evo` of `type` at node `targetobj` — a created node OR a
@@ -12337,6 +12531,33 @@ def _obj_dispatch(targetobj: int32, typep: Ptr[uint8], typen: int32, \
         js_global_set(cast[Ptr[uint8]]("event"), 5, evo)
     ran: int32 = 0
     kind: int32 = _evt_std_kind(typep, typen)
+    # CAPTURE phase — the descent that was simply absent. Without it a
+    # {capture:true} listener on an ancestor never fired for a dispatch on a
+    # descendant, which is what dom/events/EventTarget-dispatchEvent.html's
+    # "Event listeners added during dispatch should be called" checks. The
+    # event path is built first (ancestors, innermost..outermost) and then
+    # walked OUTERMOST-first, exactly as the spec reverses it.
+    n_path: int32 = 0
+    pcur: int32 = targetobj
+    while n_path < EVPATH_MAX:
+        ppv: int32 = js_get_prop(pcur, cast[Ptr[uint8]]("parentNode"), 10)
+        if js_type_of(ppv) != 5 or ppv == js_doc:
+            n_path = n_path                                # path complete
+            break
+        g_evpath[n_path] = ppv
+        pcur = ppv
+        n_path = n_path + 1
+    _set_ephase(evo, EPHASE_CAPTURE)
+    pi: int32 = n_path - 1
+    while pi >= 0 and g_stop_prop == 0:
+        g_stop_immediate = 0
+        if evo >= 0:
+            js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, g_evpath[pi])
+        if _obj_fire_hop(g_evpath[pi], typep, typen, evo, kind, \
+                         EPHASE_CAPTURE) != 0:
+            ran = 1
+        pi = pi - 1
+    g_stop_immediate = 0
     # target phase
     if evo >= 0:
         js_set_prop(evo, cast[Ptr[uint8]]("currentTarget"), 13, targetobj)
@@ -12771,6 +12992,11 @@ def _blank_event(flavor: int32) -> int32:
                 js_new_native_fn(js_hbase + NID_STOPIMMED))
     js_set_prop(ev, cast[Ptr[uint8]]("initEvent"), 9, \
                 js_new_native_fn(js_hbase + NID_INITEVENT))
+    # An event minted by document.createEvent() is NOT initialized until
+    # initEvent() runs, and dispatching an uninitialized event is an
+    # InvalidStateError (dom/events/EventTarget-dispatchEvent.html spends 15 of
+    # its rows on exactly that, one per createEvent alias).
+    js_set_prop(ev, cast[Ptr[uint8]]("@uninit"), 7, js_bool(1))
     if flavor == 1:
         js_set_prop(ev, cast[Ptr[uint8]]("initCustomEvent"), 15, \
                     js_new_native_fn(js_hbase + NID_INITCUSTOMEV))
@@ -12803,6 +13029,7 @@ def _init_event(with_detail: int32) -> int32:
     # cancelBubble back to false).
     js_set_prop(ev, cast[Ptr[uint8]]("defaultPrevented"), 16, js_bool(0))
     js_set_prop(ev, cast[Ptr[uint8]]("@sp"), 3, js_bool(0))
+    js_set_prop(ev, cast[Ptr[uint8]]("@uninit"), 7, js_bool(0))
     if with_detail != 0:
         dv: int32 = js_null()
         if js_arg_count() >= 4:
