@@ -2575,6 +2575,7 @@ def _append_child_v(parentv: int32, childv: int32):
     _mo_record_childlist(parentv, childv, -1)
     # A TEXT child extends the parent's live textContent. Without this an
     _append_sync_text(parentv, childv)
+    _maybe_run_inserted_script(childv)
 
 
 
@@ -3693,6 +3694,151 @@ def _detach_from_parent_v(childv: int32):
     js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
 
 
+# ---- HTML "prepare the script element" on DOM INSERTION ---------------------
+# A <script> that becomes connected to a document by SCRIPT (appendChild,
+# insertBefore, replaceWith, a cloned <template> fragment) is prepared and, for
+# an inline classic script, evaluated SYNCHRONOUSLY as part of the insertion —
+# it is not a task, so a caller sees its side effects before the mutating call
+# returns. We ran none of them: measured on
+# dom/nodes/remove-next-sibling-during-replace-with.html, the <script> inside a
+# cloned <template>'s content was inserted and never executed, so the node it
+# was supposed to remove was still in the tree at the assert.
+#
+# Only script-CREATED nodes qualify. A parser-created <script> already ran
+# during _run_scripts, and the spec's "already started" flag means moving it
+# around the tree must NOT run it again; those nodes have no cre_* row, which is
+# exactly the test.
+#
+# There is no resource loader, so `src=` scripts are marked started and skipped
+# rather than silently evaluating an empty body. `type=module` is likewise left
+# alone: a module has its own scope and deferred timing, and running it here as
+# a classic script would be wrong in both.
+SCRINS_CAP:  uint64 = 65536
+scrins_buf:  Array[65536, uint8]
+SCRRUN_MAX:  int32 = 512
+scrrun_obj:  Array[512, int32]
+scrrun_n:    int32 = 0
+
+
+def _scr_already_started(v: int32) -> int32:
+    i: int32 = 0
+    while i < scrrun_n:
+        if scrrun_obj[i] == v:
+            return 1
+        i = i + 1
+    return 0
+
+
+def _scr_mark_started(v: int32):
+    if scrrun_n < SCRRUN_MAX:
+        scrrun_obj[scrrun_n] = v
+        scrrun_n = scrrun_n + 1
+
+
+# Is `v` part of the live document? The parent chain of a SOURCE-anchored
+# element is materialised lazily, so it can stop at a registered element that is
+# still very much in the tree; reaching one of those (not detached) counts as
+# connected, as does reaching the Document object itself.
+def _nd_is_connected(v: int32) -> int32:
+    r: int32 = _nd_root(v)
+    doc: int32 = js_global_get(cast[Ptr[uint8]]("document"), 8)
+    if js_type_of(doc) == TAG_OBJ and r == doc:
+        return 1
+    re: int32 = _find_el_by_obj(r)
+    if re >= 0 and dom_detached[re] == 0:
+        return 1
+    return 0
+
+
+# Does the created element `v` carry a non-empty attribute `name`? Created nodes
+# keep their attributes as plain JS properties, so this is a property read.
+def _cre_attr_present(v: int32, name: Ptr[uint8], nlen: uint64) -> int32:
+    av: int32 = js_get_prop(v, name, nlen)
+    if js_type_of(av) != TAG_STR:
+        return 0
+    if _cstr_len(js_str_ptr(av)) == 0:
+        return 0
+    return 1
+
+
+def _maybe_run_inserted_script(childv: int32):
+    if js_ctx_live == 0:
+        return
+    if js_type_of(childv) != TAG_OBJ or _nd_type(childv) != 1:
+        return
+    if _find_cre_by_obj(childv) < 0:
+        return                                # parser-created: already started
+    if _scr_already_started(childv) != 0:
+        return
+    tn: int32 = js_get_prop(childv, cast[Ptr[uint8]]("tagName"), 7)
+    if js_type_of(tn) != TAG_STR:
+        return
+    tp: Ptr[uint8] = js_str_ptr(tn)
+    if _cstr_len(tp) != 6:
+        return
+    if _bytes_eq(tp, 6, cast[Ptr[uint8]]("SCRIPT"), 6) == 0:
+        return
+    if _nd_is_connected(childv) == 0:
+        return
+    # From here the element IS prepared, so it is marked started whatever the
+    # outcome — a script that was skipped must not run on a later re-insert.
+    _scr_mark_started(childv)
+    if _cre_attr_present(childv, cast[Ptr[uint8]]("src"), 3) != 0:
+        return
+    ty: int32 = js_get_prop(childv, cast[Ptr[uint8]]("type"), 4)
+    if js_type_of(ty) == TAG_STR:
+        typ: Ptr[uint8] = js_str_ptr(ty)
+        tyn: int32 = _cstr_len(typ)
+        if tyn > 0 and _script_mime_is_js(typ, tyn) == 0:
+            return
+    txt: int32 = _node_text_content(childv)
+    if js_type_of(txt) != TAG_STR:
+        return
+    sp: Ptr[uint8] = js_str_ptr(txt)
+    sn: uint64 = cast[uint64](_cstr_len(sp))
+    if sn == 0 or sn >= SCRINS_CAP:
+        return
+    # js_str_ptr hands back a slot in a 64 KiB scratch RING that the evaluator
+    # itself recycles, so the body has to be copied out before it is parsed.
+    ci: uint64 = 0
+    while ci < sn:
+        scrins_buf[ci] = sp[ci]
+        ci = ci + 1
+    # Not a turn boundary: the insertion is happening inside the caller's script,
+    # so this must not drain the timer queue or clobber the caller's pending
+    # control flow. That is exactly what js_eval_nested is for.
+    js_eval_nested(&scrins_buf[0], sn)
+
+
+# `type` values that mean "this is a classic JavaScript script". Anything else
+# (application/ld+json, text/template, module, …) is data or has its own
+# evaluation model and is not run here.
+def _script_mime_is_js(p: Ptr[uint8], n: int32) -> int32:
+    if _ci_eq_cstr(p, n, cast[Ptr[uint8]]("text/javascript")) != 0:
+        return 1
+    if _ci_eq_cstr(p, n, cast[Ptr[uint8]]("application/javascript")) != 0:
+        return 1
+    if _ci_eq_cstr(p, n, cast[Ptr[uint8]]("text/ecmascript")) != 0:
+        return 1
+    if _ci_eq_cstr(p, n, cast[Ptr[uint8]]("application/ecmascript")) != 0:
+        return 1
+    return 0
+
+
+def _ci_eq_cstr(p: Ptr[uint8], n: int32, lit: Ptr[uint8]) -> int32:
+    ln: int32 = 0
+    while lit[ln] != 0:
+        ln = ln + 1
+    if ln != n:
+        return 0
+    i: int32 = 0
+    while i < n:
+        if _hx_lower(p[i]) != lit[i]:
+            return 0
+        i = i + 1
+    return 1
+
+
 # parent.insertBefore(newv, refv) with EXPLICIT values (refv == js_null()
 # appends). Factored out of the NID_INSBEF handler so the ChildNode /
 # ParentNode mutation methods (before / after / replaceWith / prepend /
@@ -3728,6 +3874,7 @@ def _insert_before_v(parentv: int32, newv: int32, refv: int32):
     _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
                         parentv)
     _mo_record_childlist(parentv, newv, -1)
+    _maybe_run_inserted_script(newv)
 
 
 # Detach `childv` from `parentv`, mirroring the NID_REMCHILD handler.
@@ -3782,10 +3929,19 @@ def _nd_insert_nodes(parentv: int32, refv: int32, from_arg: int32):
         if _is_fragment(a) != 0:
             fk: int32 = js_get_prop(a, cast[Ptr[uint8]]("children"), 8)
             if js_is_array(fk) != 0:
+                # SNAPSHOT first. Inserting a <script> member runs it (HTML
+                # "prepare the script element"), and that script can mutate the
+                # very array being walked — the spec takes the fragment's
+                # children once, up front, for exactly this reason.
+                fsnap: int32 = js_new_array_v()
                 j: int32 = 0
                 fn: int32 = js_array_len(fk)
                 while j < fn:
-                    _insert_before_v(parentv, js_array_get(fk, j), refv)
+                    js_array_push(fsnap, js_array_get(fk, j))
+                    j = j + 1
+                j = 0
+                while j < fn:
+                    _insert_before_v(parentv, js_array_get(fsnap, j), refv)
                     j = j + 1
             _frag_clear(a)
         else:
