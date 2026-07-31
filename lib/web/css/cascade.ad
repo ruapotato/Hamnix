@@ -6522,6 +6522,109 @@ def _cssom_clear_sheet(sid: int32):
 # static cascade uses, pointing the parser at the model text buffer. Called at
 # the tail of _collect_css, so injected rules land AFTER all source + external
 # rules and therefore WIN equal-specificity ties (matching "runtime override").
+# Register the LAYER NAMES an injected CSSOM rule set declares, without
+# cascading any of its declarations.
+#
+# WHY IT IS SEPARATE. Layer ORDER is a document-global registry fixed by each
+# name's FIRST declaration, whereas a rule's declarations cascade at the
+# position of the sheet that carries them. Injected CSSOM rules are parsed at
+# the TAIL of _collect_css (see _collect_cssom: that placement is deliberate, so
+# a runtime override beats an equal-specificity static rule), which would also
+# force every layer an injected rule names to register LAST — i.e. as the
+# STRONGEST layer, silently outranking every layer the document declared.
+#
+# Registering them here instead, before the source scan and in sheet order,
+# makes an injected layer the WEAKEST rather than the strongest. That is the
+# conservative direction, and it is what `@layer second, first;`-style ordering
+# statements — whose entire purpose is to fix an order before the rules arrive —
+# need in order to mean anything at all.
+#
+# FIDELITY LIMIT: a layer first named by a source sheet and re-opened by an
+# injected rule still gets the source sheet's rank, which is correct; a layer
+# first named by an injected rule that sits LATE in document order gets a rank
+# earlier than its true position. Placing injected rules at their sheet's
+# document position is the fix for both, and is not what this engine does yet.
+def _layer_prescan(a: uint64, b: uint64):
+    p: uint64 = a
+    while p < b:
+        if p + 1 < b and src_ptr[p] == 47 and src_ptr[p + 1] == 42:       # /*
+            p = p + 2
+            while p + 1 < b and not (src_ptr[p] == 42 and src_ptr[p + 1] == 47):
+                p = p + 1
+            p = p + 2
+            continue
+        if src_ptr[p] != 64:                                              # '@'
+            p = p + 1
+            continue
+        if _mq_ci(p + 1, cast[Ptr[uint8]]("layer"), 5) == 0:
+            p = p + 1
+            continue
+        ke: uint64 = p + 6
+        q: uint64 = ke
+        while q < b and src_ptr[q] != 123 and src_ptr[q] != 59:
+            q = q + 1
+        if q >= b:
+            return
+        if src_ptr[q] == 59:                                    # `@layer a, b;`
+            ns: uint64 = ke
+            i2: uint64 = ke
+            while i2 <= q:
+                if i2 == q or src_ptr[i2] == 44:
+                    ln: int32 = _layer_qualify(ns, i2)
+                    if ln > 0:
+                        _layer_rank(&g_lname[0], ln)
+                    ns = i2 + 1
+                i2 = i2 + 1
+            p = q + 1
+            continue
+        blk_s: uint64 = q + 1                                   # `@layer a { … }`
+        depth: int32 = 1
+        r: uint64 = blk_s
+        while r < b and depth > 0:
+            if src_ptr[r] == 123:
+                depth = depth + 1
+            elif src_ptr[r] == 125:
+                depth = depth - 1
+                if depth == 0:
+                    break
+            r = r + 1
+        lqn: int32 = _layer_qualify(ke, q)
+        save_pfx: int32 = layer_pfx_len
+        _layer_rank(&g_lname[0], lqn)
+        if lqn > 0:
+            layer_pfx_len = 0
+            while layer_pfx_len < lqn and layer_pfx_len < 512:
+                layer_pfxbuf[layer_pfx_len] = g_lname[layer_pfx_len]
+                layer_pfx_len = layer_pfx_len + 1
+        _layer_prescan(blk_s, r)
+        layer_pfx_len = save_pfx
+        p = r + 1
+
+
+# Establish the layer order every ACTIVE injected sheet declares, in sheet
+# order. Runs at the HEAD of _collect_css; see _layer_prescan.
+def _collect_cssom_layers():
+    if cssom_n_sheets == 0:
+        return
+    save_p: Ptr[uint8] = src_ptr
+    save_l: uint64 = src_len
+    src_ptr = &cssom_text[0]
+    src_len = cast[uint64](cssom_text_w)
+    s: int32 = 0
+    while s < cssom_n_sheets:
+        if cssom_sheet_active[s] != 0:
+            base: int32 = s * CSSOM_SLOTS
+            r: int32 = 0
+            while r < cssom_sheet_nrules[s]:
+                a: uint64 = cast[uint64](cssom_rule_off[base + r])
+                b: uint64 = cast[uint64](cssom_rule_off[base + r] + cssom_rule_len[base + r])
+                _layer_prescan(a, b)
+                r = r + 1
+        s = s + 1
+    src_ptr = save_p
+    src_len = save_l
+
+
 def _collect_cssom():
     if cssom_n_sheets == 0:
         return
@@ -7221,6 +7324,7 @@ def _collect_css():
     n_kf_names = 0                                     # reset @keyframes registry
     kf_namebuf_w = 0
     _layers_reset()                                    # reset @layer order
+    _collect_cssom_layers()                            # injected layers rank first
     filt_reg_n = 0                                     # reset filter-list registry
     _collect_cvars()
     i: uint64 = 0

@@ -2729,6 +2729,93 @@ def _cs_set2(cs: int32, camel: Ptr[uint8], cl: uint64, css: Ptr[uint8], \
 # Copy el.style.<camel> into g_cs_vbuf; returns its length (0 if unset / the JS
 # "undefined" placeholder). The copy is taken immediately because js_new_string
 # below can move the string heap.
+g_cs_camtmp: Array[64, uint8]
+
+
+# The value the element's SOURCE `style=""` attribute declares for the camelCase
+# property `camel`, copied into g_cs_vbuf; 0 when it declares none.
+#
+# WHY. el.style is a lazily-created EMPTY declaration holding what SCRIPT
+# assigned; it has never been seeded from the content attribute. So every
+# getComputedStyle read missed a style written in the markup, and the miss was
+# invisible on elements WITH text, where the laid-out segment happened to carry
+# the same colour. `<div style="color: green"></div>` — empty, hence no segment
+# — read back rgb(0, 0, 0).
+#
+# Read here rather than by seeding el.style on creation: _dom_readback() reads
+# every registered element's style object to build the rewrite's override
+# tables, so seeding would mark every element carrying a markup `style=` as
+# MUTATED, force the rewrite path onto pages that never ran a mutation, and
+# re-emit the declaration alongside the original attribute. This path cannot
+# reach a rendered pixel.
+def _cs_srcstyle_len(el: int32, camel: Ptr[uint8], caml: uint64) -> int32:
+    if el < 0 or el >= dom_n:
+        return 0
+    te: uint64 = cast[uint64](dom_cstart[el]) - 1
+    if _hx_find_attr(cast[uint64](dom_ns[el]), te, cast[Ptr[uint8]]("style")) == 0:
+        return 0
+    b: uint64 = g_attr_end
+    i: uint64 = g_attr_start
+    while i < b:
+        ns: uint64 = i
+        while i < b and src_ptr[i] != 58 and src_ptr[i] != 59:      # ':' ';'
+            i = i + 1
+        if i >= b or src_ptr[i] == 59:
+            i = i + 1
+            continue
+        ne: uint64 = i
+        i = i + 1                                                   # past ':'
+        vs: uint64 = i
+        while i < b and src_ptr[i] != 59:
+            i = i + 1
+        ve: uint64 = i
+        if i < b:
+            i = i + 1
+        while ns < ne and (src_ptr[ns] == 32 or src_ptr[ns] == 9 or \
+                           src_ptr[ns] == 10 or src_ptr[ns] == 13):
+            ns = ns + 1
+        while ne > ns and (src_ptr[ne - 1] == 32 or src_ptr[ne - 1] == 9 or \
+                           src_ptr[ne - 1] == 10 or src_ptr[ne - 1] == 13):
+            ne = ne - 1
+        cw: int32 = _css_prop_camel(&src_ptr[ns], cast[int32](ne - ns), \
+                                    &g_cs_camtmp[0], 64)
+        if cw != cast[int32](caml):
+            continue
+        k: int32 = 0
+        same: int32 = 1
+        while k < cw:
+            if g_cs_camtmp[k] != camel[k]:
+                same = 0
+                break
+            k = k + 1
+        if same == 0:
+            continue
+        while vs < ve and (src_ptr[vs] == 32 or src_ptr[vs] == 9 or \
+                           src_ptr[vs] == 10 or src_ptr[vs] == 13):
+            vs = vs + 1
+        while ve > vs and (src_ptr[ve - 1] == 32 or src_ptr[ve - 1] == 9 or \
+                           src_ptr[ve - 1] == 10 or src_ptr[ve - 1] == 13):
+            ve = ve - 1
+        # CSSOM keeps the !important flag out of the VALUE (see
+        # _cs_ends_important): "green !important" is not a colour, and the
+        # resolver would drop the whole declaration.
+        if _cs_ends_important(&src_ptr[vs], 0, cast[int32](ve - vs)) != 0:
+            ve = ve - 10
+            while ve > vs and (src_ptr[ve - 1] == 32 or src_ptr[ve - 1] == 9):
+                ve = ve - 1
+        vn: int32 = cast[int32](ve - vs)
+        if vn <= 0:
+            return 0
+        if vn > 255:
+            vn = 255
+        j: int32 = 0
+        while j < vn:
+            g_cs_vbuf[j] = src_ptr[vs + cast[uint64](j)]
+            j = j + 1
+        return vn
+    return 0
+
+
 def _cs_inline_len(el: int32, camel: Ptr[uint8], caml: uint64) -> int32:
     if el < 0 or el >= dom_n:
         return 0
@@ -2737,7 +2824,9 @@ def _cs_inline_len(el: int32, camel: Ptr[uint8], caml: uint64) -> int32:
     ip: Ptr[uint8] = js_str_ptr(iv)
     inn: int32 = _cstr_len(ip)
     if inn <= 0 or _is_undef_str(ip, inn) != 0:
-        return 0
+        # Nothing script-set: the markup's own `style=` attribute is still an
+        # inline declaration, and it outranks the stylesheet cascade.
+        return _cs_srcstyle_len(el, camel, caml)
     if inn > 255:
         inn = 255
     i: int32 = 0
