@@ -3,16 +3,16 @@
 # pointee width was unknown and `cq[i]` loaded 8 bytes with an 8-byte stride
 # instead of a 1-byte `movzbq` with a 1-byte stride.
 
-buf: Array[16, uint8]
+rd_buf_scalar: Array[16, uint8]
 
 
-def dispatch(sel: int32) -> int32:
+def rd_disp_scalar(sel: int32) -> int32:
     if sel == 1:
         cq: int32 = 3
         return cq
 
     if sel == 2:
-        cq: Ptr[uint8] = &buf[0]
+        cq: Ptr[uint8] = &rd_buf_scalar[0]
         cq[0] = 200
         cq[1] = 100
         return cast[int32](cq[0]) + cast[int32](cq[1])
@@ -21,4 +21,4 @@ def dispatch(sel: int32) -> int32:
 
 
 def main() -> int32:
-    return dispatch(2)
+    return rd_disp_scalar(2)

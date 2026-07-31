@@ -6,7 +6,7 @@
 src: Array[8, uint8]
 
 
-def dispatch(sel: int32) -> int64:
+def rd_disp_ptrtos(sel: int32) -> int64:
     if sel == 1:
         cur: Ptr[uint8] = &src[0]
         cur[0] = 5
@@ -23,4 +23,4 @@ def dispatch(sel: int32) -> int64:
 
 
 def main() -> int32:
-    return cast[int32](dispatch(2))
+    return cast[int32](rd_disp_ptrtos(2))

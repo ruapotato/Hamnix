@@ -18,7 +18,7 @@ def take(p: Ptr[uint8], n: int32) -> int32:
     return s
 
 
-def dispatch(sel: int32) -> int32:
+def rd_disp_scalar(sel: int32) -> int32:
     if sel == 1:
         tk: int32 = 41
         return tk + 1
@@ -33,4 +33,4 @@ def dispatch(sel: int32) -> int32:
 
 
 def main() -> int32:
-    return dispatch(2)
+    return rd_disp_scalar(2)
