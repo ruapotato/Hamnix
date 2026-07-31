@@ -31,12 +31,21 @@
  * Its Option A ("remove the competing global translation") applies verbatim
  * here, and this lane can take it at its cheapest possible moment: head.S's
  * l3_user_pgtable leaves are now built with nG=1 (descriptor 0x0F47, bit 11
- * set) instead of nG=0 (0x0747). After that change there is NO global
- * translation anywhere for the user VA range, so:
- *   - A8..A11 keep running exactly as before, on ASID 0;
- *   - the A12 spaces use ASID 1 and ASID 2 and simply cannot collide with
- *     ASID 0's cached entries, so no TLB maintenance is needed at a switch at
- *     all — which is the property the phase-50 work was missing.
+ * set) instead of nG=0 (0x0747), and the per-task leaves below match. After
+ * that change there is NO global translation anywhere for the user VA range.
+ * A8..A11 keep running exactly as before, on ASID 0; the A12 spaces use ASID 1
+ * and ASID 2.
+ *
+ * WHAT IS PROVEN AND WHAT IS NOT — read this before trusting the green gate.
+ * Under qemu-system-aarch64 TCG:
+ *   - the ASID tagging IS load-bearing and IS tested: forcing every space to
+ *     ASID 0 makes space 0 run space 1's program and reds the gate;
+ *   - the nG bit is NOT testable here. Reverting both descriptors to nG=0
+ *     leaves the gate green, because TCG flushes the whole TLB (globals
+ *     included) when the ASID in TTBR0_EL1 changes. Real silicon does not, and
+ *     that difference IS the phase-50 bug. So nG=1 is correct-by-architecture
+ *     and asserted by INSPECTION in the gate, not by execution. Do not "simplify
+ *     it away" because a boot stayed green.
  * The kernel's identity RAM/device blocks stay global: they are EL1-only, they
  * are identical in every address space, and nothing ever re-maps those VAs.
  *
@@ -140,10 +149,13 @@ arm64_a12_build_spaces:
  * arm64_a12_switch — install space x0's TTBR0 with ASID (x0 + 1).
  *
  * NO TLB maintenance here, deliberately. Every user-VA translation in the
- * system is now non-global and ASID-tagged, so ASID 1 and ASID 2 cannot see
- * each other's entries and neither can see ASID 0's (A8..A11). If this switch
- * needed a flush to be correct, some global alias would still exist and
- * docs/arm64_phase50.md's failure would be back.
+ * system is non-global and ASID-tagged, so ASID 1 and ASID 2 cannot see each
+ * other's entries and neither can see ASID 0's (A8..A11). If this switch needed
+ * a flush to be correct, some global alias would still exist and
+ * docs/arm64_phase50.md's failure would be back. Caveat for whoever takes this
+ * to hardware: TCG flushes on ASID change anyway, so "it booted" does not yet
+ * prove the no-flush path on silicon. It is the ASID recycling case (more tasks
+ * than ASIDs) that will need real invalidation, and there is none of that yet.
  * ------------------------------------------------------------------------ */
     .globl arm64_a12_switch
     .type arm64_a12_switch, %function

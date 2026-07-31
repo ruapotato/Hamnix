@@ -29,13 +29,22 @@
 #   IDENTITY PHYSICAL ADDRESSES, i.e. not through either task's mapping, so no
 #   TLB alias can make two identical pages look distinct.
 #
-# THE nG=0 TRAP (docs/arm64_phase50.md) IS LOAD-BEARING HERE
-# ---------------------------------------------------------
-# head.S's EL0-RW window is now built nG=1. If it were global, the ASID-0
-# translation cached by A8..A11 would shadow the per-ASID mappings and the tasks
-# would agree with each other through the stale alias while the real pages went
-# untouched — precisely the phase-50 failure. That is not asserted by reading the
-# source: reverting the descriptor to 0x0747 reds this gate (see the commit).
+# THE nG BIT: ASSERTED BY INSPECTION, AND HERE IS WHY
+# ---------------------------------------------------
+# head.S's EL0-RW window is now built nG=1 (0x0F47, not 0x0747), because on real
+# silicon a GLOBAL translation for a user VA survives an ASID change and shadows
+# every later per-ASID mapping of that VA — docs/arm64_phase50.md's failure
+# exactly.
+#
+# MEASURED, NOT ASSUMED: reverting both descriptors to nG=0 does NOT red this
+# gate. QEMU TCG flushes the whole TLB (globals included) when the ASID in
+# TTBR0_EL1 changes, so it cannot discriminate the bit. The ASID tagging itself
+# IS discriminated — forcing every space to ASID 0 reds the gate loudly (space 0
+# then runs sum and exits 246, and the backing-page comparison fails).
+#
+# So the nG assertion below is INSPECTION OF THE SOURCE, not execution, and it
+# is labelled as such. Leaving it out would mean an execution-only gate that
+# stays green while shipping the phase-50 bug to hardware TCG never models.
 #
 # REGISTERED in scripts/ci_battery_manifest.txt. Needs qemu-system-aarch64 +
 # aarch64 binutils + clang; a missing one is INCONCLUSIVE (125), never a soft
@@ -88,6 +97,18 @@ BACK_SZ="$("${CROSS}nm" -S "$ELF" | awk '$4=="arm64_a12_backing"{print $2}')"
 [ "$((16#$BACK_SZ))" = "$((0x400000))" ] \
     || fail "arm64_a12_backing is 0x$BACK_SZ bytes, expected 0x400000 (2 spaces x 2MiB)"
 note "   arm64_a12_backing reserves 0x$BACK_SZ bytes (2 spaces x 2 MiB, private)"
+
+# ---- INSPECTION (not execution): the user-VA leaves must be non-global -----
+# See the header. TCG's flush-on-ASID-change hides a global user mapping, so no
+# amount of booting can assert this; it is checked at the source, and it is
+# flagged here as inspection so nobody mistakes it for an executed result.
+for pair in "arch/arm64/llvm/head.S:l3_user_pgtable leaf" "arch/arm64/llvm/a12.S:A12 per-task leaf"; do
+    f="${pair%%:*}"; what="${pair#*:}"
+    grep -qE '0x0F47' "$f" || fail "INSPECTION: $what in $f is not nG=1 (0x0F47) — a global user mapping reintroduces the docs/arm64_phase50.md alias on real silicon, which TCG cannot show you"
+    grep -qE 'movz +x1, #0x0747|A12_PTE_FLAGS, 0x0747' "$f" \
+        && fail "INSPECTION: $f still builds a user leaf with nG=0 (0x0747)"
+done
+note "   INSPECTION ok: user-VA leaves are nG=1 in head.S and a12.S (TCG cannot test this; see header)"
 
 note "2) booting qemu-system-aarch64 -M virt"
 printf 'A12-GATE\n' | timeout "$BOOT_TIMEOUT" qemu-system-aarch64 -M virt -cpu cortex-a72 \
