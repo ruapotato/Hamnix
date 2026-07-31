@@ -2,10 +2,33 @@
 # scripts/test_de_sessui_v2.sh — DE pivot wave 8 structural guard:
 # the modal "End Session" dialog (Lock Screen / Log Out / Shut Down /
 # Cancel) is no longer drawn by the daemon_pixel monolith. It now lives
-# in /bin/hamsessui, a separate-process v2 client that reads its model
-# from /dev/wsys/sessui and is woken by writes to /dev/wsys/sessui/show.
+# in /bin/hamsessui, a separate process that renders its own window.
 # The compositor (user/hamUId.ad) publishes the (open, hover) model on
 # every dialog mutation and pokes the show serial.
+#
+# 2026-07-31 -- WHAT CHANGED UNDER LINK 2. hamsessui was a hamui **v2-blit**
+# client: hamui_set_protocol_v2 + hamui_v2_commit_rect, painting pixels into a
+# kernel backbuffer, and polling /dev/wsys/sessui for its model. It has since
+# been ported to the SCENE-FILE DE (docs/de_scene_file_arch.md): it builds a
+# display list with the lib/hamui.ad hamscene_* helpers and commits it to
+# /dev/wsys/<wid>/scene; the kernel scene compositor owns /dev/fb and, in the
+# words of user/hamsessui.ad's own header, "v2 blit clients never paint there".
+# The same header records the other two changes: the dialog is spawned
+# ON-DEMAND from hamappmenu's "Log Out", so there is "no external open flag, no
+# /dev/wsys/sessui snapshot poll", and it reads its OWN input from
+# /dev/wsys/<wid>/event and /dev/wsys/<wid>/keys.
+#
+# Link 2 was therefore demanding all three of the things the port deliberately
+# removed, and failing on all three. GATE ROT, not a DE regression -- the
+# dialog is not broken, it is a scene client now. Link 2 below asserts the
+# protocol hamsessui ACTUALLY speaks.
+#
+# NOTE for whoever touches this next: links 3 and 4 still pass, which means the
+# kernel /dev/wsys/sessui + sessui/show leaves and hamUId's
+# sessui_publish_snapshot / sessui_spawn / sessui_poke_show all still exist even
+# though the client no longer reads any of them. That plumbing looks vestigial
+# after the scene port. It is deliberately left alone here -- deleting kernel
+# file-server leaves is not a gate repair -- but it is worth an audit.
 #
 # Pass marker:  PASS: sessui v2 extraction intact
 # Fail marker:  FAIL: <which link broke>
@@ -63,17 +86,28 @@ fi
 if ! grep -q "build_adder_user hamsessui" "$BUILD_SRC"; then
     fail_link "link 2 (build_user.sh): hamsessui is not built - the binary won't ship in the initramfs"
 fi
-# hamsessui must opt into v2 + read the snapshot.
-if ! grep -q "hamui_set_protocol_v2" "$SESSUI_SRC"; then
-    fail_link "link 2 (hamsessui.ad): does NOT call hamui_set_protocol_v2 - it isn't a v2 client"
+# hamsessui must build a display list and commit it to its scene file.
+if ! grep -qE "hamscene_begin[[:space:]]*\(" "$SESSUI_SRC"; then
+    fail_link "link 2 (hamsessui.ad): does NOT call hamscene_begin - it isn't building a display list"
 fi
-if ! grep -q '"/dev/wsys/sessui"' "$SESSUI_SRC"; then
-    fail_link "link 2 (hamsessui.ad): does NOT read /dev/wsys/sessui snapshot - the model source is missing"
+if ! grep -qE "hamscene_commit[[:space:]]*\(" "$SESSUI_SRC"; then
+    fail_link "link 2 (hamsessui.ad): does NOT call hamscene_commit - the display list never reaches /dev/wsys/<wid>/scene"
 fi
-# It must commit dirty rects via the v2 wire protocol.
-if ! grep -q "hamui_v2_commit_rect" "$SESSUI_SRC"; then
-    fail_link "link 2 (hamsessui.ad): does NOT call hamui_v2_commit_rect - no pixels reach the kernel backbuffer"
+# The scene port made it self-driving: it reads its OWN pointer and key input
+# from its per-window files rather than being fed a model by the compositor.
+if ! grep -q '"/event"' "$SESSUI_SRC"; then
+    fail_link "link 2 (hamsessui.ad): does NOT open its own /dev/wsys/<wid>/event - pointer input is unwired"
 fi
+if ! grep -q '"/keys"' "$SESSUI_SRC"; then
+    fail_link "link 2 (hamsessui.ad): does NOT open its own /dev/wsys/<wid>/keys - Escape can't dismiss the dialog"
+fi
+# The v2 blit protocol must be GONE: a scene client that still painted pixels
+# would be fighting the kernel scene compositor for /dev/fb.
+for legacy in hamui_set_protocol_v2 hamui_v2_commit_rect; do
+    if grep -q "$legacy" "$SESSUI_SRC"; then
+        fail_link "link 2 (hamsessui.ad): $legacy is BACK - a scene client must not paint through the v2 blit path"
+    fi
+done
 
 # --- Link 3: kernel exposes /dev/wsys/sessui + show leaves ----------
 for sym in "DEV_WSYS_SESSUI\b" "DEV_WSYS_SESSUI_SHOW"; do

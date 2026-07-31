@@ -7,6 +7,19 @@
 # compositor (user/hamUId.ad) publishes the catalogue and drains the
 # launch slot per frame.
 #
+# 2026-07-31 -- WHAT CHANGED UNDER LINK 2. hamappmenu was a hamui **v2-blit**
+# client: hamui_set_protocol_v2 + hamui_v2_commit_rect, painting pixels into a
+# kernel backbuffer. It has since been ported to the SCENE-FILE DE
+# (docs/de_scene_file_arch.md) and now imports only `hamui_init,
+# hamscene_begin, hamscene_commit` from lib/hamui.ad, committing a display list
+# to /dev/wsys/<wid>/scene instead of pixels to /dev/fb. Link 2's two v2
+# assertions were demanding a protocol the pivot deliberately replaced. GATE
+# ROT, not a DE regression -- the menu is not broken, it is a scene client now.
+# Everything else in link 2 (the build registration, the /dev/wsys/appmenu
+# catalogue read, the /dev/wsys/appmenu/launch write) still passed and is
+# unchanged: the catalogue/launch file protocol survived the pivot, only the
+# PAINT path moved.
+#
 # Pass marker:  PASS: appmenu v2 extraction intact
 # Fail marker:  FAIL: <which link broke>
 
@@ -63,21 +76,27 @@ fi
 if ! grep -q "build_adder_user hamappmenu" "$BUILD_SRC"; then
     fail_link "link 2 (build_user.sh): hamappmenu is not built - the binary won't ship in the initramfs"
 fi
-# hamappmenu must opt into v2 + read the catalogue snapshot + write
-# the launch verb.
-if ! grep -q "hamui_set_protocol_v2" "$APPMENU_SRC"; then
-    fail_link "link 2 (hamappmenu.ad): does NOT call hamui_set_protocol_v2 - it isn't a v2 client"
-fi
+# hamappmenu must read the catalogue snapshot + write the launch verb.
 if ! grep -q '"/dev/wsys/appmenu"' "$APPMENU_SRC"; then
     fail_link "link 2 (hamappmenu.ad): does NOT read /dev/wsys/appmenu snapshot - the catalogue source is missing"
 fi
 if ! grep -q '"/dev/wsys/appmenu/launch"' "$APPMENU_SRC"; then
     fail_link "link 2 (hamappmenu.ad): does NOT write /dev/wsys/appmenu/launch - the click → spawn link is broken"
 fi
-# It must commit dirty rects via the v2 wire protocol.
-if ! grep -q "hamui_v2_commit_rect" "$APPMENU_SRC"; then
-    fail_link "link 2 (hamappmenu.ad): does NOT call hamui_v2_commit_rect - no pixels reach the kernel backbuffer"
+# It must build a display list and commit it to its scene file.
+if ! grep -qE "hamscene_begin[[:space:]]*\(" "$APPMENU_SRC"; then
+    fail_link "link 2 (hamappmenu.ad): does NOT call hamscene_begin - it isn't building a display list"
 fi
+if ! grep -qE "hamscene_commit[[:space:]]*\(" "$APPMENU_SRC"; then
+    fail_link "link 2 (hamappmenu.ad): does NOT call hamscene_commit - the display list never reaches /dev/wsys/<wid>/scene"
+fi
+# The v2 blit protocol must be GONE: a scene client that still painted pixels
+# would be fighting the kernel scene compositor for /dev/fb.
+for legacy in hamui_set_protocol_v2 hamui_v2_commit_rect; do
+    if grep -q "$legacy" "$APPMENU_SRC"; then
+        fail_link "link 2 (hamappmenu.ad): $legacy is BACK - a scene client must not paint through the v2 blit path"
+    fi
+done
 
 # --- Link 3: kernel exposes /dev/wsys/appmenu + launch leaf ---------
 for sym in "DEV_WSYS_APPMENU\b" "DEV_WSYS_APPMENU_LAUNCH"; do
