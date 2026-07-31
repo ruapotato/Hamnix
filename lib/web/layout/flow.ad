@@ -53,6 +53,16 @@ def _reset_layout():
         bfill_oof[fb] = cast[uint8](0)
         bfill_pxy[fb] = -1
         bfill_pxh[fb] = -1
+        # background-clip insets (px, per side) — 0 = clip to the fill rect the
+        # box already computes, which is the border-box/padding-box behaviour
+        # every fill had before the property was parsed. Clearing them here is
+        # what lets the OTHER three fill-emission sites (table cells, inline
+        # chips, form widgets) stay untouched: a slot they reuse cannot inherit
+        # a stale inset from a `background-clip: content-box` block.
+        bfill_clipl[fb] = 0
+        bfill_clipt[fb] = 0
+        bfill_clipr[fb] = 0
+        bfill_clipb[fb] = 0
         fb = fb + 1
     seg_text_len = 0
     n_eimg = 0

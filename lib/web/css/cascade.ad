@@ -227,6 +227,12 @@ r_padx:   Array[2048, int32]     # horizontal padding sum px (0 = rule sets none
 r_padl:   Array[2048, int32]     # left padding px (0 = rule sets none)
 r_pady:   Array[2048, int32]     # vertical padding sum px (0 = rule sets none)
 r_bordw:  Array[2048, int32]     # border width px per side (0 = rule sets none)
+# background-clip / background-origin (W3C css-backgrounds-3 §3.7, §3.8). Both
+# name one of the three box edges; 0 = the rule does not declare it, so the
+# element keeps the property's own initial value (border-box for -clip,
+# padding-box for -origin). See BGBOX_* below.
+r_bgclip: Array[2048, int32]     # 0 unset / BGBOX_BORDER|PADDING|CONTENT
+r_bgorig: Array[2048, int32]     # 0 unset / BGBOX_BORDER|PADDING|CONTENT
 # True per-side border (W3C css-backgrounds §4). Two PACKED ints per rule
 # (0 = unset -> the box uses the uniform 1px legacy stroke, byte-identical to
 # before). Widths: 8 bits/side top|right<<8|bottom<<16|left<<24 (px, 0..120).
@@ -715,6 +721,8 @@ m_padx:   int32 = 0           # horizontal padding sum px (border-box width calc
 m_padl:   int32 = 0           # LEFT padding px alone (true-margin recovery)
 m_pady:   int32 = 0           # vertical padding sum px (border-box height calc)
 m_bordw:  int32 = 0           # border width px per side (border-box calc)
+m_bgclip: int32 = 0           # background-clip   (0 unset / BGBOX_*)
+m_bgorig: int32 = 0           # background-origin (0 unset / BGBOX_*)
 m_flexg:  int32 = -1          # flex-grow * 1000
 m_flexs:  int32 = -1          # flex-shrink * 1000
 m_flexb:  int32 = -1          # flex-basis px
@@ -1771,6 +1779,18 @@ d_padx:   int32 = 0           # horizontal padding sum (for border-box width cal
 d_padl:   int32 = 0           # LEFT padding px alone (true-margin recovery)
 d_pady:   int32 = 0           # vertical padding sum (for border-box height calc)
 d_bordw:  int32 = 0           # border width px PER SIDE (for border-box calc)
+# ---- background-clip / background-origin (css-backgrounds-3 §3.7, §3.8) ------
+# Which of the element's three box edges the background is CLIPPED to
+# (background-clip) and which one the background POSITIONING AREA is measured
+# from (background-origin). A value of 0 means the declaration is absent, which
+# is NOT the same as either initial value -- the initial value of
+# background-clip is border-box and of background-origin is padding-box, so the
+# two cannot share one "unset" encoding unless unset is its own code.
+BGBOX_BORDER:  int32 = 1
+BGBOX_PADDING: int32 = 2
+BGBOX_CONTENT: int32 = 3
+d_bgclip: int32 = 0           # 0 unset / BGBOX_*
+d_bgorig: int32 = 0           # 0 unset / BGBOX_*
 d_flexg:  int32 = -1          # flex-grow * 1000 (-1 unset)
 d_flexs:  int32 = -1          # flex-shrink * 1000 (-1 unset)
 d_flexb:  int32 = -1          # flex-basis px (-1 unset / auto)
@@ -3602,6 +3622,16 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
             d_appear = 1
         else:
             d_appear = 0
+        return 1
+    # background-clip / background-origin. Both take the same three box
+    # keywords. `text` (background-clip only) is not supported and is treated as
+    # the initial border-box rather than guessed at, so a page using it is no
+    # worse off than before this property was parsed at all.
+    if _prop_is(ps, pe, cast[Ptr[uint8]]("background-clip")) != 0:
+        d_bgclip = _bg_box_value(vs, ve, BGBOX_BORDER)
+        return 1
+    if _prop_is(ps, pe, cast[Ptr[uint8]]("background-origin")) != 0:
+        d_bgorig = _bg_box_value(vs, ve, BGBOX_PADDING)
         return 1
     if _prop_is(ps, pe, cast[Ptr[uint8]]("box-sizing")) != 0:
         if _val_starts(vs, ve, cast[Ptr[uint8]]("border-box")) != 0:
@@ -5663,6 +5693,27 @@ def _parse_aspect_ratio(vs: uint64, ve: uint64):
             d_asph = 1000                                # N / 1
 
 
+# One `border-box | padding-box | content-box` keyword (css-backgrounds-3 §3.7,
+# §3.8), shared by background-clip and background-origin. `dflt` is the
+# property's own INITIAL value, returned for any value this engine does not
+# implement (`text`, or a comma list whose first entry we cannot read) so an
+# unrecognised value degrades to the CSS default instead of to "unset".
+#
+# ORDER MATTERS: "padding-box" and "content-box" must be tested BEFORE
+# "border-box", because _val_starts is a prefix test and none of the three is a
+# prefix of another -- but a future `border-area` keyword would be. Testing the
+# longer/more specific spellings first keeps that safe.
+def _bg_box_value(vs: uint64, ve: uint64, dflt: int32) -> int32:
+    s: uint64 = _val_start(vs, ve)
+    if _val_starts(s, ve, cast[Ptr[uint8]]("padding-box")) != 0:
+        return BGBOX_PADDING
+    if _val_starts(s, ve, cast[Ptr[uint8]]("content-box")) != 0:
+        return BGBOX_CONTENT
+    if _val_starts(s, ve, cast[Ptr[uint8]]("border-box")) != 0:
+        return BGBOX_BORDER
+    return dflt
+
+
 # background-repeat: repeat (0) | no-repeat (1) | repeat-x (2) | repeat-y (3).
 # `space`/`round` are approximated as no-repeat / repeat respectively.
 def _parse_bg_repeat(vs: uint64, ve: uint64):
@@ -6293,6 +6344,8 @@ def _parse_decls(a: uint64, b: uint64):
     d_padl = 0
     d_pady = 0
     d_bordw = 0
+    d_bgclip = 0
+    d_bgorig = 0
     d_flexg = -1
     d_flexs = -1
     d_flexb = -1
@@ -6498,6 +6551,8 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
                 r_padl[ri]   = d_padl
                 r_pady[ri]   = d_pady
                 r_bordw[ri]  = d_bordw
+                r_bgclip[ri] = d_bgclip
+                r_bgorig[ri] = d_bgorig
                 r_flexg[ri]  = d_flexg
                 r_flexs[ri]  = d_flexs
                 r_flexb[ri]  = d_flexb
@@ -8078,6 +8133,8 @@ def _cascade_match_current():
     m_padl = 0
     m_pady = 0
     m_bordw = 0
+    m_bgclip = 0
+    m_bgorig = 0
     m_flexg = -1
     m_flexs = -1
     m_flexb = -1
@@ -8159,6 +8216,8 @@ def _cascade_match_current():
     spdx: int32 = -1
     spdy: int32 = -1
     sbdw: int32 = -1
+    sbgc: int32 = -1
+    sbgo: int32 = -1
     sfg: int32 = -1
     sfs: int32 = -1
     sfb: int32 = -1
@@ -8409,6 +8468,12 @@ def _cascade_match_current():
             if r_bordw[ri] > 0 and sp >= sbdw:
                 sbdw = sp
                 m_bordw = r_bordw[ri]
+            if r_bgclip[ri] != 0 and sp >= sbgc:
+                sbgc = sp
+                m_bgclip = r_bgclip[ri]
+            if r_bgorig[ri] != 0 and sp >= sbgo:
+                sbgo = sp
+                m_bgorig = r_bgorig[ri]
             if r_flexg[ri] >= 0 and sp >= sfg:
                 sfg = sp
                 m_flexg = r_flexg[ri]
@@ -9082,6 +9147,8 @@ def _parse_inline_wa(ne: uint64, te: uint64):
     d_padl = 0
     d_pady = 0
     d_bordw = 0
+    d_bgclip = 0
+    d_bgorig = 0
     d_flexg = -1
     d_flexs = -1
     d_flexb = -1

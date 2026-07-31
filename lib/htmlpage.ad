@@ -34,6 +34,7 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     he_n_bfills, he_bfill_lx, he_bfill_rx, he_bfill_top, he_bfill_bot, \
     he_bfill_rgb, he_bfill_z, he_bfill_radius, he_bfill_filter, \
     he_bfill_padt, he_bfill_padb, he_bfill_bord, he_page_bg, \
+    he_bfill_clipl, he_bfill_clipt, he_bfill_clipr, he_bfill_clipb, \
     he_bfill_oof, he_bfill_pxy, he_bfill_pxh, \
     he_n_lnkboxes, he_lnkbox_lid, he_lnkbox_lx, he_lnkbox_rx, \
     he_lnkbox_top, he_lnkbox_bot, he_lnkbox_padt, he_lnkbox_padb, \
@@ -1054,6 +1055,14 @@ def htmlpage_render() -> int32:
             if fy0 < 0:
                 fy0 = 0
             fy1 = fy1 + he_bfill_padb(fi)
+            # BACKGROUND-CLIP (css-backgrounds-3 §3.7): shrink the painted
+            # rect to the padding or content edge. Zero on every fill that does
+            # not declare the property, so the arithmetic is a no-op and every
+            # other page is byte-identical.
+            fx0 = fx0 + he_bfill_clipl(fi)
+            fy0 = fy0 + he_bfill_clipt(fi)
+            fx1 = fx1 - he_bfill_clipr(fi)
+            fy1 = fy1 - he_bfill_clipb(fi)
             fw2: int32 = fx1 - fx0
             fh2: int32 = fy1 - fy0
             if fw2 > 0 and fh2 > 0:

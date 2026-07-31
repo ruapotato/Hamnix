@@ -307,6 +307,30 @@ bfill_bord: Array[256, int32]
 bfill_oof:  Array[256, uint8]
 bfill_pxy:  Array[256, int32]
 bfill_pxh:  Array[256, int32]
+# ---- background-clip INSETS (W3C css-backgrounds-3 §3.7) -------------
+# `background-clip` names the box edge the background paints out to:
+# border-box (initial), padding-box, or content-box. The fill rect a box
+# already computes reaches its BORDER edge (bordered boxes span the char-grid
+# border rectangle; borderless boxes have no border, so their padding box IS
+# their border box), so honouring the property is a per-side INSET of that
+# rect, in pixels:
+#
+#   border-box    0, 0, 0, 0                      (byte-identical to before)
+#   padding-box   the border width on each side
+#   content-box   the border width PLUS the padding on each side
+#
+# Kept as four independent sides rather than one scalar because per-side
+# borders (border-left-width: 15px) and asymmetric padding are both already
+# modelled, and collapsing them would paint a content box in the wrong place
+# on exactly the tests that exercise the property.
+#
+# Zero on every fill that does not declare the property, which is all of them
+# until an author does — see _reset_layout in layout/flow.ad for why clearing
+# is done there rather than at each of the four emission sites.
+bfill_clipl: Array[256, int32]
+bfill_clipt: Array[256, int32]
+bfill_clipr: Array[256, int32]
+bfill_clipb: Array[256, int32]
 n_bfills:   int32 = 0
 
 # ---- LINK BOX registry (POINTER HIT-TEST ONLY — never painted) -------
@@ -507,6 +531,24 @@ def he_bfill_padt(i: int32) -> int32:
 
 def he_bfill_padb(i: int32) -> int32:
     return bfill_padb[i]
+
+
+# Per-side background-clip inset (px) of fill i; 0 = clip to the fill's own
+# rect (background-clip: border-box, the initial value).
+def he_bfill_clipl(i: int32) -> int32:
+    return bfill_clipl[i]
+
+
+def he_bfill_clipt(i: int32) -> int32:
+    return bfill_clipt[i]
+
+
+def he_bfill_clipr(i: int32) -> int32:
+    return bfill_clipr[i]
+
+
+def he_bfill_clipb(i: int32) -> int32:
+    return bfill_clipb[i]
 
 # ---- <img> src registry (for the host driver to enumerate + decode) ----
 # Every <img src="..."> seen during layout records its src string here so the
@@ -911,6 +953,10 @@ box_bg_stack:   Array[64, int32]      # element background-color (0xRRGGBB) or -
 box_bordc_stack: Array[64, int32]     # border colour (0xRRGGBB) or -1 (=> black)
 box_bordr_stack: Array[64, int32]     # border-radius px (0 = square corners)
 box_bordps_stack: Array[64, int32]    # packed per-side widths (0 = uniform stroke)
+# background-clip winner (0 unset -> border-box / BGBOX_*), captured at OPEN
+# like the padding and border above: _close_box paints the fill, but the
+# cascade globals have long since moved on to a descendant by then.
+box_bgclip_stack: Array[64, int32]
 box_bordss_stack: Array[64, int32]    # packed per-side styles
 box_bordcr_stack: Array[64, int32]    # per-side border colours right/bottom/left
 box_bordcb_stack: Array[64, int32]    # (0xRRGGBB or -1 => uniform fallback)
@@ -2604,6 +2650,12 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
             eff_bordss = d_bordss
         box_bordps_stack[box_sp] = eff_bordps
         box_bordss_stack[box_sp] = eff_bordss
+        # background-clip: inline (d_bgclip) wins over the stylesheet (m_bgclip),
+        # exactly like the border colour above. 0 => undeclared => border-box.
+        eff_bgclip: int32 = m_bgclip
+        if d_bgclip != 0:
+            eff_bgclip = d_bgclip
+        box_bgclip_stack[box_sp] = eff_bgclip
         # PER-SIDE border COLOURS (W3C css-backgrounds §4): inline d_bc_* wins over
         # the stylesheet m_bc*; -1 => that side falls back to the uniform colour.
         # They only take visual effect on the per-side painter path (eff_bordps !=
@@ -2893,6 +2945,7 @@ def _block_box_close():
     bordc: int32 = -1
     bordr: int32 = 0
     bordps: int32 = 0
+    bgclip: int32 = 0
     bordss: int32 = 0
     bordcr: int32 = -1
     bordcb: int32 = -1
@@ -2924,6 +2977,7 @@ def _block_box_close():
         bordc = box_bordc_stack[box_sp]
         bordr = box_bordr_stack[box_sp]
         bordps = box_bordps_stack[box_sp]
+        bgclip = box_bgclip_stack[box_sp]
         bordss = box_bordss_stack[box_sp]
         bordcr = box_bordcr_stack[box_sp]
         bordcb = box_bordcb_stack[box_sp]
@@ -3187,6 +3241,40 @@ def _block_box_close():
                     frx = rx + CELL_W + xpad
             if fplx < 0:
                 fplx = 0
+            # BACKGROUND-CLIP (css-backgrounds-3 §3.7). The rect computed just
+            # above reaches this box's BORDER edge. padding-box insets it by the
+            # border width, content-box by the border width plus the padding.
+            # Per-side widths come from the packed bordps when the box declares
+            # them individually (border-left-width: 15px), else the uniform bord.
+            #
+            # NOTE the vertical sides are insets of the PADDING-box rect the
+            # paint pass builds (fy0 - padt .. fy1 + padb), which is why
+            # content-box subtracts the same pady/2 the fill added: the two
+            # cancel to the content edge exactly.
+            if bgclip == BGBOX_PADDING or bgclip == BGBOX_CONTENT:
+                cbt: int32 = bord
+                cbr: int32 = bord
+                cbb: int32 = bord
+                cbl: int32 = bord
+                if bordps != 0:
+                    cbt = bordps & 255
+                    cbr = (bordps / 256) & 255
+                    cbb = (bordps / 65536) & 255
+                    cbl = (bordps / 16777216) & 255
+                if bgclip == BGBOX_CONTENT:
+                    cbl = cbl + padx / 2
+                    cbr = cbr + padx / 2
+                    cbt = cbt + pady / 2
+                    cbb = cbb + pady / 2
+                bfill_clipl[n_bfills] = cbl
+                bfill_clipt[n_bfills] = cbt
+                bfill_clipr[n_bfills] = cbr
+                bfill_clipb[n_bfills] = cbb
+            else:
+                bfill_clipl[n_bfills] = 0
+                bfill_clipt[n_bfills] = 0
+                bfill_clipr[n_bfills] = 0
+                bfill_clipb[n_bfills] = 0
             bfill_lx[n_bfills]  = fplx
             bfill_rx[n_bfills]  = frx
             bfill_top[n_bfills] = srow
