@@ -29,20 +29,25 @@
 # compiles it — so this gate ATTEMPTS the multi-TU units too, and for every
 # multi-TU unit host_ac accepts it PROVES the driver's merge is the same
 # program the seed's collect_all_imports+merge_programs closure produces
-# (identical function set). A handful of units still hit unsupported
-# constructs (reason 8) or inline `asm_volatile` (surfaces as reason 7). This
-# script is a TRACKING / REGRESSION gate: it asserts the seed still compiles
-# 100% of the tree, reports the `.ad` acceptance count + blocker breakdown,
-# and must NOT regress the `.ad`-accepted baseline (now 131/211: 120 single-TU
-# + 11 multi-TU, post CAP#4 cast[Ptr[T]](expr)[i] indexed load/store).
+# (identical function set). This script is a TRACKING / REGRESSION gate: it
+# asserts the seed still compiles 100% of the tree, reports the `.ad`
+# acceptance count + blocker breakdown, and must NOT regress the `.ad`-accepted
+# baseline.
+#
+# STATE, MEASURED 2026-07-31: 265 of 266 units accepted, 128 of 129 multi-TU,
+# every one of the 128 merge-equivalent to the seed closure. reason 7 = 0,
+# reason 8 = 0, parse errors = 0 -- unsupported constructs are no longer the
+# blocker. The ONE reject is `hambrowse`, on "[host_ac] FAIL: ELF emit error
+# (overflow)": the .ad compiler parses and codegens the largest unit in the
+# tree and then exhausts an emitter cap. That is the next capability, and it is
+# a CAP, not a language hole.
 #
 # Usage:  bash scripts/test_selfhost_wholetree_diff.sh
 #
 # Env:
-#   WT_BASELINE_AD_OK  expected minimum .ad-accepted units (default 129, post
-#                      extern-linkage + import resolution). Raise this as
-#                      codegen.ad/elf_emit.ad gain the missing reason-8
-#                      constructs.
+#   WT_BASELINE_AD_OK  expected minimum .ad-accepted units (default 265).
+#                      Raise it whenever acceptance grows -- a ratchet left
+#                      behind is a regression that reports PASS.
 
 set -uo pipefail
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,7 +61,14 @@ cd "$PROJ_ROOT"
 # intrinsics, container_of/sizeof, nested member access, indexed
 # struct-array/Ptr member base, multi-dimensional array LOCALS,
 # uint64-as-pointer scalar index base): 194 accepted (69 multi-TU).
-BASELINE_AD_OK="${WT_BASELINE_AD_OK:-194}"
+# 2026-07-31 MEASURED: 265 of 266 accepted, 128 of 129 multi-TU. The ratchet had
+# been left at 194 while acceptance grew, so 71 units of real progress were
+# unguarded -- a regression back to 195 would have reported PASS. The single
+# remaining reject is `hambrowse`, and it is NOT an unsupported construct: it
+# reaches "[host_ac] FAIL: ELF emit error (overflow)", i.e. the .ad compiler
+# parses and codegens the biggest unit in the tree and then runs out of an
+# emitter cap. reason 7 = 0, reason 8 = 0, parse errors = 0.
+BASELINE_AD_OK="${WT_BASELINE_AD_OK:-265}"
 
 fail() { echo "[wholetree] FAIL $*"; exit 1; }
 
@@ -177,8 +189,26 @@ def fnset(prog):
     out = set()
     for d in prog.declarations:
         if isinstance(d, FunctionDef):
-            nm = getattr(d, "orig_name", None) or d.name
-            out.add((nm, len(d.params), len(d.body)))
+            # 2026-07-31 — this was `getattr(d, "orig_name", None) or d.name`,
+            # and that compared two different things. merge_programs renames a
+            # module-private function to its mangled post-merge name (d.name,
+            # e.g. lib_9p_9p__p9_get_u32) and keeps the pre-merge spelling in
+            # d.orig_name. The DRIVER side is a fresh parse of the merged TEXT,
+            # which has no orig_name, so the seed contributed `_p9_get_u32` and
+            # the driver contributed `lib_9p_9p__p9_get_u32` for the SAME
+            # function and the sets could not intersect.
+            #
+            # It went unnoticed while only 11 multi-TU units were accepted (the
+            # 3 with no module-private functions passed, and this gate never ran
+            # in a sweep). CAP#3b took acceptance to 128 and 125 of them "failed"
+            # equivalence on nothing but the name column: measured across all
+            # 128, seed and driver agree on every function's post-merge name,
+            # parameter count and body length.
+            #
+            # d.name on BOTH sides is the right key: it is the identity of the
+            # program that actually gets compiled, and a divergent mangling
+            # scheme would still be caught.
+            out.add((d.name, len(d.params), len(d.body)))
     return out
 seed = merge_programs(collect_all_imports(src, root))
 drv = parse(merged.read_text(), str(merged))
@@ -228,7 +258,7 @@ fi
 
 echo "[wholetree] PASS — seed compiles 100%; .ad host compiler accepts" \
      "$ad_ok units ($ad_ok_multi multi-TU via CAP#2 import resolution), all" \
-     "multi-TU merges proven equivalent to the seed closure. Remaining .ad" \
-     "rejects are unsupported constructs (reason 8) — cap#4 (see" \
-     "docs/subsystems/adder-compiler.md)."
+     "multi-TU merges proven equivalent to the seed closure. The one" \
+     "remaining reject (hambrowse) is an ELF-emitter CAP overflow, not an" \
+     "unsupported construct (see docs/subsystems/adder-compiler.md)."
 exit 0
