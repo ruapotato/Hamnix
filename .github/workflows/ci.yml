@@ -300,14 +300,26 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-                17, 18, 19, 20, 21, 22, 23, 24]
+                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+                31, 32, 33, 34, 35, 36]
     # 50 not 40: shards typically finish in 10-20 min, but GitHub runner CPU
     # varies ~3x, so a slow runner once pushed an otherwise-normal 6-gate shard
     # to 33m — too close to a 40m cap. The per-gate GATE_TIMEOUT already bounds a
     # single wedging gate; this headroom absorbs runner-speed variance. A job
     # still exits the instant its shard finishes, so the extra ceiling costs
     # nothing on a fast runner.
-    timeout-minutes: 50
+    #
+    # 2026-07-30: raised 50 -> 70 and NSHARDS 24 -> 36. The NIGHTLY run -- the
+    # one this workflow designates as the reliable signal -- was reading
+    # `cancelled` because shards 9 and 22 hit the 50-minute cap EXACTLY
+    # (50.2 and 50.3 min); GitHub reports a timed-out job as `cancelled`, so a
+    # run with 24 green jobs and 2 over-budget shards is indistinguishable at a
+    # glance from one killed by a push storm. Shard 15 finished at 48.9 min,
+    # i.e. one gate from the same fate. More shards shortens the tail; the
+    # higher ceiling absorbs the ~3x GitHub runner-speed variance that made a
+    # 6-gate shard take 33 minutes once. A job still exits the instant its
+    # shard finishes, so neither change costs anything on a fast runner.
+    timeout-minutes: 70
 
     steps:
       - name: Checkout
@@ -368,7 +380,7 @@ jobs:
       # non-failing warning, exactly as in the old per-step battery.
       - name: Run battery shard ${{ matrix.shard }}/16
         run: |
-          SHARD=${{ matrix.shard }} NSHARDS=24 \
+          SHARD=${{ matrix.shard }} NSHARDS=36 \
             bash scripts/ci_run_battery_shard.sh 2>&1 \
             | tee /tmp/battery-shard-${{ matrix.shard }}.log
 
