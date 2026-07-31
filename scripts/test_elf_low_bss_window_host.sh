@@ -3,10 +3,11 @@
 # ELF64 loader for a demand-BSS window big enough to swallow the kernel's own
 # direct map.
 #
-# WHY THIS GATE EXISTS
-# --------------------
-# A native Hamnix ELF64 app is ET_EXEC linked at 0x400000 (user/init64.lds), so
-# its user virtual addresses are NUMERICALLY IDENTICAL to low physical RAM —
+# WHY THIS GATE EXISTS  (history — see THE LIFT below for today's shape)
+# ----------------------------------------------------------------------
+# A native Hamnix ELF64 app USED TO BE ET_EXEC linked at 0x400000
+# (user/init64.lds), so its user virtual addresses were
+# NUMERICALLY IDENTICAL to low physical RAM —
 # the kernel's identity direct map. fs/elf.ad splits such an image into an
 # eager file-backed extent plus a demand-zero BSS tail, and
 # mm/vma.ad::vma_register_bss_demand -> fs/elf.ad::elf_prepare_demand_range
