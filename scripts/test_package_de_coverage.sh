@@ -83,6 +83,26 @@ SKIP_BINS = {
     # back into the autostart, drop it from this list and package it.
     "hamUI", "hambottom", "hampanel", "hamcycler", "hamrun", "hamsnap",
     "hamcalpop", "hamnotif", "hamsysmon", "hamecho", "hamfiles",
+    # --- 2026-07-31 -------------------------------------------------
+    # Nine dev/test binaries that landed 2026-07-15..30 while this gate was
+    # outside every sweep (scripts/list_host_gates.sh returned 283 of 645).
+    # NONE is referenced by rc.5, services.d, desktop.icons or any shipped
+    # .desktop — verified, and now asserted mechanically by the launcher
+    # cross-check below, which is what keeps this list from becoming a place
+    # to hide a real hole.
+    #
+    #   audiolife         hamGame/hamSDL audio demo (Game of Life + tones)
+    #   sdlpong           hamSDL Pong demo
+    #   keydemo           raw keyboard-event demo
+    #   ed25519_selftest  signature-verify selftest, run BY a gate
+    #   hamvideoselftest  Motion-JPEG decode selftest, run BY a gate
+    #   sysirqprobe       IRQ-latency probe (soak instrumentation)
+    #   wakelat           wake-latency measurement tool  ...
+    #   wakelat_echo      ... its echo peer ...
+    #   wakelat_hog       ... and its load generator
+    "audiolife", "sdlpong", "keydemo",
+    "ed25519_selftest", "hamvideoselftest",
+    "sysirqprobe", "wakelat", "wakelat_echo", "wakelat_hog",
 }
 
 fail = []
@@ -164,6 +184,39 @@ for r in sorted(referenced):
         fail.append(f"rc.5/svc references /bin/{r} but it is not in the "
                     f"hamnix-base closure")
 
+# --- 2b: LAUNCHER COVERAGE (2026-07-31) ---------------------------------
+# Every binary a user can CLICK must be installed by some package. The
+# desktop icons (etc/desktop.icons) and the Applications-menu launchers
+# (etc/hamde/apps/*.desktop, which user/hamde.ad scans at startup) are the
+# two click surfaces, and NEITHER was checked here: check 2 only read
+# rc.5 + services.d, so `haminput` shipped an icon AND a menu entry on
+# 2026-07-18 while being in no package at all for thirteen days. That is
+# this gate's own headline bug ("the entire DE was in NO package") in
+# miniature, and the allowlist above cannot launder it — a binary named by
+# a launcher fails here whether or not it is allowlisted.
+clickable = {}          # basename -> where it is advertised
+icons = ETC / "desktop.icons"
+if icons.is_file():
+    for m in re.findall(r"/bin/([A-Za-z0-9_]+)", icons.read_text()):
+        clickable.setdefault(m, "etc/desktop.icons")
+else:
+    fail.append("etc/desktop.icons is missing (the desktop has no icons)")
+appdir = ETC / "hamde" / "apps"
+ndesktop = 0
+for d in sorted(appdir.glob("*.desktop")):
+    ndesktop += 1
+    for ln in d.read_text().splitlines():
+        if ln.startswith("Exec="):
+            prog = ln[5:].split()[0] if ln[5:].split() else ""
+            if prog:
+                clickable.setdefault(Path(prog).name, f"etc/hamde/apps/{d.name}")
+            break
+if ndesktop == 0:
+    fail.append("etc/hamde/apps has no .desktop launchers (the menu is empty)")
+for b in sorted(clickable):
+    if b not in all_bins:
+        fail.append(f"{clickable[b]} launches /bin/{b} but NO package installs it")
+
 # --- 3: every build/user/*.elf (minus allowlist) is in SOME package ---
 built = {p.stem for p in USER.glob("*.elf")}
 uncovered = sorted(b for b in built
@@ -192,6 +245,7 @@ EXPECTED_APP_PKGS = {
     "hamnix-haminbox": "haminbox",
     "hamnix-hamsettings": "hamsettings",
     "hamnix-haminstallui": "haminstallui",
+    "hamnix-haminput": "haminput",
     # The OFFICE SUITE — pre-installed first-class DE apps (promoted out
     # of the repo-only apps-optional set): word processor / spreadsheet /
     # presentation. Each is its own package under hamnix-desktop-apps.
@@ -247,6 +301,8 @@ if fail:
 
 print(f"[de-cov] OK: base closure={len(seen)} pkgs; "
       f"rc.5/svc refs={len(referenced)} resolved; "
+      f"{len(clickable)} clickable launchers ({ndesktop} .desktop + icons) "
+      f"all packaged; "
       f"{len(built)} built bins, {len(SKIP_BINS & built)} allowlisted, "
       "0 uncovered.")
 PY

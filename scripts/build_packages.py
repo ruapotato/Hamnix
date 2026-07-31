@@ -762,6 +762,16 @@ DESKTOP_APP_PACKAGES: list[dict] = [
      "summary": "settings + about dialog"},
     {"name": "hamnix-haminstallui", "bins": ("haminstallui",),
      "summary": "graphical installer front-end"},
+    # 2026-07-31: haminput shipped a desktop icon (etc/desktop.icons "Input
+    # Inspector") AND an Applications-menu launcher (etc/hamde/apps/
+    # haminput.desktop) on 2026-07-18, and was in NO package for thirteen days —
+    # `hpm install hamnix-base` handed you two launchers for a binary the
+    # install did not contain. Exactly the hole this file's coverage gate exists
+    # for. test_package_de_coverage now asserts that every binary named by
+    # desktop.icons or a shipped .desktop is packaged, so it cannot recur
+    # silently.
+    {"name": "hamnix-haminput", "bins": ("haminput",),
+     "summary": "input event inspector (live key/mouse/PRIMARY-paste diagnostic)"},
 ]
 
 # Flat set of every app-package name — used to keep hamnix-base's direct
