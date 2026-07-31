@@ -3,7 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
-from lib.htmlengine import _close_seg, _collect_css, _content_right, _float_flush, _gc_collect_css, _handle_tag, _hx_name_eq, _hx_tag_end, _left_margin, _newline, _page_has_main, _page_has_maxwidth, _page_uses_layout, _pending_indjump, _pending_marker, _word_flush, _word_push, _hx_tag_end_p, _alnum_at, _rawtext_skip
+from lib.htmlengine import _close_seg, _collect_css, _content_right, _float_flush, _gc_collect_css, _handle_tag, _hx_name_eq, _hx_tag_end, _left_margin, _newline, _page_has_main, _page_has_maxwidth, _page_uses_layout, _pending_indjump, _pending_marker, _word_flush, _word_push, _hx_tag_end_p, _alnum_at, _rawtext_skip, csty_reset
 
 # ====================================================================
 # LAYOUT — parse src_ptr/src_len into segments.
@@ -25,6 +25,9 @@ def _reset_layout():
     # CSSOM layout-read tap: drop the previous render's element boxes so a
     # re-layout (script mutated the DOM) never reports a stale geometry.
     n_eboxes = 0
+    # Same reason for the resolved-colour tap: a re-layout must replace the
+    # table, not stack a second copy of every element on top of the old one.
+    csty_reset()
     g_open_src = -1
     g_ebox_skx = 0
     g_ebox_sky = 0

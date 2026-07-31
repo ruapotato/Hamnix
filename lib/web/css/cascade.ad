@@ -3,6 +3,7 @@
 #
 # Behavior-preserving split (single-compilation-unit; byte-identical).
 
+from lib.htmlengine import _anchor_orig
 from lib.htmlengine import _bg_pop, _bg_push, _color_pop, _color_push, _content_right, _css_ws, _hx_lower, _left_margin, _recompute_style, _hx_tag_end_p
 # Live block-box stack (owned by lib/web/layout/box.ad): the open box's content
 # left/right edges. A horizontal CSS percentage resolves against THIS, not the
@@ -269,6 +270,189 @@ r_asph:   Array[2048, int32]     # aspect-ratio denominator (milli), 0 = unset
 r_spec:   Array[2048, int32]
 n_rules:  int32 = 0
 
+# ---- CSS CASCADE LAYERS (@layer) -----------------------------------------
+# css-cascade-5 inserts a sort key BETWEEN origin and specificity: a
+# declaration's LAYER. Layers sort in the order their names are FIRST seen in
+# the document, earliest = weakest, and every UNLAYERED normal declaration
+# outranks every layered one no matter how specific the layered selector is.
+#
+# Before this existed, `@layer` was an unrecognised block at-rule, which
+# _parse_at_rule handled by SKIPPING the whole block — so a rule inside a layer
+# did not merely sort wrong, it did not exist. `@layer { target { color: green }}`
+# left the element at its UA default.
+#
+# HOW IT PLUGS IN. Every rule records the rank of the layer it was parsed in,
+# and the one place the matcher reads a rule's specificity folds that rank in
+# above it:
+#
+#     sp = r_spec[ri] + r_layer[ri] * LAYER_STEP
+#
+# so the existing "highest key wins, later source order breaks ties" comparison
+# — repeated for ~60 properties — gets layer ordering for every one of them
+# without ~60 edits that could disagree with each other. LAYER_STEP is far above
+# any reachable specificity sum (id = 100, class = 10, type = 1, summed over the
+# compounds of one selector), so a layer boundary can never be crossed by
+# specificity, which is precisely the guarantee the cascade requires.
+LAYER_STEP:      int32 = 100000
+LAYER_MAX:       int32 = 128
+LAYER_UNLAYERED: int32 = 1000   # ranks above every named/anonymous layer
+LAYER_NAME_CAP:  int32 = 2048
+
+r_layer:      Array[2048, int32]   # rank of the layer each rule was parsed in
+
+# Per-rule list of the camelCase property names the rule declares !important
+# (newline-separated, into imp_namebuf). See csty_important_at.
+IMP_NAMEBUF_CAP: int32 = 16384
+imp_namebuf:  Array[16384, uint8]
+imp_namebuf_w: int32 = 0
+r_impn_off:   Array[2048, int32]
+r_impn_len:   Array[2048, int32]
+g_impn_off:   int32 = 0
+g_impn_len:   int32 = 0
+
+
+# Scan a declaration block src[a,b) and pack the camelCase names of every
+# declaration carrying an `!important` priority into imp_namebuf; the span lands
+# in g_impn_off/g_impn_len. Quote- and paren-blind on purpose: a `!important`
+# inside a url() or a string is not valid CSS priority syntax.
+def _scan_important_names(a: uint64, b: uint64):
+    g_impn_off = imp_namebuf_w
+    g_impn_len = 0
+    i: uint64 = a
+    while i < b:
+        while i < b and (src_ptr[i] == 32 or src_ptr[i] == 9 or \
+                         src_ptr[i] == 10 or src_ptr[i] == 13 or src_ptr[i] == 59):
+            i = i + 1
+        ns: uint64 = i
+        while i < b and src_ptr[i] != 58 and src_ptr[i] != 59:
+            i = i + 1
+        if i >= b or src_ptr[i] == 59:
+            continue
+        ne: uint64 = i
+        i = i + 1
+        vs: uint64 = i
+        while i < b and src_ptr[i] != 59:
+            i = i + 1
+        ve: uint64 = i
+        while ne > ns and (src_ptr[ne - 1] == 32 or src_ptr[ne - 1] == 9 or \
+                           src_ptr[ne - 1] == 10 or src_ptr[ne - 1] == 13):
+            ne = ne - 1
+        while ve > vs and (src_ptr[ve - 1] == 32 or src_ptr[ve - 1] == 9 or \
+                           src_ptr[ve - 1] == 10 or src_ptr[ve - 1] == 13):
+            ve = ve - 1
+        if ve - vs < 10 or _mq_ci(ve - 10, cast[Ptr[uint8]]("!important"), 10) == 0:
+            continue
+        if imp_namebuf_w + cast[int32](ne - ns) + 1 > IMP_NAMEBUF_CAP:
+            return
+        up: int32 = 0
+        k: uint64 = ns
+        while k < ne:
+            c: uint8 = src_ptr[k]
+            if c == 45 and k > ns:                    # '-' -> uppercase next
+                up = 1
+            else:
+                if up != 0:
+                    imp_namebuf[imp_namebuf_w] = _upper_ascii(c)
+                    up = 0
+                else:
+                    imp_namebuf[imp_namebuf_w] = _hx_lower(c)
+                imp_namebuf_w = imp_namebuf_w + 1
+                g_impn_len = g_impn_len + 1
+            k = k + 1
+        imp_namebuf[imp_namebuf_w] = 10
+        imp_namebuf_w = imp_namebuf_w + 1
+        g_impn_len = g_impn_len + 1
+
+
+def _upper_ascii(c: uint8) -> uint8:
+    if c >= 97 and c <= 122:
+        return c - 32
+    return c
+layer_name_off: Array[128, int32]  # into layer_namebuf; -1 = anonymous
+layer_name_len: Array[128, int32]
+layer_namebuf:  Array[2048, uint8]
+layer_namebuf_w: int32 = 0
+n_layers:       int32 = 0
+g_cur_layer:    int32 = 1000   # layer the parser is currently inside (LAYER_UNLAYERED)
+
+# The enclosing layer-name prefix for `@layer a { @layer b { … } }`, whose inner
+# layer is the distinct layer "a.b" — NOT the same layer as a sibling "b"
+# declared elsewhere.
+layer_pfxbuf:   Array[512, uint8]
+layer_pfx_len:  int32 = 0
+
+
+def _layers_reset():
+    n_layers = 0
+    layer_namebuf_w = 0
+    layer_pfx_len = 0
+    g_cur_layer = LAYER_UNLAYERED
+
+
+# Rank of the layer named buf[0..n) (prefix already applied), registering it at
+# the end of the order if this is its first declaration. An empty name is an
+# ANONYMOUS layer: every `@layer { }` is a distinct layer that nothing can name
+# or re-open, so it always registers a fresh rank.
+def _layer_rank(p: Ptr[uint8], n: int32) -> int32:
+    if n > 0:
+        i: int32 = 0
+        while i < n_layers:
+            if layer_name_len[i] == n:
+                k: int32 = 0
+                same: int32 = 1
+                while k < n:
+                    if layer_namebuf[layer_name_off[i] + k] != p[k]:
+                        same = 0
+                        break
+                    k = k + 1
+                if same != 0:
+                    return i
+            i = i + 1
+    if n_layers >= LAYER_MAX or layer_namebuf_w + n > LAYER_NAME_CAP:
+        return LAYER_UNLAYERED - 1        # out of room: weakest layered rank
+    r: int32 = n_layers
+    layer_name_off[r] = layer_namebuf_w
+    layer_name_len[r] = n
+    j: int32 = 0
+    while j < n:
+        layer_namebuf[layer_namebuf_w] = p[j]
+        layer_namebuf_w = layer_namebuf_w + 1
+        j = j + 1
+    n_layers = n_layers + 1
+    return r
+
+
+# Build "<enclosing prefix>.<name>" for a layer name in src[a,b) into g_lname,
+# skipping surrounding whitespace. Returns its length (0 = anonymous).
+g_lname: Array[512, uint8]
+
+
+def _layer_qualify(a: uint64, b: uint64) -> int32:
+    n: int32 = 0
+    k: int32 = 0
+    while k < layer_pfx_len and n < 511:
+        g_lname[n] = layer_pfxbuf[k]
+        n = n + 1
+        k = k + 1
+    i: uint64 = a
+    while i < b and (src_ptr[i] == 32 or src_ptr[i] == 9 or \
+                     src_ptr[i] == 10 or src_ptr[i] == 13):
+        i = i + 1
+    e: uint64 = b
+    while e > i and (src_ptr[e - 1] == 32 or src_ptr[e - 1] == 9 or \
+                     src_ptr[e - 1] == 10 or src_ptr[e - 1] == 13):
+        e = e - 1
+    if e <= i:
+        return 0                                # anonymous: prefix is irrelevant
+    if n > 0 and n < 511:
+        g_lname[n] = 46                         # '.'
+        n = n + 1
+    while i < e and n < 511:
+        g_lname[n] = src_ptr[i]
+        n = n + 1
+        i = i + 1
+    return n
+
 # element stack (open elements) for descendant matching
 MAX_EL:     int32  = 64
 EL_STR_CAP: uint64 = 4096
@@ -285,6 +469,10 @@ el_id_len:  Array[64, int32]
 # whole layout pass that drives cascade matching).
 el_body_s:  Array[64, uint64]
 el_body_e:  Array[64, uint64]
+# Source offset of each open element's '<' — the same ANCHOR the DOM layer keys
+# elements by (dom_anchor / ebox_src), so a cascade result stamped here can be
+# looked up later from a DOM object. See csty_* below.
+el_lt:      Array[64, uint64]
 # 1-based position of each open element among its parent's element children,
 # and the running element-child count opened so far under the element at each
 # stack level (indexed by PARENT level). Together these drive :nth-child /
@@ -294,6 +482,138 @@ el_childidx: Array[64, int32]
 el_nchild:   Array[64, int32]
 el_rootcnt:  int32 = 0        # element children seen at depth 0 (document root)
 el_sp: int32 = 0
+
+# ---- RESOLVED-COLOUR REGISTRY (getComputedStyle) --------------------------
+# WHAT IT IS: for every element the cascade matched during a layout pass, the
+# colour and background-colour the cascade RESOLVED for it, keyed by the
+# element's source anchor.
+#
+# WHY IT HAD TO EXIST. getComputedStyle's colour answers used to come from the
+# element's laid-out TEXT SEGMENT (`color`) or from nothing at all
+# (`background-color`, which read back "rgba(0, 0, 0, 0)" unconditionally
+# unless a script had assigned el.style.backgroundColor). Both are the wrong
+# source:
+#   * an EMPTY element paints no text segment, so `<target></target>` styled by
+#     `target { color: green }` reported the UA default black — the exact shape
+#     every css-cascade layer/scope test is built out of;
+#   * `background-color` from a <style> rule was invisible to script outright,
+#     which is what the whole @scope suite asserts on.
+# The cascade already computes both values for every stylable element on its
+# way to painting them. Recording them costs one array write per element and
+# makes the read-back agree with the render BY CONSTRUCTION rather than by
+# re-deriving from pixels.
+#
+# -1 in either column means "no rule set this property" — NOT a colour. The
+# reader distinguishes them: `color` inherits, so it walks ancestors; a
+# background does not, so -1 stays transparent.
+#
+# Capacity is a soft ceiling: past it elements simply keep the old behaviour.
+# Anchor value for "this element has no source anchor" (a script-created node
+# laid out through the rewrite). Above any real source offset, so a lookup by a
+# real anchor can never collide with it.
+CSTY_NOANCHOR: uint64 = 18446744073709551615
+CSTY_MAX: int32 = 4096
+csty_lt:  Array[4096, uint64]     # source '<' offset (the DOM anchor)
+csty_col: Array[4096, int32]      # cascade-resolved color 0xRRGGBB, -1 unset
+csty_bg:  Array[4096, int32]      # cascade-resolved background-color, -1 unset
+n_csty:   int32 = 0
+
+
+# Drop every recorded colour. Called at the start of each layout pass so a
+# re-layout (after a DOM/CSSOM mutation) replaces the table rather than
+# shadowing it with stale entries.
+def csty_reset():
+    n_csty = 0
+    csty_impbuf_w = 0
+
+
+# Record the cascade's resolved colours for the element whose start tag begins
+# at `lt`. Newest-last; the reader scans backwards so the most recent pass wins
+# even if a reset was missed. `ioff/ilen` span the !important property names the
+# matching rules declared (see csty_important_at).
+def csty_put(lt: uint64, col: int32, bg: int32, ioff: int32, ilen: int32):
+    if n_csty >= CSTY_MAX:
+        return
+    csty_lt[n_csty]  = lt
+    csty_col[n_csty] = col
+    csty_bg[n_csty]  = bg
+    csty_imp_off[n_csty] = ioff
+    csty_imp_len[n_csty] = ilen
+    n_csty = n_csty + 1
+
+
+def _csty_find(lt: uint64) -> int32:
+    i: int32 = n_csty - 1
+    while i >= 0:
+        if csty_lt[i] == lt:
+            return i
+        i = i - 1
+    return -1
+
+
+# The cascade-resolved `color` for the element anchored at `lt`, or -1.
+def csty_color_at(lt: uint64) -> int32:
+    i: int32 = _csty_find(lt)
+    if i < 0:
+        return -1
+    return csty_col[i]
+
+
+# The cascade-resolved `background-color` for the element anchored at `lt`, or -1.
+def csty_bg_at(lt: uint64) -> int32:
+    i: int32 = _csty_find(lt)
+    if i < 0:
+        return -1
+    return csty_bg[i]
+
+
+# ---- !important VS THE INLINE STYLE ATTRIBUTE ----------------------------
+# css-cascade-5 §6.4.2: an IMPORTANT author declaration outranks the element's
+# inline `style` declaration. getComputedStyle consults the inline declaration
+# FIRST for every property it reports, so `.cls { visibility: inherit !important }`
+# lost to `style="visibility: hidden"` and the read-back said "hidden".
+#
+# Modelling importance per declaration would mean an `r_imp_<prop>` beside each
+# of the ~60 `r_<prop>` arrays. Instead each rule records the NAMES it declares
+# `!important` (camelCase, newline-separated), and the cascade accumulates the
+# union of those names over the rules that MATCH each element. That is exactly
+# the question the read-back has to answer — "may an inline value still win this
+# property?" — and it costs one blob per rule and one append per match.
+#
+# It deliberately does NOT change what the layout paints: an important
+# declaration already won or lost inside the ordinary specificity comparison
+# (which the layer fold now feeds). This is a read-back correction only.
+CSTY_IMPBUF_CAP: int32 = 16384
+csty_impbuf:     Array[16384, uint8]
+csty_impbuf_w:   int32 = 0
+csty_imp_off:    Array[4096, int32]
+csty_imp_len:    Array[4096, int32]
+
+
+# Is the camelCase property `p[0..n)` declared !important by a rule matching the
+# element anchored at `lt`?
+def csty_important_at(lt: uint64, p: Ptr[uint8], n: int32) -> int32:
+    i: int32 = _csty_find(lt)
+    if i < 0 or csty_imp_len[i] <= 0:
+        return 0
+    a: int32 = csty_imp_off[i]
+    e: int32 = a + csty_imp_len[i]
+    while a < e:
+        b: int32 = a
+        while b < e and csty_impbuf[b] != 10:
+            b = b + 1
+        if b - a == n:
+            k: int32 = 0
+            same: int32 = 1
+            while k < n:
+                if csty_impbuf[a + k] != p[k]:
+                    same = 0
+                    break
+                k = k + 1
+            if same != 0:
+                return 1
+        a = b + 1
+    return 0
 
 # cascade match results (filled by _cascade_match_current)
 m_col:    int32 = -1
@@ -6032,6 +6352,7 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
     if i < rgn_end:
         i = i + 1
     _parse_decls(dec_s, dec_e)
+    _scan_important_names(dec_s, dec_e)
     # Nothing we honour -> skip emitting rules entirely.
     if d_color < 0 and d_bg < 0 and d_weight == 0 and d_align == 0 and \
        d_deco == 0 and d_fstyle == 0 and d_nomark == 0 and \
@@ -6058,7 +6379,14 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
        d_ovfx == 0 and d_ovfy == 0 and d_txtovf == 0 and \
        d_objfit == 0 and d_objpos == 0 and d_asph == 0 and d_animname < 0 and \
        d_animfill < 0 and d_accent < 0:
-        return i
+        # …unless it declares something !important. The rule then contributes no
+        # value the engine models, but it still SUPPRESSES the element's inline
+        # declaration for those properties, which is a cascade fact the
+        # read-back needs (`.cls { visibility: inherit !important }` is a whole
+        # rule made of nothing this engine represents).
+        if g_impn_len <= 0:
+            imp_namebuf_w = g_impn_off               # nothing kept: reclaim
+            return i
     # one rule per comma-separated selector
     ss: uint64 = sel_s
     k: uint64 = sel_s
@@ -6067,6 +6395,9 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
             if n_rules < MAX_RULES and k > ss:
                 ri: int32 = n_rules
                 _parse_selector(ss, k, ri)
+                r_layer[ri]  = g_cur_layer
+                r_impn_off[ri] = g_impn_off
+                r_impn_len[ri] = g_impn_len
                 r_color[ri]  = d_color
                 # Fold rgba()/#rrggbbaa alpha, element opacity, and a box-shadow
                 # class into the packed background colour (see _pack_fill_rgb).
@@ -6323,6 +6654,109 @@ def _cssom_clear_sheet(sid: int32):
 # static cascade uses, pointing the parser at the model text buffer. Called at
 # the tail of _collect_css, so injected rules land AFTER all source + external
 # rules and therefore WIN equal-specificity ties (matching "runtime override").
+# Register the LAYER NAMES an injected CSSOM rule set declares, without
+# cascading any of its declarations.
+#
+# WHY IT IS SEPARATE. Layer ORDER is a document-global registry fixed by each
+# name's FIRST declaration, whereas a rule's declarations cascade at the
+# position of the sheet that carries them. Injected CSSOM rules are parsed at
+# the TAIL of _collect_css (see _collect_cssom: that placement is deliberate, so
+# a runtime override beats an equal-specificity static rule), which would also
+# force every layer an injected rule names to register LAST — i.e. as the
+# STRONGEST layer, silently outranking every layer the document declared.
+#
+# Registering them here instead, before the source scan and in sheet order,
+# makes an injected layer the WEAKEST rather than the strongest. That is the
+# conservative direction, and it is what `@layer second, first;`-style ordering
+# statements — whose entire purpose is to fix an order before the rules arrive —
+# need in order to mean anything at all.
+#
+# FIDELITY LIMIT: a layer first named by a source sheet and re-opened by an
+# injected rule still gets the source sheet's rank, which is correct; a layer
+# first named by an injected rule that sits LATE in document order gets a rank
+# earlier than its true position. Placing injected rules at their sheet's
+# document position is the fix for both, and is not what this engine does yet.
+def _layer_prescan(a: uint64, b: uint64):
+    p: uint64 = a
+    while p < b:
+        if p + 1 < b and src_ptr[p] == 47 and src_ptr[p + 1] == 42:       # /*
+            p = p + 2
+            while p + 1 < b and not (src_ptr[p] == 42 and src_ptr[p + 1] == 47):
+                p = p + 1
+            p = p + 2
+            continue
+        if src_ptr[p] != 64:                                              # '@'
+            p = p + 1
+            continue
+        if _mq_ci(p + 1, cast[Ptr[uint8]]("layer"), 5) == 0:
+            p = p + 1
+            continue
+        ke: uint64 = p + 6
+        q: uint64 = ke
+        while q < b and src_ptr[q] != 123 and src_ptr[q] != 59:
+            q = q + 1
+        if q >= b:
+            return
+        if src_ptr[q] == 59:                                    # `@layer a, b;`
+            ns: uint64 = ke
+            i2: uint64 = ke
+            while i2 <= q:
+                if i2 == q or src_ptr[i2] == 44:
+                    ln: int32 = _layer_qualify(ns, i2)
+                    if ln > 0:
+                        _layer_rank(&g_lname[0], ln)
+                    ns = i2 + 1
+                i2 = i2 + 1
+            p = q + 1
+            continue
+        blk_s: uint64 = q + 1                                   # `@layer a { … }`
+        depth: int32 = 1
+        r: uint64 = blk_s
+        while r < b and depth > 0:
+            if src_ptr[r] == 123:
+                depth = depth + 1
+            elif src_ptr[r] == 125:
+                depth = depth - 1
+                if depth == 0:
+                    break
+            r = r + 1
+        lqn: int32 = _layer_qualify(ke, q)
+        save_pfx: int32 = layer_pfx_len
+        _layer_rank(&g_lname[0], lqn)
+        if lqn > 0:
+            layer_pfx_len = 0
+            while layer_pfx_len < lqn and layer_pfx_len < 512:
+                layer_pfxbuf[layer_pfx_len] = g_lname[layer_pfx_len]
+                layer_pfx_len = layer_pfx_len + 1
+        _layer_prescan(blk_s, r)
+        layer_pfx_len = save_pfx
+        p = r + 1
+
+
+# Establish the layer order every ACTIVE injected sheet declares, in sheet
+# order. Runs at the HEAD of _collect_css; see _layer_prescan.
+def _collect_cssom_layers():
+    if cssom_n_sheets == 0:
+        return
+    save_p: Ptr[uint8] = src_ptr
+    save_l: uint64 = src_len
+    src_ptr = &cssom_text[0]
+    src_len = cast[uint64](cssom_text_w)
+    s: int32 = 0
+    while s < cssom_n_sheets:
+        if cssom_sheet_active[s] != 0:
+            base: int32 = s * CSSOM_SLOTS
+            r: int32 = 0
+            while r < cssom_sheet_nrules[s]:
+                a: uint64 = cast[uint64](cssom_rule_off[base + r])
+                b: uint64 = cast[uint64](cssom_rule_off[base + r] + cssom_rule_len[base + r])
+                _layer_prescan(a, b)
+                r = r + 1
+        s = s + 1
+    src_ptr = save_p
+    src_len = save_l
+
+
 def _collect_cssom():
     if cssom_n_sheets == 0:
         return
@@ -6629,6 +7063,8 @@ def _store_keyframe(nameid: int32, isfrom: int32):
     if n_rules >= MAX_RULES or nameid < 0:
         return
     ri: int32 = n_rules
+    r_layer[ri]   = g_cur_layer
+    r_impn_len[ri] = 0
     r_kfname[ri]  = nameid
     r_kf_from[ri] = isfrom
     r_animref[ri] = -1
@@ -6751,12 +7187,29 @@ def _parse_at_rule(a: uint64, b: uint64) -> uint64:
     if (ke - kw) == 17 and \
        _mq_ci(kw, cast[Ptr[uint8]]("-webkit-keyframes"), 17) != 0:
         is_kf = 1
+    is_layer: int32 = 0
+    if (ke - kw) == 5 and _mq_ci(kw, cast[Ptr[uint8]]("layer"), 5) != 0:
+        is_layer = 1
     q: uint64 = ke                                    # prelude → '{' or ';'
     while q < b and src_ptr[q] != 123 and src_ptr[q] != 59:
         q = q + 1
     if q >= b:
         return b
     if src_ptr[q] == 59:                              # statement at-rule
+        # `@layer a, b, c;` DECLARES layer order without contributing a single
+        # declaration. It is the only way to put a layer's rank before rules
+        # that are written later, and half of layer-basic is built on it, so a
+        # statement @layer has to register its names even though it has no body.
+        if is_layer != 0:
+            ns: uint64 = ke
+            i2: uint64 = ke
+            while i2 <= q:
+                if i2 == q or src_ptr[i2] == 44:      # ',' or end of prelude
+                    ln: int32 = _layer_qualify(ns, i2)
+                    if ln > 0:
+                        _layer_rank(&g_lname[0], ln)
+                    ns = i2 + 1
+                i2 = i2 + 1
         return q + 1
     blk_s: uint64 = q + 1                             # block at-rule: brace-match
     depth: int32 = 1
@@ -6769,7 +7222,24 @@ def _parse_at_rule(a: uint64, b: uint64) -> uint64:
             if depth == 0:
                 break
         r = r + 1
-    if is_media != 0 and _media_matches(ke, q) != 0:
+    if is_layer != 0:
+        # `@layer name { … }` / `@layer { … }`. Parse the body with the layer's
+        # rank current, and with its qualified name pushed as the prefix so a
+        # NESTED @layer forms "outer.inner" rather than aliasing a top-level
+        # layer of the same short name.
+        lqn: int32 = _layer_qualify(ke, q)
+        save_layer: int32 = g_cur_layer
+        save_pfx: int32 = layer_pfx_len
+        g_cur_layer = _layer_rank(&g_lname[0], lqn)
+        if lqn > 0:
+            layer_pfx_len = 0
+            while layer_pfx_len < lqn and layer_pfx_len < 512:
+                layer_pfxbuf[layer_pfx_len] = g_lname[layer_pfx_len]
+                layer_pfx_len = layer_pfx_len + 1
+        _parse_sheet(blk_s, r)
+        layer_pfx_len = save_pfx
+        g_cur_layer = save_layer
+    elif is_media != 0 and _media_matches(ke, q) != 0:
         _parse_sheet(blk_s, r)
     elif is_kf != 0:
         kfid: int32 = _kf_intern(ke, q)
@@ -6986,6 +7456,9 @@ def _collect_css():
     el_rootcnt = 0                                    # reset :nth-child root counter
     n_kf_names = 0                                     # reset @keyframes registry
     kf_namebuf_w = 0
+    imp_namebuf_w = 0                                  # reset !important names
+    _layers_reset()                                    # reset @layer order
+    _collect_cssom_layers()                            # injected layers rank first
     filt_reg_n = 0                                     # reset filter-list registry
     _collect_cvars()
     i: uint64 = 0
@@ -7021,6 +7494,18 @@ def _collect_css():
                 if _hx_find_attr(k, tag_end, cast[Ptr[uint8]]("media")) != 0 and \
                    g_attr_end > g_attr_start:
                     media_ok = _media_matches(g_attr_start, g_attr_end)
+                # HTML "update a style block": the element's type attribute must
+                # be absent, EMPTY, or an ASCII case-insensitive match for
+                # "text/css" — exactly, with no surrounding whitespace and no
+                # MIME parameters. `type=" text/css "` and
+                # `type="text/css; charset=utf-8"` both mean the block does NOT
+                # apply. We honoured every <style> regardless.
+                if media_ok != 0 and \
+                   _hx_find_attr(k, tag_end, cast[Ptr[uint8]]("type")) != 0 and \
+                   g_attr_end > g_attr_start:
+                    if g_attr_end - g_attr_start != 8 or \
+                       _mq_ci(g_attr_start, cast[Ptr[uint8]]("text/css"), 8) == 0:
+                        media_ok = 0
                 # parse rulesets within [body,e)
                 if media_ok != 0:
                     _parse_sheet(body, e)
@@ -7072,6 +7557,15 @@ def _el_push(np: uint64, nlen: uint64, ne: uint64, te: uint64):
         el_id_len[el_sp] = _el_copy(g_attr_start, g_attr_end)
     el_body_s[el_sp] = ne
     el_body_e[el_sp] = te
+    # The '<' of this start tag, translated back to the ORIGINAL-source anchor
+    # when this pass is laying out the mutation-rewritten copy. -1 (a created
+    # element with no source anchor) stores the sentinel, which no reader
+    # can ask for, so the element simply has no recorded cascade result.
+    el_lt_o: int32 = _anchor_orig(cast[int32](np) - 1)
+    if el_lt_o < 0:
+        el_lt[el_sp] = CSTY_NOANCHOR
+    else:
+        el_lt[el_sp] = cast[uint64](el_lt_o)
     # sibling position among element children (1-based) for :nth-child /
     # :first-child. The parent is the element one level down; depth-0 roots use
     # el_rootcnt. A fresh element starts its own child count at 0.
@@ -7678,10 +8172,26 @@ def _cascade_match_current():
     sofit: int32 = -1
     sopos: int32 = -1
     sasp: int32 = -1
+    # Union of the !important property names the matching rules declare — the
+    # set of properties for which this element's inline style must lose.
+    el_imp_off: int32 = csty_impbuf_w
+    el_imp_len: int32 = 0
     ri: int32 = 0
     while ri < n_rules:
         if _rule_matches(ri, top) != 0:
-            sp: int32 = r_spec[ri]
+            if r_impn_len[ri] > 0 and \
+               csty_impbuf_w + r_impn_len[ri] <= CSTY_IMPBUF_CAP:
+                ic: int32 = 0
+                while ic < r_impn_len[ri]:
+                    csty_impbuf[csty_impbuf_w] = imp_namebuf[r_impn_off[ri] + ic]
+                    csty_impbuf_w = csty_impbuf_w + 1
+                    ic = ic + 1
+                el_imp_len = el_imp_len + r_impn_len[ri]
+            # CASCADE SORT KEY. Layer rank is a HIGHER-order term than
+            # specificity (css-cascade-5 §6.4.4), so folding it in above
+            # LAYER_STEP gives every one of the ~60 property winners below the
+            # correct layer ordering through the comparison they already do.
+            sp: int32 = r_spec[ri] + r_layer[ri] * LAYER_STEP
             if r_color[ri] >= 0 and sp >= bc:
                 bc = sp
                 m_col = r_color[ri]
@@ -8026,6 +8536,12 @@ def _cascade_match_current():
             m_ml = 40
         if m_mr < 0:
             m_mr = 40
+    # Publish the two colours this cascade resolved so getComputedStyle can read
+    # back what was actually cascaded, for EVERY stylable element — including the
+    # empty ones that paint no text segment and the inline ones that open no
+    # block box. Stamped BEFORE the transform binding below, which re-packs m_bg
+    # into an opaque handle that is not a colour.
+    csty_put(el_lt[top], m_col, m_bg, el_imp_off, el_imp_len)
     # CSS transform (stylesheet cascade): bind the winning affine template with
     # the fill this element paints and re-pack it through m_bg. Every background
     # consumer — block boxes (forms.ad reads m_bg directly), inline-block chips
