@@ -184,6 +184,44 @@ def monitor_mem():
     return tuple(int(x) for x in m[-1])
 
 
+def monitor_wid():
+    t = run_cmd("cat /tmp/.hammonscene.mem")
+    m = re.findall(r"wid=(\d+)", t)
+    return int(m[-1]) if m else None
+
+
+def window_rect(wid):
+    """(x, y, w, h) of a compositor window, from its own ctl file."""
+    t = run_cmd(f"cat /dev/wsys/{wid}/ctl")
+    m = re.search(r"^\s*(-?\d+) (-?\d+) (\d+) (\d+)", t, re.M)
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def ppm_rect_diff(a, b, rect):
+    """Pixels differing between two screendumps inside rect, or None."""
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        ia, ib = Image.open(a).convert("RGB"), Image.open(b).convert("RGB")
+    except Exception:
+        return None
+    x, y, w, h = rect
+    x, y = max(0, x), max(0, y)
+    w, h = min(w, ia.width - x), min(h, ia.height - y)
+    if w <= 0 or h <= 0:
+        return None
+    ca, cb = ia.crop((x, y, x + w, y + h)), ib.crop((x, y, x + w, y + h))
+    pa, pb = ca.load(), cb.load()
+    n = 0
+    for j in range(h):
+        for i in range(w):
+            if pa[i, j] != pb[i, j]:
+                n += 1
+    return n
+
+
 rc = 2
 try:
     if not wait_for("handing off to interactive shell", BOOT_WAIT):
@@ -287,6 +325,39 @@ try:
     else:
         emit("AGREE_DELTA_KB", "UNREADABLE")
         emit("RELEASE_DROP_KB", "UNREADABLE")
+    # ---- PHASE 2: the same cycle with the window UNFOCUSED ---------------
+    # The model updating is not the same claim as the PIXELS updating. A user
+    # watching the monitor from behind another window / with focus elsewhere
+    # sees only pixels, and "restarting the app fixes it" is exactly what a
+    # window that only repaints on a full present would look like. So defocus
+    # the monitor (click bare backdrop), pulse again, and measure how many
+    # pixels inside the MONITOR'S OWN RECT actually changed.
+    wid = monitor_wid()
+    rect = window_rect(wid) if wid is not None else None
+    emit("MON_WID", wid if wid is not None else "UNRESOLVED")
+    emit("MON_RECT", ",".join(str(v) for v in rect) if rect else "UNRESOLVED")
+    mv(1000, 500, 0); time.sleep(0.3)
+    mv(1000, 500, 1); time.sleep(0.3)
+    mv(1000, 500, 0); time.sleep(2.0)          # focus is now the desktop
+    shot("03_defocused_idle")
+    run_cmd(f"/bin/memhog {HOG_MB}M --hold 30 --batch --no-verify &",
+            settle=1.0, tries=1)
+    time.sleep(14)
+    mu3 = monitor_mem()[1]
+    shot("04_defocused_held")
+    emit("M_USED3", mu3)
+    time.sleep(35)
+    mu4 = monitor_mem()[1]
+    shot("05_defocused_released")
+    emit("M_USED4", mu4)
+    if rect:
+        d = ppm_rect_diff(os.path.join(OUT, "04_defocused_held.ppm"),
+                          os.path.join(OUT, "05_defocused_released.ppm"), rect)
+        emit("DEFOCUSED_RECT_PIXELS_CHANGED",
+             d if d is not None else "UNREADABLE")
+    else:
+        emit("DEFOCUSED_RECT_PIXELS_CHANGED", "UNREADABLE")
+
     send("echo SMM_ALIVE_PROBE_ZZ")
     emit("ALIVE", "1" if wait_for("SMM_ALIVE_PROBE_ZZ", 15) else "0")
     rc = 0

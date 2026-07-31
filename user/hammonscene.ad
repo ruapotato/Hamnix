@@ -182,6 +182,7 @@ def _refresh_uptime():
 # that the loop is alive rather than wedged.
 mem_samples: uint64 = 0
 mem_peak_used: uint64 = 0
+mem_wid: int32 = -1                # our window id, so a gate can find our RECT
 _mem_tel_last: uint64 = 0xffffffffffffffff
 TEL_HEARTBEAT: uint64 = 16
 _mem_telbuf: Array[128, uint8]
@@ -221,6 +222,13 @@ def _report_mem(total: uint64, used: uint64):
         p = p + 1
         k = k + 1
     p = p + _u64_to_dec(mem_peak_used, &_mem_telbuf[p])
+    wd: Ptr[uint8] = cast[Ptr[uint8]](" wid=")
+    k = 0
+    while wd[k] != 0:
+        _mem_telbuf[p] = wd[k]
+        p = p + 1
+        k = k + 1
+    p = p + _u64_to_dec(cast[uint64](mem_wid), &_mem_telbuf[p])
     _mem_telbuf[p] = 10
     p = p + 1
     sys_write(fd, &_mem_telbuf[0], p)
@@ -460,6 +468,7 @@ def _refresh_all():
 def main() -> int32:
     sys_bind(cast[Ptr[char]]("/dev"), cast[Ptr[char]]("#c"), 0)
     wid: int32 = _newwindow()
+    mem_wid = wid
     if wid < 0:
         _writeall(1, cast[Ptr[uint8]]("[hammonscene] FAIL newwindow\n"))
         return 1

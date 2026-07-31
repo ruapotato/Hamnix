@@ -166,6 +166,21 @@ else
     bad "the displayed used disagrees with /proc/meminfo by '${AGREE}' kB (MemFree ${K_FREE0} -> ${K_FREE1} -> ${K_FREE2})"
 fi
 
+# ---- the PIXELS, not just the model, with the window UNFOCUSED ----------
+# "Restarting the app fixes it" is exactly the shape of a window whose model is
+# fine but whose pixels only refresh on a full present. So the second pulse
+# runs with focus on the desktop, and this asserts the monitor's OWN rect
+# actually repainted across the release.
+PXD="$(val DEFOCUSED_RECT_PIXELS_CHANGED)"
+M_USED3="$(val M_USED3)"; M_USED4="$(val M_USED4)"
+if blind defocused_repaint; then
+    bad "(blinded): an UNFOCUSED monitor still repaints its memory row"
+elif isnum "$PXD" && [ "$PXD" -ge 200 ]; then
+    ok "an UNFOCUSED monitor still repaints ($PXD px changed in its rect $(val MON_RECT) across the release; model ${M_USED3} -> ${M_USED4} kB)"
+else
+    bad "an UNFOCUSED monitor's window did NOT repaint across the release ('$PXD' px changed in rect $(val MON_RECT)) while its model moved ${M_USED3} -> ${M_USED4} kB — stale PIXELS, which is what 'restarting the app fixes it' looks like"
+fi
+
 [ "$(val ALIVE)" = "1" ] \
     && ok "the guest survived the run" \
     || bad "the guest stopped responding during the run"
