@@ -38,23 +38,41 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
+# 2026-07-31: THIS FILE WAS STILL LYING, in exactly the way its own header
+# describes. The header claims "SELECTOR: prefix-glob the family, then exclude
+# anything that boots QEMU. Capability, not naming convention." The second
+# sentence was false: the default selector was three name prefixes
+# (test_hambrowse*, test_jsengine*, test_wpt*), so it returned 283 scripts while
+# **645 QEMU-free gates exist on disk**. 362 were invisible to every "full host
+# gate sweep" run against it -- and those sweeps were reported, by me, as
+# comprehensive.
+#
+# It was caught when a browser agent ran a wider set and found
+# `scripts/test_react18_host.sh` RED on a base commit that a `283/283 green`
+# sweep had just declared clean. That gate does not begin with any of the three
+# prefixes, so it had never once been run by a sweep through this file.
+#
+# The default is now the capability the header always claimed: every
+# scripts/test_*.sh that does not boot a VM. `browser` keeps the old
+# browser-family set, because those gates share build/host/hambrowse_gfx and a
+# browser change genuinely only needs that subset re-run.
+#
+# Usage:
+#   bash scripts/list_host_gates.sh            # ALL QEMU-free gates (the truth)
+#   bash scripts/list_host_gates.sh browser    # the hambrowse/jsengine/wpt set
+#   bash scripts/list_host_gates.sh hamsh      # any other prefix family
 fam="${1:-}"
-if [ -n "$fam" ]; then
-    pats=("scripts/test_${fam}"*.sh)
-else
-    # test_wpt* joined the family 2026-07-29. Both WPT lanes are QEMU-free
-    # browser gates and BOTH build into build/host/ alongside the hambrowse
-    # gates -- the reftest lane rebuilds build/host/hambrowse_gfx, the exact
-    # artifact this file's serial-execution note is about. Leaving them out of
-    # "the authoritative list of QEMU-free host gates" reproduced, for the
-    # external-conformance lanes, the same dark-gate hole the header describes.
-    pats=(scripts/test_hambrowse*.sh scripts/test_jsengine*.sh
-          scripts/test_wpt*.sh)
-fi
+case "$fam" in
+    "")        pats=(scripts/test_*.sh) ;;
+    browser)   pats=(scripts/test_hambrowse*.sh scripts/test_jsengine*.sh
+                     scripts/test_wpt*.sh) ;;
+    *)         pats=("scripts/test_${fam}"*.sh) ;;
+esac
 
 for f in "${pats[@]}"; do
     [ -f "$f" ] || continue
-    # A gate that launches QEMU is not a host gate.
-    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh' "$f" && continue
+    # A gate that launches QEMU -- directly, via the shared runners, or by
+    # demanding an installer image -- is not a host gate.
+    grep -qE 'qemu-system|run_qemu|_qemu_drive\.sh|ensure_installer_img|installer_img_or_verdict' "$f" && continue
     echo "$f"
 done
