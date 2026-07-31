@@ -108,9 +108,40 @@ NUL-terminated byte sequence in `.rodata` and are referenced through
 RIP-relative `leaq`. Triple-quoted strings are supported. Escapes:
 `\n`, `\t`, `\r`, `\b`, `\\`, `\'`, `\"`, `\0`, `\xNN`.
 
+**That list is exhaustive.** Anything else after a backslash is NOT an
+escape: the backslash is dropped and the next character is kept
+verbatim, with no warning, in BOTH front ends. So `"\v"` is the letter
+`v`, `"\a"` is the letter `a`, and the C octal escape `"\101"` is the
+three characters `101` — not `A`. To get a byte by value, spell it
+`\xNN`. (`\x` followed by a non-hex digit is a hard error in the seed
+but currently yields byte 0 in the native lexer, which NUL-terminates
+the literal early. Don't write one — the divergence is a known defect.)
+
 Adjacent string-literal concatenation works: `"foo " "bar"` is exactly
 the same as `"foo bar"`. Any number of adjacent `STRING` tokens are
-joined into one literal at parse time, just like C and Python.
+joined into one literal at parse time, just like C and Python — in BOTH
+the seed (`parser.py` `parse_primary`) and the native front end
+(`parser.ad` `parse_primary`, which copies the fragments into one fresh
+`strbuf` entry).
+
+Outside brackets a newline ends the statement, so a multi-line join has
+to be parenthesised — exactly as in Python:
+
+```python
+printk("some long message "          # inside the call's parens: joined
+       "continued here\n")
+
+s: Ptr[uint8] = ("abc"               # parenthesised: joined
+                 "def")
+```
+
+> Until 2026-07-30 the NATIVE front end consumed the trailing fragments
+> and threw their text away — silently, no warning, no error. 35 kernel
+> `printk` sites emitted only their opening fragment INCLUDING the
+> trailing newline, so log lines merged; 14 of those were a leak
+> campaign's own instrumentation. The seed had always concatenated, so
+> this was a seed/native semantic divergence as well as a silent drop.
+> Pinned by `scripts/test_compiler_adjacent_strings.sh`.
 
 ### Reserved words
 
