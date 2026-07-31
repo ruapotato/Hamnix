@@ -552,6 +552,19 @@ def _cre_make_text(sval: int32) -> int32:
     return tco
 
 
+# Is this document's `contentType` value the HTML one? A document that carries
+# no contentType at all (the main parsed document) is HTML too, so an absent /
+# non-string value answers yes.
+def _is_html_content_type(ctv: int32) -> int32:
+    if js_type_of(ctv) != TAG_STR:
+        return 1
+    ctp2: Ptr[uint8] = js_str_bytes(ctv)
+    ctn2: int32 = js_str_bytelen(ctv)
+    if _bytes_eq(ctp2, ctn2, cast[Ptr[uint8]]("text/html"), 9) != 0:
+        return 1
+    return 0
+
+
 # A created Comment (kind 2) or ProcessingInstruction (kind 3). Both are real
 # members of the created-node pool, which is what lets them be APPENDED: a
 # comment used to be a bare JS object with no cre_* row, so appendChild could
@@ -571,6 +584,14 @@ def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
         js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
                     js_new_string(cast[Ptr[uint8]]("#comment"), 8))
         _node_identity(co2, g_proto_comm)
+    elif kind == 4:
+        # CDATASection: nodeType 4, and per spec a SUBCLASS OF Text -- so
+        # `cdata instanceof Text` is true and the Text/CharacterData members
+        # (data, length, substringData, splitText) come down the chain.
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(4.0))
+        js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, \
+                    js_new_string(cast[Ptr[uint8]]("#cdata-section"), 14))
+        _node_identity(co2, g_proto_cdata)
     else:
         js_set_prop(co2, cast[Ptr[uint8]]("nodeType"), 8, js_number(7.0))
         js_set_prop(co2, cast[Ptr[uint8]]("nodeName"), 8, targetv)
@@ -2618,6 +2639,33 @@ def _mount_dispatch(rel: int32) -> int32:
         if js_arg_count() >= 1:
             cval = js_arg(0)
         return _cre_make_chardata(cval, 2, js_undefined())
+    if rel == NID_CREATECDATA:
+        # document.createCDATASection(data).
+        #
+        # In an HTML document this is a NotSupportedError, NOT a working
+        # factory -- dom/nodes/Document-createCDATASection.html asserts exactly
+        # that and nothing else. XML documents (contentType application/xml,
+        # image/svg+xml, application/xhtml+xml) mint the node. The main
+        # document carries no contentType at all, which is also the HTML case.
+        cdct: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("contentType"), 11)
+        if _is_html_content_type(cdct) != 0:
+            return _throw_domexc(cast[Ptr[uint8]]("NotSupportedError"), 17, \
+                                 cast[Ptr[uint8]]("createCDATASection in an HTML document"), \
+                                 38)
+        cdsv: int32 = js_new_string(cast[Ptr[uint8]](""), 0)
+        if js_arg_count() >= 1:
+            cdsv = _cd_arg_str(0)
+        # "]]>" cannot appear in a CDATA section's data.
+        cdsp: Ptr[uint8] = js_str_bytes(cdsv)
+        cdsn: int32 = js_str_bytelen(cdsv)
+        ck3: int32 = 0
+        while ck3 + 2 < cdsn:
+            if cdsp[ck3] == 93 and cdsp[ck3 + 1] == 93 and cdsp[ck3 + 2] == 62:
+                return _throw_domexc( \
+                    cast[Ptr[uint8]]("InvalidCharacterError"), 21, \
+                    cast[Ptr[uint8]]("CDATA data contains ]]>"), 23)
+            ck3 = ck3 + 1
+        return _cre_make_chardata(cdsv, 4, js_undefined())
     if rel == NID_CREATEPI:
         # document.createProcessingInstruction(target, data). The target must be
         # an XML Name and the data must not contain "?>" — WPT
@@ -4965,8 +5013,28 @@ def _js_host_dispatch(id: int32) -> int32:
         if rel == NID_TEXT_CTOR:
             return _cre_make_text(cdv)
         return _cre_make_chardata(cdv, 2, js_undefined())
-    if rel == NID_CREATEPI:
+    if rel == NID_CREATEPI or rel == NID_CREATECDATA:
         return _mount_dispatch(rel)
+    if rel == NID_DOCUMENT_CTOR:
+        # `new Document()` is an XML document (contentType application/xml)
+        # with no root element -- the same thing
+        # implementation.createDocument(null, null, null) produces, which is
+        # what the tail of _impl_dispatch already builds. It reads only the
+        # argument list (empty here), never `this`.
+        #
+        # Two corrections afterwards, both asserted by
+        # dom/nodes/Document-constructor.html: the result is a Document and
+        # NOT an XMLDocument (createDocument() returns an XMLDocument; the
+        # constructor does not), and an empty document's firstChild/lastChild
+        # are null, where reading index 0 of the empty child array gives
+        # undefined.
+        ndoc: int32 = _impl_dispatch(NID_IMPL_CREDOC)
+        if js_type_of(ndoc) == TAG_OBJ:
+            if g_proto_doc != 0:
+                js_set_proto_v(ndoc, g_proto_doc)
+            js_set_prop(ndoc, cast[Ptr[uint8]]("firstChild"), 10, js_null())
+            js_set_prop(ndoc, cast[Ptr[uint8]]("lastChild"), 9, js_null())
+        return ndoc
     if rel >= NID_CREATECOMMENT and rel <= NID_NODE_CTOR and rel != NID_CREATE_NS:
         return _mount_dispatch(rel)
     if rel == NID_COOKIE_GET:
@@ -8182,7 +8250,19 @@ def _build_dom_interfaces():
     _attach_childnode_mixin(g_proto_pi)
     g_proto_frag = _dom_interface(cast[Ptr[uint8]]("DocumentFragment"), 16, \
                                   g_proto_node)
+    g_proto_cdata = _dom_interface(cast[Ptr[uint8]]("CDATASection"), 12, \
+                                   g_proto_text)
     g_proto_doc = _dom_interface(cast[Ptr[uint8]]("Document"), 8, g_proto_node)
+    # `new Document()` builds a real XML document rather than an empty husk.
+    js_global_set(cast[Ptr[uint8]]("Document"), 8, \
+                  _rebrand_ctor(g_proto_doc, NID_DOCUMENT_CTOR))
+    # ONE copy of createCDATASection, on Document.prototype -- every document
+    # object here chains to it, and the HTML-vs-XML NotSupportedError split is
+    # decided at call time from the receiver's contentType. A per-instance
+    # method on each of the four document factories would be four objects out
+    # of the shared pool for no behavioural gain.
+    js_set_prop(g_proto_doc, cast[Ptr[uint8]]("createCDATASection"), 18, \
+                js_new_native_fn(js_hbase + NID_CREATECDATA))
     _dom_interface(cast[Ptr[uint8]]("HTMLDocument"), 12, g_proto_doc)
     _dom_interface(cast[Ptr[uint8]]("XMLDocument"), 11, g_proto_doc)
     _attach_parentnode_mixin(g_proto_frag)
