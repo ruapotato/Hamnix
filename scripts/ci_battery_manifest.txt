@@ -4716,3 +4716,11 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_a12_addrspace.sh
 # 300,000-scope Function.prototype.call loop that completes only because the
 # arena is swept and refilled.
 bash scripts/test_hambrowse_rawtext_layout_host.sh
+
+# Leak pass 20 (2026-07-31): the pid->slot hash must not accumulate tombstones.
+# It used to remove by tombstoning with nothing ever reclaiming one, so after
+# ~1024 cumulative exits every hash MISS walked all 1024 buckets and then fell
+# back to the O(NTASKS) linear scan — permanently, on the signal/waitpid/proc
+# paths. Measured at 811x the mean miss cost. QEMU-free; carries its own
+# positive control (the old algorithm must still degrade under the harness).
+bash scripts/test_pidh_no_tombstone.sh
