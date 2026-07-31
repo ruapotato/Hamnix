@@ -1792,12 +1792,28 @@ d_bordw:  int32 = 0           # border width px PER SIDE (for border-box calc)
 # is NOT the same as either initial value -- the initial value of
 # background-clip is border-box and of background-origin is padding-box, so the
 # two cannot share one "unset" encoding unless unset is its own code.
+#
+# STATUS: background-clip is PARSED, CASCADED and APPLIED (as a per-side inset
+# of the fill rect, see bfill_clip* in layout/box.ad). background-origin is
+# parsed and cascaded but NOT YET APPLIED, and that is deliberate rather than an
+# oversight -- recorded here so the next reader does not assume it works.
+#
+# Applying it means positioning the background IMAGE from the named box, and
+# this engine's fill rect for a BORDERED box is not its border box: measured on
+# `div{position:absolute;border:5px solid;padding:25px;width:100px;height:100px}`,
+# the border box should be 160x160 at x=8 and we paint 116x150 at x=33 (the
+# border-box left PLUS the padding). Every one of the five
+# `background-origin-002/003/004/005/008` near-misses is a pure X-offset error
+# of exactly that shape, with the image already blitted at the right 60x60 size.
+# Calibrating an origin offset against that rect would encode the box-model bug
+# into a second property instead of fixing it, so the value is carried to the
+# point of use and left there until the fill rect is the border box.
 BGBOX_BORDER:  int32 = 1
 BGBOX_PADDING: int32 = 2
 BGBOX_CONTENT: int32 = 3
 d_bgclip: int32 = 0           # packed list (see _bg_box_list)
 d_bgclipn: int32 = 0          # its length (0 = undeclared)
-d_bgorig: int32 = 0           # packed list
+d_bgorig: int32 = 0           # packed list; parsed + cascaded, not yet applied
 d_bgorign: int32 = 0          # its length (0 = undeclared)
 d_bglay:  int32 = 0           # background layer count (0 = undeclared)
 d_flexg:  int32 = -1          # flex-grow * 1000 (-1 unset)
