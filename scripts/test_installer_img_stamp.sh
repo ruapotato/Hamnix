@@ -31,6 +31,47 @@
 # a guard gets commented out by the next person in a hurry. `unchanged` and
 # `irrelevant_var` below are that control.
 #
+# FOUND SHORT A FOURTH TIME (2026-07-31, leak pass 20) — AND WHY 13/13 GREEN
+# IN BOTH DIRECTIONS DID NOT CATCH IT
+# ==========================================================================
+# The day after the stamp landed, a freshly built image — ZERO MINUTES OLD —
+# read STALE to every consumer gate. The producer had written 4155381500747
+# and a clean-env consumer computed 1236644388579. The cause is a
+# PRODUCER/CONSUMER ENVIRONMENT SKEW: build_installer_img.sh exports its own
+# `${VAR:-default}` knobs (BUILD_DIR, DEFAULT_REAL_DEBIAN, KERNEL_OPT,
+# USER_OPT, USER_OPT_EXCLUDE, KERNEL_BACKEND, ROOTFS_MIN_MB) on its way down
+# and stamps at the BOTTOM, so the digest described an environment that only
+# existed inside that process and no consumer could reproduce.
+#
+# THE GAP IS THIS GATE'S SHAPE, NOT ITS COVERAGE. Every one of the 13 cases
+# wrote the stamp with a bare `installer_img_write_stamp` from a subshell whose
+# environment was scrubbed of the knobs, and then probed from a subshell
+# scrubbed the same way. Producer and consumer environments were IDENTICAL BY
+# CONSTRUCTION in the test and DIFFERENT BY CONSTRUCTION in production. The
+# gate even stubs `scripts/build_installer_img.sh` to `#!/bin/sh` so no real
+# build runs — so the one component whose behaviour causes the bug was replaced
+# by a no-op in every single case.
+#
+# That is why the three no-op controls stayed FRESH and proved nothing here:
+# they could not have failed. `unchanged` compares a clean-env write against a
+# clean-env read, which agree trivially. The 13 cases test the staleness MODEL
+# ("does the digest move when X moves?"); none tested the PRODUCER/CONSUMER
+# CONTRACT ("do the two sides compute the same digest for the same build?").
+#
+# THE GENERAL LESSON, worth more than the fix: a mutation gate that STUBS OUT
+# the component under test can be green in both directions on every mutation
+# and still be blind to any defect that lives in the interaction between that
+# component's real behaviour and the code under test. Mutation coverage
+# measures the assertions you wrote, not the seam you mocked away.
+#
+# Cases 9a/9b below close it by stamping through the producer's REAL shape
+# (snapshot the caller's env, export the defaults, THEN stamp) instead of a
+# bare clean-env write.
+#
+# PRACTICAL COST OF THIS CLASS, since it may explain unrelated-looking
+# slowness: a gate that believes a fresh image is stale REBUILDS it, at 8-14
+# minutes a time, on every invocation.
+#
 # Exit 0 = PASS, 1 = FAIL, 125 = INCONCLUSIVE. No QEMU, ~1 s.
 
 set -uo pipefail

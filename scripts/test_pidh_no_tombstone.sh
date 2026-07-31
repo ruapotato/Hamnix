@@ -21,7 +21,37 @@
 # It leaks no memory. It just permanently stops being a hash, and never
 # recovers short of a reboot — which is precisely what a months-of-uptime bar
 # cannot afford, and precisely the class the devwsys per-pid window table
-# belonged to.
+# belonged to. No page census can see it, because nothing grows.
+#
+# WHAT IT COSTS, AND WHETHER IT PLATEAUS (measured 2026-07-31)
+# ===========================================================
+# Per-window mean probe counts over 400k churn events, MISS and HIT separately:
+#
+#     events     tombstone miss/hit     backward-shift miss/hit
+#      1,000         1.30 / 1.00              1.00 / 1.00
+#      5,000       799.32 / 1.01              1.18 / 1.00
+#     20,000      1024.00 / 1.03              1.25 / 1.01
+#    400,000      1024.00 / 1.03              1.25 / 1.01
+#
+# Three things follow, and the first two are limits on the claim:
+#
+#   * HITS ARE NOT AFFECTED (1.03 vs 1.01). Signal delivery to a LIVE pid was
+#     always fine. The damage is entirely on the MISS path — waitpid reaping,
+#     signals to an already-dead pid, /proc on a stale pid, and the devwsys
+#     prune walk, which is miss-heavy by construction.
+#   * IT IS BOUNDED, NOT UNBOUNDED. It saturates at exactly PIDH_SIZE — one
+#     full table walk — and stops there. It does not keep climbing.
+#   * BUT THE ONSET IS FAST AND THE PLATEAU IS PERMANENT: 799 by 5,000 churn
+#     events, pinned at 1024 by 20,000, which is well under an hour of a
+#     desktop launching apps. It is a step to the worst available value, not a
+#     slow drift, and nothing ever walks it back.
+#
+# In wall clock: `% PIDH_SIZE` compiles to a real `divq` — PIDH_SIZE is a
+# global, so the divisor is a runtime load and cannot fold to an AND (verified
+# in the emitted asm: `leaq PIDH_SIZE(%rip)` / `divq %rcx`) — at roughly 30
+# cycles a probe. At 3 GHz a lookup MISS therefore goes from about 13 ns to
+# about 10 us. The O(NTASKS) linear fallback runs after the hash walk in both
+# cases, so it is not part of that delta; it is simply added on top.
 #
 # WHAT THIS GATE ASSERTS
 # ======================
