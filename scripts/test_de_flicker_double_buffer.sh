@@ -74,7 +74,7 @@ fi
 
 # --- LINK 4: the full-screen present flushes the whole frame after compositing
 presentbody="$(awk '/^def _wsys_scene_present_locked/{f=1} /^def /{if(f && $0 !~ /_wsys_scene_present_locked/)f=0} f' "$WSYS")"
-if ! printf '%s\n' "$presentbody" | grep -qE '_wsys_flush_rect'; then
+if ! grep -qE '_wsys_flush_rect' <<<"$presentbody"; then
     fail_link "link4: _wsys_scene_present_locked does not flush the composited frame to scanout"
 fi
 

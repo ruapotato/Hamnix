@@ -55,19 +55,19 @@ if [ -z "$drain_body" ]; then
 else
     # Link 1: the drain loop reads the STATUS port (0x64) so it can inspect the
     # AUX bit per byte (not just OBF once).
-    if ! printf '%s\n' "$drain_body" | grep -qE 'inb\(KBD_STATUS_PORT\)'; then
+    if ! grep -qE 'inb\(KBD_STATUS_PORT\)' <<<"$drain_body"; then
         fail_link "link 1 (_atkbd_drain): does not read KBD_STATUS_PORT to inspect AUX bit"
     fi
     # Link 2: it tests the AUX bit (0x20) so mouse-sourced bytes are detected.
-    if ! printf '%s\n' "$drain_body" | grep -qE '&[[:space:]]*0x20'; then
+    if ! grep -qE '&[[:space:]]*0x20' <<<"$drain_body"; then
         fail_link "link 2 (_atkbd_drain): does not test the AUX bit (0x20) — mouse bytes will leak to /keys"
     fi
     # Link 3: it still routes KEYBOARD bytes to atkbd_process_byte (the else arm).
-    if ! printf '%s\n' "$drain_body" | grep -qE 'atkbd_process_byte'; then
+    if ! grep -qE 'atkbd_process_byte' <<<"$drain_body"; then
         fail_link "link 3 (_atkbd_drain): no longer routes keyboard bytes to atkbd_process_byte"
     fi
     # Link 4 (sanity): the AUX-set arm drains the data port WITHOUT processing.
-    if ! printf '%s\n' "$drain_body" | grep -qE '^[[:space:]]+inb\(KBD_DATA_PORT\)'; then
+    if ! grep -qE '^[[:space:]]+inb\(KBD_DATA_PORT\)' <<<"$drain_body"; then
         fail_link "link 4 (_atkbd_drain): AUX-set branch does not discard the data byte (drop mouse byte)"
     fi
 fi
@@ -79,7 +79,7 @@ for fn in atkbd_poll atkbd_irq_handler; do
         /^def[[:space:]]/ { if (inside) { inside=0 } }
         inside { print }
     ' "$ATKBD_SRC")
-    if ! printf '%s\n' "$body" | grep -qE '_atkbd_drain'; then
+    if ! grep -qE '_atkbd_drain' <<<"$body"; then
         fail_link "$fn: does not route through the serialized _atkbd_drain()"
     fi
 done

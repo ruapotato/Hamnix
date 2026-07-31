@@ -72,7 +72,7 @@ parse_body=$(awk '
 ' "$KERN_SRC")
 # 'B' = 66, 'D' = 68, 'C' = 67 in ASCII.
 for verb_id in 66 67 68; do
-    if ! echo "$parse_body" | grep -q "verb == ${verb_id}"; then
+    if ! grep -q "verb == ${verb_id}" <<<"$parse_body"; then
         fail_link "link 1 (devwsys.ad): _wsys_blit_parse does NOT dispatch verb=${verb_id} - one of B/C/D is unimplemented"
     fi
 done
@@ -87,7 +87,7 @@ if ! grep -Eq "def[[:space:]]+wsys_win_version_get[[:space:]]*\(" "$KERN_SRC"; t
     fail_link "link 2 (devwsys.ad): wsys_win_version_get() accessor is missing - callers can't ask whether a window is v2"
 fi
 # The wctl `version N` verb must exist (this is how clients opt in).
-if ! grep -E "_wctl_word_eq" "$KERN_SRC" | grep -q "\"version\""; then
+if ! grep -q "\"version\"" <<<"$(grep -E "_wctl_word_eq" "$KERN_SRC")"; then
     fail_link "link 2 (devwsys.ad): wctl `version <n>` verb is missing - clients can't negotiate protocol version"
 fi
 
@@ -113,7 +113,7 @@ ens_body=$(awk '
 ' "$KERN_SRC")
 if [ -z "$ens_body" ]; then
     fail_link "link 3 (devwsys.ad): _wsys_backbuffer_ensure() is missing - backbuffers are never allocated"
-elif ! echo "$ens_body" | grep -q "alloc_pages(WSYS_BB_ORDER)"; then
+elif ! grep -q "alloc_pages(WSYS_BB_ORDER)" <<<"$ens_body"; then
     fail_link "link 3 (devwsys.ad): _wsys_backbuffer_ensure does not alloc_pages(WSYS_BB_ORDER)"
 fi
 # ... and release on slot teardown (else 32 windows leak ~4 MiB each).
@@ -124,7 +124,7 @@ rel_body=$(awk '
 ' "$KERN_SRC")
 if [ -z "$rel_body" ]; then
     fail_link "link 3 (devwsys.ad): _wsys_backbuffer_release() is missing - backbuffer blocks leak on window close"
-elif ! echo "$rel_body" | grep -q "free_pages(wsys_backbuffer_page"; then
+elif ! grep -q "free_pages(wsys_backbuffer_page" <<<"$rel_body"; then
     fail_link "link 3 (devwsys.ad): _wsys_backbuffer_release does not free_pages the block - ~4 MiB leaks per closed window"
 fi
 for fn in wsys_backbuffer_ptr wsys_backbuffer_dims_w wsys_backbuffer_dims_h \
@@ -158,10 +158,10 @@ draw_ctl_body=$(awk '
     /^def[[:space:]]/ { if (inside) { inside=0 } }
     inside { print }
 ' "$KERN_SRC")
-if ! echo "$draw_ctl_body" | grep -q "_wsys_blit_parse"; then
+if ! grep -q "_wsys_blit_parse" <<<"$draw_ctl_body"; then
     fail_link "link 5 (devwsys.ad): devwsys_draw_ctl_write does NOT call _wsys_blit_parse - v2 blit verbs fall through to the ASCII tokeniser"
 fi
-if ! echo "$draw_ctl_body" | grep -q "wsys_win_version_get"; then
+if ! grep -q "wsys_win_version_get" <<<"$draw_ctl_body"; then
     fail_link "link 5 (devwsys.ad): devwsys_draw_ctl_write does NOT gate the blit dispatch on wsys_win_version_get - legacy v0/v1 markup may misroute through the blit parser"
 fi
 
@@ -222,15 +222,15 @@ commit_body=$(awk '
     /^def[[:space:]]/ { if (inside) { inside=0 } }
     inside { print }
 ' "$HAMUI_SRC")
-if ! echo "$commit_body" | grep -qE "^[[:space:]]*msg\[0\] = 66\b"; then
+if ! grep -qE "^[[:space:]]*msg\[0\] = 66\b" <<<"$commit_body"; then
     fail_link "link 7 (lib/hamui.ad): hamui_v2_commit_rect does NOT write a 'B' (66) verb byte - it isn't speaking the blit wire format"
 fi
-if ! echo "$commit_body" | grep -qE "^[[:space:]]*msg\[0\] = 68\b"; then
+if ! grep -qE "^[[:space:]]*msg\[0\] = 68\b" <<<"$commit_body"; then
     fail_link "link 7 (lib/hamui.ad): hamui_v2_commit_rect does NOT write a 'D' (68) verb byte - dirty rect won't reach the kernel"
 fi
 # The 'B' payload must be tagged with the pixel format byte and both
 # headers must carry the x0/y0/x1/y1 rect (little-endian i32 quads).
-if ! echo "$commit_body" | grep -q "HAMUI_V2_FMT_RGBA8888"; then
+if ! grep -q "HAMUI_V2_FMT_RGBA8888" <<<"$commit_body"; then
     fail_link "link 7 (lib/hamui.ad): the 'B' header does not carry the pixel-format byte"
 fi
 if [ "$(echo "$commit_body" | grep -c "_h_v2_emit_i32_le")" -lt 8 ]; then
@@ -261,7 +261,7 @@ ppo_body=$(awk '
     /^def[[:space:]]/ { if (inside) { inside=0 } }
     inside { print }
 ' "$COMPOSITOR_SRC")
-if ! echo "$ppo_body" | grep -q "v2_present_dirty_windows"; then
+if ! grep -q "v2_present_dirty_windows" <<<"$ppo_body"; then
     fail_link "link 8 (hamUId.ad): post_present_overlays does NOT call v2_present_dirty_windows - v2 windows never paint"
 fi
 

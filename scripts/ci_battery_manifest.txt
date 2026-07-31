@@ -4771,3 +4771,15 @@ bash scripts/ci_run_gate.sh scripts/test_arm64_a14_kstack.sh
 # paths. Measured at 811x the mean miss cost. QEMU-free; carries its own
 # positive control (the old algorithm must still degrade under the harness).
 bash scripts/test_pidh_no_tombstone.sh
+
+# --- meta-gate: the PIPEFAIL+SIGPIPE class (added 2026-07-31) --------------
+# The third lying-verdict shape, after test_gate_registration.sh ("nothing
+# runs this gate") and test_gate_softgreen.sh ("green having asserted
+# nothing"): the gate DOES observe its assertion and the plumbing inverts the
+# answer. `grep -q` exits on match, the still-writing left-hand side of the
+# pipe takes SIGPIPE (141), `set -o pipefail` promotes 141 to the pipeline's
+# status, and `if !` turns a MATCH into a FAIL. In the absent-assertion sense
+# it is silent instead: the guard reports PASS while the regression it exists
+# to catch walks through. scripts/test_de_new_apps.sh had two of those over a
+# 43 KB payload and was proven blind 7/7 by mutation. No QEMU, ~1 s.
+bash scripts/test_gate_pipefail_grepq.sh

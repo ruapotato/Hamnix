@@ -35,6 +35,11 @@ compile_one() {
     out="$(mktemp --tmpdir "hamnix-${name}.XXXXXX.elf")"
     if python3 -m compiler.adder compile --target=x86_64-adder-user \
             "user/${name}.ad" -o "$out" >/tmp/de_new_apps.$name.log 2>&1; then
+        # The SIGPIPE race that this gate's other links had (see the block at
+        # the /n/distros check) needs a payload the writer is still emitting
+        # when grep -q exits. A one-line payload measured 0/400 under 8-way
+        # host load, so this site is exempt:
+        # pipefail-grepq-ok: `file` on a SINGLE path emits one line (126 B)
         if file "$out" | grep -q ELF; then
             passed "$name compiles to an ELF"
         else
@@ -105,7 +110,30 @@ else
 fi
 # Check code lines only (strip '#' comments) — the header doc may mention
 # /n/distros to explain what it deliberately does NOT do.
-if grep -vE '^\s*#' user/haminstallui.ad | grep -q '/n/distros'; then
+#
+# GATE HYGIENE (2026-07-31). This check and the haminstall.gui.log one below
+# used to be spelled
+#     grep -vE '^\s*#' user/haminstallui.ad | grep -q '<pattern>'
+# under `set -o pipefail`. Both are ABSENT-assertions: a MATCH is the
+# regression and must take the `then` branch. But `grep -q` exits the instant
+# it matches, closing the pipe under the still-writing `grep -vE` (~43 KB of
+# code lines, emitted in ~130-byte write() chunks, never one blob). The writer
+# dies of SIGPIPE (141), `pipefail` promotes 141 to the pipeline's status, the
+# `if` is therefore FALSE, and the ELSE branch reports PASS. The guard could
+# only ever fire when the offending line happened to sit near the END of the
+# file, where grep has already drained the writer before it matches.
+# PROVEN by mutation on 2026-07-31: with
+#     DISTRO_SRC_MUTATION_PROBE: Ptr[char] = "/n/distros"
+# inserted at the FIRST code line, the old form reported
+#     PASS haminstallui code never references /n/distros
+# on 7 of 7 runs — while the same probe APPENDED at the end went red. A guard
+# that passes exactly when you mutation-test it the obvious way.
+# Materialise the comment-stripped view ONCE and grep that FILE: no pipeline,
+# no race, and file position no longer decides the verdict.
+HAMINSTALLUI_CODE="$(mktemp --tmpdir hamnix-haminstallui-code.XXXXXX)"
+trap 'rm -f "$HAMINSTALLUI_CODE"' EXIT
+grep -vE '^\s*#' user/haminstallui.ad >"$HAMINSTALLUI_CODE"
+if grep -q '/n/distros' "$HAMINSTALLUI_CODE"; then
     failed "haminstallui CODE references /n/distros (must source from the hpm repo only)"
 else
     passed "haminstallui code never references /n/distros"
@@ -171,7 +199,7 @@ else
     failed "haminstallui markers do not match /bin/install output (pane can't detect done)"
 fi
 # The legacy /tmp log-file redirect path must be gone (it was the fd>=16 trap).
-if grep -vE '^\s*#' user/haminstallui.ad | grep -q 'haminstall.gui.log'; then
+if grep -q 'haminstall.gui.log' "$HAMINSTALLUI_CODE"; then
     failed "haminstallui still uses the /tmp log-file redirect (fd>=16 dup2 trap)"
 else
     passed "haminstallui no longer uses the fragile /tmp log-file redirect"

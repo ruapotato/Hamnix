@@ -122,20 +122,20 @@ ADDER
 COMPILE_OUT="$(python3 -m compiler.adder compile --target=aarch64-linux \
     "$SRC" -o "$ELF" 2>&1)" || fail "compile errored:
 $COMPILE_OUT"
-echo "$COMPILE_OUT" | grep -q "Compiled to" || fail "compiler did not report success:
+grep -q "Compiled to" <<<"$COMPILE_OUT" || fail "compiler did not report success:
 $COMPILE_OUT"
 [ -f "$ELF" ] || fail "no ELF produced at $ELF"
 
 # --- verify ELF is a well-formed AArch64 executable --------------------
 HDR="$(readelf -h "$ELF" 2>&1)" || fail "readelf failed on $ELF"
-echo "$HDR" | grep -q "Machine: *AArch64" || fail "ELF Machine is not AArch64:
+grep -q "Machine: *AArch64" <<<"$HDR" || fail "ELF Machine is not AArch64:
 $HDR"
 
 # --- run under qemu-aarch64 (user-mode) --------------------------------
 RUN_OUT="$("$QEMU" "$ELF")"
 RC=$?
 
-echo "$RUN_OUT" | grep -q "hello from aarch64" || \
+grep -q "hello from aarch64" <<<"$RUN_OUT" || \
     fail "expected stdout 'hello from aarch64', got: '$RUN_OUT'"
 [ "$RC" -eq 42 ] || fail "expected exit code 42, got $RC (stdout: '$RUN_OUT')"
 

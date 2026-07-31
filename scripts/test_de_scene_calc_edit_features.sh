@@ -34,6 +34,19 @@
 #
 # Pass marker:  PASS: DE scene calc+edit features intact
 # Fail marker:  FAIL: <which link broke>
+#
+# GATE HYGIENE (2026-07-31). Fourteen links here used to be spelled
+#     printf '%s\n' "$body" | grep -qE 'PAT'
+# under `set -o pipefail`. The extracted function bodies run to ~9.5 KB and
+# bash emits them in ~130-byte write() chunks, so `grep -q` routinely matched
+# and exited — closing the pipe under the still-writing printf, which then
+# died of SIGPIPE (141). pipefail promoted 141 to the pipeline's status and
+# `if !` inverted it, so a MATCHING assertion reported FAILURE. Measured on a
+# clean tree: 16/400 runs of this gate failed before, 0/400 after.
+# Every one now uses a here-string, which is a redirection rather than a
+# pipeline: there is no writer process to kill. The patterns were MOVED, not
+# retyped — the set of grep patterns is byte-identical to the pipeline form.
+# Do not reintroduce `printf ... | grep -q` here.
 
 set -euo pipefail
 
@@ -71,17 +84,17 @@ fi
 if ! grep -qE 'def _calc_apply_resize' "$CALCCORE"; then
     fail_link "bug4: $CALCCORE has no _calc_apply_resize re-layout handler"
 fi
-if ! printf '%s\n' "$(defbody hamcalc_resize_line "$CALCCORE")" \
-        | grep -qE '_calc_apply_resize\('; then
+if ! grep -qE '_calc_apply_resize\(' \
+        <<<"$(defbody hamcalc_resize_line "$CALCCORE")"; then
     fail_link "bug4: hamcalc_resize_line never applies the resize (dead code)"
 fi
 # ... and the native main loop must actually CALL it (not just link it).
-if ! printf '%s\n' "$mainbody" | grep -qE 'hamcalc_resize_line'; then
+if ! grep -qE 'hamcalc_resize_line' <<<"$mainbody"; then
     fail_link "bug4: calc main loop never CALLS hamcalc_resize_line (resize dead code)"
 fi
 # The scene background fill must use the live calc_w/calc_h, not fixed dims.
 emitbody="$(defbody hamcalc_build_scene "$CALCCORE")"
-if ! printf '%s\n' "$emitbody" | grep -qE 'hamscene_fill\(0, 0, calc_w, calc_h'; then
+if ! grep -qE 'hamscene_fill\(0, 0, calc_w, calc_h' <<<"$emitbody"; then
     fail_link "bug4: hamcalc_build_scene background fill not sized to calc_w/calc_h (black quadrant returns)"
 fi
 
@@ -95,20 +108,20 @@ fi
 if ! grep -qE 'def hamcalc_key_line' "$CALCCORE"; then
     fail_link "bug5: $CALCCORE has no hamcalc_key_line /keys line parser"
 fi
-if ! printf '%s\n' "$mainbody" | grep -qE 'hamcalc_key_line'; then
+if ! grep -qE 'hamcalc_key_line' <<<"$mainbody"; then
     fail_link "bug5: calc main loop never drains /keys via hamcalc_key_line"
 fi
 # Sanity: the mapping handles a digit (48..57), '+' (43) and '=' (61).
 kbdbody="$(defbody _press_kbd "$CALCCORE")"
 for code in 'c >= 48 and c <= 57' 'c == 43' 'c == 61'; do
-    if ! printf '%s\n' "$kbdbody" | grep -qF "$code"; then
+    if ! grep -qF "$code" <<<"$kbdbody"; then
         fail_link "bug5: _press_kbd missing key mapping ($code)"
     fi
 done
 # The everyday-calculator keys (5639686e) ride the same mapping: '.' (46),
 # '%' (37) and backspace (8) must not silently drop out of it again.
 for code in 'c == 46' 'c == 37' 'c == 8'; do
-    if ! printf '%s\n' "$kbdbody" | grep -qF "$code"; then
+    if ! grep -qF "$code" <<<"$kbdbody"; then
         fail_link "bug5: _press_kbd missing everyday-calculator key mapping ($code)"
     fi
 done
@@ -120,10 +133,10 @@ if ! grep -qE 'def _visual_row_of' "$EDIT"; then
     fail_link "bug6: hamedit has no _visual_row_of (wrap-aware scroll) helper"
 fi
 editemit="$(defbody emit_scene "$EDIT")"
-if ! printf '%s\n' "$editemit" | grep -qE 'rl < VIS_COLS'; then
+if ! grep -qE 'rl < VIS_COLS' <<<"$editemit"; then
     fail_link "bug6: hamedit emit_scene does not wrap at VIS_COLS (long lines clipped)"
 fi
-if ! printf '%s\n' "$editemit" | grep -qE 'vrow'; then
+if ! grep -qE 'vrow' <<<"$editemit"; then
     fail_link "bug6: hamedit emit_scene not rendering in visual-row space (no wrap)"
 fi
 
@@ -173,21 +186,21 @@ ctrls_arm="$(printf '%s\n' "$csbody" \
 if [ -z "$ctrls_arm" ]; then
     fail_link "bug8: no Ctrl-S (code 19) arm in _handle_code"
 fi
-if ! printf '%s\n' "$ctrls_arm" | grep -qE 'has_file == 0'; then
+if ! grep -qE 'has_file == 0' <<<"$ctrls_arm"; then
     fail_link "bug8: Ctrl-S does not branch on missing filename (no Save-As)"
 fi
-if ! printf '%s\n' "$ctrls_arm" | grep -qE '_ed_pop_picker\(FILEPICK_SAVE\)'; then
+if ! grep -qE '_ed_pop_picker\(FILEPICK_SAVE\)' <<<"$ctrls_arm"; then
     fail_link "bug8: Ctrl-S with no file does not raise the Save-As chooser (dead-end)"
 fi
 # Ctrl-W = always-available "Save As" even when the buffer already has a name.
-if ! printf '%s\n' "$csbody" | grep -qE 'code == 23'; then
+if ! grep -qE 'code == 23' <<<"$csbody"; then
     fail_link "bug8: no Ctrl-W always-available Save As binding"
 fi
 # The modal must be RENDERED while active, and must own the keyboard while up.
-if ! printf '%s\n' "$editemit" | grep -qE 'filepick_active\(\)'; then
+if ! grep -qE 'filepick_active\(\)' <<<"$editemit"; then
     fail_link "bug8: emit_scene does not render the Save-As chooser overlay"
 fi
-if ! printf '%s\n' "$csbody" | grep -qE 'filepick_handle_code'; then
+if ! grep -qE 'filepick_handle_code' <<<"$csbody"; then
     fail_link "bug8: the Save-As chooser does not take the keyboard while open"
 fi
 if ! grep -qE 'filepick_take_result' "$EDIT"; then

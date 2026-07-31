@@ -49,8 +49,8 @@ fail_link() { echo "FAIL: $1" >&2; fail=1; }
 if ! grep -qE 'def _wsys_evt_emit_resize' "$WSYS_SRC"; then
     fail_link "link 1: _wsys_evt_emit_resize() (resize-event emitter) missing"
 fi
-if ! awk '/^def _wsys_evt_emit_resize/{f=1} /^def /{if(f && $0 !~ /_wsys_evt_emit_resize/)f=0} f' "$WSYS_SRC" \
-        | grep -qE '_wsys_evt_push_byte\(wid, 114\)'; then
+if ! grep -qE '_wsys_evt_push_byte\(wid, 114\)' \
+        <<<"$(awk '/^def _wsys_evt_emit_resize/{f=1} /^def /{if(f && $0 !~ /_wsys_evt_emit_resize/)f=0} f' "$WSYS_SRC")"; then
     fail_link "link 1: resize emitter does not push the 'r' (114) event type byte"
 fi
 
@@ -59,17 +59,17 @@ if ! grep -qE 'def _wsys_geo_post_change' "$WSYS_SRC"; then
     fail_link "link 2: _wsys_geo_post_change() (re-raster + notify) missing"
 fi
 geo_body=$(awk '/^def _wsys_geo_post_change/{f=1} /^def /{if(f && $0 !~ /_wsys_geo_post_change/)f=0} f' "$WSYS_SRC")
-if ! printf '%s\n' "$geo_body" | grep -qE '_wsys_rasterize_window'; then
+if ! grep -qE '_wsys_rasterize_window' <<<"$geo_body"; then
     fail_link "link 2: geo-change does not re-rasterize the cache at the new size (shear will return)"
 fi
-if ! printf '%s\n' "$geo_body" | grep -qE '_wsys_evt_emit_resize'; then
+if ! grep -qE '_wsys_evt_emit_resize' <<<"$geo_body"; then
     fail_link "link 2: geo-change does not emit the resize event"
 fi
 
 # --- LINK 3: the WM paths invoke the geo-change hook ---------------------
 # _wsys_apply_geo (maximize/snap/restore) and the free-resize drag must call it.
 apply_body=$(awk '/^def _wsys_apply_geo/{f=1} /^def /{if(f && $0 !~ /_wsys_apply_geo/)f=0} f' "$WSYS_SRC")
-if ! printf '%s\n' "$apply_body" | grep -qE '_wsys_geo_post_change'; then
+if ! grep -qE '_wsys_geo_post_change' <<<"$apply_body"; then
     fail_link "link 3: _wsys_apply_geo does not call _wsys_geo_post_change (maximize/snap tear)"
 fi
 
