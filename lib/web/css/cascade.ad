@@ -231,8 +231,11 @@ r_bordw:  Array[2048, int32]     # border width px per side (0 = rule sets none)
 # name one of the three box edges; 0 = the rule does not declare it, so the
 # element keeps the property's own initial value (border-box for -clip,
 # padding-box for -origin). See BGBOX_* below.
-r_bgclip: Array[2048, int32]     # 0 unset / BGBOX_BORDER|PADDING|CONTENT
-r_bgorig: Array[2048, int32]     # 0 unset / BGBOX_BORDER|PADDING|CONTENT
+r_bgclip: Array[2048, int32]     # packed box-keyword list (see BGBOX_MAXL)
+r_bgclipn: Array[2048, int32]    # its length; 0 = the rule does not declare it
+r_bgorig: Array[2048, int32]     # packed box-keyword list
+r_bgorign: Array[2048, int32]    # its length; 0 = the rule does not declare it
+r_bglay:  Array[2048, int32]     # background LAYER count; 0 = rule sets no image
 # True per-side border (W3C css-backgrounds §4). Two PACKED ints per rule
 # (0 = unset -> the box uses the uniform 1px legacy stroke, byte-identical to
 # before). Widths: 8 bits/side top|right<<8|bottom<<16|left<<24 (px, 0..120).
@@ -721,8 +724,11 @@ m_padx:   int32 = 0           # horizontal padding sum px (border-box width calc
 m_padl:   int32 = 0           # LEFT padding px alone (true-margin recovery)
 m_pady:   int32 = 0           # vertical padding sum px (border-box height calc)
 m_bordw:  int32 = 0           # border width px per side (border-box calc)
-m_bgclip: int32 = 0           # background-clip   (0 unset / BGBOX_*)
-m_bgorig: int32 = 0           # background-origin (0 unset / BGBOX_*)
+m_bgclip: int32 = 0           # background-clip   packed list
+m_bgclipn: int32 = 0          # its length (0 = undeclared)
+m_bgorig: int32 = 0           # background-origin packed list
+m_bgorign: int32 = 0          # its length (0 = undeclared)
+m_bglay:  int32 = 0           # background layer count (0 = undeclared)
 m_flexg:  int32 = -1          # flex-grow * 1000
 m_flexs:  int32 = -1          # flex-shrink * 1000
 m_flexb:  int32 = -1          # flex-basis px
@@ -1789,8 +1795,11 @@ d_bordw:  int32 = 0           # border width px PER SIDE (for border-box calc)
 BGBOX_BORDER:  int32 = 1
 BGBOX_PADDING: int32 = 2
 BGBOX_CONTENT: int32 = 3
-d_bgclip: int32 = 0           # 0 unset / BGBOX_*
-d_bgorig: int32 = 0           # 0 unset / BGBOX_*
+d_bgclip: int32 = 0           # packed list (see _bg_box_list)
+d_bgclipn: int32 = 0          # its length (0 = undeclared)
+d_bgorig: int32 = 0           # packed list
+d_bgorign: int32 = 0          # its length (0 = undeclared)
+d_bglay:  int32 = 0           # background layer count (0 = undeclared)
 d_flexg:  int32 = -1          # flex-grow * 1000 (-1 unset)
 d_flexs:  int32 = -1          # flex-shrink * 1000 (-1 unset)
 d_flexb:  int32 = -1          # flex-basis px (-1 unset / auto)
@@ -3628,10 +3637,12 @@ def _box_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64) -> int32:
     # the initial border-box rather than guessed at, so a page using it is no
     # worse off than before this property was parsed at all.
     if _prop_is(ps, pe, cast[Ptr[uint8]]("background-clip")) != 0:
-        d_bgclip = _bg_box_value(vs, ve, BGBOX_BORDER)
+        d_bgclip = _bg_box_list(vs, ve, BGBOX_BORDER)
+        d_bgclipn = g_bgbox_n
         return 1
     if _prop_is(ps, pe, cast[Ptr[uint8]]("background-origin")) != 0:
-        d_bgorig = _bg_box_value(vs, ve, BGBOX_PADDING)
+        d_bgorig = _bg_box_list(vs, ve, BGBOX_PADDING)
+        d_bgorign = g_bgbox_n
         return 1
     if _prop_is(ps, pe, cast[Ptr[uint8]]("box-sizing")) != 0:
         if _val_starts(vs, ve, cast[Ptr[uint8]]("border-box")) != 0:
@@ -5693,25 +5704,131 @@ def _parse_aspect_ratio(vs: uint64, ve: uint64):
             d_asph = 1000                                # N / 1
 
 
-# One `border-box | padding-box | content-box` keyword (css-backgrounds-3 §3.7,
-# §3.8), shared by background-clip and background-origin. `dflt` is the
-# property's own INITIAL value, returned for any value this engine does not
-# implement (`text`, or a comma list whose first entry we cannot read) so an
-# unrecognised value degrades to the CSS default instead of to "unset".
+# ---- background-clip / background-origin: a LAYER LIST, not one keyword -----
+# Both properties are comma lists, one entry per background layer, and the
+# background COLOR is painted in the BOTTOM-MOST layer, so it is clipped by the
+# LAST entry -- after the list has been truncated (or repeated) to the number of
+# layers, which `background-image` determines (css-backgrounds-3 §3.10).
 #
-# ORDER MATTERS: "padding-box" and "content-box" must be tested BEFORE
-# "border-box", because _val_starts is a prefix test and none of the three is a
-# prefix of another -- but a future `border-area` keyword would be. Testing the
-# longer/more specific spellings first keeps that safe.
-def _bg_box_value(vs: uint64, ve: uint64, dflt: int32) -> int32:
-    s: uint64 = _val_start(vs, ve)
-    if _val_starts(s, ve, cast[Ptr[uint8]]("padding-box")) != 0:
+# This is not pedantry, it is the difference between passing and failing
+# `css-backgrounds/background-color-clip`, whose whole subject is the rule:
+#
+#     background-clip:  border-box, content-box, border-box;   /* 3 entries */
+#     background-image: none, none;                            /* 2 layers  */
+#
+# truncates to `border-box, content-box`, so the colour clips to CONTENT-BOX --
+# the middle entry, reachable neither as "the first" nor as "the last". Chromium
+# (--headless --screenshot --window-size=800,600) renders both that test and its
+# reference as 12,000 green px, i.e. the 120x100 content box, confirming it.
+#
+# So the parse keeps the whole list PACKED (4 bits per entry, entry 0 in the low
+# nibble, up to BGBOX_MAXL entries) plus its length, and the single effective
+# value is resolved at USE time -- box-open, in layout/box.ad -- because
+# `background-image` may be declared either side of `background-clip` in the
+# same block, and only at the end of the block is the layer count known.
+BGBOX_MAXL: int32 = 8
+
+
+# Pack the comma list of box keywords in src[vs,ve). Returns the packed nibbles;
+# leaves the entry COUNT in g_bgbox_n. `dflt` is the property's own initial
+# value, substituted for any entry this engine does not implement (`text`), so
+# an unrecognised keyword degrades to the CSS default rather than to "unset".
+g_bgbox_n: int32 = 0
+
+
+def _bg_box_list(vs: uint64, ve: uint64, dflt: int32) -> int32:
+    pk: int32 = 0
+    n: int32 = 0
+    i: uint64 = vs
+    seg: uint64 = _val_start(vs, ve)
+    depth: int32 = 0
+    while i <= ve:
+        # split on TOP-LEVEL commas only: a future `rect(a, b)`-shaped value
+        # must not be torn in half by its own separators.
+        atend: int32 = 0
+        if i == ve:
+            atend = 1
+        elif src_ptr[i] == 40:                      # '('
+            depth = depth + 1
+        elif src_ptr[i] == 41:                      # ')'
+            depth = depth - 1
+        elif src_ptr[i] == 44 and depth == 0:       # ','
+            atend = 1
+        if atend != 0:
+            if n < BGBOX_MAXL:
+                v: int32 = _bg_box_one(seg, i, dflt)
+                pk = pk | (v * _bg_nib_shift(n))
+                n = n + 1
+            seg = _val_start(i + 1, ve)
+        i = i + 1
+    if n == 0:
+        pk = dflt
+        n = 1
+    g_bgbox_n = n
+    return pk
+
+
+# 16^k, i.e. the multiplier that moves a nibble to slot k. Written as a loop
+# because this engine has no shift operator in constant position here.
+def _bg_nib_shift(k: int32) -> int32:
+    m: int32 = 1
+    j: int32 = 0
+    while j < k and j < BGBOX_MAXL:
+        m = m * 16
+        j = j + 1
+    return m
+
+
+# ONE `border-box | padding-box | content-box` keyword from src[a,b).
+#
+# ORDER MATTERS: "padding-box" and "content-box" are tested BEFORE "border-box"
+# because _val_starts is a PREFIX test. None of the three is a prefix of another
+# today, but a future `border-area` keyword would be, and testing the more
+# specific spellings first keeps that safe.
+def _bg_box_one(a: uint64, b: uint64, dflt: int32) -> int32:
+    s: uint64 = _val_start(a, b)
+    if _val_starts(s, b, cast[Ptr[uint8]]("padding-box")) != 0:
         return BGBOX_PADDING
-    if _val_starts(s, ve, cast[Ptr[uint8]]("content-box")) != 0:
+    if _val_starts(s, b, cast[Ptr[uint8]]("content-box")) != 0:
         return BGBOX_CONTENT
-    if _val_starts(s, ve, cast[Ptr[uint8]]("border-box")) != 0:
+    if _val_starts(s, b, cast[Ptr[uint8]]("border-box")) != 0:
         return BGBOX_BORDER
     return dflt
+
+
+# Number of background LAYERS in a `background-image` value: top-level commas
+# plus one. Parenthesised commas (`linear-gradient(red, blue)`) are one layer,
+# which is why the depth counter is not optional.
+def _bg_layer_count(vs: uint64, ve: uint64) -> int32:
+    n: int32 = 1
+    depth: int32 = 0
+    i: uint64 = vs
+    while i < ve:
+        if src_ptr[i] == 40:
+            depth = depth + 1
+        elif src_ptr[i] == 41:
+            depth = depth - 1
+        elif src_ptr[i] == 44 and depth == 0:
+            n = n + 1
+        i = i + 1
+    return n
+
+
+# Resolve a packed list + its length + the element's layer count to the ONE box
+# the background COLOUR clips to (or is positioned from). The colour lives in
+# the BOTTOM-MOST layer, so it takes the LAST entry after the list is truncated
+# to `layers`; a list SHORTER than the layer count repeats, which for the last
+# layer means the last entry again.
+def bgbox_effective(pk: int32, n: int32, layers: int32) -> int32:
+    if n <= 0:
+        return 0
+    lay: int32 = layers
+    if lay < 1:
+        lay = 1
+    idx: int32 = lay
+    if idx > n:
+        idx = n
+    return (pk / _bg_nib_shift(idx - 1)) & 15
 
 
 # background-repeat: repeat (0) | no-repeat (1) | repeat-x (2) | repeat-y (3).
@@ -5953,6 +6070,10 @@ def _apply_decl(ps: uint64, pe: uint64, vs: uint64, ve: uint64):
     # background-image: a linear-/radial-gradient() paints a real gradient; a
     # url() (raster image) is not resolvable here and falls through unchanged.
     if _prop_is(ps, pe, cast[Ptr[uint8]]("background-image")) != 0:
+        # The LAYER COUNT is what truncates a background-clip/-origin list, and
+        # it is needed even for values this engine cannot paint (`none, none`),
+        # so record it before any of the early returns below.
+        d_bglay = _bg_layer_count(_val_start(vs, ve), ve)
         gi: int32 = _parse_gradient(vs, ve)
         if gi >= 0:
             d_bg_grad = gi
@@ -6345,7 +6466,10 @@ def _parse_decls(a: uint64, b: uint64):
     d_pady = 0
     d_bordw = 0
     d_bgclip = 0
+    d_bgclipn = 0
     d_bgorig = 0
+    d_bgorign = 0
+    d_bglay = 0
     d_flexg = -1
     d_flexs = -1
     d_flexb = -1
@@ -6552,7 +6676,10 @@ def _parse_ruleset(a: uint64, rgn_end: uint64) -> uint64:
                 r_pady[ri]   = d_pady
                 r_bordw[ri]  = d_bordw
                 r_bgclip[ri] = d_bgclip
+                r_bgclipn[ri] = d_bgclipn
                 r_bgorig[ri] = d_bgorig
+                r_bgorign[ri] = d_bgorign
+                r_bglay[ri]  = d_bglay
                 r_flexg[ri]  = d_flexg
                 r_flexs[ri]  = d_flexs
                 r_flexb[ri]  = d_flexb
@@ -8134,7 +8261,10 @@ def _cascade_match_current():
     m_pady = 0
     m_bordw = 0
     m_bgclip = 0
+    m_bgclipn = 0
     m_bgorig = 0
+    m_bgorign = 0
+    m_bglay = 0
     m_flexg = -1
     m_flexs = -1
     m_flexb = -1
@@ -8218,6 +8348,7 @@ def _cascade_match_current():
     sbdw: int32 = -1
     sbgc: int32 = -1
     sbgo: int32 = -1
+    sbgl: int32 = -1
     sfg: int32 = -1
     sfs: int32 = -1
     sfb: int32 = -1
@@ -8468,12 +8599,17 @@ def _cascade_match_current():
             if r_bordw[ri] > 0 and sp >= sbdw:
                 sbdw = sp
                 m_bordw = r_bordw[ri]
-            if r_bgclip[ri] != 0 and sp >= sbgc:
+            if r_bgclipn[ri] != 0 and sp >= sbgc:
                 sbgc = sp
                 m_bgclip = r_bgclip[ri]
-            if r_bgorig[ri] != 0 and sp >= sbgo:
+                m_bgclipn = r_bgclipn[ri]
+            if r_bgorign[ri] != 0 and sp >= sbgo:
                 sbgo = sp
                 m_bgorig = r_bgorig[ri]
+                m_bgorign = r_bgorign[ri]
+            if r_bglay[ri] != 0 and sp >= sbgl:
+                sbgl = sp
+                m_bglay = r_bglay[ri]
             if r_flexg[ri] >= 0 and sp >= sfg:
                 sfg = sp
                 m_flexg = r_flexg[ri]
@@ -9148,7 +9284,10 @@ def _parse_inline_wa(ne: uint64, te: uint64):
     d_pady = 0
     d_bordw = 0
     d_bgclip = 0
+    d_bgclipn = 0
     d_bgorig = 0
+    d_bgorign = 0
+    d_bglay = 0
     d_flexg = -1
     d_flexs = -1
     d_flexb = -1

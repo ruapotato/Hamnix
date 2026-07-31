@@ -5,6 +5,11 @@
 
 from lib.htmlengine import _cascade_match_current, _content_right, _flx_child_cascade, _img_cascade, _left_margin, m_flexb, m_flexg, m_flexs, m_order, m_wd, m_ht, d_wd, d_ht, m_wpct, d_wpct, m_padx, m_pady, d_padx, d_pady, m_bordw, m_clear, d_clear, m_ml, m_mr, m_padl, d_padl, _hx_tag_end_p
 from lib.htmlengine import grad_is, grad_id_of, grad_type_of, grad_url_ptr, grad_url_len_of
+# background-clip / background-origin (css-backgrounds-3 §3.7, §3.8): the packed
+# layer list, its length, the element's layer count, and the resolver that picks
+# the bottom-most layer's box -- which is the one the background COLOUR uses.
+from lib.htmlengine import m_bgclip, m_bgclipn, d_bgclip, d_bgclipn, \
+    m_bglay, d_bglay, bgbox_effective, BGBOX_PADDING, BGBOX_CONTENT
 
 # ====================================================================
 # LAYOUT MODEL — the parsed page becomes a flat list of styled SEGMENTS.
@@ -2650,12 +2655,21 @@ def _block_box_open(left: int32, rins: int32, wd: int32, topg: int32, \
             eff_bordss = d_bordss
         box_bordps_stack[box_sp] = eff_bordps
         box_bordss_stack[box_sp] = eff_bordss
-        # background-clip: inline (d_bgclip) wins over the stylesheet (m_bgclip),
-        # exactly like the border colour above. 0 => undeclared => border-box.
-        eff_bgclip: int32 = m_bgclip
-        if d_bgclip != 0:
-            eff_bgclip = d_bgclip
-        box_bgclip_stack[box_sp] = eff_bgclip
+        # background-clip: inline (d_bgclip*) wins over the stylesheet (m_bgclip*),
+        # exactly like the border colour above. The value is a packed LAYER LIST
+        # (see _bg_box_list in css/cascade.ad); the background COLOUR lives in
+        # the bottom-most layer, so bgbox_effective picks the entry the layer
+        # count selects. Length 0 on both => undeclared => border-box => the
+        # zero inset every fill had before, so unstyled boxes are unchanged.
+        eff_bgcp: int32 = m_bgclip
+        eff_bgcn: int32 = m_bgclipn
+        if d_bgclipn != 0:
+            eff_bgcp = d_bgclip
+            eff_bgcn = d_bgclipn
+        eff_bglay: int32 = m_bglay
+        if d_bglay != 0:
+            eff_bglay = d_bglay
+        box_bgclip_stack[box_sp] = bgbox_effective(eff_bgcp, eff_bgcn, eff_bglay)
         # PER-SIDE border COLOURS (W3C css-backgrounds §4): inline d_bc_* wins over
         # the stylesheet m_bc*; -1 => that side falls back to the uniform colour.
         # They only take visual effect on the per-side painter path (eff_bordps !=
