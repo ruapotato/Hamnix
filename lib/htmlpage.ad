@@ -48,6 +48,7 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     xform_is, xform_id_of, xform_inner_of, xform_a_of, xform_b_of, \
     xform_c_of, xform_d_of, xform_e_of, xform_f_of, xform_epct_of, \
     xform_fpct_of, xform_ox_of, xform_oxp_of, xform_oy_of, xform_oyp_of
+from lib.web.state import bh
 from lib.htmlimg import htmlimg_find
 from lib.htmlpaint import htmlpaint_begin, htmlpaint_fill_rect, \
     htmlpaint_fill_round_rect, htmlpaint_stroke_round_rect, \
@@ -963,6 +964,32 @@ def htmlpage_render() -> int32:
                 if ey1 > total_h:
                     total_h = ey1
         ei = ei + 1
+
+    # 2d. CANVAS BACKGROUND COVERS THE VIEWPORT (CSS backgrounds-3 §2.11.2,
+    # "The Canvas Background"). The background propagated from <html>/<body>
+    # paints over the WHOLE canvas, and the canvas is "the infinite surface over
+    # which the document is rendered" — it is never smaller than the viewport.
+    # This engine sizes its canvas to CONTENT, so a short document with
+    # `html{background-color:green}` painted a green band only as tall as its
+    # text and left the rest of the viewport at the default white.
+    #
+    # Chromium (`chromium --headless --screenshot --window-size=800,600` on a
+    # document whose only content is `html{background-color:green}` plus a 20px
+    # box) fills all 800x600 with green. We filled 800x~60.
+    #
+    # It is also a REFTEST-VISIBLE divergence rather than a cosmetic one,
+    # because two documents with the SAME canvas background but different
+    # content heights then disagree about how much of the frame is that colour —
+    # which is exactly why `background-rounded-image-clip-001` (test canvas
+    # 212px vs reference canvas 62px) could not match however correctly the
+    # boxes themselves were painted.
+    #
+    # Guarded to a page that actually declares a canvas background (pbg >= 0):
+    # with no declaration the clear colour is white, which is what the unfilled
+    # region already was, so every undeclared page is byte-identical.
+    pgbg0: int32 = he_page_bg()
+    if pgbg0 >= 0 and total_h < bh:
+        total_h = bh
 
     # 3. canvas cleared to the page background (<body>/<html> bg, gap #3) or
     # white by default. A dark-theme page thus fills the whole viewport, not
