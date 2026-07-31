@@ -147,10 +147,38 @@ arm64_llvm_lower_sync_entry:
     stp     x28, x29, [sp, #(16 * 14)]
     str     x30,      [sp, #(16 * 15)]
 
+    /* A13: DECODE ESR_EL1.EC FIRST. Before A13 this stub called the syscall
+     * dispatcher for EVERY synchronous exception from EL0 — so a data abort was
+     * serviced as a syscall whose number was whatever the faulting program had
+     * left in x8, a value was written into x0, and the task was eret'd back to
+     * resume. A fault that returns a plausible value and keeps running is the
+     * exact failure mode this lane has already been bitten by (see the A11 exit
+     * latch, init/main.ad arm64_a12_take_exit_arm64). Now:
+     *   EC=0x15 SVC64                      -> the syscall dispatcher
+     *   EC=0x24/0x20 Data/Instr abort, EL0 -> the A13 demand-paging path
+     *   anything else                      -> the loud diagnostic vector */
+    mrs     x9, esr_el1
+    lsr     x10, x9, #26
+    and     x10, x10, #0x3f
+    cmp     x10, #0x15
+    b.eq    .Lel0_svc
+    cmp     x10, #0x24                  /* Data Abort from a lower EL */
+    b.eq    .Lel0_abort
+    cmp     x10, #0x20                  /* Instruction Abort from a lower EL */
+    b.eq    .Lel0_abort
+    b       arm64_llvm_exc              /* unexpected EC: dump ESR/ELR and halt */
+
+.Lel0_abort:
+    bl      arm64_a13_fault_entry       /* 1 = mapped (retry), 0 = task killed */
+    cbz     x0, 3f                      /* refused -> unwind to head.S (status 139) */
+    b       .Lel0_resume                /* ELR_EL1 untouched: RETRY the fault */
+
+.Lel0_svc:
     mov     x0, sp                      /* frame_ptr -> arg0 */
     bl      arm64_svc_dispatch_arm64
     cbnz    x0, 3f                      /* nonzero -> EL0 task exited */
 
+.Lel0_resume:
     /* Resume EL0: reload the (mutated) frame and eret. */
     ldp     x0,  x1,  [sp, #(16 * 0)]
     ldp     x2,  x3,  [sp, #(16 * 1)]

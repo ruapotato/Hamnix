@@ -25,6 +25,11 @@
     .equ PL011_DR,      0x00
     .equ PL011_FR,      0x18
     .equ PL011_FR_TXFF, 0x20        /* FR bit5: transmit FIFO full */
+    /* A13: how many of a13.S's 16 demand pages the 'dpage' program touches.
+     * Must equal user/arm64_a13_demand.ad's A13_PAGES — the kernel requires
+     * EXACTLY this many faults, so a mismatch reds the gate rather than
+     * quietly weakening it. */
+    .equ A13_DEMAND_PAGES_HEAD, 8
 
     .section .boot.text, "ax"
     .globl _start
@@ -352,6 +357,72 @@ a12_done:
     ldr     x0, =msg_a12_ret
     bl      uart_puts
 
+    /* A13 (a13.S): DEMAND PAGING. Every address space up to A12 was FULLY
+     * PRE-POPULATED before a task ran, because a Data Abort from EL0 was not
+     * serviceable — in fact el0.S never even looked at ESR.EC, so an abort was
+     * decoded as a syscall and the task was resumed. A13 builds a space whose
+     * 16-page window at 0x4814_0000 is INVALID, runs an EL0 program that stores
+     * into it, and services each translation fault by allocating a frame,
+     * stamping the leaf and RETRYING the faulting instruction.
+     *
+     * The order below is the assertion. The leaves are checked INVALID from the
+     * descriptors before the program runs, so a pre-mapped window cannot pass
+     * vacuously; then the fault count must equal the page count (a retry that
+     * installed nothing would fault forever, and one that mapped the whole
+     * window at once would fault once); then the bytes EL0 stored are read back
+     * at the frames' IDENTITY PAs, not through the task's mapping.
+     *
+     * Then the negative control, which is an EXECUTED path and not an
+     * inspection: 'segv' stores to EL1-only RAM, the kernel refuses to map it,
+     * kills the task with status 139, and the boot continues below. */
+    ldr     x0, =msg_a13
+    bl      uart_puts
+    bl      arm64_a13_build_space
+    bl      arm64_a13_switch
+
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_dpage
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a13_fail
+
+    ldr     x0, =arm64_a13_l3
+    mov     x1, #A13_DEMAND_PAGES_HEAD
+    bl      arm64_a13_precheck_arm64
+    cbz     x0, a13_fail
+
+    ldr     x0, =msg_a13_run
+    bl      uart_puts
+    bl      arm64_a10_launch
+    ldr     x0, =arm64_a13_l3
+    mov     x1, #A13_DEMAND_PAGES_HEAD
+    bl      arm64_a13_report_arm64
+    cbz     x0, a13_fail
+
+    /* NEGATIVE CONTROL: a fault the kernel must refuse. */
+    ldr     x0, =arm64_a11_archive_start
+    ldr     x1, =arm64_a11_archive_end
+    sub     x1, x1, x0
+    ldr     x2, =name_segv
+    bl      arm64_a11_load_named_arm64
+    cbz     x0, a13_fail
+    ldr     x0, =msg_a13_segv
+    bl      uart_puts
+    bl      arm64_a10_launch
+    bl      arm64_a13_take_kill_arm64
+    cbz     x0, a13_fail
+
+    bl      arm64_a12_switch_kernel
+    b       a13_done
+a13_fail:
+    bl      arm64_a12_switch_kernel
+    ldr     x0, =msg_a13_fail
+    bl      uart_puts
+a13_done:
+    ldr     x0, =msg_a13_ret
+    bl      uart_puts
+
 park:
     wfi
     b       park
@@ -593,6 +664,16 @@ msg_a12_trunc:
     .asciz  "A12 FAIL: an EL0 run did not reach exit() (truncated)\n"
 msg_a12_ret:
     .asciz  "A12: per-task address-space stage complete\n"
+msg_a13:
+    .asciz  "A13: DEMAND PAGING (an unmapped EL0 window, faulted in on first touch)\n"
+msg_a13_run:
+    .asciz  "A13: running 'dpage' (ASID 3) — it will store into UNMAPPED pages\n"
+msg_a13_segv:
+    .asciz  "A13: running 'segv' (ASID 3) — a fault the kernel must REFUSE\n"
+msg_a13_fail:
+    .asciz  "A13 FAIL: the demand-paging stage did not complete\n"
+msg_a13_ret:
+    .asciz  "A13: demand-paging stage complete\n"
 /* Member names asked for at runtime. Fixed 16-byte fields in the archive, but
  * these are ordinary NUL-terminated strings — the walk compares up to the NUL
  * and requires the stored name to end there too, so "sum" cannot match a
@@ -605,6 +686,10 @@ name_echo:
     .asciz  "echo"
 name_absent:
     .asciz  "nosuchprog"
+name_dpage:
+    .asciz  "dpage"
+name_segv:
+    .asciz  "segv"
     .balign 8
 test_chars:
     .byte   '+', 'A', '0', '#', ' ', 'z'

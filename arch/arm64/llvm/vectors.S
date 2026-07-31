@@ -57,6 +57,10 @@ arm64_llvm_vectors:
 
 /* Diagnostic: print "EXC esr=<16hex> elr=<16hex>" and halt. */
     .balign 0x80
+    /* .globl: A13's el0.S branches here for any EL0 synchronous exception that
+     * is neither SVC64 nor a lower-EL abort, instead of the pre-A13 behaviour of
+     * feeding it to the syscall dispatcher. */
+    .globl arm64_llvm_exc
     .type arm64_llvm_exc, %function
 arm64_llvm_exc:
     ldr     x0, =msg_exc

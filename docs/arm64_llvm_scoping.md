@@ -1664,3 +1664,72 @@ Landed: per-task TTBR0 + ASID + private backing, concurrently resident images.
 `arch/arm64/kmain.ad` (the standalone ladder, `test_arm64_phase49.sh` green)
 already has fork/exec/wait, blocking-in-syscall, and ASID-tagged separate
 address spaces. Items 1-2 are a port from there, not an invention.
+
+## A13 — DEMAND PAGING (the A12 item 1 above, landed 2026-07-31)
+
+Commits `eec21236` (mechanism) + `ab247f59` (gate). Gate:
+`scripts/test_arm64_a13_demand.sh`, registered in the CI battery.
+
+### The bug this closes was worse than "unhandled"
+
+A12 item 1 says `EC=0x24` from a task was *fatal*. It was not fatal — it was
+**misread**. `el0.S`'s Lower-EL synchronous stub dispatched **every** synchronous
+exception from EL0 into `arm64_svc_dispatch_arm64()` without ever reading
+`ESR_EL1.EC`. A data abort was therefore decoded as a syscall numbered by
+whatever the faulting program happened to have left in `x8`, was answered with a
+value in `x0`, and was `eret`'d back to resume. A fault that returns a plausible
+value and keeps running is the same failure shape this lane already hit once (the
+A11 exit latch: a run truncated after one syscall "that looked like a working
+demo in the log").
+
+Confirmed by mutation, not by reading: reverting the EC compare to always-true
+reproduces it exactly — the boot floods with
+`EL0 svc: unknown nr=0 (returning -ENOSYS)` forever, because each refused
+"syscall" resumes the task onto the same faulting instruction.
+
+### What landed
+
+- `el0.S` decodes `ESR_EL1.EC`: `0x15` (SVC64) → the syscall dispatcher,
+  `0x24`/`0x20` (Data/Instruction Abort from a lower EL) → the demand path,
+  anything else → the loud diagnostic vector (previously: all of it → syscalls).
+- `arch/arm64/llvm/a13.S` builds a TTBR0 space (ASID 3) whose 16-page window at
+  `0x4814_0000` is left **invalid**, and does only what Adder cannot express:
+  read `FAR_EL1`/`ESR_EL1`/`TTBR0_EL1`, and `tlbi vaae1is`.
+- The **policy is emitted Adder** (`init/main.ad`
+  `arm64_a13_demand_fault_arm64`): fault-class check (a *permission* fault must
+  not be papered over by stamping a fresh leaf), region check, a walk of the
+  **live** TTBR0 tables (the base the CPU is actually using, read at fault time —
+  not a pointer the kernel remembered), frame allocation, zero-fill, leaf stamp.
+  The stub then `eret`s with `ELR_EL1` **untouched**, so the faulting instruction
+  retries and the task never learns it faulted.
+- **Every refusal kills the task, not the kernel.** Status 139 (128+SIGSEGV) is
+  latched and the stub unwinds to `head.S` exactly as `exit()` does.
+
+### What was executed vs. inspected
+
+**Executed** (qemu-system-aarch64 `-M virt -cpu cortex-a72`): the 8 demand leaves
+read as invalid descriptors *before* the run; exactly 8 faults, one per page, at
+the expected VAs in address order; 8 **distinct** frames; the bytes EL0 stored
+read back at each frame's **identity PA** (not through the task's mapping, so no
+TLB alias can fake it); `A13: D=12126821464` / status 88, matching a Python
+oracle computed independently in the gate; and the negative control — a store to
+`0x4900_0000` refused, the task killed with 139, the boot continuing.
+
+**Inspected** (and labelled as such in the gate): the demand leaves are `nG=1`.
+The A12 boundary still binds — TCG flushes globals on an ASID change and cannot
+discriminate the bit.
+
+Four mutations, each rebuilt and booted, each caught: removing the carve (leaves
+pre-valid); removing the region check (the wild store gets mapped); aliasing all
+demand pages onto one frame; and reverting the EC decode.
+
+### Where A13 stops
+
+Items 2-4 of the A12 list are unchanged and still in that order. The next one is
+**per-task kernel stacks + `__switch_to`**: A13's faults are all serviced to
+completion on the boot stack and return to the same task, so a task still cannot
+block *inside* a syscall or a fault. That is the hinge — once it holds, the
+`arch/arm64/kmain.ad` ladder's fork/exec/pipes/signals become ports rather than
+inventions. Note also that A13's frame pool is a bump allocator with no free
+path; a real pager needs eviction, and `ASID recycling` (item 3) remains the
+point at which `nG` stops being untestable.
