@@ -309,9 +309,30 @@ bfill_bord: Array[256, int32]
 #               from the row span. Taken from the run's height pin, which is
 #               the only place the real CSS px (not the 16px-grid rounding)
 #               survives.
+#   bfill_pxbrow / bfill_pxboff
+#               BOTTOM-ANCHORED pixel geometry: `position:absolute; bottom:B`
+#               inside a positioned ancestor. The box's bottom edge sits B px
+#               above the containing block's padding-box bottom — but at LAYOUT
+#               time that edge is only known as a ROW INDEX (the row one past
+#               the ancestor's last), because row PIXEL heights are not resolved
+#               until the paint pass. So record the anchor row and the offset
+#               and let the painter finish the sum:
+#                   y1 = row_y(pxbrow) - pxboff ;   y0 = y1 - pxh
+#               -1 = not bottom-anchored (every other fill, byte-identical).
+#
+#               WHY it cannot stay in rows. Resolving `bottom` on the row grid
+#               shifts the box by whole rows, and an out-of-flow box's row span
+#               is DEGENERATE — it contributes no flow rows, so bfill_bot ==
+#               bfill_top and the "height" the row arithmetic subtracts is ZERO.
+#               The box's TOP therefore landed where its BOTTOM belonged: a
+#               `bottom:0` box sat one full box-height BELOW its containing
+#               block. Measured on a `position:relative` 108px container with a
+#               20px `bottom:0` child: painted y 120..140, Chromium 100..120.
 bfill_oof:  Array[256, uint8]
 bfill_pxy:  Array[256, int32]
 bfill_pxh:  Array[256, int32]
+bfill_pxbrow: Array[256, int32]
+bfill_pxboff: Array[256, int32]
 # ---- background-clip INSETS (W3C css-backgrounds-3 §3.7) -------------
 # `background-clip` names the box edge the background paints out to:
 # border-box (initial), padding-box, or content-box. The fill rect a box
@@ -554,6 +575,19 @@ def he_bfill_clipr(i: int32) -> int32:
 
 def he_bfill_clipb(i: int32) -> int32:
     return bfill_clipb[i]
+
+
+# Row index whose TOP EDGE the out-of-flow fill i's BOTTOM anchors to
+# (`position:absolute; bottom:B` inside a positioned ancestor), or -1 when the
+# fill is not bottom-anchored. See the bfill_pxbrow block above for why the sum
+# has to be finished by the painter rather than here.
+def he_bfill_pxbrow(i: int32) -> int32:
+    return bfill_pxbrow[i]
+
+
+# Pixel offset ABOVE that anchor row: the declared `bottom` length.
+def he_bfill_pxboff(i: int32) -> int32:
+    return bfill_pxboff[i]
 
 # ---- <img> src registry (for the host driver to enumerate + decode) ----
 # Every <img src="..."> seen during layout records its src string here so the

@@ -53,6 +53,8 @@ def _reset_layout():
         bfill_oof[fb] = cast[uint8](0)
         bfill_pxy[fb] = -1
         bfill_pxh[fb] = -1
+        bfill_pxbrow[fb] = -1
+        bfill_pxboff[fb] = 0
         # background-clip insets (px, per side) — 0 = clip to the fill rect the
         # box already computes, which is the border-box/padding-box behaviour
         # every fill had before the property was parsed. Clearing them here is
@@ -324,6 +326,11 @@ def _apply_positioned():
             minrow = bfill_top[pos_bf0[i]]
         dx: int32 = 0
         drow: int32 = 0
+        # The containing block's padding-box BOTTOM as a ROW index, for the
+        # bottom-anchored out-of-flow case below. -1 until the absolute branch
+        # resolves a real positioned ancestor: `fixed` and a box with no
+        # positioned ancestor fall back to the page and keep the old path.
+        cbbot_row: int32 = -1
         if maxx >= 0:
             elemw: int32 = maxx - minx
             if pos_mode[i] == 1 and pos_fx[i] == 2:        # STICKY
@@ -381,6 +388,7 @@ def _apply_positioned():
                         cb_right = pos_cb_rx[cbrun]
                     if pos_cb_bot[cbrun] >= 0:
                         cb_bot = pos_cb_bot[cbrun]
+                        cbbot_row = pos_cb_bot[cbrun]
                 # SHRINK-TO-FIT (CSS 10.3.7): a `width:auto` abs/fixed box sizes to
                 # its content, NOT the containing-block width. Without this an
                 # auto-width `top;right` badge fills the whole CB and starts at the
@@ -484,6 +492,20 @@ def _apply_positioned():
             icb = 1
         if icb != 0 and pos_t[i] >= 0 and pos_scroll_y == 0:
             oof_pxy = pos_t[i]
+        # BOTTOM-ANCHORED: `position:absolute; bottom:B` with NO `top`, inside a
+        # real positioned ancestor. The row path cannot express this — see the
+        # bfill_pxbrow block in layout/box.ad — because an out-of-flow box's row
+        # span is degenerate, so the row arithmetic subtracts a height of ZERO
+        # and pins the box's TOP where its BOTTOM belongs. Hand the painter the
+        # anchor row and the offset instead; it knows the row's pixel edge.
+        # `top` wins when both are declared (CSS 2.1 §10.6.4 for the
+        # over-constrained case), so this is strictly the `bottom`-only box.
+        oof_pxbrow: int32 = -1
+        oof_pxboff: int32 = 0
+        if oofk == 1 and icb == 0 and pos_t[i] < 0 and pos_b[i] >= 0 and \
+           cbbot_row >= 0 and pos_scroll_y == 0:
+            oof_pxbrow = cbbot_row
+            oof_pxboff = pos_b[i]
         # Explicit CSS height in REAL px, per fill, recovered from the height pin
         # (kind 0 = `height`) whose row span IS that fill's row span. The run
         # covers the box AND its descendants — an abspos box's in-flow children
@@ -552,6 +574,12 @@ def _apply_positioned():
                 bfill_oof[bf] = cast[uint8](oofk)
                 if at_run_top != 0:
                     bfill_pxy[bf] = oof_pxy
+                    # The bottom anchor rides with the box's OWN background
+                    # (the run-top fills), exactly like `top`: a descendant
+                    # lower in the box keeps its row-derived y so it stays
+                    # related to its siblings.
+                    bfill_pxbrow[bf] = oof_pxbrow
+                    bfill_pxboff[bf] = oof_pxboff
             bf = bf + 1
         # Move this box's explicit-height PIXEL PINS with it. A pin names ROW
         # INDICES, and the box was just relocated by `drow` rows; a pin left behind

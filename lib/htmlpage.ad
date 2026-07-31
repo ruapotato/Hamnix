@@ -36,6 +36,7 @@ from lib.htmlengine import he_n_segs, he_total_rows, he_page_width, \
     he_bfill_padt, he_bfill_padb, he_bfill_bord, he_page_bg, \
     he_bfill_clipl, he_bfill_clipt, he_bfill_clipr, he_bfill_clipb, \
     he_bfill_oof, he_bfill_pxy, he_bfill_pxh, \
+    he_bfill_pxbrow, he_bfill_pxboff, \
     he_n_lnkboxes, he_lnkbox_lid, he_lnkbox_lx, he_lnkbox_rx, \
     he_lnkbox_top, he_lnkbox_bot, he_lnkbox_padt, he_lnkbox_padb, \
     he_filter_is_list, he_filter_list_len, he_filter_list_at, \
@@ -534,12 +535,22 @@ _hpg_fy1: int32 = 0
 def _hpg_fill_y(fi: int32, ftop: int32, fbot: int32) -> int32:
     fy0: int32 = 0
     if he_bfill_oof(fi) != 0:
+        pxh: int32 = he_bfill_pxh(fi)
+        # BOTTOM-ANCHORED (`position:absolute; bottom:B` in a positioned
+        # ancestor): the box's BOTTOM edge is what CSS pinned, so resolve that
+        # edge first and hang the height off it. The anchor row is the row one
+        # past the containing block's last, so _hpg_row_y of it IS the block's
+        # bottom pixel edge — a value layout could not compute, because row
+        # heights are only resolved here.
+        pxbr: int32 = he_bfill_pxbrow(fi)
+        if pxbr >= 0 and pxh > 0:
+            _hpg_fy1 = _hpg_row_y(pxbr) - he_bfill_pxboff(fi)
+            return _hpg_fy1 - pxh
         pxy: int32 = he_bfill_pxy(fi)
         if pxy >= 0:
             fy0 = pxy
         else:
             fy0 = _hpg_row_y(ftop)
-        pxh: int32 = he_bfill_pxh(fi)
         if pxh > 0:
             _hpg_fy1 = fy0 + pxh
         else:
