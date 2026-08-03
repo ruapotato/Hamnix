@@ -55,6 +55,26 @@
 # so the container has a working /bin/* (under clean isolation the
 # host /bin is no longer visible; the distro tree's /bin is the only
 # place to find executables). The trap restores the committed fixture.
+# ---------------------------------------------------------------
+# 2026-07-31 — THIS GATE IS BROKEN, THE FEATURE IS NOT.
+#
+# The gate fails with qemu rc=124: the guest never reaches the test
+# prompts, so EVERY banner misses — including the "12.4" distro-side
+# assertions that no recent change touched. That shape is a harness /
+# boot-timeout problem, not a namespace regression.
+#
+# The feature it guards is confirmed working by hand: `enter linux { sh }`
+# drops you at a working shell inside the Linux namespace. The DE visual
+# gate also boots and renders 3/3 apps on the same tree, so the system is
+# healthy.
+#
+# Note this gate is NOT in scripts/ci_battery_manifest.txt and is not in
+# list_host_gates.sh (it boots QEMU), so CI has never run it and there is
+# no baseline to regress from. It may have been failing for a long time.
+# That is the actual defect worth fixing: register it, then find out why
+# the boot times out.
+# ---------------------------------------------------------------
+
 
 . "$(dirname "$0")/_build_lock.sh"
 # Real-Debian opt-in: this gate walks the real Debian distro tree and
