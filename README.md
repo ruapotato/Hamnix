@@ -57,6 +57,43 @@ loop through userspace-posted srvfds. See
 
 ---
 
+## What actually works — measured, not asserted
+
+Everything below was captured on **2026-08-03** from a freshly built image
+booted six times under OVMF/KVM, with every claim backed by a real
+framebuffer scanout or serial transcript. The gallery is in
+[`docs/screenshots/`](docs/screenshots/) and the full inventory —
+deliberately unflattering — is [`docs/what_works.md`](docs/what_works.md).
+
+| | |
+|---|---|
+| Desktop launchers shipped | 26 |
+| Launched and mapped a window | **26 / 26** |
+| Painted a real UI (not a blank frame) | **26 / 26** |
+| Responded to the keystrokes sent | **16 / 26** |
+| Could be closed | **0 / 26** |
+| Kernel faults across six boots | **0** |
+
+**The desktop is real.** What is thin is the *second* minute of use:
+several applications ignore the keyboard, nothing can be closed from a
+script (`kill` does not unmap a scene window, and the `free <wid>` ctl
+verb is hostowner-gated), and two of the three games are already showing
+GAME OVER by the time the window settles.
+
+Known rough edges at 1.0, all reproduced: the Applications menu has no
+keyboard navigation and ignores Backspace in its search box; the Software
+app renders `hpm`'s stdout as package rows and disagrees with `hpm list`
+on the same boot; the Input Inspector is a debug console shipping as an
+application; pointer latency degrades as windows accumulate (117 ms at
+two windows, 310 ms at twenty).
+
+**Not evidenced by that run:** the capture machine had no network card, so
+every browser claim there is against the built-in `about:demo` page rather
+than the live web; no real hardware; no completed install; no audio
+actually heard; a single vCPU.
+
+---
+
 ## What it boots into today
 
 - **Real hardware — historically yes, UNVERIFIED AT THIS REVISION.**
@@ -139,10 +176,12 @@ loop through userspace-posted srvfds. See
 - **hamUI** — file-server-per-window UI. Phases 1, 2, 4a, 4b, 4c
   landed: `/dev/wsys/<N>/{text,output,cmd,ns,pid,uid,kind,geometry}`
   per window; layered draw protocol under `/dev/wsys/<N>/draw/`;
-  `hamUId` userland renderer daemon with GNOME2/MATE-style panel,
-  taskbar (window-list buttons), minimize, and live clock; drag-title-
-  to-move + click-to-close window management; `/dev/fb` framebuffer
-  cdev; interactive windowed hamsh terminal. An AI agent can
+  the desktop is `hamdesktop` + `hampanelscene` over the scene-file
+  protocol, with a GNOME2/MATE-style panel, taskbar (window-list
+  buttons), minimise, live clock and a 4-workspace switcher;
+  drag-title-to-move window management; `/dev/fb` framebuffer cdev;
+  interactive windowed hamsh terminal. (The older `hamUId` renderer
+  daemon is retired — `rc.5` no longer starts it.) An AI agent can
   `cat /dev/wsys/N/text` to see screen content and
   `echo cmd > /dev/wsys/N/cmd` to drive it. **X11 first slice**: native
   X11 server in `user/x11/` over `/net/tcp` (core-protocol subset).
@@ -171,8 +210,9 @@ loop through userspace-posted srvfds. See
 - **Native HTTP server** — `httpd` concurrent web server; per-connection
   worker processes; name-based virtual hosts; static files; CGI.
 - **`vi`** — native Adder `vi` modal text editor.
-- **`hamfm`** — TUI file manager with an Applications menu entry in
-  the hamUId panel.
+- **`hamfmscene`** — graphical file manager (the desktop's "Files"),
+  with an Applications menu entry. A TUI `hamfm` also exists for the
+  serial console.
 - **`tar` + `gzip` / `gunzip`** — native ustar archiver and DEFLATE
   compressor; survival primitives for the native namespace.
 - ~80 native userland binaries (`ls`, `cat`, `cp -r`, `find`, `du`,

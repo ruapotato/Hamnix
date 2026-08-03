@@ -1,7 +1,17 @@
 # /etc/desktop.icons — scene-file DE desktop launcher icons.
 #
-# Read by /bin/hamdesktop at startup (through its own namespace; no global
-# bypass). One launcher per non-blank, non-'#' line:
+# ⚠ NOT CURRENTLY READ (verified 2026-08-03, 1.0). /bin/hamdesktop builds
+# the desktop from ~/Desktop/*.desktop via the shared directory scanner;
+# this path survives only in hamdesktop.ad COMMENTS, with no code behind
+# them. The entries below do not match what renders, in either direction.
+#
+# Kept rather than deleted because removing shipped config is a behaviour
+# change, and because the format below is still the intended shape if the
+# read path is restored. If you are looking for what the desktop actually
+# shows, look in ~/Desktop/.
+#
+# The original contract, for reference. One launcher per non-blank,
+# non-'#' line:
 #
 #     label|type|action
 #
