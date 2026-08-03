@@ -29,6 +29,10 @@
 #   * SEED-vs-NATIVE agreement: both must return 0 (a backend that drops
 #     fragments returns a nonzero tag, so a one-sided regression is a
 #     visible disagreement, not a silent divergence).
+#   * The MIXED-PREFIX seams the fixture cannot express: `b".." b".."`
+#     must JOIN on both, and `f".." ".."` / `".." f".."` must be REJECTED
+#     (nonzero exit) by both. Rejection is an acceptable answer; accepting
+#     one and keeping a single fragment is the original bug in a prefix.
 #   * A TREE INVARIANT: every joined literal in the shipped .ad tree is
 #     re-lexed and the joined text asserted non-empty, so a regression to
 #     drop-semantics cannot pass by accident on the fixture alone.
@@ -139,7 +143,64 @@ done
 strings -a "$WORK/native.o" | grep -qx -- "line two" \
     || { echo "[$TAG] FAIL: native object lost the tail past a \\n seam"; exit 1; }
 
-# ---- Part D: tree invariant — every shipped join re-lexes to joined text --
+# ---- Part D: the MIXED-PREFIX seams, where a silent drop could return ----
+# The join rule is defined for plain and byte literals. The seams NOT covered
+# by the fixture are `b"..." b"..."` and the two mixed-prefix orders
+# `f"..." "..."` / `"..." f"..."`. These are exactly the shapes a future
+# f-string change could quietly start swallowing, so pin them on BOTH front
+# ends and require the two to AGREE:
+#   * b"aa" b"bb"  -> joined, on both.
+#   * f"aa{x}" "bb" and "aa" f"bb{x}" -> REJECTED (nonzero exit, a parse
+#     error) on both. Rejection is fine; SILENCE is not. A front end that
+#     accepts one of these and keeps only one fragment is the original bug
+#     wearing a prefix, and it would exit 0 here.
+echo "[$TAG] mixed-prefix seams: bytes join, f-string adjacency rejected"
+cat > "$WORK/mp_bytes.ad" <<'EOF'
+def mp_bytes() -> Ptr[uint8]:
+    s: Ptr[uint8] = b"QQaa" b"QQbb"
+    return s
+EOF
+cat > "$WORK/mp_fs.ad" <<'EOF'
+def mp_fs(x: int64) -> Ptr[uint8]:
+    s: Ptr[uint8] = f"QQaa{x}" "QQbb"
+    return s
+EOF
+cat > "$WORK/mp_sf.ad" <<'EOF'
+def mp_sf(x: int64) -> Ptr[uint8]:
+    s: Ptr[uint8] = "QQaa" f"QQbb{x}"
+    return s
+EOF
+
+# b"..." b"..." must JOIN on both front ends.
+python3 -m compiler.adder asm --target=x86_64-adder-user -O0 \
+    "$WORK/mp_bytes.ad" -o "$WORK/mp_bytes.s" >/dev/null 2>&1 \
+    || { echo "[$TAG] FAIL: seed rejected b\"aa\" b\"bb\""; exit 1; }
+grep -q -- "QQaaQQbb" "$WORK/mp_bytes.s" \
+    || { echo "[$TAG] FAIL: seed dropped a byte-literal fragment"; exit 1; }
+"$PROJ_ROOT/build/cutover/host_ac.elf" --target=x86_64-adder-user \
+    "$WORK/mp_bytes.ad" "$WORK/mp_bytes.o" >/dev/null 2>&1 \
+    || { echo "[$TAG] FAIL: native rejected b\"aa\" b\"bb\""; exit 1; }
+strings -a "$WORK/mp_bytes.o" | grep -qx -- "QQaaQQbb" \
+    || { echo "[$TAG] FAIL: native dropped a byte-literal fragment"; exit 1; }
+
+# Mixed f-string adjacency must FAIL LOUDLY on both — never silently truncate.
+for c in mp_fs mp_sf; do
+    if python3 -m compiler.adder asm --target=x86_64-adder-user -O0 \
+            "$WORK/$c.ad" -o "$WORK/$c.s" >/dev/null 2>&1; then
+        echo "[$TAG] FAIL: seed ACCEPTED mixed f-string adjacency ($c) —"
+        echo "        if it kept only one fragment this is a silent drop"
+        exit 1
+    fi
+    if "$PROJ_ROOT/build/cutover/host_ac.elf" --target=x86_64-adder-user \
+            "$WORK/$c.ad" "$WORK/$c.o" >/dev/null 2>&1; then
+        echo "[$TAG] FAIL: native ACCEPTED mixed f-string adjacency ($c) —"
+        echo "        if it kept only one fragment this is a silent drop"
+        exit 1
+    fi
+done
+echo "[$TAG] mixed-prefix seams OK (bytes join; f-adjacency rejected by both)"
+
+# ---- Part E: tree invariant — every shipped join re-lexes to joined text --
 echo "[$TAG] tree sweep: joined literals in the shipped .ad tree"
 python3 - <<'PY'
 import sys, os, pathlib

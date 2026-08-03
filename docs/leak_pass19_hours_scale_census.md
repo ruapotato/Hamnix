@@ -358,10 +358,18 @@ detached run is executing.
 
 ## 6. The next counted questions
 
-1. **Fix adjacent string-literal concatenation in the Adder front end.**
-   Carried forward unchanged from pass 18: 35 diagnostics were silently losing
-   everything after their first fragment, and the next one written will do the
-   same. Concatenate, or REJECT.
+1. ~~**Fix adjacent string-literal concatenation in the Adder front end.**~~
+   **ALREADY DONE when this pass was written — `d3a04b6e`, same day (annotated
+   2026-08-03).** This pass carried the item forward from pass 18 from memory
+   instead of re-checking the tree, and it then generated at least one further
+   dispatch. The native parser concatenates (the Python seed always did, so the
+   bug was a seed/native divergence — a miscompile). Gate:
+   `scripts/test_compiler_adjacent_strings.sh`, registered in
+   `ci_battery_manifest.txt`, extended 2026-08-03 with the mixed-prefix seams
+   (`b".." b".."` joins; `f".." ".."` is rejected by both front ends). The
+   35 diagnostic call sites had already been mechanically joined in pass 18,
+   so nothing in the tree was truncated by the time this was written. **Brief
+   from the tree, not from the previous pass's open list.**
 2. **Run this gate across a REBOOT-free day, not two hours.** Two hours is the
    first honest hours-scale reading; the bar is months. The gate takes `GAP_S`
    and needs no change to answer at 12 or 24 hours, and the counted question is

@@ -277,6 +277,14 @@ not. Verified in band afterwards — the run-span legend and the full
 The language-layer fix (make the parser concatenate, or REJECT the construct
 loudly) is named below rather than attempted here.
 
+> **CLOSED 2026-07-30 by `d3a04b6e`** (annotated 2026-08-03). The native
+> parser now CONCATENATES, matching the Python seed, which had concatenated
+> all along — so this was a seed/native semantic divergence, i.e. a
+> miscompile, not merely a missing feature. Gate
+> `scripts/test_compiler_adjacent_strings.sh`, registered in
+> `ci_battery_manifest.txt`. The item below is therefore DONE; do not
+> re-dispatch it.
+
 ---
 
 ## 6. Gates run
@@ -365,11 +373,11 @@ That is the next question, and it is cheap.
    above is a minutes-scale measurement; the user's bar is months. This is
    the smallest experiment that speaks to it, and both controls make the
    difference meaningful.
-2. **Fix adjacent string-literal concatenation in the Adder front end** — 35
-   diagnostics were silently losing everything after their first fragment,
-   and the next one written will do the same. Concatenate, or REJECT: a
-   construct that compiles and silently discards half its argument is the
-   purest form of the silent-cap class this campaign keeps finding.
+2. ~~**Fix adjacent string-literal concatenation in the Adder front end**~~ —
+   **DONE, `d3a04b6e` (2026-07-30).** 35 diagnostics were silently losing
+   everything after their first fragment. The native parser concatenates now;
+   the seed already did. Gated by
+   `scripts/test_compiler_adjacent_strings.sh` (registered).
 3. **Point the origin instrument at the DE's own long-lived processes** —
    `hamUId`, the panel, the compositor. Every gate so far measures apps that
    OPEN AND CLOSE; nothing measures the processes that never exit, which are
