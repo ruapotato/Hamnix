@@ -173,6 +173,7 @@ section() {                         # section <tag> <command>
     done
     sed -n "/BEGIN_$1/,/END_$1/p" "$LOG"
 }
+if [ -z "${SKIP_TEXT:-}" ]; then
 section APPSDIR  'ls /etc/hamde/apps'        > "$OUT_DIR/txt_apps_dir.txt"
 # The desktop icon set is PERSISTED to /etc/desktop.icons by hamdesktop;
 # /dev/wsys/desktop.icons is not a path (verified 2026-08-03: "dev: no such
@@ -183,6 +184,7 @@ section APPMENU  'cat /dev/wsys/appmenu'     > "$OUT_DIR/txt_appmenu.txt"
 section HPM      'hpm list'                  > "$OUT_DIR/txt_hpm_list.txt"
 section FREE     'free'                      > "$OUT_DIR/txt_free.txt"
 section UNAME    'uname -a'                  > "$OUT_DIR/txt_uname.txt"
+fi
 
 # --- 00: the idle desktop ---------------------------------------------
 sleep 3
@@ -198,16 +200,20 @@ while [ "$SECONDS" -lt "$d" ]; do
 done
 sleep "$SETTLE"
 snapshot 01-appmenu || true
-# Expand the first category so the shot shows an actual CATALOGUE, not
-# seven collapsed rows. Down enters the list, Right opens the submenu.
+# The menu opens with all seven categories COLLAPSED, so the open-menu shot
+# alone shows no catalogue. Type into the search box FIRST — that is the
+# menu's real discovery path and the only one proven to work. Do NOT send
+# esc before typing: esc closes the whole menu (verified 2026-08-03; an
+# earlier ordering that pressed esc first captured a bare desktop).
+for k in ${MENU_FILTER:-s n a k}; do mon_cmd "sendkey $k"; sleep 0.35; done
+sleep 2
+snapshot 01b-appmenu-search || true
+# Then try keyboard navigation into a submenu. Down/Right does NOT expand a
+# category as of 2026-08-03 — the shot is kept so the gap stays visible.
+for k in bs bs bs bs; do mon_cmd "sendkey $k"; sleep 0.2; done
 mon_cmd "sendkey down"; sleep 0.5
 mon_cmd "sendkey right"; sleep 1.5
 snapshot 01a-appmenu-submenu || true
-# ...and the live search filter, which is the menu's real discovery path.
-mon_cmd "sendkey esc"; sleep 0.5
-for k in s n a k; do mon_cmd "sendkey $k"; sleep 0.3; done
-sleep 2
-snapshot 01b-appmenu-search || true
 menu_pid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
 menu_wid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*window \([0-9]*\) mapped.*/\1/p')
 mon_cmd "sendkey esc"; sleep 2
@@ -247,10 +253,13 @@ for desktop in etc/hamde/apps/*.desktop; do
     app=$(basename "$desktop" .desktop)
     bin=$(grep -m1 '^Exec=' "$desktop" | cut -d= -f2 | awk '{print $1}')
     prog=$(basename "$bin")
+    # Increment BEFORE the ONLY filter so a given app keeps the SAME tag
+    # number whichever batch it is captured in — batches exist so that no
+    # more than a handful of undismissable windows pile up per boot.
+    idx=$((idx + 1))
     if [ -n "${ONLY:-}" ]; then
         grep -qw "$app" <<<"$ONLY" || continue
     fi
-    idx=$((idx + 1))
     tag=$(printf "%02d-%s" "$idx" "$app")
     echo "[shots] === $tag  ($bin) ==="
 
