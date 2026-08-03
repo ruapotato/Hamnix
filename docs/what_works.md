@@ -143,6 +143,9 @@ All 26 launch and paint. Per-app detail, and the shots themselves, are in
   version string has to move with it.
 * System Monitor's process table shows `__rfork_` as the command name for
   most processes.
+* Most apps draw **their own title bar underneath the window manager's**, so
+  the window title appears twice (Coin Dash, Calendar, Control Center, Notes,
+  Chess, Audio Player, Software, Install Hamnix, Video Player, …).
 * Cosmetic: the Audio Player has an unpainted black band along the bottom of
   its window and its "Level" label overlaps the seek bar; Chess draws pieces
   as the letters R N B Q K P rather than glyphs.

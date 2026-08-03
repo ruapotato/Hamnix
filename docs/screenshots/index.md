@@ -76,6 +76,19 @@ category. The popup is a fixed size and **truncates** rather than growing or
 scrolling — the "Games" section here is cut off mid-list. Backspace is
 ignored, so a mistyped filter can only be cleared by reopening the menu.
 
+## Several apps at once
+
+![Five apps open on one desktop](99-desktop-final.png)
+
+Browser, Audio Player, Calculator, Calendar and Coin Dash sharing one desktop
+at the end of a capture batch, with the taskbar tracking all five. The
+calculator reads `789` — the digits were typed through the real PS/2 path, so
+this frame is also the evidence that keyboard input reaches a focused window.
+
+Note that most apps draw **their own title bar underneath the window
+manager's** ("Coin Dash" appears twice, as does "Calendar"). That double
+titling is visible in most of the app shots below.
+
 ---
 
 ## The 26 shipped applications
