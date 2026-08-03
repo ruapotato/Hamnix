@@ -2,6 +2,12 @@
   <img src="logo.svg" alt="Hamnix logo" width="240"/>
 </p>
 
+<p align="center">
+  <b><a href="https://255.one/">255.one</a></b> — website, screenshots and downloads
+  &nbsp;·&nbsp;
+  <a href="https://github.com/HamnixOS/Hamnix/releases/latest">Latest release</a>
+</p>
+
 # Hamnix
 
 **A from-scratch x86_64 OS (with an in-progress AArch64 port), written
@@ -153,7 +159,9 @@ actually heard; a single vCPU.
   service declarations; default multi-user runlevel 3.
 - **Package manager (`hpm`)** — Hamnix-native, binary-only, BFS dep
   solver, `hpm install hamnix-base` metapackage pulls 17 component
-  packages. Debian-shape subdirectory channels at `https://255.one/`
+  packages. Debian-shape subdirectory channels at
+  [`https://255.one/`](https://255.one/) — the project's website, which is
+  also the live package repository
   (`/main/` live; `/non-free/` + `/non-free-firmware/` placeholders);
   `hpm channels` / `enable` / `disable` for subscription. Default:
   `main` only.
@@ -416,6 +424,23 @@ cross-cutting design specs; the subsystem docs live under
   never per-site workarounds.
 - Naming: the language and compiler are **Adder**. The OS is **Hamnix**.
   Source files end in `.ad`.
+
+---
+
+## Links
+
+- **[255.one](https://255.one/)** — the project's website: what it is,
+  screenshots from a running system, an honest status table, and downloads.
+  It is also the live `hpm` package repository.
+- **[Releases](https://github.com/HamnixOS/Hamnix/releases)** — installer
+  images, with checksums and release notes.
+- **[docs/BOOT.md](docs/BOOT.md#0-try-it-build-an-image-boot-it-install-it-boot-the-result)**
+  — build an image, boot it, install it, boot the result, as plain `qemu`
+  commands.
+- **[docs/what_works.md](docs/what_works.md)** — the measured, deliberately
+  unflattering inventory of what does and does not work.
+- **[HamnixOS/packages](https://github.com/HamnixOS/packages)** — the site
+  and the package channels.
 
 ---
 
