@@ -653,6 +653,23 @@ per-gate `GATE_TIMEOUT`, 50-min ceiling), and the installer OVMF boot-heartbeat
 job that **does** build `build/hamnix-installer.img` every push. Docs-only pushes
 skip the workflow (`paths-ignore`). Adding a gate = one line in the manifest.
 
+- [ ] **The two `test_distro_*` gates are in NO registry — and one of them is red**
+  (found 2026-08-03 while verifying the 1.0 version bump). `grep -c test_distro_namespace
+  scripts/ci_battery_manifest.txt scripts/list_host_gates.sh` = **0 and 0**; same for
+  `test_distro_debian`. They boot QEMU, so the host sweep excludes them by construction,
+  and nobody ever added them to the battery — **CI has never run either one, so there is
+  no baseline and they may have been failing for a long time**. `test_distro_debian.sh`
+  currently FAILs `qemu rc=124`: the guest never reaches the prompts, so every banner
+  MISSes, including `12.4` assertions no recent change touched. The 1.0 bump is
+  **not** the cause (version strings + the hand-counted `uname.ad` length literal are
+  consistent; the DE visual gate renders 3/3 apps on the same tree).
+  Suspect the hardcoded `timeout 60s` at `scripts/test_distro_debian.sh:146` — a fixed
+  60 s budget for a whole boot cannot survive a loaded host (observed failing at load
+  average ~10). Fix the budget (or make it adaptive), confirm a PASS isolated on a quiet
+  host, THEN add both to the manifest. Do not register them while red.
+  This is another instance of [[project_unregistered_gate_backlog]] — 1495 gates on
+  disk, 528 in the manifest.
+
 - [ ] **`test_installer_nvme_inram.sh` (installed-disk, real OVMF) still un-gated**
   — it hard-requires `/dev/kvm` (SKIPs without it) and runs a 3-stage
   install→reboot→boot flow too slow for TCG. Gate it on a KVM-enabled
