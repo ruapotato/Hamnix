@@ -43,6 +43,111 @@ ESP; on the developer `-kernel` path it is loaded by GRUB's multiboot1
 loader via the shim. Both honour the 64-bit `p_paddr` program-header
 fields the kernel's VMA/LMA split needs.
 
+## 0. Try it: build an image, boot it, install it, boot the result
+
+The whole path with plain `qemu-system-x86_64` commands — no wrapper
+scripts, so you can see exactly what is being asked of the firmware.
+
+**Two OVMF gotchas are baked into the commands below.** Both cost an
+evening if you hit them cold:
+
+1. **Use a *writable* copy of OVMF.** A read-only `-bios` can drop you at
+   the EFI shell instead of booting, because the firmware cannot persist
+   its boot variables.
+2. **Put `bootindex=0` on the medium you want booted.** Once an NVMe
+   target or a NIC is attached, OVMF stops auto-selecting the installer
+   and falls through to the EFI shell or PXE.
+
+```sh
+cd /path/to/Hamnix
+cp /usr/share/ovmf/OVMF.fd /tmp/ovmf.fd        # writable OVMF — do this once
+```
+
+### 1. Build the installer image
+
+```sh
+bash scripts/build_installer_img.sh            # -> build/hamnix-installer.img
+```
+
+### 2. Make a blank target disk
+
+```sh
+qemu-img create -f qcow2 /tmp/hamnix-disk.qcow2 8G
+```
+
+### 3. Boot the installer, with the blank disk attached
+
+This comes up to the **live desktop**. It does **not** touch any disk on
+its own — you launch the installer yourself, and it prompts for the target
+and confirms the erase before writing anything.
+
+```sh
+qemu-system-x86_64 -enable-kvm -cpu host -m 2G -bios /tmp/ovmf.fd \
+  -drive file=build/hamnix-installer.img,format=raw,if=none,id=instmedia \
+  -device virtio-blk-pci,drive=instmedia,bootindex=0 \
+  -drive file=/tmp/hamnix-disk.qcow2,format=qcow2,if=none,id=nvmetgt \
+  -device nvme,drive=nvmetgt,serial=hamnvme01 \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+  -vga std -display gtk -serial stdio
+```
+
+In the guest, either click **Install Hamnix** on the desktop, or run
+`install` at a hamsh prompt. It lists the disks, warns that the target
+will be erased, and waits for you to pick one and confirm. When it prints
+`[install-nvme] install complete`, shut the VM down.
+
+### 4. Boot the installed system
+
+Drop the installer medium entirely and move `bootindex=0` to the NVMe:
+
+```sh
+qemu-system-x86_64 -enable-kvm -cpu host -m 2G -bios /tmp/ovmf.fd \
+  -drive file=/tmp/hamnix-disk.qcow2,format=qcow2,if=none,id=nvmeroot \
+  -device nvme,drive=nvmeroot,serial=hamnvme01,bootindex=0 \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+  -vga std -display gtk -serial stdio
+```
+
+That is a real installed system: GPT + ESP + ext4 root on the NVMe, which
+grows to fill the disk on first boot.
+
+### Just look at the live desktop
+
+No target disk, nothing to install:
+
+```sh
+qemu-system-x86_64 -enable-kvm -cpu host -m 2G -bios /tmp/ovmf.fd \
+  -drive file=build/hamnix-installer.img,format=raw,if=virtio \
+  -vga std -display gtk -serial stdio
+```
+
+### Onto a USB stick, for real hardware
+
+```sh
+sudo dd if=build/hamnix-installer.img of=/dev/sdX bs=4M status=progress
+```
+
+Check `/dev/sdX` twice — `dd` will not ask. And see the warning in
+[`REAL_HARDWARE.md`](REAL_HARDWARE.md): bare-metal boot worked historically
+but is **unverified at this revision**.
+
+### Convenience wrappers, if you would rather not type the above
+
+```sh
+DISK=/tmp/hamnix-disk.qcow2 bash scripts/run_installer.sh   # boots live; you run `install`
+```
+
+**Testing only — unattended auto-install.** This builds a *separate*
+medium carrying an `/etc/installer-autorun` marker and **auto-wipes the
+target with no prompt**. It exists for CI and for the keyboard-less NUC. A
+normal installer image never does this.
+
+```sh
+AUTO_INSTALL=1 DISK=/tmp/hamnix-disk.qcow2 bash scripts/run_installer.sh
+```
+
+---
+
 ## 1. Developer dev loop
 
 For the inner dev loop while iterating on `init/main.ad` or kernel modules:
