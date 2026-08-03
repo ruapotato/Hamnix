@@ -141,6 +141,19 @@ def main():
         print("geometry mismatch", file=sys.stderr)
         return 2
 
+    # --box x,y,w,h — explicit override. Needed when an app's window chrome
+    # is pixel-identical to the window it covers (Tetris over Snake: both
+    # near-black), so NO threshold can find the frame and the automatic crop
+    # keeps only the playfield.
+    if "--box" in sys.argv:
+        bx, by, bw_, bh_ = (int(v) for v in
+                            sys.argv[sys.argv.index("--box") + 1].split(","))
+        from PIL import Image
+        img = Image.frombytes("RGB", (w, h), bytes(pb[:w * h * 3]))
+        img.crop((bx, by, bx + bw_, by + bh_)).save(out_path)
+        print("%s %dx%d+%d+%d (explicit box)" % (out_path, bw_, bh_, bx, by))
+        return 0
+
     # Try progressively LOWER thresholds and keep the largest box that is
     # still plausibly one window (< 60% of the screen). A single fixed
     # threshold cannot work for every app: at 24 an app drawn over a
