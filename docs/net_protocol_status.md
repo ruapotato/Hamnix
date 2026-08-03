@@ -1,7 +1,7 @@
 # Native net-protocol honesty tracker
 
 **Date:** 2026-06-13
-**Source audit:** [docs/audit_gap_vs_linux_2026-06-13.md](audit_gap_vs_linux_2026-06-13.md) §3
+**Source audit:** [docs/audit_gap_vs_linux_2026-06-13.md](history/audit_gap_vs_linux_2026-06-13.md) §3
 ("Are we lying — the in-memory selftest cluster")
 
 This file is the consolidated, single-source-of-truth tracker for what each

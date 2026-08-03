@@ -5,11 +5,19 @@
 # Hamnix
 
 **A from-scratch x86_64 OS (with an in-progress AArch64 port), written
-in Adder — a Python-syntax systems language with a hand-written compiler
-(no LLVM).** Hamnix is the OS; Adder is the language and compiler used to
-write it. On x86_64 it is UEFI-only; boots off a GPT disk image and
-reaches an interactive shell on real hardware. The AArch64 backend and
-kernel port boot to EL0 userspace on QEMU `virt`.
+in Adder — a Python-syntax systems language with its own compiler.**
+Hamnix is the OS; Adder is the language and compiler used to write it.
+
+Adder has two backends. The **hand-written x86_64 backend** compiles the
+kernel, and is both the bootstrap path and the differential oracle that
+every other lane is checked against. An **LLVM backend** (SSA IR →
+textual LLVM IR → clang) builds all 278 userland applications by
+default, and is the only supported path for AArch64.
+
+On x86_64 it is UEFI-only and boots off a GPT disk image to an
+interactive shell. The AArch64 port boots to EL0 userspace on QEMU
+`virt`, with per-task address spaces, demand paging, and per-task kernel
+stacks — a task can block inside a syscall.
 
 The novel claim is the **layered architecture**: native Plan 9-shape
 syscalls underneath, with a Linux ABI shim sitting on top so unmodified
@@ -28,7 +36,7 @@ Plan 9 from scratch. Hamnix picks both, layered:
 | **4** | Wire protocols | 9P (kernel↔userspace), [DE scene files](docs/de_scene_file_arch.md) (file-server-per-window UI; rearchitecting) |
 | **3** | Userspace services | 9P file servers (hamwd, distrofs, ...) — Hamnix programs |
 | **2** | Linux ABI shims | `linux_abi/` — translates Linux syscalls onto Layer 1 |
-| **1** | Native syscalls | **Plan 9-shape** — ~25 calls including `rfork`, `bind`, `mount`, `errstr`. See [`docs/native-api.md`](docs/native-api.md) |
+| **1** | Native syscalls | **Plan 9-shape** — 106 calls including `rfork`, `bind`, `mount`, `errstr`. See [`docs/native-api.md`](docs/native-api.md) |
 | **0** | Kernel internals | Linux-shape — task_struct, scheduler, allocators. Porting `kernel/sched/core.c` → `kernel/sched/core.ad` is the unit of work. |
 
 The clearest demonstration: the **cdev family**. Native code reads
@@ -51,12 +59,20 @@ loop through userspace-posted srvfds. See
 
 ## What it boots into today
 
-- **Real hardware** — boots end-to-end on the Intel Skull Canyon NUC
-  (UEFI, USB keyboard input via the L-shim USB-HC bridge, reaches
-  hamsh prompt, runs `enter linux { /bin/sh }` against real Debian
-  apt/dpkg). Asus i5-4210U boots to hamsh prompt in Legacy/BIOS mode
-  (built-in keyboard unresponsive — leading hypothesis: EHCI-routed,
-  not i8042). See [`docs/REAL_HARDWARE.md`](docs/REAL_HARDWARE.md).
+- **Real hardware — historically yes, UNVERIFIED AT THIS REVISION.**
+  Read this before trying it on a machine you care about. The NUC and
+  laptop results below are real and reproducible *as recorded*, but they
+  were taken many hundreds of commits ago. Development and testing since
+  have been almost entirely under QEMU/KVM, and **no bare-metal boot has
+  been re-confirmed at 1.0**. Treat bare metal as "known to have worked
+  once, expected to need work again", not as a supported configuration.
+  - Intel Skull Canyon NUC — booted end-to-end (UEFI, USB keyboard via
+    the L-shim USB-HC bridge, hamsh prompt, `enter linux { /bin/sh }`
+    against real Debian apt/dpkg).
+  - Asus i5-4210U — booted to hamsh prompt in Legacy/BIOS mode; built-in
+    keyboard unresponsive (leading hypothesis: EHCI-routed, not i8042).
+  - See [`docs/REAL_HARDWARE.md`](docs/REAL_HARDWARE.md). If you do try
+    it, a report either way is genuinely useful.
 - **In-RAM installer image** (`build/hamnix-installer.img`) via
   `scripts/build_installer_img.sh` — **the recommended real-hardware
   artifact.** An ESP-only GPT image: UEFI firmware loads the installer
@@ -246,11 +262,15 @@ it to change boot; no kernel rebuild.
 Adder source (.ad — Python syntax, static types)
    │
    ▼
-adder/  ──►  codegen_x86.py (hand-written, no LLVM)
+adder/  ──►  codegen_x86.py   (hand-written x86_64 backend)
    │         (inlined in-tree since commit 9a8801e; no longer a submodule)
-   ├──►  x86_64-bare-metal       → hamnix-kernel.elf  (M16+ kernel)
-   ├──►  x86_64-adder-user       → CPL-3 ELF          (user binaries)
+   ├──►  x86_64-bare-metal       → hamnix-kernel.elf  (M16+ kernel; DEFAULT)
+   ├──►  x86_64-adder-user       → CPL-3 ELF          (bootstrap + oracle)
    └──►  x86_64-linux-kernel-module → .ko             (stock-Linux .ko regression)
+
+adder/  ──►  ssa.ad → ssa_llvm.ad → clang   (LLVM backend)
+   ├──►  x86_64 userland          → ET_DYN/PIE ELF64  (DEFAULT: 278/278 apps)
+   └──►  aarch64                  → kernel + EL0      (the ONLY AArch64 path)
 ```
 
 Kernel codegen honours SysV AMD64, 16-byte stack alignment, ENDBR64
