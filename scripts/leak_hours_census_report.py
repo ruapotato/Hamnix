@@ -355,6 +355,42 @@ def main():
         notes.append('total live pages grew %+d over the gap, within the %d '
                      'page bar' % (delta, growth_bar))
 
+    # THE PER-SITE BAR (leak pass 20). A TOTAL IS CANCELLABLE, and the bar
+    # above was the only growth assertion this adjudicator made. Demonstrated
+    # rather than argued: with site 9 (pgtable) at +900 and site 6 at -900 the
+    # pass-19 report printed "total live pages grew +0 ... within the 256 page
+    # bar" and returned PASS — over a run in which a KERNEL site, one the
+    # orphan census explicitly declines to judge ("scope: USER-MAPPED sites
+    # only"), took 900 pages in a gap where nothing was launched. Every word of
+    # that verdict was true and the run was a leak. The mutation is
+    # `site_swap_nets_zero`.
+    #
+    # The rule is per-site and uses the SAME bar, including site 0: after
+    # arming, an untagged allocation path is the one bucket whose growth cannot
+    # be acted on, so it is the last one that should get an exemption.
+    #
+    # Its negative control is `site_motion_under_bar`, and it is the one that
+    # keeps this rule alive: pass 19's real run moved -151/+31/+2/+2 across four
+    # sites — frames returned by the un-attributed population and re-allocated
+    # WITH attribution — and a per-site rule that reddened on that would be
+    # deleted within a pass.
+    for s in sorted(set(sa) | set(sb)):
+        d = sb.get(s, 0) - sa.get(s, 0)
+        if d <= growth_bar:
+            continue
+        if born:
+            notes.append('site %d (%s) grew %+d pages (> bar %d) but %d '
+                         'process(es) STARTED during the gap — reported, not '
+                         'condemned'
+                         % (s, PGNAME.get(s, '?'), d, growth_bar, len(born)))
+        else:
+            bad.append('site %d (%s) grew %+d pages over the gap with an '
+                       'UNCHANGED live task set, past the bar of %d. The TOTAL '
+                       'does not condemn it because other sites returned the '
+                       'same frames, but a named site accumulating at this '
+                       'rate is a leak with an address.'
+                       % (s, PGNAME.get(s, '?'), d, growth_bar))
+
     # ---- arms: inter-sample nets, adjudicated by the owner discriminator ----
     aa, ab = parse_arms(ta), parse_arms(tb)
     oa, ob = parse_owners(ta), parse_owners(tb)
