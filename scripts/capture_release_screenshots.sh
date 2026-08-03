@@ -106,7 +106,11 @@ exec 3>"$FIFO"
 mon_cmd() { printf '%s\n' "$1" | socat - "UNIX-CONNECT:$MON" >/dev/null 2>&1; }
 
 snapshot() {                        # snapshot <label>
-    local label="$1" ppm="$OUT_DIR/$label.ppm"
+    # NB: separate `local` statements — `local a="$1" b="$a"` expands $a
+    # BEFORE the local `a` is assigned, which under `set -u` aborts the
+    # whole script with "label: unbound variable".
+    local label="$1"
+    local ppm="$OUT_DIR/$label.ppm"
     rm -f "$ppm"
     mon_cmd "screendump $ppm" || return 1
     local i=0
@@ -125,7 +129,8 @@ region_diff() {                     # region_diff A.ppm B.ppm -> changed px
 }
 
 wait_for() {
-    local pat="$1" timeout="$2" deadline=$(( SECONDS + $2 ))
+    local pat="$1"
+    local deadline=$(( SECONDS + $2 ))
     while [ "$SECONDS" -lt "$deadline" ]; do
         grep -aqE "$pat" "$LOG" && return 0
         kill -0 "$QEMU_PID" 2>/dev/null || return 1
@@ -169,7 +174,11 @@ section() {                         # section <tag> <command>
     sed -n "/BEGIN_$1/,/END_$1/p" "$LOG"
 }
 section APPSDIR  'ls /etc/hamde/apps'        > "$OUT_DIR/txt_apps_dir.txt"
-section DESKICON 'cat /dev/wsys/desktop.icons' > "$OUT_DIR/txt_desktop_icons.txt"
+# The desktop icon set is PERSISTED to /etc/desktop.icons by hamdesktop;
+# /dev/wsys/desktop.icons is not a path (verified 2026-08-03: "dev: no such
+# device"). The panel's own count lands in the serial log as
+# `[panel] appmenu entries: N`.
+section DESKICON 'cat /etc/desktop.icons'    > "$OUT_DIR/txt_desktop_icons.txt"
 section APPMENU  'cat /dev/wsys/appmenu'     > "$OUT_DIR/txt_appmenu.txt"
 section HPM      'hpm list'                  > "$OUT_DIR/txt_hpm_list.txt"
 section FREE     'free'                      > "$OUT_DIR/txt_free.txt"
@@ -189,11 +198,23 @@ while [ "$SECONDS" -lt "$d" ]; do
 done
 sleep "$SETTLE"
 snapshot 01-appmenu || true
+# Expand the first category so the shot shows an actual CATALOGUE, not
+# seven collapsed rows. Down enters the list, Right opens the submenu.
+mon_cmd "sendkey down"; sleep 0.5
+mon_cmd "sendkey right"; sleep 1.5
+snapshot 01a-appmenu-submenu || true
+# ...and the live search filter, which is the menu's real discovery path.
+mon_cmd "sendkey esc"; sleep 0.5
+for k in s n a k; do mon_cmd "sendkey $k"; sleep 0.3; done
+sleep 2
+snapshot 01b-appmenu-search || true
 menu_pid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
+menu_wid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*window \([0-9]*\) mapped.*/\1/p')
 mon_cmd "sendkey esc"; sleep 2
 [ -n "$menu_pid" ] && printf 'kill %s\n' "$menu_pid" >&3
+[ -n "$menu_wid" ] && printf 'echo free %s > /dev/wsys/ctl\n' "$menu_wid" >&3
 sleep 3
-snapshot 01b-appmenu-closed || true
+snapshot 01c-appmenu-closed || true
 
 # --- 02..: every launcher ---------------------------------------------
 # Per-app keystroke script: real keys that SHOULD change the UI.
@@ -218,7 +239,7 @@ keys_for() {
     esac
 }
 
-printf 'app\tbin\tlaunched\tpid\trendered_px\ttyped_px\tclose_resid_px\tfaults\n' \
+printf 'app\tbin\tlaunched\twid\tpid\trendered_px\ttyped_px\tclose_resid_px\tfaults\n' \
     > "$OUT_DIR/verdicts.tsv"
 
 idx=1
@@ -248,8 +269,9 @@ for desktop in etc/hamde/apps/*.desktop; do
     if [ "$after" -gt "$before" ]; then
         launched=yes
         pid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
+        wid=$(grep -a "\[devwsys\] window .* mapped" "$LOG" | tail -1 | sed -n 's/.*window \([0-9]*\) mapped.*/\1/p')
     else
-        launched=no; pid=""
+        launched=no; pid=""; wid=""
     fi
     sleep "$SETTLE"
     snapshot "$tag-b-running" || true
@@ -260,7 +282,15 @@ for desktop in etc/hamde/apps/*.desktop; do
     snapshot "$tag-c-typed" || true
     typed_px=$(region_diff "$OUT_DIR/$tag-b-running.ppm" "$OUT_DIR/$tag-c-typed.ppm")
 
-    if [ -n "$pid" ]; then printf 'kill %s\n' "$pid" >&3; fi
+    # TEARDOWN. `kill <pid>` alone does NOT remove a scene app's window
+    # (verified 2026-08-03: no `task: pid N exited` follows, and the frame
+    # after the kill is pixel-identical to the running frame), so every
+    # launched app stayed on screen and the desktop accumulated 26 stacked
+    # windows. Follow the kill with the hostowner `free <wid>` verb on
+    # /dev/wsys/ctl, which routes through wsys_free_wid and recomposes the
+    # vacated footprint. close_resid then measures a REAL teardown.
+    if [ -n "$pid" ]; then printf 'kill %s\n' "$pid" >&3; sleep 1; fi
+    if [ -n "$wid" ]; then printf 'echo free %s > /dev/wsys/ctl\n' "$wid" >&3; fi
     sleep 4
     snapshot "$tag-d-closed" || true
     close_px=$(region_diff "$OUT_DIR/$tag-a-pre.ppm" "$OUT_DIR/$tag-d-closed.ppm")
@@ -268,11 +298,11 @@ for desktop in etc/hamde/apps/*.desktop; do
     faults=$(tail -n +"$log_mark_start" "$LOG" \
         | grep -aciE "panic|page fault|trap [0-9]|oops|GPF|#PF" || true)
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$app" "$prog" "$launched" "${pid:--}" "${rendered_px:--1}" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$app" "$prog" "$launched" "${wid:--}" "${pid:--}" "${rendered_px:--1}" \
         "${typed_px:--1}" "${close_px:--1}" "${faults:-0}" \
         >> "$OUT_DIR/verdicts.tsv"
-    echo "[shots]     launched=$launched pid=${pid:--} rendered=${rendered_px} typed=${typed_px} close_resid=${close_px} faults=${faults:-0}"
+    echo "[shots]     $app wid=${wid:--} pid=${pid:--} launched=$launched rendered=${rendered_px} typed=${typed_px} close_resid=${close_px} faults=${faults:-0}"
 done
 
 snapshot 99-desktop-final || true
