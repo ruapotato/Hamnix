@@ -4665,6 +4665,21 @@ bash scripts/test_llvm_container_of_2d_exec.sh
 # out green. The expensive gate proves the machine; this one proves the
 # expensive gate can still say no.
 bash scripts/test_leak_hours_report_mutations.sh
+# Leak pass 20: the MUTATION gate for the KERNEL-HEAP differ. No QEMU, ~1 s.
+# Pass 19's census gate has issued `kmtrack dump` in BOTH sample batteries
+# since it was written, and its adjudicator does not contain the string
+# "kmtrack" — the kmalloc/slab heap was captured and never judged, while the
+# PASS read as though it covered the machine. The orphan census cannot cover
+# it either: it says so itself in the guest log ("scope: USER-MAPPED sites
+# only ... use kmtrack for the heap"). scripts/leak_kmtrack_diff.py closes
+# that, and this feeds it 17 synthetic logs — blindness (mode=0, no header,
+# no site lines, an exhausted or full site-block pool), contamination (the
+# live histogram and allocs-minus-frees disagreeing, a reset landing mid-gap),
+# growth (one site, two sites, a site absent from sample A, an id past the
+# name table) and 4 NEGATIVE controls that must stay green, because a differ
+# that always said INCONCLUSIVE would pass every positive row and be worse
+# than no differ at all.
+bash scripts/test_leak_kmtrack_diff.sh
 # The CONFIGURATION half of the stale-image guard. No QEMU, ~1 s. The mtime
 # model in scripts/_installer_img.sh has been found short four times, and the
 # fourth was not a directory at all: ADDER_FORCE_NATIVE_APPS changes what the
