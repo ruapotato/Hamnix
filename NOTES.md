@@ -1,6 +1,5 @@
 /model opus[1m]
-claude --resume 87369342-5631-4e0b-b8bd-c6f8925641a7
-ENABLE_LOG_SLOW=1
+claude --resume e4822f03-edb0-4edc-8b9f-e613be526f38
 ENABLE_LOG_SLOW=1 bash scripts/build_installer_img.sh
 sudo dd if=/home/david/Hamnix/build/hamnix-installer.img of=/dev/sdb bs=4M status=progress
 

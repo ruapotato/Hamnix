@@ -36,7 +36,7 @@
 #      /etc/debian_version resolves into the distro's etc/.
 #   3. From OUTSIDE the namespace (hamsh's own view, unaffected by
 #      the enter child's rfork), /etc/debian_version still reads
-#      Hamnix's native value ("hamnix/0.1") — the namespace mutation
+#      Hamnix's native value ("hamnix/1.0") — the namespace mutation
 #      is per-task, not global.
 #   4. `enter linux { ... } && echo CHAIN_OK` — the §11 namespace
 #      verbs chain with && / || like any other command.
@@ -268,9 +268,9 @@ assert_banner_value "BANNER-DEBIAN-ALIAS" "12.4" \
 #    still reads Hamnix's native value. Both the pre- and post-enter
 #    reads — the post one is the real boundary test (proves the
 #    enter child's rfork didn't bleed into hamsh's namespace).
-assert_banner_value "BANNER-NATIVE-PRE" "hamnix/0.1" \
+assert_banner_value "BANNER-NATIVE-PRE" "hamnix/1.0" \
     "pre-enter native /etc/debian_version reads Hamnix"
-assert_banner_value "BANNER-NATIVE-POST" "hamnix/0.1" \
+assert_banner_value "BANNER-NATIVE-POST" "hamnix/1.0" \
     "post-enter native /etc/debian_version still reads Hamnix"
 
 # 6. The namespace verb chained with && (HAMSH_SPEC §11).

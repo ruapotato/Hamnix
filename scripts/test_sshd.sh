@@ -242,7 +242,7 @@ if grep -F -q "[sshd] session channel opened" "$LOG" && \
 fi
 
 # TIER 3: the remote command ran and its OUTPUT came back. `uname` on
-# Hamnix prints the exact line "Hamnix x86_64 0.1"; we look for that
+# Hamnix prints the exact line "Hamnix x86_64 1.0"; we look for that
 # inside ssh's stdout (pty) section only — the verbose stderr log never
 # carries remote command output.
 SSH_STDOUT=$(sed -n '/=== ssh stdout ===/,/=== ssh stderr/p' "$SSHLOG" 2>/dev/null || true)

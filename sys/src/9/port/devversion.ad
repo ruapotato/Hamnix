@@ -5,14 +5,14 @@
 # One read regenerates a fresh text snapshot of the Hamnix release
 # string:
 #
-#   "hamnix/0.1 (M16.132+)\n"
+#   "hamnix/1.0 (M16.132+)\n"
 #
 # Stateless backend: FD_VERSION_MARK fds carry no per-fd slot. Every
 # read regenerates the entire blob, then copies up to `count` bytes
 # into the caller's buffer. Writes return -1 — read-only.
 #
 # Source of truth: hardcoded into the binary. The "real" source is
-# /etc/os-release (NAME=Hamnix, VERSION="0.1"), but that file is a
+# /etc/os-release (NAME=Hamnix, VERSION="1.0"), but that file is a
 # build-time artifact that ships in the initramfs — userland that
 # wants to parse it can. The cdev's job is to give a stable
 # single-line identity string the same way uname(2) does, without
@@ -46,10 +46,10 @@ def _ver_emit_str(out: Ptr[uint8], pos: uint64, s: Ptr[uint8]) -> uint64:
 def _build_version(out: Ptr[uint8], cap: uint64) -> uint64:
     # Fill out[] with the release-identity text. Returns total bytes
     # written (NOT including any NUL). Worst-case ~32 bytes for the
-    # current "hamnix/0.1 (M16.132+)\n" literal; caller supplies a
+    # current "hamnix/1.0 (M16.132+)\n" literal; caller supplies a
     # 64-byte scratch in devversion_read.
     pos: uint64 = 0
-    pos = _ver_emit_str(out, pos, "hamnix/0.1 (M16.132+)\n")
+    pos = _ver_emit_str(out, pos, "hamnix/1.0 (M16.132+)\n")
     return pos
 
 

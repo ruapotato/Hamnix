@@ -200,7 +200,7 @@ assert_banner_value "BANNER-DEB-VERSION" "$EXPECTED_VER" \
 # 3. After the entered child returns, hamsh's own /etc/debian_version
 #    still reads Hamnix's native value — proving the enter child's
 #    rfork didn't bleed into the parent's namespace.
-assert_banner_value "BANNER-NATIVE-AFTER" "hamnix/0.1" \
+assert_banner_value "BANNER-NATIVE-AFTER" "hamnix/1.0" \
     "post-enter native /etc/debian_version still reads Hamnix"
 
 if [ "$fail" -ne 0 ]; then
