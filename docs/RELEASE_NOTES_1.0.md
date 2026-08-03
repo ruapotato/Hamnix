@@ -83,6 +83,20 @@ The recommended artifact is the **in-RAM installer image**: firmware loads
 the kernel and a squashfs root entirely into memory, so nothing is read from
 the boot medium after handoff.
 
+```
+hamnix-1.0-installer.img
+SHA-256  f9f5d99c03e48d76f85719149205a56b12c7bc6ac556f74b2ccaea303b252796
+```
+
+Full step-by-step — build, boot, install, boot the installed disk, as plain
+`qemu-system-x86_64` commands rather than wrapper scripts — is in
+[docs/BOOT.md](https://github.com/HamnixOS/Hamnix/blob/main/docs/BOOT.md#0-try-it-build-an-image-boot-it-install-it-boot-the-result).
+It also carries the two OVMF gotchas (use a *writable* firmware copy; put
+`bootindex=0` on the medium you want booted) that otherwise cost an evening.
+
+**The installer does not auto-wipe.** It boots to a live desktop and waits
+for you to choose a target disk and confirm the erase.
+
 ```sh
 # try it in a VM
 qemu-system-x86_64 -enable-kvm -m 2G \
