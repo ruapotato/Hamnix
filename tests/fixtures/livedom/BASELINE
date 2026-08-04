@@ -30,6 +30,19 @@
 # candidate 16th fixture for it was written, measured, and DELETED: it failed on
 # D2 plus the style= attribute mirror, both of which fixtures 04/05/06 already
 # cover, and it never touched the code under test.
+# RAISED 2026-08-04 to SEVEN, by the D2 text half: `el.textContent = x` on a
+# SOURCE-parsed element never ran the "replace every child with one Text node"
+# algorithm. It stashed the string as an own property — a store only the render
+# read-back looks at — so the LIVE child list kept the parse-time Text node and
+# every reader that walks the tree (childNodes, firstChild.data, this harness)
+# saw the ORIGINAL source text while `.textContent` itself answered the new one.
+# Created nodes already ran the real algorithm; unifying both onto it took the
+# lane 3 -> 7. Verified as a real guard: all four of the names added below FAIL
+# on the pre-fix engine at 7f82b640 (clean-tree run, pass=3 fail=12).
 01_create_click
+02_innerhtml_subtree
+03_delegation
+04_settimeout_mutate
+05_form_input
 11_counter_chain
 15_innerhtml_rerender
