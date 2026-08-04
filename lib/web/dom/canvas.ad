@@ -14239,12 +14239,23 @@ def _click_activate_pre(obj: int32, kind: int32, el: int32) -> int32:
 
 # Canceled-activation steps / activation behaviour, after the click dispatch.
 # `evtidx` is a _fire_value_evt index: a dom index, or CRE_IDX_BASE + created id.
+#
+# CONNECTEDNESS gates the EVENTS ONLY, not the checkedness. The checkbox/radio
+# activation behaviour is two separate steps: set the checkedness (always), and
+# then "if the element is CONNECTED, fire an event named input ... and fire an
+# event named change". A detached `document.createElement('input')` that is
+# clicked must therefore come back .checked === true while emitting NOTHING —
+# see WPT dom/events/Event-dispatch-detached-input-and-change.html, whose
+# "detached ... should not emit" and "disconnected ... should be checked"
+# subtests assert exactly the two halves of that split.
 def _click_activate_post(obj: int32, kind: int32, evtidx: int32, \
                          was: int32, canceled: int32):
     if kind == 0:
         return
     if canceled != 0:
         js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(was))
+        return
+    if _nd_is_connected(obj) == 0:
         return
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("input"), 5)
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("change"), 6)
