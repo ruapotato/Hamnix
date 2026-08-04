@@ -1709,8 +1709,20 @@ def _cre_all_names(objv: int32, arr: int32):
                 w = w + 1
                 j = j + 1
             cnm[w] = 0
-            if _arr_has_name(arr, &cnm[0], w) == 0:
-                js_array_push(arr, js_new_string(&cnm[0], cast[uint64](w)))
+            # NO de-duplication here, on purpose. Two attributes may share a
+            # QUALIFIED NAME while differing in namespace — setAttribute("foo")
+            # (null namespace) and setAttributeNS("dummy1", "foo") are two
+            # distinct attributes that both serialise as "foo", and
+            # getAttributeNames() must return one entry per attribute, in order,
+            # duplicates included. _nsa_set() already keys the store on
+            # (namespace, localName) and replaces in place on a re-set, so every
+            # nsa_ row for this object IS a distinct attribute and a name-only
+            # dedupe could only ever drop a real one. It did: WPT
+            # dom/nodes/attributes.html "getAttributeNames tests" expects
+            # ["foo","FOO","foo","dummy:foo"] and got ["foo","FOO","dummy:foo"].
+            # The guard is still correct for the two sources below, which are
+            # ALTERNATE STORAGE for an attribute the nsa_ store may already hold.
+            js_array_push(arr, js_new_string(&cnm[0], cast[uint64](w)))
         q = q + 1
     if _find_cre_by_obj(objv) < 0:
         return
