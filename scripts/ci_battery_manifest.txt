@@ -4664,6 +4664,22 @@ bash scripts/test_llvm_container_of_2d_exec.sh
 # recorded, resident growth past the bar) and FAILS if any of them still comes
 # out green. The expensive gate proves the machine; this one proves the
 # expensive gate can still say no.
+#
+# Leak pass 21 grew the same gate from 22 to 44 cases, because the adjudicator
+# grew a TREND arm: the census now takes N >= 3 samples on one boot and
+# differences CONSECUTIVE pairs, so it can tell a warm-up SETTLE (rates decay)
+# from a LEAK (rates persist) — the discrimination pass 20's two-sample run
+# provably could not make. The new rows are the ones an endpoint-only bar is
+# blind to: a 15 pg/h linear leak whose whole-span growth is UNDER the 256-page
+# bar must FAIL, the same endpoint growth with decaying rates must PASS, three
+# consecutive deltas each under the bar that sum over it must FAIL (the exact
+# blindness a per-DELTA bar would have), a leak masked by a site 0 that is
+# still draining is INCONCLUSIVE while one whose site 0 has finished draining
+# is a FAIL, and a harness `cat` in the last sweep must NOT buy a leak the
+# "a process started" amnesty (pass 20's real log had one). Pass 21 also
+# adjudicates the owner-unrecorded population BY SITE: site=0/va=0 is the
+# pre-arming population (pa_set_owner is a no-op while the tracker is
+# disarmed), a NAMED site is a hole in the discriminator with an address.
 bash scripts/test_leak_hours_report_mutations.sh
 # Leak pass 20: the MUTATION gate for the KERNEL-HEAP differ. No QEMU, ~1 s.
 # Pass 19's census gate has issued `kmtrack dump` in BOTH sample batteries

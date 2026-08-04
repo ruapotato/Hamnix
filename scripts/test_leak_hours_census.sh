@@ -111,8 +111,22 @@
 # taken from the same regime and their difference is a difference in steady
 # state.
 #
+# N SAMPLES, NOT TWO (leak pass 21)
+# =================================
+# SAMPLES=N takes N batteries on ONE boot, each separated by GAP_S. N=2 (the
+# default) is byte-for-byte the pass-19/20 shape, so the registered mutation
+# gate and every captured two-sample log keep their exact meaning.
+#
+# Why N>2 is not a luxury: pass 20 ran this gate for 8.02 hours, PASSed, and
+# its own verdict says the result cannot answer the question it was run for.
+# Site 6 (vma_anon) went 1 -> 38 pages. A warm-up that finished in the first
+# twenty minutes and a linear leak of 4.6 pages/hour produce THE SAME TWO
+# NUMBERS. A delta has no shape; three points do. The adjudicator differences
+# consecutive pairs and classifies the curve — see the TREND ARM in
+# scripts/leak_hours_census_report.py — so the run must produce a curve.
+#
 # Env: INSTALLER_IMG, OVMF_FD, BOOT_WAIT, OUT_DIR, SETTLE_S, GAP_S, MIN_GAP_S,
-#      GROWTH_FAIL_PAGES, ARMS.
+#      GROWTH_FAIL_PAGES, ARMS, SAMPLES, TREND_MIN_PAGES, SETTLE_FRAC.
 
 
 set -uo pipefail
@@ -133,6 +147,24 @@ SETTLE_S="${SETTLE_S:-900}"
 # section above.
 MIN_GAP_S="${MIN_GAP_S:-3600}"
 GROWTH_FAIL_PAGES="${GROWTH_FAIL_PAGES:-256}"
+# How many sample batteries to take on this one boot. 2 = the pass-19/20 shape,
+# exactly. >= 3 engages the adjudicator's TREND arm, which is the only thing in
+# this campaign that can tell a settle from a slow linear leak.
+SAMPLES="${SAMPLES:-2}"
+# The resolution floor for the trend arm, in pages of whole-span growth. A span
+# of T hours cannot resolve a rate below roughly one page per T hours, so below
+# this the shape of the curve is noise and the adjudicator says so instead of
+# guessing. NOT a tolerance — see the adjudicator's header.
+TREND_MIN_PAGES="${TREND_MIN_PAGES:-16}"
+# A terminal rate under this fraction of its earlier peak counts as decayed.
+SETTLE_FRAC="${SETTLE_FRAC:-0.5}"
+case "$SAMPLES" in
+    ''|*[!0-9]*) echo "$TAG SAMPLES must be an integer, got '$SAMPLES'" >&2; exit 2 ;;
+esac
+[ "$SAMPLES" -ge 2 ] || { echo "$TAG SAMPLES must be >= 2" >&2; exit 2; }
+SAMPLE_LABELS=$(echo ABCDEFGH | cut -c1-"$SAMPLES")
+[ "${#SAMPLE_LABELS}" -eq "$SAMPLES" ] || {
+    echo "$TAG SAMPLES=$SAMPLES exceeds the A..H label space" >&2; exit 2; }
 read -r -a ARM_LIST <<< "${ARMS:-1 2 5 19 21 23 24}"
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT_DIR="${OUT_DIR:-build/leak_hours_census/$TS}"
@@ -166,6 +198,14 @@ echo "$TAG image age: $(installer_img_age_str "$INSTALLER_IMG")"
 mkdir -p "$OUT_DIR"
 echo "$TAG output dir: $OUT_DIR"
 echo "$TAG settle: ${SETTLE_S}s, gap: ${GAP_S}s (min accepted ${MIN_GAP_S}s), arms: ${ARM_LIST[*]}"
+echo "$TAG samples: $SAMPLES ($SAMPLE_LABELS), total span $(( GAP_S * (SAMPLES - 1) ))s"
+if [ "$SAMPLES" -ge 3 ]; then
+    echo "$TAG   N>=3: the adjudicator's TREND arm engages — consecutive rates,"
+    echo "$TAG   not just the endpoint delta. A settle flattens; a leak does not."
+else
+    echo "$TAG   N=2: endpoint delta only. This CANNOT tell a settle from a slow"
+    echo "$TAG   linear leak (leak pass 20's own closing verdict)."
+fi
 
 OVMF_RW=$(mktemp --tmpdir hamnix-hc.ovmf.XXXXXX.fd)
 IMG_RW=$(mktemp --tmpdir hamnix-hc.img.XXXXXX.raw)
@@ -302,8 +342,6 @@ grep -aq "^HC_SETTLED\$" "$LOG" || echo "$TAG WARNING: no echo after the settle 
 send "echo track full > /proc/meminfo" HC_ARM_PAGE 60 || say_fail "track full timed out"
 send "echo kmtrack on > /proc/meminfo" HC_ARM_KM   60 || say_fail "kmtrack on timed out"
 
-take_sample A
-
 # ---------------------------------------------------------------------------
 # THE GAP. By default nothing is launched, nothing is closed. The DE's own
 # long-lived processes keep running — the panel repaints its clock, the
@@ -414,44 +452,65 @@ gap_load_cycle() {
     return 0
 }
 
-if [ "$GAP_LOAD" = "1" ]; then
-    echo "$TAG LOADED gap: ${GAP_S}s total, launch/close cycles of ${GAP_LOAD_PER_CYCLE}"
-    echo "$TAG   apps from: ${GAP_APP_POOL[*]}"
-    echo "$TAG   with the last ${GAP_LOAD_QUIESCE_S}s strictly idle so both samples"
-    echo "$TAG   are taken quiet and on the SAME live task set"
-else
-    echo "$TAG idling ${GAP_S}s between samples (nothing launched, nothing closed)"
-fi
 hb=0
-gap_end=$(( SECONDS + GAP_S ))
-load_end=$(( gap_end - GAP_LOAD_QUIESCE_S ))
-while [ "$SECONDS" -lt "$gap_end" ]; do
-    if [ "$GAP_LOAD" = "1" ] && [ "$SECONDS" -lt "$load_end" ]; then
-        # One load cycle, then heartbeat. The cycle is self-timing (it waits on
-        # windows and exits), so it replaces the sleep rather than adding to it.
-        gap_load_cycle || { echo "$TAG guest died during a load cycle" >&2; break; }
+# run_gap <next-sample-label> — ONE inter-sample interval of GAP_S seconds.
+# Factored out of the straight-line pass-19 body so that N-1 of them can run on
+# one boot (leak pass 21). Nothing about the interval's behaviour changed.
+run_gap() {
+    local nextlab="$1" gap_end load_end left
+    if [ "$GAP_LOAD" = "1" ]; then
+        echo "$TAG LOADED gap: ${GAP_S}s total, launch/close cycles of ${GAP_LOAD_PER_CYCLE}"
+        echo "$TAG   apps from: ${GAP_APP_POOL[*]}"
+        echo "$TAG   with the last ${GAP_LOAD_QUIESCE_S}s strictly idle so both samples"
+        echo "$TAG   are taken quiet and on the SAME live task set"
     else
-        # Sleep only as far as the deadline, never past it. A flat `sleep 300`
-        # overshoots GAP_S by up to five minutes; the gap the verdict uses is the
-        # MEASURED one from the timestamps either way, so this is about the gate
-        # doing what its knob says, not about honesty of the number.
-        left=$(( gap_end - SECONDS ))
-        [ "$left" -gt 300 ] && left=300
-        [ "$left" -gt 0 ] && sleep "$left"
+        echo "$TAG idling ${GAP_S}s before sample $nextlab (nothing launched, nothing closed)"
     fi
-    hb=$(( hb + 1 ))
-    printf 'echo HC_ALIVE %d\n' "$hb" >&3
-    sleep 2
-    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-        echo "$TAG guest died during the gap (heartbeat $hb)" >&2
-        break
-    fi
-    if ! grep -aq "^HC_ALIVE $hb\$" "$LOG"; then
-        echo "$TAG WARNING: heartbeat $hb produced no echo — guest shell may be wedged" >&2
-    fi
-    echo "$TAG   heartbeat $hb ($(( gap_end - SECONDS ))s to sample B)" \
-         "${GAP_LOAD:+[load: ${gl_launched} launched, ${gl_closed} closed, ${gl_survivors} survivors, ${gl_nowindow} no-window]}"
+    gap_end=$(( SECONDS + GAP_S ))
+    load_end=$(( gap_end - GAP_LOAD_QUIESCE_S ))
+    while [ "$SECONDS" -lt "$gap_end" ]; do
+        if [ "$GAP_LOAD" = "1" ] && [ "$SECONDS" -lt "$load_end" ]; then
+            # One load cycle, then heartbeat. The cycle is self-timing (it waits
+            # on windows and exits), so it replaces the sleep rather than adding
+            # to it.
+            gap_load_cycle || { echo "$TAG guest died during a load cycle" >&2; return 1; }
+        else
+            # Sleep only as far as the deadline, never past it. A flat
+            # `sleep 300` overshoots GAP_S by up to five minutes; the gap the
+            # verdict uses is the MEASURED one from the timestamps either way,
+            # so this is about the gate doing what its knob says, not about
+            # honesty of the number.
+            left=$(( gap_end - SECONDS ))
+            [ "$left" -gt 300 ] && left=300
+            [ "$left" -gt 0 ] && sleep "$left"
+        fi
+        hb=$(( hb + 1 ))
+        printf 'echo HC_ALIVE %d\n' "$hb" >&3
+        sleep 2
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            echo "$TAG guest died during the gap (heartbeat $hb)" >&2
+            return 1
+        fi
+        if ! grep -aq "^HC_ALIVE $hb\$" "$LOG"; then
+            echo "$TAG WARNING: heartbeat $hb produced no echo — guest shell may be wedged" >&2
+        fi
+        echo "$TAG   heartbeat $hb ($(( gap_end - SECONDS ))s to sample $nextlab)" \
+             "${GAP_LOAD:+[load: ${gl_launched} launched, ${gl_closed} closed, ${gl_survivors} survivors, ${gl_nowindow} no-window]}"
+    done
+    return 0
+}
+
+# Sample A, then (gap, sample) for every remaining label. For SAMPLES=2 this is
+# exactly `take_sample A; run_gap B; take_sample B`, i.e. the pass-19/20 body.
+take_sample "${SAMPLE_LABELS:0:1}"
+i=1
+while [ "$i" -lt "$SAMPLES" ]; do
+    lab="${SAMPLE_LABELS:$i:1}"
+    run_gap "$lab" || break
+    take_sample "$lab"
+    i=$(( i + 1 ))
 done
+
 if [ "$GAP_LOAD" = "1" ]; then
     echo "$TAG LOAD PHASE TOTALS: cycles=$gl_cycles launched=$gl_launched closed=$gl_closed survivors=$gl_survivors no-window=$gl_nowindow"
     echo "$gl_cycles $gl_launched $gl_closed $gl_survivors $gl_nowindow" > "$OUT_DIR/gap_load_totals.txt"
@@ -460,11 +519,10 @@ if [ "$GAP_LOAD" = "1" ]; then
     fi
     if [ "$gl_survivors" -gt 0 ]; then
         echo "$TAG WARNING: $gl_survivors app(s) survived their terminate note; the" >&2
-        echo "$TAG   task set at B differs from A and the growth bar will self-downgrade" >&2
+        echo "$TAG   task set at the last sample differs from the first and the" >&2
+        echo "$TAG   growth bar will self-downgrade" >&2
     fi
 fi
-
-take_sample B
 
 kill "$QEMU_PID" 2>/dev/null
 ( sleep 5; kill -9 "$QEMU_PID" 2>/dev/null ) & WD=$!
@@ -473,7 +531,8 @@ kill "$WD" 2>/dev/null
 
 SUMMARY="$OUT_DIR/summary.txt"
 python3 "$PROJ_ROOT/scripts/leak_hours_census_report.py" \
-    "$LOG" "$STAMPS" "$MIN_GAP_S" "$GROWTH_FAIL_PAGES" > "$SUMMARY" 2>&1
+    "$LOG" "$STAMPS" "$MIN_GAP_S" "$GROWTH_FAIL_PAGES" \
+    "$SAMPLES" "$TREND_MIN_PAGES" "$SETTLE_FRAC" > "$SUMMARY" 2>&1
 rc=$?
 cat "$SUMMARY"
 

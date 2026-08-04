@@ -51,6 +51,19 @@ def sample(s, sites, arms, orgl, tasks, statm, plant, unacc, inrun,
         L.append("[origin] org=%d born=%d died=%d" % (a, b, d))
     L.append("HC_ORG_%s" % s)
     for a, e in sorted(orgl.items()):
+        # The per-survivor detail the kernel prints BEFORE the tallies
+        # (kernel/sched/core.ad), capped there at 64 frames. `detail` is a list
+        # of (site, va, unrecorded) triples; omitting it reproduces a log in
+        # which the detail was never captured, which is itself a case.
+        for i, (site, va, unrec) in enumerate(e.get('detail', ())):
+            L.append("[orgl] org=%d live[%d] phys=0x%x" % (a, i, 0xb100000 + i * 0x1000))
+            L.append("[orgl] live[%d] va=0x%016x site=%d" % (i, va, site))
+            L.append("[orgl] live[%d] cow_refcount=1" % i)
+            if unrec:
+                L.append("[orgl] live[%d] owner: NOT RECORDED" % i)
+            else:
+                L.append("[orgl] live[%d] owner slot=%d live=1" % (i, 3))
+                L.append("[orgl] live[%d] owner pid=%d" % (i, 6))
         L.append("[orgl] org=%d TOTAL=%d owner-live=%d"
                  % (a, e['total'], e['total'] - e['dead']))
         L.append("[orgl] org=%d owner-dead=%d owner-unrecorded=%d"
@@ -134,7 +147,33 @@ def write(name, a_kw, b_kw, gap=7200):
         f.write("A 1000000\nB %d\n" % (1000000 + gap))
 
 
-# name -> (expected exit code, description)
+LABELS = 'ABCDEFGH'
+
+
+def write_n(name, per_sample, gaps):
+    """An N-sample log (leak pass 21). `per_sample` is a list of overrides,
+    one per sample; `gaps` is the N-1 inter-sample gaps in seconds."""
+    d = os.path.join(work, name)
+    os.makedirs(d, exist_ok=True)
+    base = dict(sites=SITES_A, arms=ARMS_A, orgl=ORGL, tasks=TASKS,
+                statm=STATM_A, **CLEAN)
+    t = 1000000
+    stamps = []
+    with open(os.path.join(d, 'serial.log'), 'w') as f:
+        for i, over in enumerate(per_sample):
+            k = dict(base)
+            k.update(over)
+            f.write(sample(LABELS[i], **k))
+            f.write("HC_ALIVE %d\n" % (i + 1))
+            stamps.append((LABELS[i], t))
+            if i < len(gaps):
+                t += gaps[i]
+    with open(os.path.join(d, 'stamps'), 'w') as f:
+        for lb, ts in stamps:
+            f.write("%s %d\n" % (lb, ts))
+
+
+# name -> (expected exit code, extra adjudicator args, description)
 CASES = {}
 
 
@@ -148,7 +187,15 @@ def merged(base, extra):
 
 def case(name, a, b, rc, why, gap=7200):
     write(name, a, b, gap)
-    CASES[name] = (rc, why)
+    CASES[name] = (rc, '2', why)
+
+
+def ncase(name, per_sample, rc, why, gaps=None, min_samples=2):
+    """A pass-21 N-sample case. Default cadence: 2 h between samples."""
+    if gaps is None:
+        gaps = [7200] * (len(per_sample) - 1)
+    write_n(name, per_sample, gaps)
+    CASES[name] = (rc, str(min_samples), why)
 
 
 case('clean', {}, {}, 0, 'a quiet pair: only the plant is unaccounted')
@@ -239,14 +286,196 @@ case('unknown_site_grew',
      dict(sites={0: 5900, 6: 2000, 9: 300, 13: 500, 20: 64}), 1,
      'the unattributed bucket itself grew 900 pages')
 
+# =========================================================================
+# LEAK PASS 21 — THE TREND ARM. N >= 3 samples on one boot.
+# =========================================================================
+# Everything above is an ENDPOINT rule against an absolute page bar, and pass
+# 20 proved out both of its blind spots on real data:
+#
+#   * an absolute bar cannot see a slow LINEAR leak — 90 pages over 6 hours is
+#     96 MiB/year of unbounded accumulation and sails under a 256-page bar;
+#   * a SETTLE and a LEAK print the SAME endpoint delta. Pass 20 measured site 6
+#     going 1 -> 38 and could say nothing about which it was.
+#
+# These cases are the discrimination. Every one of them keeps the ENDPOINT
+# verdict at PASS and differs only in the shape of the curve, which is the
+# whole point: if the trend arm regresses, these go green and the endpoint arm
+# will not notice.
+def sites_series(site, vals, base=None):
+    """Per-sample override list putting `vals` at `site`, everything else flat."""
+    out = []
+    for v in vals:
+        s = dict(base or SITES_A)
+        s[site] = v
+        out.append(dict(sites=s))
+    return out
+
+
+def with_site(per_sample, site, vals):
+    out = []
+    for i, over in enumerate(per_sample):
+        s = dict(over.get('sites', SITES_A))
+        s[site] = vals[i]
+        o = dict(over)
+        o['sites'] = s
+        out.append(o)
+    return out
+
+
+FLAT4 = [{}, {}, {}, {}]
+
+ncase('n4_clean', FLAT4, 0,
+      'four samples, nothing moves: the negative control for the whole arm')
+# THE MONEY CASE. Site 9 takes 30 pages every two hours and never stops. Total
+# span growth is +90 — well UNDER the 256-page bar, so every endpoint rule in
+# this file says PASS. Only the shape convicts it.
+ncase('n4_linear_leak_under_bar', sites_series(9, [300, 330, 360, 390]), 1,
+      'a 15 pg/h linear leak whose span growth (+90) is UNDER the absolute bar')
+# Its twin, and the reason the rule is not just "did it grow": same +90 at the
+# endpoints, decaying rates. A warm-up reaching steady state.
+ncase('n4_settle_decaying', sites_series(6, [2000, 2024, 2032, 2036]), 0,
+      'the SAME endpoint growth as a leak, but the rate decays 12->4->2: settle')
+ncase('n4_leaks_then_stops', sites_series(9, [300, 340, 380, 380]), 0,
+      'it leaked 20 pg/h for four hours and then stopped: not a slope')
+ncase('n4_noise_zero_trend', sites_series(9, [300, 306, 298, 303]), 0,
+      'oscillation with no trend stays under the resolution floor')
+# A shrinking site 0 is not an alibi — but a STILL-shrinking one is not
+# distinguishable from re-attribution either, so this is 125 and not 1. Same
+# polarity as the endpoint credit (`site_grew_from_unknown`), expressed as a
+# rate: only a bucket still being DRAINED at the end of the span can be feeding
+# anything.
+ncase('n4_leak_masked_by_shrinking_site0',
+      with_site(sites_series(9, [300, 330, 360, 390]), 0,
+                [5000, 4970, 4940, 4910]), 125,
+      'site 0 is still draining at 15 pg/h, exactly covering the leak')
+ncase('n4_leak_site0_already_settled',
+      with_site(sites_series(9, [300, 330, 360, 390]), 0,
+                [5000, 4900, 4890, 4885]), 1,
+      'site 0 FINISHED draining (-2.5 pg/h): it cannot be feeding a 15 pg/h site')
+# The harness spawns its own `cat` per statm read, and a `born` process
+# DOWNGRADES every growth rule to a note. Pass 20's real 8-hour run reported
+# "processes that appeared during the gap: 62/cat" — i.e. the instrument was
+# suppressing its own assertions with a process it spawned itself. It must not.
+ncase('n4_leak_with_harness_cat',
+      sites_series(9, [300, 330, 360, 390])[:3]
+      + [dict(sites=merged(SITES_A, {9: 390}),
+              tasks=merged(TASKS, {62: 'cat'}),
+              statm=merged(STATM_A, {62: 5}))], 1,
+      'a harness `cat` in the last sweep must NOT buy the leak an amnesty')
+# ...and its negative control: a REAL app starting still does.
+ncase('n4_leak_with_real_app_started',
+      sites_series(9, [300, 330, 360, 390])[:3]
+      + [dict(sites=merged(SITES_A, {9: 390}),
+              tasks=merged(TASKS, {31: 'hamwrite'}),
+              statm=merged(STATM_A, {31: 900}))], 0,
+      'a real process STARTED: the growth is not attributable to steady state')
+# Three samples is the minimum that has a curve at all, and it must work.
+ncase('n3_settle', sites_series(6, [2000, 2029, 2033])[:3], 0,
+      'the minimum N: rates 14.5 -> 2.0 is a settle')
+ncase('n3_linear_leak', sites_series(9, [300, 345, 390])[:3], 1,
+      'the minimum N: rates 22.5 -> 22.5 does not decay')
+# Long-lived processes. Sustained is 125 and not 1 on purpose: the one process
+# this gate grows is the serial shell IT DRIVES, and convicting the
+# instrument's own scaffolding is the false red this campaign keeps catching.
+ncase('n4_process_sustained',
+      [dict(statm=merged(STATM_A, {7: v})) for v in (120, 160, 200, 240)], 125,
+      'the panel resident set climbs 20 pg/h and is still climbing at the end')
+ncase('n4_process_settles',
+      [dict(statm=merged(STATM_A, {7: v})) for v in (120, 160, 175, 180)], 0,
+      'the same +60, but decaying 20 -> 7.5 -> 2.5: a bounded high-water')
+# "Too few" and "too close" are INCONCLUSIVE, never PASS — a three-sample run
+# asked for four has not measured what it claims, and four samples five minutes
+# apart are two samples with extra steps.
+ncase('n3_but_four_asked', FLAT4[:3], 125,
+      'three samples when four were required', min_samples=4)
+ncase('n4_one_gap_too_close', FLAT4, 125,
+      'the C->D interval is four minutes: that pair measured nothing',
+      gaps=[7200, 7200, 240])
+# THE FLOOR, stated as a case rather than left implicit. 12 pages over 6 hours
+# is 2 pg/h = 68 MiB/year and this instrument CANNOT see it: at a 6-hour span
+# the smallest resolvable rate is about one page per span. This case documents
+# the hole; it is not a bug to be fixed by lowering the threshold, it is fixed
+# by a LONGER SPAN.
+ncase('n4_leak_below_resolution_floor',
+      sites_series(9, [300, 304, 308, 312]), 0,
+      'a 2 pg/h leak is UNDER the resolution floor of a 6-hour span: PASS, '
+      'and the doc says so')
+
+# THE EXACT BLINDNESS A PER-DELTA BAR WOULD HAVE. Site 9 takes 200 pages in
+# every one of three intervals. NOT ONE of those deltas reaches the 256-page
+# bar, and an adjudicator that had been "generalised" to N samples by applying
+# the bar to each consecutive pair would report three clean intervals and PASS.
+# The span is +600. The bar belongs on the SPAN, and this case is what pins it
+# there. (Named explicitly in the pass-21 brief; it is the difference between
+# differencing consecutive pairs and adjudicating on them.)
+ncase('n4_deltas_under_bar_sum_over', sites_series(9, [300, 500, 700, 900]), 1,
+      'three deltas of +200 each under the 256 bar, +600 over the span')
+# The interaction between the two arms, pinned rather than left implicit: SHAPE
+# DOES NOT WAIVE THE ABSOLUTE BAR. This curve decays (200 -> 100 -> 50, a
+# textbook settle) and still puts 350 pages on the machine in six hours after a
+# 15-minute settle window had already run. Pass 20's per-site bar convicts it
+# and pass 21 does not soften that: a settle large enough to blow the bar is
+# still 1.4 MiB the machine did not have, and the trend arm was added to catch
+# MORE leaks, not to excuse the ones already caught.
+ncase('n4_big_settle_still_over_bar', sites_series(9, [300, 500, 600, 650]), 1,
+      'a decaying curve that still puts 350 pages past the absolute bar')
+
+# =========================================================================
+# LEAK PASS 21 — THE OWNER-UNRECORDED POPULATION (pass 20's third residual).
+# =========================================================================
+# Pass 20 ended with arm 23 at net +18 over 29 survivors, 9 of them
+# `owner-unrecorded`, and the rule "an unrecorded owner is not an alibi" —
+# stated, not enforced, because the tally line is only a count. These cases
+# enforce it, and they distinguish the two populations that count conflates.
+ARM_NET = {1: (100, 100), 5: (40, 30), 23: (30, 12)}   # arm 23 nets +18
+
+
+def orgl_with(arm, total, unrec, detail):
+    o = dict(ORGL)
+    o[arm] = dict(total=total, dead=0, unrec=unrec, stray=0, untagged=0,
+                  detail=detail)
+    return o
+
+
+# PRE-ARMING, and provably so: pa_set_owner is a no-op while _pa_trk_mode == 0
+# (mm/page_alloc.ad), exactly as pa_set_site is — so a frame allocated before
+# `track full` has site 0 AND va 0 AND owner 0, necessarily and together. This
+# is the shape pass 20's REAL log has: all 9 unrecorded survivors on
+# site=0 va=0x0. Explained, named, and PASS.
+case('arm_unrec_prearming', {},
+     dict(arms=ARM_NET,
+          orgl=orgl_with(23, 29, 9,
+                         [(0, 0, True)] * 9 + [(6, 0x7f0000, False)] * 20)), 0,
+     'unrecorded owners on site=0/va=0 are the PRE-ARMING population')
+# The opposite finding from the same count: those frames were allocated with
+# the tracker ARMED (they carry a named site) and that path never called
+# pa_set_owner. A hole in the discriminator, with an address.
+case('arm_unrec_named_site', {},
+     dict(arms=ARM_NET,
+          orgl=orgl_with(23, 29, 9,
+                         [(9, 0, True)] * 9 + [(6, 0x7f0000, False)] * 20)), 125,
+     'unrecorded owners at a NAMED site: pa_set_owner missing on that path')
+# No per-frame detail at all: nothing can be attributed, so nothing is
+# exonerated. An unattributed unrecorded owner is not even an argument.
+case('arm_unrec_no_detail', {},
+     dict(arms=ARM_NET, orgl=orgl_with(23, 29, 9, [])), 125,
+     'owner-unrecorded survivors with no per-frame detail to attribute them')
+# The kernel caps the per-frame detail at 64 while the tallies cover every
+# survivor. A run whose unrecorded count exceeds what the detail reached is a
+# PREFIX attribution — the exact shape leak pass 16 caught in a survivor walk.
+case('arm_unrec_detail_prefix', {},
+     dict(arms=ARM_NET,
+          orgl=orgl_with(23, 29, 9, [(0, 0, True)] * 4)), 125,
+     'the detail covers 4 of 9 unrecorded survivors: a prefix, not a clean set')
+
 # `no_sample_B` needs its B half deleted after the fact.
 p = os.path.join(work, 'no_sample_B', 'serial.log')
 txt = open(p).read()
 open(p, 'w').write(txt.split('HC_SAMPLE B')[0])
 
 with open(os.path.join(work, 'cases.txt'), 'w') as f:
-    for n, (rc, why) in CASES.items():
-        f.write('%s %d %s\n' % (n, rc, why))
+    for n, (rc, minsamp, why) in CASES.items():
+        f.write('%s %d %s %s\n' % (n, rc, minsamp, why))
 PY
 
 [ -f "$WORK/cases.txt" ] || {
@@ -255,11 +484,14 @@ PY
 
 ncase=0
 nfail=0
-while read -r name want why; do
+while read -r name want minsamp why; do
     ncase=$((ncase + 1))
     out="$WORK/$name/report.txt"
+    # min_gap 3600, growth bar 256, min_samples per case, trend floor 16 pages,
+    # settle fraction 0.5. The two-sample cases pass min_samples=2, which is the
+    # adjudicator's default and leaves them adjudicating exactly as in pass 20.
     python3 "$REPORT" "$WORK/$name/serial.log" "$WORK/$name/stamps" 3600 256 \
-        > "$out" 2>&1
+        "$minsamp" 16 0.5 > "$out" 2>&1
     got=$?
     lbl() { case "$1" in 0) echo PASS;; 1) echo FAIL;; 125) echo INCONCLUSIVE;;
                          *) echo "rc=$1";; esac; }
@@ -275,7 +507,7 @@ done < "$WORK/cases.txt"
 
 # A mutation table that shrank to nothing would pass vacuously — the failure
 # mode this whole gate is about. Assert its own population.
-if [ "$ncase" -lt 15 ]; then
+if [ "$ncase" -lt 44 ]; then
     echo "$TAG INCONCLUSIVE: only $ncase mutation(s) ran; the table has been" >&2
     echo "$TAG   gutted and a green from it means nothing" >&2
     exit 125
