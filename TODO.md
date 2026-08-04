@@ -108,8 +108,10 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
 dispatches REAL events into the nodes that JS built, drains timers, then diffs
 the WHOLE live DOM against `chromium --headless`. Both sides read off the same
 channel, so the diff is of two DOMs, not of two serialisers. Fixtures in
-`tests/fixtures/livedom/`, banked floor in `.../BASELINE` — **now `pass=7
-fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
+`tests/fixtures/livedom/`, banked floor in `.../BASELINE` — **now `pass=18
+fail=1` @ `c16fb668`** (was zero), so the gate can finally rot-proof a win.
+The one remaining failure is `06_class_style_toggle`, deferred on purpose
+(needs CSSOM serialisation, and closing it would move a green render gate).
 
 - **DISPROVED: "events can't reach dynamic elements."** Measured directly, both
   engines agree — a click on a script-created button runs its listener, a click
@@ -182,16 +184,42 @@ fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
       ⚠ **`17` had been green BY ACCIDENT** — same `i < 3`, but no `>` before the
       close tag, so the bogus span ran past the leak. A green fixture is not
       evidence the code path is right.
-- [ ] **★ D8 — fixed, merged, then REVERTED (`179eac42` → `b15a1588`); re-land
-      in flight on `livedom/d8-reland`.** The fix is correct and moves the floor
-      `pass=12 fail=6 → pass=14 fail=5`, but the WPT ratchet is per-subtest and
-      caught **64** subtests that were passing and are not now: 6 in
-      `dom/events/Body-FrameSet-Event-Handlers.html` (body/frameset handlers
-      reflect onto the **Window**, so a blanket `HTMLElement.prototype` accessor
-      is wrong for exactly that set) and 58 in `dom/ranges/Range-comparePoint.html`
-      (foreign-document cluster, cause not established). A/B-attributed: ratchet
-      PASS with 0 newly-failing on `87bf2cc2`, FAIL with the same 64 on the merge,
-      twice. Detail of the fix itself below.
+- [x] ✔ **D8 RE-LANDED 2026-08-04 (`c16fb668`)** — merged `179eac42`, reverted
+      `b15a1588`, now back for good. Orchestrator re-ran both lanes on the branch
+      before merging: ratchet **PASS, 0 newly-failing, PASS 15433** (floor was
+      13945, since re-banked to 15433 in `7b661ce6`), live-DOM `pass=16 fail=2 →
+      **pass=18 fail=1**`. **Neither of the two "loss" clusters was D8, and the
+      brief that blamed the accessor was DISPROVED:**
+      - The 6 frameset subtests were a **THIRD writer** — a JS prelude shim
+        defining `onblur/onerror/onfocus/onload/onscroll/onresize` on the Body
+        and FrameSet prototypes out of one object keyed by **handler NAME**: one
+        store for every body and every frameset in the document, sitting on a
+        more-derived prototype so it won the lookup. The blanket
+        `HTMLElement.prototype` accessor was correct; the cache in front of it
+        was not. Shim deleted. That is the two-writers shape a **seventh** time,
+        and the first instance found outside the DOM store.
+      - The 58 `Range-comparePoint` subtests were **not conformance at all** —
+        see the arena-wall item below. A correct commit was reverted over a
+        memory reading.
+- [ ] **★ OPEN — the WPT object-arena wall: banked numbers that are a memory
+      reading, not a score.** `testharness.js` holds every `Test` object live for
+      its final report, so the live set is **linear in subtest count**. At
+      `MAX_OBJ=40000`, `Range-comparePoint.html` and `Range-intersectsNode.html`
+      exhausted the pool and were **cut off mid-run** at 1477 and 1684 subtests —
+      and those cut-off points were banked in `wpt_baseline.txt` as if they were
+      conformance. The reading is chaotic: the collector's `hi_water` adapts on
+      low-yield collections, so allocating **four more objects anywhere before
+      the page runs** moves the cut-off by ±100 subtests. Any change that
+      allocates at startup therefore "regresses" ~140 banked passes while fixing
+      and breaking nothing — which is exactly what forced D8's revert.
+      `MAX_OBJ 40000 → 48000` (+4.1 MB BSS, 164.9 → 168.9 MB) buys **headroom,
+      not completion**: the two files now reach 2019 and 1925 subtests against
+      chromium's 2356 and 5580, each a prefix of chromium's own subtest order.
+      **Range-comparePoint is still cut off at ~34%, and no constant fixes that.**
+      The real fix is a **streaming report or a per-test object budget** so the
+      live set stops growing with subtest count. Until then: before treating any
+      baseline delta as conformance, check whether the file RAN TO COMPLETION.
+      *(Also note the BSS cost is charged on-device, not just on the host.)*
 - [x] ~~**D8 CLOSED 2026-08-04** (`179eac42`)~~ — fixture `14`'s inline
       `onclick=` never ran because the content attribute and the IDL attribute
       were **two writers for one piece of state** (the sixth instance of the
