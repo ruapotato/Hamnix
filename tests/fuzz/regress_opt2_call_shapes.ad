@@ -1,0 +1,115 @@
+# tests/fuzz/regress_opt2_call_shapes.ad
+#
+# Regression for the --opt / ADDER_OPT2 (SSA) lane's CALL-SHAPE handling.
+#
+# codegen.ad's legacy -O0 path does NOT lower every ND_CALL as a `call <sym>`.
+# gen_expr and gen_call between them intercept several call shapes BY NAME and
+# lower them to something else entirely, and the SSA builder — which never
+# enters gen_call — reproduced none of that. Two live miscompiles resulted:
+#
+#   1. KEYWORD ARGS / OMITTED DEFAULTS. gen_call re-shapes such a call through
+#      normalize_call_args (resolve kwargs to parameter positions, fill omitted
+#      trailing defaults); the SSA builder marshalled the argument chain
+#      strictly positionally in WRITTEN order. `g(3)` for
+#      `def g(a: uint64, b: uint64 = 7)` returned 37 with --opt off and 30 with
+#      --opt on — a silent wrong answer, no diagnostic.
+#
+#   2. NON-CALL ND_CALLs. `len(slice)` (fat-pointer .len), `__syscallN` (inline
+#      `syscall`), `asm_volatile`, the port-I/O intrinsics and enum-variant
+#      CONSTRUCTORS (`Second(v)`, intercepted by enum_ctor_ev in gen_expr) all
+#      lower to inline bytes with NO linkable symbol. Accepted into the SSA
+#      subset they emitted `call rel32` + a fixup naming a symbol that does not
+#      exist: cg_fail(7) on a userland target, and — far worse — a SILENT PLT32
+#      extern relocation against a nonexistent symbol on a kernel target.
+#
+# The fix is a WHITELIST (ssa.ad :: ssa_callee_direct_symbol_ok): the native SSA
+# path emits a direct call ONLY for an in-unit `def`, a kernel-target
+# `extern def`, or a userland `extern def` whose runtime wrapper
+# link_runtime_externs synthesizes. A blacklist is what let case 2 ship — the
+# previous attempt enumerated four intercepted families and missed enum
+# constructors.
+#
+# Both --opt ON and --opt OFF must print 399. Any bail must fall back to the
+# legacy path and still produce a CORRECT binary — never cg_fail.
+#
+# Note: the host harness rewrites `sys_write(...)` into `__syscall3(1, ...)`, so
+# print_u64/_putc below ALSO cover the statement-position `__syscallN` shape.
+
+extern def sys_write(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
+
+_ch:   Array[1, uint8]
+_digs: Array[32, uint8]
+_sbuf: Array[8, uint8]
+
+sacc: int64
+
+enum Shape:
+    Plain
+    Tagged(int32)
+
+
+def _putc(c: uint8) -> int32:
+    _ch[0] = c
+    sys_write(cast[int32](1), &_ch[0], cast[uint64](1))
+    return 0
+
+
+def print_u64(val: uint64) -> int32:
+    nd: int64 = 0
+    v: uint64 = val
+    if v == cast[uint64](0):
+        _digs[0] = cast[uint8](48)
+        nd = 1
+    while v > cast[uint64](0):
+        q: uint64 = v / cast[uint64](10)
+        d: uint64 = v - q * cast[uint64](10)
+        _digs[cast[int64](nd)] = cast[uint8](d + cast[uint64](48))
+        nd = nd + 1
+        v = q
+    k: int64 = nd - 1
+    while k >= 0:
+        _putc(_digs[cast[int64](k)])
+        k = k - 1
+    _putc(cast[uint8](10))
+    return 0
+
+
+# ---- shape 1: omitted trailing default ---------------------------------
+def defaulted(a: uint64, b: uint64 = 7) -> uint64:
+    return a * 10 + b
+
+
+# ---- shape 2: keyword arguments, written OUT OF ORDER -------------------
+def kw2(a: uint64, b: uint64) -> uint64:
+    return a * 10 + b
+
+
+# ---- shape 3: enum-variant constructor as a call argument --------------
+# `Tagged(v)` is an ND_CALL that gen_expr intercepts (enum_ctor_ev) and lowers
+# to an inline packed enum value — there is no `Tagged` symbol to call.
+def tagged_sum(v: int32) -> int64:
+    x: int64 = 111
+    y: int64 = 222
+    s: Shape = Tagged(v)
+    match s:
+        case Plain:
+            sacc = 0
+        case Tagged(w):
+            sacc = x + y + cast[int64](w)
+    return sacc
+
+
+# ---- shape 4: len(slice) ------------------------------------------------
+def slice_len(n: uint64) -> uint64:
+    s: Slice[uint8] = Slice[uint8](_sbuf)
+    return len(s) + n
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    a: uint64 = defaulted(cast[uint64](3))              # 37 (was 30 under --opt)
+    b: uint64 = kw2(b=cast[uint64](1), a=cast[uint64](2))  # 21
+    c: uint64 = cast[uint64](tagged_sum(cast[int32](0)))   # 333
+    d: uint64 = slice_len(cast[uint64](0))                 # 8
+    total: uint64 = a + b + c + d                          # 399
+    print_u64(total)
+    return cast[int32](total & cast[uint64](255))
