@@ -68,18 +68,24 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
 dispatches REAL events into the nodes that JS built, drains timers, then diffs
 the WHOLE live DOM against `chromium --headless`. Both sides read off the same
 channel, so the diff is of two DOMs, not of two serialisers. Fixtures in
-`tests/fixtures/livedom/`, banked floor in `.../BASELINE` (zero — the gate
-cannot paint CI red yet).
+`tests/fixtures/livedom/`, banked floor in `.../BASELINE` — **now `pass=3
+fail=12` @ `d702f796`** (was zero), so the gate can finally rot-proof a win.
 
 - **DISPROVED: "events can't reach dynamic elements."** Measured directly, both
   engines agree — a click on a script-created button runs its listener, a click
   inside an `innerHTML`-replaced subtree runs its listener, and a click on a
   5-deep script-built tree bubbles to a delegated ancestor with the correct
   `event.target`. Dispatch is not the keystone it was briefed as.
-- [~] **D1 — `el.attributes` omits attributes set via property setters**
-  (`el.id=`, `el.className=`, `dataset`). `getAttribute()` and
-  `getAttributeNames()` both have them; only the `NamedNodeMap` is missing
-  them. Biggest single diff producer. In flight.
+- [x] ✔ **D1 CLOSED** (`d702f796`) — `el.attributes` omitted attributes set via
+      property setters (`el.id=`, `el.className=`, `dataset`): `getAttribute()`
+      and `getAttributeNames()` had them, only the `NamedNodeMap` did not,
+      because a created element's attributes were enumerated by two different
+      code paths. Unified onto one enumerator (`_cre_all_names`). It was the
+      biggest single diff producer, and closing it took the lane **0 → 3**
+      (`01_create_click`, `11_counter_chain`, `15_innerhtml_rerender` — the
+      three fixtures that diverged on attributes and nothing else, so they went
+      byte-identical). Also: `getAttributeNames()` must **not** dedupe — two
+      namespaces can legitimately share one qualified name.
 - [~] **D2 — stale read-back on SOURCE-parsed elements.** After
   `src.textContent='NEW'`, `.textContent` says NEW but `childNodes[0].nodeValue`
   and `.innerHTML` still return the original source text; `classList.add()`
@@ -105,6 +111,20 @@ cannot paint CI red yet).
       each modified engine input; `HAMNIX_LIVEDOM_REQUIRE_CLEAN=1` refuses to
       measure a dirty tree at all. **Floor is now banked: `pass=0 fail=15`,
       verified clean-tree at `39db2a07`** (chromium 147.0.7727.137).
+
+- [x] ✔ **A RENDER bug this lane is structurally blind to** (`d702f796`, found
+      while working D1). `el.style.display` was **write-only for `"none"`**: an
+      element a stylesheet rule hid and a script revealed
+      (`.stash{display:none}` + `el.style.display='block'` — the show/hide
+      primitive behind every modal, dropdown, accordion and tab strip) produced
+      no override at all, the rewrite re-emitted a bare tag, the cascade
+      re-applied `display:none` on the fresh parse, and the element never
+      appeared. Fixed in `_emit_merged_style()`. It moved this lane by **zero**,
+      correctly — the DOM already read back `"block"`, so a DOM-diffing harness
+      cannot see a painting bug. Coverage lives in
+      `test_hambrowse_style_host.sh` (`REVEALWORD` + a `STAYHIDDEN` negative
+      control). **Generalises:** a functional lane and a render lane fail
+      disjointly, so a green live-DOM diff is not evidence the page PAINTS.
 
 None of D1–D7 is visible to a pixel diff. This is the lane that sees them.
 
