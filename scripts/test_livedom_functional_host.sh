@@ -103,10 +103,45 @@
 # None of these are visible to a pixel diff, and none of them are the bug the
 # brief predicted.
 #
+# PROVENANCE — WHY EVERY RUN PRINTS A HEADER  (2026-08-04)
+# =========================================================
+# This harness was briefed as NON-DETERMINISTIC: "the same commit measured
+# pass=2 in a worktree and pass=0 in a fresh main checkout". That is FALSE, and
+# the real explanation is worse than a flaky gate.
+#
+# Measured directly: 15 fixtures x 5 repetitions of EACH engine (75 hambrowse
+# runs, 75 chromium runs) produced ONE distinct output per fixture per engine —
+# zero variance on either side. Three consecutive whole-gate runs in the same
+# worktree gave byte-identical logs and pass=0 fail=15, the same as a clean
+# checkout. Neither engine, nor the injected driver, nor the tmpdir, nor node
+# ordering varies.
+#
+# What actually happened: the pass=2 was measured in a worktree that was sitting
+# on the harness commit with an UNCOMMITTED 21-line engine patch (a NamedNodeMap
+# fix for created elements in lib/web/dom/canvas.ad) that was never committed.
+# Restoring exactly that patch onto a clean tree here reproduces pass=2 fail=13
+# with the SAME two fixtures (01_create_click, 11_counter_chain). Same commit,
+# different WORKING TREE. `git rev-parse HEAD` was a true statement about the
+# repository and a false statement about the binary under test.
+#
+# So the fix is not to the measurement, it is to the REPORT. Every run now
+# prints the HEAD sha, a LOUD dirty-tree warning naming the modified engine
+# inputs, the content fingerprint that actually keys the compiled binary, and
+# the chromium version. A pass/fail count from this gate is only quotable
+# together with that header. `HAMNIX_LIVEDOM_REQUIRE_CLEAN=1` refuses to run at
+# all on a dirty tree, which is what a floor-banking run should use.
+#
+# Chromium also now gets a PRIVATE --user-data-dir. Sharing the default profile
+# with the ~5 sibling gates that also drive headless chromium on this host is a
+# real (if not-yet-observed-here) way for one to exit instantly as a client of
+# another and log nothing, which this gate would have reported as an engine
+# failure.
+#
 # USAGE
 #   bash scripts/test_livedom_functional_host.sh            # all fixtures
 #   bash scripts/test_livedom_functional_host.sh create     # name filter
 #   KEEP=1 bash scripts/...                                 # keep the workdir
+#   HAMNIX_LIVEDOM_REQUIRE_CLEAN=1 bash scripts/...         # refuse a dirty tree
 #
 # EXIT STATUS is a FLOOR, not perfection: tests/fixtures/livedom/BASELINE lists
 # the fixtures that were byte-identical to chromium when the floor was banked.
@@ -131,8 +166,37 @@ if [ -z "$CHROMIUM" ]; then
     exit 0
 fi
 
-echo "[livedom] compiling host engine (x86_64-linux) ..."
+# ---------------------------------------------------------------------------
+# PROVENANCE HEADER. A pass/fail count from this gate means nothing without it —
+# see the PROVENANCE section above for the run that proved why.
+# ---------------------------------------------------------------------------
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
+
+# The engine inputs whose content decides what this gate measures. A change
+# ANYWHERE else in the tree cannot move a livedom number.
+LD_INPUTS="lib/web user/hambrowse_host.ad adder/compiler compiler tests/fixtures/livedom scripts/test_livedom_functional_host.sh"
+LD_HEAD="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+# shellcheck disable=SC2086
+LD_DIRTY="$(git status --porcelain -- $LD_INPUTS 2>/dev/null | sed 's/^/    /')"
+LD_FP="$(hamnix_tree_fingerprint)"
+echo "[livedom] ============ PROVENANCE ============"
+echo "[livedom] HEAD          $LD_HEAD  ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
+echo "[livedom] tree fp       ${LD_FP:0:16}   (this, not HEAD, keys the compiled binary)"
+echo "[livedom] chromium      $("$CHROMIUM" --version 2>/dev/null | tr -d '\n')"
+if [ -n "$LD_DIRTY" ]; then
+    echo "[livedom] WORKING TREE  *** DIRTY *** — the numbers below are NOT a"
+    echo "[livedom]               property of $LD_HEAD. Uncommitted engine inputs:"
+    echo "$LD_DIRTY" | sed 's/^/[livedom] /'
+    if [ "${HAMNIX_LIVEDOM_REQUIRE_CLEAN:-0}" = "1" ]; then
+        echo "[livedom] HAMNIX_LIVEDOM_REQUIRE_CLEAN=1: refusing to measure a dirty tree"
+        exit 1
+    fi
+else
+    echo "[livedom] WORKING TREE  clean — these numbers ARE a property of $LD_HEAD"
+fi
+echo "[livedom] ===================================="
+
+echo "[livedom] compiling host engine (x86_64-linux) ..."
 if ! adder_bin x86_64-linux user/hambrowse_host.ad "$BIN" 2>"$OUT/livedom_compile.log"; then
     echo "[livedom] FAIL: host engine did not compile"; cat "$OUT/livedom_compile.log"; exit 1
 fi
@@ -223,7 +287,11 @@ hb_dump() {   # <prepared page> -> canonical lines on stdout
 ch_dump() {   # <prepared page> -> canonical lines on stdout
     # Greedy \(.*\) so a text node that itself contains '", source: ' cannot
     # truncate the line.
+    # --user-data-dir is PRIVATE: sharing the default profile with a sibling
+    # gate's chromium makes one instance exit immediately as a client of the
+    # other, logging nothing — which this gate would misreport as an engine bug.
     timeout 120 "$CHROMIUM" --headless --no-sandbox --disable-gpu \
+        --user-data-dir="$WORK/chromeprofile" \
         --virtual-time-budget=8000 --enable-logging=stderr \
         --dump-dom "file://$1" 2>&1 >/dev/null \
         | sed -n 's/^.*:CONSOLE[^]]*\] "LD \(.*\)", source: .*$/\1/p' \
@@ -273,7 +341,7 @@ for fx in "$FIXDIR"/*.html; do
 done
 
 echo "[livedom] ---------------------------------------------"
-echo "[livedom] RESULT pass=$pass fail=$fail"
+echo "[livedom] RESULT pass=$pass fail=$fail  @ $LD_HEAD${LD_DIRTY:+ (DIRTY TREE — not a property of this commit)}"
 [ -n "$FAILED" ] && echo "[livedom] failing:$FAILED"
 if [ -n "$NEWPASS" ]; then
     echo "[livedom] NEW PASS (not yet banked):$NEWPASS"
@@ -287,5 +355,9 @@ if [ "${STRICT:-0}" = "1" ] && [ "$fail" -ne 0 ]; then
     echo "[livedom] STRICT=1: $fail fixture(s) still diverge"
     exit 1
 fi
-echo "[livedom] floor held (banked passes: $(grep -cvE '^\s*(#|$)' "$BASELINE" 2>/dev/null || echo 0))"
+# `grep -c` PRINTS 0 and EXITS 1 on no match, so the old `|| echo 0` fallback
+# appended a SECOND zero and this line read "banked passes: 0\n0)".
+LD_BANKED=0
+[ -f "$BASELINE" ] && LD_BANKED="$(grep -cvE '^[[:space:]]*(#|$)' "$BASELINE" 2>/dev/null)"
+echo "[livedom] floor held (banked passes: $LD_BANKED) @ $LD_HEAD ${LD_DIRTY:+[DIRTY TREE]}"
 exit 0
