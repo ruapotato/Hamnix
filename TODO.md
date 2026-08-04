@@ -62,6 +62,34 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
 
 ---
 
+## 2026-08-04 — leak census pass 21: the trend arm landed, and it disproved pass 20
+
+Tooling on `main` (`d99b19b5`); writeup `docs/leak_pass21_n_sample_census.md`;
+44/44 mutation cases green via `scripts/test_leak_hours_report_mutations.sh`.
+
+**Pass 20's headline is retired.** A 6-minute three-sample run reaches `vma_anon`
+**+34** where the 8.02-hour run reached **+37**, and `hamsh` pid 6 reaches **+26**
+in both. Eight hours bought three extra pages and zero extra pages. The new SHAPE
+classifier calls both **DECAY** without being told what to look for. So the "+41
+pages of real growth hidden inside a −149 shrink" is the tracker *attributing* a
+fixed population as site 0 drains into the named sites — not growth of the machine.
+
+- [~] **The 4×2h proof run is in flight** (one boot, 4 samples, 2 h apart; QEMU pid
+  660353, output under worktree `agent-acbaf7b610609d81d`). Adjudicate with
+  `python3 scripts/leak_hours_census_report.py <dir>/serial.log <dir>/sample_stamps.txt 7000 256 4 16 0.5`
+  and read the `=== TREND across 4 samples ===` block. `SUSTAINED` on site 6 with the
+  site-0 credit not covering it convicts `vma_anon`; `SETTLE`/`DECAY` retires the
+  residual. A partial log still adjudicates — a missing sample is INCONCLUSIVE with
+  the reason named, never a PASS.
+- [ ] **Arm the page tracker AT BOOT** — the single highest-value kernel change here.
+  It empties site 0 and thereby retires the re-attribution credit, the
+  owner-unrecorded population, and the per-site attribution gap all at once.
+- Rule the campaign keeps re-learning: the trend arm thresholds on **resolution**,
+  never on a rate tolerance. A sustained positive rate is unbounded by definition,
+  so no threshold on it is defensible; a smaller floor is bought by running longer.
+
+---
+
 ## 2026-07-22 — LLVM = PRIMARY backend: compile EVERYTHING (USER)
 USER 07-22: "make LLVM the primary compile pathway"; "build the kernel and all packages with llvm" for the speedup; "get the new LLVM backend to compile EVERYTHING, keeping the kernel LAST but still on the TODO after we get all other apps compiled via llvm."
 - ✅ LLVM backend PROVEN: 0.86× gcc-O2; native-link → real ELF64 native binaries; **panel (662/662 fns) compiled via LLVM BOOTS + launches apps (3/3)**; on-device compilation works (host_ac emits .ll on live OS via PIE). Native SSA stays the BOOTSTRAP FLOOR (builds host_ac; can't drop).
