@@ -60,6 +60,31 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
   `scripts/ssa_subset_census.py`; a per-*reason* histogram is useless, since
   `SBR_MEMORY` alone spans ~40 distinct gates.
 
+- [x] ✔ **The two live `--opt` call-shape miscompiles are FIXED** (`63131c78`).
+      The blocked `3269f2b2` is superseded. Verified RED on main first: a
+      shape-1/2 reduction printed `on=51` where the answer is `58` (omitted
+      trailing default marshalled positionally — silent, no diagnostic), and the
+      full fixture `cgfail`ed under `--opt`. Fixed by a **whitelist**
+      (`ssa_callee_direct_symbol_ok`), because a blacklist of intercepted
+      `gen_expr`/`gen_call` shapes is unmaintainable by construction — the
+      previous attempt listed four of six families and missed enum constructors.
+      Gates: fuzz 500/500 0 miscompiles, kobjdiff 11398/0, `test_opt_*` 52/52.
+- **Census re-run on `63131c78` (whole tree, 2616291 functions): 17.49%
+  accepted.** NOT a clean before/after — the census tool shipped with the fix,
+  so it cannot be run unchanged against the old compiler — but the subset did
+  **not** shrink despite the whitelist's narrowing, because the same change
+  relaxed the call-result gate (`ssa_callee_ret_native_ok`; float and by-value
+  aggregate returns still bail). Current bail table, and it **re-orders the
+  briefed one above**:
+  `SBR_NONLOCAL` **31.5%** (site 34 alone = 27.0%, 583092 functions),
+  `SBR_NONPROMOTABLE` 28.2% (site 66), `SBR_MEMORY` 18.2% (site 92 = 13.4%),
+  `SBR_CALL` 14.1%, `SBR_NONSUBSET_EXPR` 5.8%, `SBR_MANYARGS` 1.5%,
+  `SBR_FLOAT` 0.6%.
+- [ ] **Next subset target: `SBR_NONLOCAL` site 34** — now the single largest
+      bail. Agent dispatched. The correctness bar is the hard part, not the
+      broadening: a wrong accept SILENTLY MISCOMPILES, which is exactly what
+      `63131c78` had to fix.
+
 ---
 
 ## 2026-08-04 — browser: the live-DOM functional lane exists, and it moved the blame
@@ -105,15 +130,45 @@ fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
       engine. Post-merge the render lane was checked separately (it fails
       disjointly from this one): hambrowse style gate GREEN, WPT testharness
       ratchet PASS at the banked floor 13945/16807, failures 2961 = baseline.
-- [ ] **D2b — the attribute half is still open.** `classList.add()` updates
-      `.className` but not `getAttribute('class')`. Untouched by `ecd24fa1`,
-      which fixed only the text half.
-- [ ] **D3** `insertBefore(DocumentFragment, ref)` inserts nothing, children lost.
-- [ ] **D4** `node.parentNode` still points at the old parent after `removeChild()`.
+- [x] ✔ **D2b/D3/D4 CLOSED** (`a6ce1da3`) — all three were the SAME shape as D1
+      and D2, a **third** time running: one piece of state, two writers, only
+      one on the path the readers walk. **D2b** — `classList` wrote only the
+      reflected `className`; `_el_get_attribute` consults the `sattr_`
+      content-attribute store FIRST, so a source-anchored element reported its
+      parse-time class forever. **D3** — `_insert_before_v` gated on
+      `_find_cre_by_obj()`, which a DocumentFragment deliberately never
+      satisfies, so the insert branch was skipped whole and the staged children
+      dropped; `appendChild` had the spec's insert-children-then-empty step,
+      `insertBefore` never got it. **D4** — two causes: the created-node branch
+      never nulled `parentNode`, and the SOURCE branch nulled it **before** the
+      child-list surgery, which reads `parent.children` — a lazy accessor that
+      materialises the subtree and rewrites `parentNode` on every child,
+      overwriting the null. **Order is load-bearing.** Three neighbours of the
+      identical shape came with them: `appendChild()` of a source-anchored
+      element was a total no-op; a SECOND `textContent=` on a source element did
+      nothing (an own data property shadows the prototype accessor in
+      `member_set` as well as `member_get` — the D2 tail); `el.dataset.foo=`
+      wrote the dataset object and no attribute. Floor **pass=7 fail=8 →
+      pass=12 fail=6**, orchestrator-re-measured; guards proved RED by
+      `git archive`ing the pre-fix tree, not by assertion.
 - [ ] **D5** `checkbox.click()` runs no activation behaviour — `.checked` never
       flips, no `change` event, radio-group exclusivity never runs.
 - [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
-- [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text node.
+- [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text
+      node. Causes fixtures `07` and `12` to fail.
+- [ ] **★ D8 (NEW, found 2026-08-04 while closing D2b/D3/D4; on nobody's
+      brief)** — fixture `14`: an inline **`onclick=` content attribute never
+      runs**. The attribute is present and reads back correctly; the handler
+      simply never executes. Inline event-handler content attributes are
+      pervasive on the real web, so this matters for the "run MOST WEBSITES"
+      goal. Agent dispatched.
+- [ ] **`06` is a FOURTH instance of the shape, deliberately deferred.** Its
+      class half is now byte-identical; it diverges on the `style=` attribute
+      alone. Closing it also needs CSSOM serialisation to match chromium
+      (declaration order, `"prop: value;"` spacing, colour normalisation), which
+      would move `test_hambrowse_style_host.sh`'s banked `getAttribute('style')`
+      expectation — a separate change with its own re-measurement, not a churn
+      of a green render gate.
 - [x] ✔ **DISPROVED: "the gate is not deterministic."** 15 fixtures × 5 reps ×
       both engines — 150 runs — produced exactly ONE distinct output per fixture
       per engine, and three whole-gate runs were byte-identical. The stale-binary
