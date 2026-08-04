@@ -1675,6 +1675,43 @@ def _idbytes_eq(a: uint64, b: uint64, idp: Ptr[uint8], idn: int32) -> int32:
     return 1
 
 
+# Is the tag-name span [ts, ts+nl) a RAW-TEXT element name? The HTML tokenizer's
+# "script data" / "RAWTEXT" states: everything until the matching close tag is
+# character data, with NO markup and NO nesting.
+def _rawtext_name(ts: uint64, nl: uint64) -> int32:
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("script")) != 0:
+        return 1
+    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("style")) != 0:
+        return 1
+    return 0
+
+
+# THE scanner for "where does a raw-text element's body end". Raw text has no
+# element nesting and no tags at all, so the body ends at the FIRST literal
+# </name — a plain byte scan, never a markup walk. Publishes g_close_lt (the
+# '<' of the close tag) and g_close_end (just past its '>') on the same
+# contract as _find_close, and returns 1 on a hit. On a MISS the body genuinely
+# runs to EOF (there is no close tag anywhere), so both globals are set to
+# src_len rather than to `frm` — which is also exactly the resume point
+# _rawtext_skip has always returned for an unterminated body.
+def _rawtext_close(ts: uint64, nl: uint64, frm: uint64) -> int32:
+    i: uint64 = frm
+    while i < src_len:
+        if src_ptr[i] == 60 and i + 1 < src_len and src_ptr[i + 1] == 47:
+            if _srcname_eq(i + 2, ts, nl) != 0:           # matched </script>|</style>
+                g_close_lt = i
+                j: uint64 = i + 2
+                j = _hx_tag_end_p(src_ptr, src_len, j)
+                if j < src_len:
+                    j = j + 1
+                g_close_end = j
+                return 1
+        i = i + 1
+    g_close_lt = src_len
+    g_close_end = src_len
+    return 0
+
+
 # does the tag name at src[at] equal the src name span [ns, ns+nl), bounded?
 def _srcname_eq(at: uint64, ns: uint64, nl: uint64) -> int32:
     k: uint64 = 0
@@ -1703,6 +1740,23 @@ def _srcname_eq(at: uint64, ns: uint64, nl: uint64) -> int32:
 # document.body.textContent and .innerHTML were "" on those pages no matter how
 # the DOM stored them. archlinux.org, with exactly one of each, worked.
 def _find_close(ns: uint64, nl: uint64, frm: uint64) -> int32:
+    # RAW TEXT FIRST. The scan below is a MARKUP scan, and the body of a
+    # <script>/<style> is not markup — so running it over one is not merely
+    # wasteful, it is WRONG: `for (i = 0; i < 3; i++)` reaches the `<` at line
+    # 1730 below (not '</', not '<!', not '<?'), _hx_tag_end_p treats it as a
+    # start tag and skips to the next '>' — which is the '>' of the element's
+    # OWN </script>. The close tag is consumed as part of a phantom tag, the
+    # scan never sees it, and the element gets an EMPTY content span. The
+    # readers then compute "just past the close tag" (_tx_elem_end) as the
+    # script's content START, so the whole JS source came back as a sibling
+    # TEXT NODE of the <script> in the parent's childNodes.
+    #
+    # There were TWO writers for "where does a raw-text body end": this one and
+    # _rawtext_skip, which has always been raw-text-correct — and only the
+    # WRONG one fed tx_ce, which is what every tree reader walks. Both now go
+    # through _rawtext_close, which is the single scanner.
+    if _rawtext_name(ns, nl) != 0:
+        return _rawtext_close(ns, nl, frm)
     depth: int32 = 0
     i: uint64 = frm
     while i < src_len:
@@ -1970,26 +2024,12 @@ def _scan_start_tag(i: uint64) -> int32:
 # Raw text has no element nesting — the body ends at the FIRST literal </name>.
 def _rawtext_skip(ts: uint64, ne: uint64, je: uint64) -> uint64:
     nl: uint64 = ne - ts
-    isrt: int32 = 0
-    if _hx_name_eq(ts, nl, cast[Ptr[uint8]]("script")) != 0:
-        isrt = 1
-    elif _hx_name_eq(ts, nl, cast[Ptr[uint8]]("style")) != 0:
-        isrt = 1
-    if isrt == 0:
+    if _rawtext_name(ts, nl) == 0:
         return 0
     if je > ts and src_ptr[je - 1] == 47:                 # '<script .../>' self-close
         return 0
-    i: uint64 = je + 1
-    while i < src_len:
-        if src_ptr[i] == 60 and i + 1 < src_len and src_ptr[i + 1] == 47:
-            if _srcname_eq(i + 2, ts, nl) != 0:           # matched </script>|</style>
-                j: uint64 = i + 2
-                j = _hx_tag_end_p(src_ptr, src_len, j)
-                if j < src_len:
-                    j = j + 1
-                return j
-        i = i + 1
-    return src_len                                        # unterminated: skip to EOF
+    ign: int32 = _rawtext_close(ts, nl, je + 1)
+    return g_close_end                                    # miss => src_len (EOF)
 
 
 # Resume offset for a subtree the ELEMENT scanners must not look inside, or 0
