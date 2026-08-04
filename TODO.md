@@ -68,8 +68,8 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
 dispatches REAL events into the nodes that JS built, drains timers, then diffs
 the WHOLE live DOM against `chromium --headless`. Both sides read off the same
 channel, so the diff is of two DOMs, not of two serialisers. Fixtures in
-`tests/fixtures/livedom/`, banked floor in `.../BASELINE` — **now `pass=3
-fail=12` @ `d702f796`** (was zero), so the gate can finally rot-proof a win.
+`tests/fixtures/livedom/`, banked floor in `.../BASELINE` — **now `pass=7
+fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
 
 - **DISPROVED: "events can't reach dynamic elements."** Measured directly, both
   engines agree — a click on a script-created button runs its listener, a click
@@ -86,11 +86,28 @@ fail=12` @ `d702f796`** (was zero), so the gate can finally rot-proof a win.
       three fixtures that diverged on attributes and nothing else, so they went
       byte-identical). Also: `getAttributeNames()` must **not** dedupe — two
       namespaces can legitimately share one qualified name.
-- [~] **D2 — stale read-back on SOURCE-parsed elements.** After
-  `src.textContent='NEW'`, `.textContent` says NEW but `childNodes[0].nodeValue`
-  and `.innerHTML` still return the original source text; `classList.add()`
-  updates `.className` but not `getAttribute('class')`. Script-CREATED nodes are
-  fine — it is the source-anchored lazy path that goes stale. In flight.
+- [x] ✔ **D2 (text half) CLOSED** (`ecd24fa1`) — `el.textContent = x` on a
+      SOURCE-anchored element never ran "replace every child with one Text
+      node". Only a CREATED node ran that algorithm; a source-anchored one
+      stashed the string as an own property that **only** the render read-back
+      (`_dom_readback` → `dom_ov_inner`) ever consulted. The node then carried
+      two representations of its content that disagreed — after
+      `src.textContent='NEW'`, `.textContent` said `NEW` while
+      `childNodes[0].nodeValue` and `.firstChild.data` still said `ORIG`, so
+      every reader that WALKS the tree (a framework, a delegated handler
+      reading its own output element back) saw the original source text. Same
+      shape as D1 (two enumerators): the fix **deletes the second writer**
+      rather than teaching the readers about it — both kinds of node now run
+      `_node_set_text_content`. Orchestrator re-measured clean-tree both sides:
+      **`pass=3 fail=12` @ `7f82b640` → `pass=7 fail=8`**, new passes
+      `02_innerhtml_subtree` `03_delegation` `04_settimeout_mutate`
+      `05_form_input`, all four banked and all four failing on the pre-fix
+      engine. Post-merge the render lane was checked separately (it fails
+      disjointly from this one): hambrowse style gate GREEN, WPT testharness
+      ratchet PASS at the banked floor 13945/16807, failures 2961 = baseline.
+- [ ] **D2b — the attribute half is still open.** `classList.add()` updates
+      `.className` but not `getAttribute('class')`. Untouched by `ecd24fa1`,
+      which fixed only the text half.
 - [ ] **D3** `insertBefore(DocumentFragment, ref)` inserts nothing, children lost.
 - [ ] **D4** `node.parentNode` still points at the old parent after `removeChild()`.
 - [ ] **D5** `checkbox.click()` runs no activation behaviour — `.checked` never
