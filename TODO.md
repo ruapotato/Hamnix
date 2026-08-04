@@ -16,6 +16,52 @@ Markers: `[ ]` open · `[~]` in flight.
 
 ---
 
+## ⚠ 2026-08-03 — a LIVE `--opt` miscompile on `main` (native codegen.ad lane)
+
+Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
+*right now*, not historical.
+
+- [~] **Keyword args / omitted defaults are marshalled positionally by the SSA
+  builder.** `gen_call` re-shapes such calls via `normalize_call_args`; the SSA
+  builder walks the argument chain in *written* order. Repro through the native
+  lane (`tests/fuzz/ad_codegen_host.py`: `build_driver` → `run_dump(opt=…)` →
+  `wrap_elf` → run):
+
+      def g(a: uint64, b: uint64 = 7) -> uint64: return a * 10 + b
+      def main() -> uint64: return g(3)
+
+  `--opt` off → **37** (correct), `--opt` on → **30**. The Python seed is
+  unaffected (37 both ways). The shape sits squarely inside the accepted SSA
+  subset, so nothing else was stopping it.
+- [~] **codegen.ad's by-NAME call interceptions have no linkable symbol.**
+  `__syscallN`, `asm_volatile`, the port-I/O + atomic intrinsics and
+  `len(slice)` lower to inline bytes, but the SSA lane never enters `gen_call`,
+  so a statement-position `__syscall1(60, x)` emits `call rel32` + a fixup
+  naming `__syscall1`. Userland hard-fails `cg_fail(7)`; a **kernel** target
+  silently records a PLT32 extern reloc against a nonexistent symbol. The
+  code comment claiming "the native path never reaches here" stopped being true
+  when Phase 3 started emitting.
+- [ ] **Invariant to restore: an SSA bail must fall back to -O0, never
+  hard-fail.** The in-flight fix branch bails the two cases above but turns
+  `tests/fuzz/regress_match_liveness.ad` from `STATUS ok` into
+  `STATUS cgfail reason=7`, regressing `scripts/fuzz_adder_diff.sh` to rc 1.
+  That fixture pins the register-allocator liveness bug that *blanked the
+  desktop* — silently ceasing to compile it is a coverage loss wearing a
+  green badge.
+- [ ] **Re-brief subset work from the census, not from prose.** The
+  "~86.7% subset coverage" figure in the design doc is a *fuzzer-corpus*
+  number. Over the real tree it is **16.92%** (3598/21261 functions), over
+  kernel sources **26.11%** (2493/9548). The long-briefed gap list is wrong:
+  `SBR_SHORTCIRCUIT` bails **zero** functions and `SBR_MANYARGS` is 1.5%. The
+  real top three, 71% of all fallbacks, are `SBR_NONPROMOTABLE` 27.0%
+  (address-taken scalar local — the native path has no `SVO_ALLOCA` at all),
+  `SBR_NONLOCAL` 26.1%, `SBR_CALL` 18.0%. Steer with the per-CALL-SITE
+  histogram (`--dump-ssa`, `ssa_bail_site_hist`) and
+  `scripts/ssa_subset_census.py`; a per-*reason* histogram is useless, since
+  `SBR_MEMORY` alone spans ~40 distinct gates.
+
+---
+
 ## 2026-07-22 — LLVM = PRIMARY backend: compile EVERYTHING (USER)
 USER 07-22: "make LLVM the primary compile pathway"; "build the kernel and all packages with llvm" for the speedup; "get the new LLVM backend to compile EVERYTHING, keeping the kernel LAST but still on the TODO after we get all other apps compiled via llvm."
 - ✅ LLVM backend PROVEN: 0.86× gcc-O2; native-link → real ELF64 native binaries; **panel (662/662 fns) compiled via LLVM BOOTS + launches apps (3/3)**; on-device compilation works (host_ac emits .ll on live OS via PIE). Native SSA stays the BOOTSTRAP FLOOR (builds host_ac; can't drop).
