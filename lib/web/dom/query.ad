@@ -2308,9 +2308,11 @@ def _dom_register_el() -> int32:
         if dom_origchecked[idx] >= 0:
             js_set_prop(o, cast[Ptr[uint8]]("checked"), 7, \
                         js_bool(dom_origchecked[idx]))
-        if kind == 3:
-            js_set_prop(o, cast[Ptr[uint8]]("selectedIndex"), 13, \
-                        js_number(cast[float64](_select_index(g_el_cs))))
+        # NO eager `selectedIndex` own property. It is a VIEW over .value now
+        # (an accessor on HTMLSelectElement.prototype — see the option/select
+        # block of the JS prelude in lib/web/dom/canvas.ad), and an own data
+        # property would shadow that accessor in member_get AND member_set,
+        # putting the second, never-updated store straight back.
     _attach_el_methods(o)
     # style / classList / dataset are LAZY accessors on HTMLElement.prototype
     # (NID_STYLE_ACC / NID_CLS_ACC / NID_DS_ACC): 3 of the ~5.8 JS objects this

@@ -96,3 +96,46 @@
 16_classlist_attr_mirror
 17_insertbefore_fragment
 18_parentnode_after_remove
+# RAISED 2026-08-04 to SIXTEEN, by D7 + D5 + D6. The shape held for a FOURTH
+# round: every one was one piece of state with more than one writer, and the
+# reader walked the wrong one.
+#   D7  (07_fragment_insert, 12_nested_deep_click) — the <script> element's own
+#       JS source came back as a sibling TEXT NODE. TWO writers for "where does
+#       a raw-text body end": _rawtext_skip (a plain byte scan for the first
+#       literal </script — correct, and what the element walks use to skip the
+#       body) and _find_close (a MARKUP scan — wrong, and the one that fed
+#       tx_ce, which is what every tree reader walks). In _find_close's scan the
+#       `<` of `for (i = 0; i < 3; i++)` is not '</', '<!' or '<?', so it was
+#       taken for a start tag and the skip-to-'>' swallowed the element's own
+#       </script>. No close found => empty content span => "just past the close
+#       tag" resolved to the script's content START. Fixed by giving both
+#       writers one scanner, _rawtext_close.
+#       17 passed all along by ACCIDENT: its script has the same `i < 3` but no
+#       '>' before the injected driver's </script>, so the bogus span ran past
+#       the leak instead of into it. A green fixture proved nothing here.
+#   D5  (09_checkbox_radio) — element.click() ran no activation behaviour. Two
+#       IMPLEMENTATIONS of "activate a checkable input": he_dom_set_checked (the
+#       real-input path — flips checked, enforces radio exclusivity, fires input
+#       + change) and NID_CLICK (the scripted path — dispatched and stopped).
+#       Only the one a mouse can reach was complete. Both now call
+#       _click_activate_pre / _click_activate_post, which carry the spec's
+#       pre-click / canceled / activation-behaviour steps. A checkbox with no
+#       value= attribute also answers .value === "on" now (the spec's
+#       "default/on" value mode), which is the same store form submission reads.
+#   D6  (10_select_change) — select.selectedIndex was a SECOND, INDEPENDENT
+#       store: an own data property seeded once from the source scan that no
+#       .value write ever touched, plus a THIRD writer in the render read-back.
+#       `sel.value = 'c'` moved .value and left .selectedIndex at 0 — the exact
+#       split every dependent dropdown does. selectedIndex is now a pure VIEW
+#       over .value (accessor on HTMLSelectElement.prototype); the two native
+#       writers are deleted. HTMLOptionElement .value / .text did not exist at
+#       all, so `opt.value = 'c'` on a created option parked a property no
+#       attribute reader could see; they are proper reflections now.
+#
+# STILL FAILING: 06 (CSSOM serialisation — deliberately deferred, closing it
+# would move a green render gate) and 14 (inline onclick= content attributes
+# never run — owned by another branch).
+07_fragment_insert
+09_checkbox_radio
+10_select_change
+12_nested_deep_click

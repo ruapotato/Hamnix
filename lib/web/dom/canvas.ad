@@ -9974,6 +9974,37 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("def(HTMLTitleElement.prototype,'text',function(){var k=this.childNodes,s='',i;for(i=0;i<k.length;i++){if(k[i].nodeType===3)s+=k[i].data;}return s;},function(v){this.textContent=v;});"))
     _pre_nl()
+    # ---- <option>/<select> SELECTION: one store, one writer ----------------
+    # HTMLOptionElement.value REFLECTS the value content attribute (falling back
+    # to the option's text when the attribute is absent), and .text is the
+    # stripped-and-collapsed text content. Both were missing entirely, so
+    # `opt.value = 'c'` on a created <option> parked a plain JS property that no
+    # attribute reader could ever see — the node serialised with NO value=.
+    #
+    # HTMLSelectElement.selectedIndex used to be a SECOND, INDEPENDENT store:
+    # an own data property seeded once from the source scan, which no `.value`
+    # write ever touched and which nothing but the render read-back consulted.
+    # `sel.value = 'c'` moved .value and left .selectedIndex on 0 forever — the
+    # exact split every dependent-dropdown does. It is now a pure VIEW over
+    # .value (the one store): the getter resolves the matching option, the
+    # setter writes .value. The native seeding in _dom_register_el and the
+    # native selectedIndex branch of the render read-back — the other two
+    # writers — are gone with it.
+    _pre_put(cast[Ptr[uint8]]("function optTrim(s){var a=0,b=s.length;while(a<b&&s.charCodeAt(a)<33)a++;while(b>a&&s.charCodeAt(b-1)<33)b--;return s.slice(a,b);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function optText(o){var t=o.textContent;return optTrim(t===null||t===undefined?'':''+t);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLOptionElement.prototype,'text',function(){return optText(this);},function(v){this.textContent=v;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLOptionElement.prototype,'value',function(){var v=gat(this,'value');return v===null||v===undefined?optText(this):v;},function(v){if(reflBusy)return;reflBusy=1;this.setAttribute('value',''+v);reflBusy=0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function selOpts(s){var r=[],k=s.childNodes,i,c,g,j;for(i=0;i<k.length;i++){c=k[i];if(c.nodeType!==1)continue;"))
+    _pre_put(cast[Ptr[uint8]]("if(c.tagName==='OPTION'){r.push(c);}else if(c.tagName==='OPTGROUP'){g=c.childNodes;for(j=0;j<g.length;j++){if(g[j].nodeType===1&&g[j].tagName==='OPTION')r.push(g[j]);}}}return r;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLSelectElement.prototype,'selectedIndex',function(){var o=selOpts(this),v=this.value,i;"))
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<o.length;i++){if(o[i].value===v)return i;}for(i=0;i<o.length;i++){if(optText(o[i])===v)return i;}return -1;},"))
+    _pre_put(cast[Ptr[uint8]]("function(n){var o=selOpts(this);n=n|0;if(n>=0&&n<o.length)this.value=o[n].value;else this.value='';});"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("function urlOf(e){var h=e.getAttribute('href');if(h===null)return null;try{return new URL(h,document.baseURI||location.href);}catch(x){return null;}}"))
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("function urlPart(P,prop,key,dflt){def(P,prop,function(){var u=urlOf(this);return u?u[key]:dflt;});}"))
@@ -10879,26 +10910,11 @@ def _dom_readback():
                 dom_ov_val_off[idx] = voff
                 dom_ov_val_len[idx] = kv
                 changed = 1
-        # select: a JS `selectedIndex = N` write with no matching value write
-        # resolves to the Nth option's text so the control re-marks + re-renders.
-        if dom_kind[idx] == 3 and dom_ov_val_len[idx] < 0:
-            siv: int32 = js_get_prop(o, cast[Ptr[uint8]]("selectedIndex"), 13)
-            si: int32 = cast[int32](js_to_number(siv))
-            oi: int32 = _select_index(cast[uint64](dom_cstart[idx]))
-            if si != oi and si >= 0:
-                sn: int32 = _select_optext_at(cast[uint64](dom_cstart[idx]), si)
-                if sn >= 0:
-                    soff: int32 = dom_ov_len
-                    ks: int32 = 0
-                    while ks < sn and dom_ov_len < DOM_OV_CAP:
-                        dom_ovbuf[dom_ov_len] = fbuf[ks]
-                        dom_ov_len = dom_ov_len + 1
-                        ks = ks + 1
-                    dom_ov_val_off[idx] = soff
-                    dom_ov_val_len[idx] = ks
-                    js_set_prop(o, cast[Ptr[uint8]]("value"), 5, \
-                                js_new_string(&fbuf[0], cast[uint64](ks)))
-                    changed = 1
+        # NO separate `selectedIndex` branch here any more. It existed because a
+        # JS `selectedIndex = N` write moved a store the .value read-back above
+        # could not see — the third writer of one piece of state. selectedIndex
+        # is now an accessor over .value, so such a write lands in .value and
+        # the branch above already renders it.
         if dom_origchecked[idx] >= 0:
             ckv: int32 = js_get_prop(o, cast[Ptr[uint8]]("checked"), 7)
             ckb: int32 = 0
