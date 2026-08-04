@@ -351,6 +351,18 @@ jobs:
             mtools \
             ovmf \
             musl-tools
+          # Pillow (PIL) is a HARD dependency of every render-to-PNG gate, and
+          # nothing installed it. Ten scripts import it — hb_flexwrap_qa_probe,
+          # hb_grid_probe, render_hambrowse_png, framediff_{prep,metric,gfx_prep},
+          # wpt_reftest_chromium_check, _crop_new_window, gen_test_video,
+          # _de_sysmon_mem_live_drv — i.e. the whole visual-QA path plus three
+          # gates registered in ci_battery_manifest.txt. Found 2026-08-04 when a
+          # 200-gate sweep on the dev host reported test_hambrowse_{flexwrap_qa,
+          # gridareas,gridpng} as FAIL; all three were "ModuleNotFoundError: No
+          # module named 'PIL'" and all three PASS once it is installed. They
+          # were never regressions — they were DARK. pip, not apt's python3-pil,
+          # because setup-python's interpreter is not the system python3.
+          python3 -m pip install --quiet pillow
           # musl-tools provides musl-gcc, which test_futex_elided_wake needs
           # to build its u-binary fixture. Without it _ensure_ubin.sh SKIPs
           # (exit 0) and the gate silently does NOT run — a soft green. With
