@@ -10525,6 +10525,8 @@ def _dom_readback():
         dom_ov_cls_off[idx] = -1
         dom_ov_cls_len[idx] = -1
         dom_ov_hide[idx] = 0
+        dom_ov_disp_off[idx] = -1
+        dom_ov_disp_len[idx] = -1
         dom_ov_val_off[idx] = -1
         dom_ov_val_len[idx] = -1
         dom_ov_checked[idx] = -1
@@ -10624,13 +10626,24 @@ def _dom_readback():
               dom_ov_wd_off[idx] = g_rb_off
               dom_ov_wd_len[idx] = r
               changed = 1
-          # display:none
+          # display — BOTH directions. "none" drops the element from the render
+          # outright (the cheap path); any other value is recorded so
+          # _emit_merged_style() can write it back as an inline declaration,
+          # which outranks the stylesheet rule that hid the element in the first
+          # place. Without the second branch `el.style.display='block'` on a
+          # `display:none` rule was a silent no-op.
           dv: int32 = js_get_prop(stv, cast[Ptr[uint8]]("display"), 7)
           dp: Ptr[uint8] = js_str_ptr(dv)
           dn: int32 = _cstr_len(dp)
           if _bytes_eq(dp, dn, cast[Ptr[uint8]]("none"), 4) != 0:
               dom_ov_hide[idx] = 1
               changed = 1
+          else:
+              r = _readback_str(stv, cast[Ptr[uint8]]("display"), 7)
+              if r >= 0:
+                  dom_ov_disp_off[idx] = g_rb_off
+                  dom_ov_disp_len[idx] = r
+                  changed = 1
         # className
         clv: int32 = js_get_prop(o, cast[Ptr[uint8]]("className"), 9)
         clp: Ptr[uint8] = js_str_ptr(clv)
@@ -11192,7 +11205,7 @@ def _el_has_override(idx: int32) -> int32:
     if dom_ov_hide[idx] != 0 or dom_ov_inner_len[idx] >= 0 or \
        dom_ov_col_len[idx] >= 0 or dom_ov_bg_len[idx] >= 0 or \
        dom_ov_wt_len[idx] >= 0 or dom_ov_al_len[idx] >= 0 or \
-       dom_ov_wd_len[idx] >= 0 or \
+       dom_ov_wd_len[idx] >= 0 or dom_ov_disp_len[idx] >= 0 or \
        dom_ov_cls_len[idx] >= 0 or dom_ov_val_len[idx] >= 0 or \
        dom_ov_checked[idx] >= 0:
         return 1
@@ -11519,11 +11532,17 @@ def _emit_merged_style(idx: int32):
         ser_disp = 1
     if dom_ov_col_len[idx] < 0 and dom_ov_bg_len[idx] < 0 and \
        dom_ov_wt_len[idx] < 0 and dom_ov_al_len[idx] < 0 and \
-       dom_ov_wd_len[idx] < 0 and ser_disp == 0:
+       dom_ov_wd_len[idx] < 0 and dom_ov_disp_len[idx] < 0 and ser_disp == 0:
         return
     _rw_cstr(cast[Ptr[uint8]](" style=\""))
     if ser_disp != 0:
         _rw_cstr(cast[Ptr[uint8]]("display:none;"))
+    # A script-set NON-none display, emitted inline so it beats the stylesheet
+    # rule the reveal is undoing.
+    if dom_ov_disp_len[idx] >= 0:
+        _rw_cstr(cast[Ptr[uint8]]("display:"))
+        _rw_ovbuf(dom_ov_disp_off[idx], dom_ov_disp_len[idx])
+        _rw_ch(59)
     if dom_ov_col_len[idx] >= 0:
         _rw_cstr(cast[Ptr[uint8]]("color:"))
         _rw_ovbuf(dom_ov_col_off[idx], dom_ov_col_len[idx])
