@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>create+click</title></head><body>
+<div id="host"></div>
+<script>
+// A node that exists ONLY because script made it. Its handler is the only way
+// the <p id="born"> can appear, so a click that never reaches it is a missing
+// node in the diff.
+var b = document.createElement('button');
+b.id = 'newbtn';
+b.setAttribute('data-kind', 'made');
+b.textContent = 'press me';
+b.addEventListener('click', function () {
+  var p = document.createElement('p');
+  p.id = 'born';
+  p.textContent = 'handler ran';
+  document.getElementById('host').appendChild(p);
+});
+document.getElementById('host').appendChild(b);
+window.__act = function () { document.getElementById('newbtn').click(); };
+</script>
+</body></html>

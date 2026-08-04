@@ -1,0 +1,31 @@
+<!doctype html><html><head><title>counter chain</title></head><body>
+<div id="app"></div>
+<script>
+// State that survives ACROSS events: three clicks must land three times on the
+// same created node. A one-shot dispatch bug shows up as count=1.
+var n = 0;
+var app = document.getElementById('app');
+var out = document.createElement('span');
+out.id = 'count';
+out.textContent = '0';
+var btn = document.createElement('button');
+btn.id = 'inc';
+btn.textContent = '+1';
+btn.addEventListener('click', function () {
+  n = n + 1;
+  out.textContent = String(n);
+  if (n === 2) {
+    var badge = document.createElement('em');
+    badge.id = 'badge';
+    badge.textContent = 'two!';
+    app.appendChild(badge);
+  }
+});
+app.appendChild(btn);
+app.appendChild(out);
+window.__act = function () {
+  var b = document.getElementById('inc');
+  b.click(); b.click(); b.click();
+};
+</script>
+</body></html>

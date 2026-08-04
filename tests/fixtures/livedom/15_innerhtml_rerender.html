@@ -1,0 +1,28 @@
+<!doctype html><html><head><title>re-render loop</title></head><body>
+<div id="app"></div>
+<script>
+// The naive framework loop: every event re-writes the container's innerHTML, so
+// the node clicked SECOND is a different object from the one clicked first, and
+// the only surviving listener is the delegated one on the static container.
+var items = ['one', 'two'];
+var app = document.getElementById('app');
+function render() {
+  var h = '<div class="items">', i;
+  for (i = 0; i < items.length; i++) {
+    h += '<span class="item" id="i' + i + '" data-i="' + i + '">' + items[i] + '</span>';
+  }
+  app.innerHTML = h + '</div><div id="n">n=' + items.length + '</div>';
+}
+app.addEventListener('click', function (e) {
+  if (e.target.className === 'item') {
+    items.push('extra' + e.target.getAttribute('data-i'));
+    render();
+  }
+});
+render();
+window.__act = function () {
+  document.getElementById('i0').click();
+  document.getElementById('i2').click();
+};
+</script>
+</body></html>

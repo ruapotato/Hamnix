@@ -1,0 +1,21 @@
+<!doctype html><html><head><title>deferred mutation</title></head><body>
+<div id="root">loading…</div>
+<script>
+// The node the user interacts with does not exist at load time at all: it is
+// built by a timer, the way a fetch/render cycle builds one.
+setTimeout(function () {
+  var r = document.getElementById('root');
+  r.textContent = '';
+  var d = document.createElement('div');
+  d.id = 'card';
+  d.className = 'card idle';
+  d.textContent = 'idle';
+  d.onclick = function () { d.className = 'card active'; d.textContent = 'active'; };
+  r.appendChild(d);
+}, 0);
+window.__act = function () {
+  var c = document.getElementById('card');
+  if (c) { c.click(); } else { document.getElementById('root').setAttribute('data-missing', '1'); }
+};
+</script>
+</body></html>

@@ -1,0 +1,15 @@
+<!doctype html><html><head><title>innerHTML subtree</title></head><body>
+<div id="panel"><span>original</span></div>
+<div id="log"></div>
+<script>
+// innerHTML replacement: the whole subtree is minted by the fragment parser, not
+// by the source parse. Then a listener is attached to a node inside it and the
+// event is dispatched there.
+document.getElementById('panel').innerHTML =
+  '<ul class="list"><li id="a">alpha</li><li id="b" data-x="2">beta</li></ul>';
+document.getElementById('b').addEventListener('click', function (e) {
+  document.getElementById('log').textContent = 'hit ' + e.target.id;
+});
+window.__act = function () { document.getElementById('b').click(); };
+</script>
+</body></html>

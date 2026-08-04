@@ -1,0 +1,23 @@
+<!doctype html><html><head><title>inline handlers</title></head><body>
+<button id="b1" onclick="document.getElementById('out').textContent='inline ran';this.setAttribute('data-done','1')">go</button>
+<div id="out">-</div>
+<div id="dyn"></div>
+<script>
+// Two inline-handler shapes: one from SOURCE markup (no script ever looks the
+// node up before the click) and one on a node created by script with the
+// onclick ATTRIBUTE set as a string rather than as a function.
+var d = document.createElement('div');
+d.id = 'made';
+d.setAttribute('onclick', "document.getElementById('out2').textContent='attr handler ran'");
+d.textContent = 'made';
+var o2 = document.createElement('div');
+o2.id = 'out2';
+o2.textContent = '-';
+document.getElementById('dyn').appendChild(d);
+document.getElementById('dyn').appendChild(o2);
+window.__act = function () {
+  document.getElementById('b1').click();
+  document.getElementById('made').click();
+};
+</script>
+</body></html>

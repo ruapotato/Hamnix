@@ -1,0 +1,18 @@
+<!doctype html><html><head><title>remove + re-add</title></head><body>
+<div id="host"><span id="chip" data-n="0">chip</span></div>
+<div id="out">-</div>
+<script>
+// A node detached and re-attached must keep its listener (the listener lives on
+// the node, not on its position). Reconcilers move nodes constantly.
+var chip = document.getElementById('chip');
+chip.addEventListener('click', function () {
+  var n = Number(chip.getAttribute('data-n')) + 1;
+  chip.setAttribute('data-n', String(n));
+  document.getElementById('out').textContent = 'n=' + n;
+});
+var host = document.getElementById('host');
+host.removeChild(chip);
+host.appendChild(chip);
+window.__act = function () { chip.click(); chip.click(); };
+</script>
+</body></html>

@@ -1,0 +1,23 @@
+<!doctype html><html><head><title>fragment + insertBefore</title></head><body>
+<div id="rows"><div id="tail">tail</div></div>
+<div id="out">-</div>
+<script>
+// Batched insertion through a DocumentFragment, placed with insertBefore, and
+// the batch's middle row is the one that gets clicked.
+var frag = document.createDocumentFragment();
+var i;
+for (i = 0; i < 3; i++) {
+  var r = document.createElement('div');
+  r.id = 'r' + i;
+  r.className = 'row';
+  r.textContent = 'row ' + i;
+  r.addEventListener('click', function (e) {
+    document.getElementById('out').textContent = 'clicked ' + e.currentTarget.id;
+  });
+  frag.appendChild(r);
+}
+var rows = document.getElementById('rows');
+rows.insertBefore(frag, document.getElementById('tail'));
+window.__act = function () { document.getElementById('r1').click(); };
+</script>
+</body></html>

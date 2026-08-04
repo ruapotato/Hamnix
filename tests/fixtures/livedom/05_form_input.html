@@ -1,0 +1,25 @@
+<!doctype html><html><head><title>form input</title></head><body>
+<form id="f">
+  <input id="name" name="name" value="start">
+  <input id="email" name="email" value="">
+  <output id="echo">-</output>
+</form>
+<script>
+// Typing into a field is .value + an input/change event. The value= ATTRIBUTE
+// never moves, so only the live .value readback in the serialiser can see this.
+var n = document.getElementById('name');
+n.addEventListener('input', function () {
+  document.getElementById('echo').textContent = 'len=' + n.value.length;
+});
+document.getElementById('email').addEventListener('change', function (e) {
+  e.target.setAttribute('data-touched', '1');
+});
+window.__act = function () {
+  n.value = 'typed text';
+  n.dispatchEvent(new Event('input', { bubbles: true }));
+  var em = document.getElementById('email');
+  em.value = 'a@b.c';
+  em.dispatchEvent(new Event('change', { bubbles: true }));
+};
+</script>
+</body></html>
