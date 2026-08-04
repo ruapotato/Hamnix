@@ -96,24 +96,3 @@
 16_classlist_attr_mirror
 17_insertbefore_fragment
 18_parentnode_after_remove
-# RAISED 2026-08-04 to FOURTEEN, by the event-handler content/IDL attribute
-# fix. The SIXTH instance of the two-writers shape in this lane: an event
-# handler lived in dom_on*_src (parse-time, four types only, readable only by
-# _fire_handler) AND as whatever setAttribute() stashed on the JS object — a
-# STRING, which is precisely what created-node dispatch reads and precisely
-# what it can never call. So `createElement` + `setAttribute('onclick', …)`,
-# the only way to give a created node an inline handler, wrote to a store no
-# dispatch path could reach. Per spec the content attribute and the IDL
-# attribute (el.onclick) are ONE piece of state: setting the content attribute
-# compiles it into a function with the element as `this` and installs it as the
-# IDL attribute. There is now one store ("@H<name>" own property) and one
-# reader (an accessor pair on HTMLElement.prototype, 20 handler names).
-# 19 is the wider regression fixture: an onmouseover= on a SOURCE element (no
-# non-kind type had ANY attribute-handler route), typeof el.onclick read before
-# any dispatch, setAttribute of onmouseover/onkeydown on a created node,
-# el.onclick winning over an earlier setAttribute, and String(el.onclick) after
-# removeAttribute. BOTH names verified RED on the pre-fix engine at a6ce1da3
-# (`git archive` into a scratch tree, clean-tree run): 14 fails on the created
-# node's handler never running, 19 fails on FIVE of the six lines above.
-14_inline_handler_onclick
-19_handler_idl_reflection
