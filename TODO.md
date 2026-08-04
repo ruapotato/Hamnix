@@ -91,12 +91,20 @@ cannot paint CI red yet).
       flips, no `change` event, radio-group exclusivity never runs.
 - [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
 - [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text node.
-- [ ] ⚠ **The gate is not yet deterministic.** The same commit measured
-      `pass=2 fail=13` in a worktree and `pass=0 fail=15` in the main checkout —
-      so it depends on build/environment state, not the engine (suspect a stale
-      cached host binary, cf. the `build/host/hambrowse_gfx` trap). **Do not bank
-      a floor on it until that is root-caused** — a flaky floor manufactures
-      phantom regressions. In flight alongside D1/D2.
+- [x] ✔ **DISPROVED: "the gate is not deterministic."** 15 fixtures × 5 reps ×
+      both engines — 150 runs — produced exactly ONE distinct output per fixture
+      per engine, and three whole-gate runs were byte-identical. The stale-binary
+      suspicion was wrong too: this gate keys its build on a CONTENT fingerprint
+      of the tree (`scripts/_adder_bin.sh`), which is the *fix* for the
+      `hambrowse_gfx` trap, not an instance of it. The `pass=2` came from an
+      **uncommitted 21-line NamedNodeMap patch** in the measuring agent's working
+      tree — same commit, different working tree. `git rev-parse HEAD` was a true
+      statement about the repository and a false statement about the binary.
+      The measurement needed no fix; the REPORT did. Every run now prints HEAD,
+      the tree fingerprint, the chromium version, and a loud DIRTY banner naming
+      each modified engine input; `HAMNIX_LIVEDOM_REQUIRE_CLEAN=1` refuses to
+      measure a dirty tree at all. **Floor is now banked: `pass=0 fail=15`,
+      verified clean-tree at `39db2a07`** (chromium 147.0.7727.137).
 
 None of D1–D7 is visible to a pixel diff. This is the lane that sees them.
 
@@ -114,13 +122,24 @@ classifier calls both **DECAY** without being told what to look for. So the "+41
 pages of real growth hidden inside a −149 shrink" is the tracker *attributing* a
 fixed population as site 0 drains into the named sites — not growth of the machine.
 
-- [~] **The 4×2h proof run is in flight** (one boot, 4 samples, 2 h apart; QEMU pid
-  660353, output under worktree `agent-acbaf7b610609d81d`). Adjudicate with
-  `python3 scripts/leak_hours_census_report.py <dir>/serial.log <dir>/sample_stamps.txt 7000 256 4 16 0.5`
-  and read the `=== TREND across 4 samples ===` block. `SUSTAINED` on site 6 with the
-  site-0 credit not covering it convicts `vma_anon`; `SETTLE`/`DECAY` retires the
-  residual. A partial log still adjudicates — a missing sample is INCONCLUSIVE with
-  the reason named, never a PASS.
+- [x] ✔ **The 4×2h proof run LANDED — `VERDICT: PASS`, and it retires the residual.**
+  One boot, 4 samples over 6.05 h. Both suspects are **DECAY**, not leaks, and the
+  trend arm called it without being told what to look for:
+  - site 6 `vma_anon` — `1/32/38/48`, rates `+15.36 → +2.97 → +4.96` pg/h
+  - long-lived pid 6 `hamsh` — `100/123/127/137`, rates `+11.40 → +1.98 → +4.96` pg/h
+  - site 0 `unknown` — `5978/5830/5830/5830`: **FLAT** after one −148 drain, terminal
+    rate `+0.00`, so there is no re-attribution credit left to hand out
+  - TOTAL live pages **−97** over the gap (−16.02 pg/h). Every other tracked site is
+    FLAT at zero. All four sweeps' census control was green: the only unaccounted
+    frame in the machine was the planted control.
+  **There is no measurable leak at hours scale.** Pass 20's "+41 pages of real growth"
+  is fully retired; it was site 0 draining into named sites, exactly as pass 21 argued.
+- [~] **Arm the page tracker AT BOOT** — now the single remaining hole, and the run
+  named it precisely: all 9 `owner-unrecorded` survivors on arm 23 carry `site=0 va=0`,
+  i.e. they were allocated *before* `track full` armed the tracker, and `pa_set_owner`
+  is a no-op while disarmed (`mm/page_alloc.ad`). No owner COULD have been recorded.
+  That is a pre-arming population, not a discriminator hole — arming at boot empties it
+  and turns `owner-unrecorded` into a genuine signal. Dispatched.
 - [ ] **Arm the page tracker AT BOOT** — the single highest-value kernel change here.
   It empties site 0 and thereby retires the re-attribution credit, the
   owner-unrecorded population, and the per-site attribution gap all at once.
