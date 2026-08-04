@@ -62,6 +62,46 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
 
 ---
 
+## 2026-08-04 — browser: the live-DOM functional lane exists, and it moved the blame
+
+`scripts/test_livedom_functional_host.sh` on `main`: runs each fixture's JS,
+dispatches REAL events into the nodes that JS built, drains timers, then diffs
+the WHOLE live DOM against `chromium --headless`. Both sides read off the same
+channel, so the diff is of two DOMs, not of two serialisers. Fixtures in
+`tests/fixtures/livedom/`, banked floor in `.../BASELINE` (zero — the gate
+cannot paint CI red yet).
+
+- **DISPROVED: "events can't reach dynamic elements."** Measured directly, both
+  engines agree — a click on a script-created button runs its listener, a click
+  inside an `innerHTML`-replaced subtree runs its listener, and a click on a
+  5-deep script-built tree bubbles to a delegated ancestor with the correct
+  `event.target`. Dispatch is not the keystone it was briefed as.
+- [~] **D1 — `el.attributes` omits attributes set via property setters**
+  (`el.id=`, `el.className=`, `dataset`). `getAttribute()` and
+  `getAttributeNames()` both have them; only the `NamedNodeMap` is missing
+  them. Biggest single diff producer. In flight.
+- [~] **D2 — stale read-back on SOURCE-parsed elements.** After
+  `src.textContent='NEW'`, `.textContent` says NEW but `childNodes[0].nodeValue`
+  and `.innerHTML` still return the original source text; `classList.add()`
+  updates `.className` but not `getAttribute('class')`. Script-CREATED nodes are
+  fine — it is the source-anchored lazy path that goes stale. In flight.
+- [ ] **D3** `insertBefore(DocumentFragment, ref)` inserts nothing, children lost.
+- [ ] **D4** `node.parentNode` still points at the old parent after `removeChild()`.
+- [ ] **D5** `checkbox.click()` runs no activation behaviour — `.checked` never
+      flips, no `change` event, radio-group exclusivity never runs.
+- [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
+- [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text node.
+- [ ] ⚠ **The gate is not yet deterministic.** The same commit measured
+      `pass=2 fail=13` in a worktree and `pass=0 fail=15` in the main checkout —
+      so it depends on build/environment state, not the engine (suspect a stale
+      cached host binary, cf. the `build/host/hambrowse_gfx` trap). **Do not bank
+      a floor on it until that is root-caused** — a flaky floor manufactures
+      phantom regressions. In flight alongside D1/D2.
+
+None of D1–D7 is visible to a pixel diff. This is the lane that sees them.
+
+---
+
 ## 2026-08-04 — leak census pass 21: the trend arm landed, and it disproved pass 20
 
 Tooling on `main` (`d99b19b5`); writeup `docs/leak_pass21_n_sample_census.md`;
