@@ -1,0 +1,18 @@
+<!doctype html><html><head><title>parentNode after removeChild</title></head><body>
+<div id="host"><span id="src">src</span></div>
+<div id="out">-</div>
+<script>
+var host = document.getElementById('host');
+var s = document.getElementById('src');
+var c = document.createElement('b');
+c.id = 'cre';
+c.textContent = 'cre';
+host.appendChild(c);
+var before = (c.parentNode === host) + ',' + (s.parentNode === host);
+host.removeChild(c);
+host.removeChild(s);
+var after = (c.parentNode === null) + ',' + (s.parentNode === null);
+document.getElementById('out').textContent = 'before=' + before + ' after=' + after;
+window.__act = function () {};
+</script>
+</body></html>

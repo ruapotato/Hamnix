@@ -46,3 +46,53 @@
 05_form_input
 11_counter_chain
 15_innerhtml_rerender
+# RAISED 2026-08-04 to TWELVE, by D2b + D3 + D4 and two neighbours of the same
+# shape. Every one of them was ONE piece of DOM state with TWO writers, only
+# one of which sat on the path the readers walk — the third time running that
+# this lane's answer has had that shape:
+#   D2b  classList.add/remove/toggle wrote the reflected className property and
+#        NOT the sattr_ content-attribute store, which is the store
+#        _el_get_attribute consults FIRST. setAttribute('class') had always
+#        written both. So on a source-anchored element getAttribute('class')
+#        and el.attributes answered the PARSE-TIME class forever.
+#        Fixed in _cls_write_o — one writer, both stores.
+#   D3   insertBefore(DocumentFragment, ref) inserted NOTHING. A fragment is
+#        deliberately not a created-node-pool member, so _insert_before_v's
+#        _find_cre_by_obj() test failed and the whole staged batch was dropped
+#        on the floor. appendChild had had the spec's "insert the children,
+#        leave the fragment empty" step since it was written; insertBefore
+#        never got it.
+#   D4   node.parentNode still named the old parent after removeChild(). TWO
+#        causes, one per branch: the created-node branch never nulled it, and
+#        the source branch nulled it BEFORE the child-list surgery — and that
+#        surgery reads parent.children, a LAZY accessor that materialises the
+#        subtree from the parse tree and re-writes parentNode on every child,
+#        overwriting the null it had just written. NID_REMCHILD carried a
+#        second copy of _remove_child_v; there is now one, and it unlinks
+#        AFTER the wiring.
+#   +    appendChild() of a SOURCE element was a total no-op (only created
+#        nodes had a branch), so the remove+re-add every reconciler does left
+#        the node dom_detached and dead. That is 08.
+#   +    `el.textContent = x` a SECOND time on a source element did nothing to
+#        the child list: the first set installs an own data property for the
+#        render read-back, and an own data property shadows the prototype
+#        accessor in member_set as well as member_get, so later assignments
+#        never ran the replace-children algorithm. The D2 tail.
+#   +    `el.dataset.foo = 'x'` wrote the dataset object and no attribute at
+#        all. That is 13.
+# 16/17/18 are the D2b/D3/D4 regression fixtures, each verified RED on the
+# pre-fix engine at ea3627ef (clean-tree run, pass=7 fail=8 -> the three new
+# names all FAIL) before being banked here.
+#
+# STILL FAILING and NOT ours: 06 diverges on the style= attribute alone — the
+# inline-style store is a third instance of this same shape, but closing it
+# also needs CSSOM serialisation to match chromium (declaration order and
+# "prop: value;" spacing, plus colour normalisation), which would move
+# scripts/test_hambrowse_style_host.sh's banked expectation. 07 and 12 are D7
+# (the <script> element's own source leaking in as a sibling Text node), 09/10
+# are D5/D6, 14 is the inline onclick= content attribute never running.
+08_remove_readd
+13_attr_dataset
+16_classlist_attr_mirror
+17_insertbefore_fragment
+18_parentnode_after_remove

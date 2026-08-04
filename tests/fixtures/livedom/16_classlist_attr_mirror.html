@@ -1,0 +1,16 @@
+<!doctype html><html><head><title>classList attribute mirror</title></head><body>
+<div id="box" class="panel wide">content</div>
+<button id="t">go</button>
+<div id="out">-</div>
+<script>
+var box = document.getElementById('box');
+document.getElementById('t').addEventListener('click', function () {
+  box.classList.add('open');
+  box.classList.remove('wide');
+  box.classList.toggle('panel');
+  var o = document.getElementById('out');
+  o.textContent = 'attr=' + box.getAttribute('class') + ' prop=' + box.className;
+});
+window.__act = function () { document.getElementById('t').click(); };
+</script>
+</body></html>
