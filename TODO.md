@@ -80,10 +80,25 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
   `SBR_NONPROMOTABLE` 28.2% (site 66), `SBR_MEMORY` 18.2% (site 92 = 13.4%),
   `SBR_CALL` 14.1%, `SBR_NONSUBSET_EXPR` 5.8%, `SBR_MANYARGS` 1.5%,
   `SBR_FLOAT` 0.6%.
-- [ ] **Next subset target: `SBR_NONLOCAL` site 34** — now the single largest
-      bail. Agent dispatched. The correctness bar is the hard part, not the
-      broadening: a wrong accept SILENTLY MISCOMPILES, which is exactly what
-      `63131c78` had to fix.
+- [x] ✔ **RETIRED — "next subset target = `SBR_NONLOCAL` site 34" was an
+      INSTRUMENT BUG.** The census driver ran `ssa_run_program()` on the bare
+      parsed AST, skipping the `collect_externs`/`layout_globals` prologue the
+      real `--opt` lane runs, so `glob_count == 0` and **every global read bailed
+      in the census and none of them bailed in the real compiler**. Corrected
+      whole-tree numbers, same tool build both sides: **accepted 17.46% →
+      36.65%**, site 34 27.4% of bails → 4.2%. Per-construct split kills both
+      briefed candidates: function-name address decay = 3 functions, aggregate/
+      array globals = 0, out of 21276. Guarded by
+      `scripts/test_ssa_census_fidelity.sh`, verified RED on main first.
+- [ ] **Next subset target: `SBR_NONPROMOTABLE` site 66 (36.9% of bails)** — an
+      address-taken scalar local on the native path; the native x86 emitter has
+      no alloca lowering (`ssa.ad:4534`). Substantially bigger than a gate
+      relaxation. The correctness bar is still the hard part: a wrong accept
+      SILENTLY MISCOMPILES, which is exactly what `63131c78` had to fix.
+- [ ] **The census measures a STANDALONE compile of each `.ad`; a real build
+      import-merges the module closure.** A global defined in another module is
+      invisible to it and bails at site 34 — the residual 566 is an upper bound,
+      not a subset gap. Don't "fix" it by accepting unknown names.
 
 ---
 
@@ -156,7 +171,17 @@ fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
 - [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
 - [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text
       node. Causes fixtures `07` and `12` to fail.
-- [x] ✔ **D8 CLOSED 2026-08-04** (`179eac42`) — fixture `14`'s inline
+- [ ] **★ D8 — fixed, merged, then REVERTED (`179eac42` → `b15a1588`); re-land
+      in flight on `livedom/d8-reland`.** The fix is correct and moves the floor
+      `pass=12 fail=6 → pass=14 fail=5`, but the WPT ratchet is per-subtest and
+      caught **64** subtests that were passing and are not now: 6 in
+      `dom/events/Body-FrameSet-Event-Handlers.html` (body/frameset handlers
+      reflect onto the **Window**, so a blanket `HTMLElement.prototype` accessor
+      is wrong for exactly that set) and 58 in `dom/ranges/Range-comparePoint.html`
+      (foreign-document cluster, cause not established). A/B-attributed: ratchet
+      PASS with 0 newly-failing on `87bf2cc2`, FAIL with the same 64 on the merge,
+      twice. Detail of the fix itself below.
+- [x] ~~**D8 CLOSED 2026-08-04** (`179eac42`)~~ — fixture `14`'s inline
       `onclick=` never ran because the content attribute and the IDL attribute
       were **two writers for one piece of state** (the sixth instance of the
       shape): the parse-time inline source lived in `dom_on*_src` (four
