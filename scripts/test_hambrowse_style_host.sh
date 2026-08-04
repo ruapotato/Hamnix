@@ -7,7 +7,9 @@
 # style store that `<div style="...">` uses, so they participate in the cascade
 # at inline specificity and AFFECT THE RENDER:
 #
-#   - .style.display='none' removes the element from layout entirely
+#   - .style.display='none' removes the element from layout entirely, AND the
+#     reverse: .style.display='block' on an element a STYLESHEET rule hid makes
+#     it paint (with an un-revealed sibling as the negative control)
 #   - .style.color beats a stylesheet class rule (inline specificity)
 #   - .style.backgroundColor paints the element box (SEG bg + FILL readback)
 #   - .style.fontWeight='bold' renders a bold segment
@@ -73,6 +75,16 @@ assert_nogrep '^JSERR'                                   "no uncaught JS error a
 # ---- RENDER REFLECTION ---------------------------------------------------
 # display:none removes the element from layout entirely (no segment at all).
 assert_nogrep 'HIDEME'   ".style.display='none' removes the element from the painted output"
+
+# The REVERSE direction. .style.display was write-only for "none": an element a
+# STYLESHEET rule hid and a SCRIPT revealed (`.stash{display:none}` +
+# el.style.display='block' — the show/hide primitive behind every modal,
+# dropdown, accordion and tab strip) produced no override at all, the rewrite
+# re-emitted a bare tag, the cascade re-applied display:none on the fresh parse,
+# and the element never appeared. #keep is the negative control that stops this
+# going green by simply ignoring the stylesheet rule.
+assert_grep   'REVEALWORD'   "a stylesheet-hidden element revealed by .style.display='block' PAINTS"
+assert_nogrep 'STAYHIDDEN'   "the un-revealed sibling under the same rule stays unpainted (control)"
 
 # inline .style.color beats the .red stylesheet class (#111111) -> #ee2244.
 assert_grep '^SEG .* #ee2244 .*\|COLORWORD'  ".style.color paints the recoloured region (SEG readback)"

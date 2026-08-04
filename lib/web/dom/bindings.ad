@@ -434,6 +434,17 @@ dom_ov_wd_len:   Array[8192, int32]
 dom_ov_cls_off:  Array[8192, int32]    # className
 dom_ov_cls_len:  Array[8192, int32]
 dom_ov_hide:     Array[8192, int32]    # 1 = display:none (drop the element)
+# The REVEAL half of `el.style.display`. dom_ov_hide alone made the readback
+# one-directional: a script could HIDE an element, but a script REVEALING one
+# that a stylesheet rule had hidden (`#modal{display:none}` +
+# `modal.style.display='block'` — the show/hide primitive behind every modal,
+# dropdown, accordion and tab strip on the web) produced no override at all, so
+# the rewrite re-emitted the bare tag, the cascade re-applied the stylesheet's
+# display:none on the fresh parse, and the element never appeared. Recording the
+# non-none value and emitting it as an INLINE declaration (which outranks any
+# stylesheet rule) is what makes the reveal stick.
+dom_ov_disp_off: Array[8192, int32]    # display (non-none CSS value, e.g. "block")
+dom_ov_disp_len: Array[8192, int32]
 # DETACHED source elements. removeChild()/replaceChild() used to handle CREATED
 # children only, so `parent.removeChild(sourceEl)` was a silent no-op: the node
 # stayed on screen AND stayed in the parent's innerHTML. This is the real

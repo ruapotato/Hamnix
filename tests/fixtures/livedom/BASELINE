@@ -7,3 +7,29 @@
 # number, not a placeholder — see the "WHAT THE FIRST RUN FOUND" section of the
 # harness for the seven distinct causes. Add a name here the moment it goes
 # green so the win cannot silently rot.
+#
+# RAISED 2026-08-04 to THREE, by the D1 fix (created-element attribute
+# enumeration unified onto one enumerator, _cre_all_names). Every attribute-
+# valued line in all 15 diffs now agrees with chromium; these three fixtures
+# diverged on NOTHING ELSE, so they went byte-identical. The other twelve still
+# fail on D2-D7 (stale source-anchored text read-back, DocumentFragment
+# insertBefore, parentNode after removeChild, checkbox activation behaviour,
+# select.selectedIndex, script source leaking in as a text node) — none of which
+# is an attribute problem.
+#
+# RE-MEASURED 2026-08-04 on livedom/land-d1-and-display a80dc449 (tree fp
+# 14f71548), clean tree, chromium 147.0.7727.137 — pass=3 fail=12, the SAME
+# three names. Both ends of that measurement were produced in one worktree: the
+# before run on 0ad6acf1 gave pass=0 fail=15, so 0 -> 3 is D1's alone. The
+# el.style.display REVEAL fix landed alongside it moved this lane by ZERO, and
+# that is expected, not a disappointment: this harness diffs the LIVE DOM, and
+# the reveal bug was never a DOM bug — the DOM already read back "block"
+# correctly. It was a RENDER bug in _emit_merged_style(). A live-DOM lane is
+# structurally blind to it, so its coverage lives in the render-asserting gate
+# scripts/test_hambrowse_style_host.sh (REVEALWORD / STAYHIDDEN) instead. A
+# candidate 16th fixture for it was written, measured, and DELETED: it failed on
+# D2 plus the style= attribute mirror, both of which fixtures 04/05/06 already
+# cover, and it never touched the code under test.
+01_create_click
+11_counter_chain
+15_innerhtml_rerender

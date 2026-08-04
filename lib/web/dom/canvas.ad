@@ -604,6 +604,48 @@ def _cre_make_chardata(sval: int32, kind: int32, targetv: int32) -> int32:
     return co2
 
 
+# ---- created-element CONTENT-ATTRIBUTE name list ----------------------------
+# A created element (createElement, or a node built by the innerHTML fragment
+# parser) keeps its attribute VALUES in two places, and that is deliberate:
+#   * the object-keyed nsa_ store, where setAttribute()/setAttributeNS() write;
+#   * plain JS properties, which is how the reflected IDL attributes (id,
+#     className, href, value, ...) are read by every other part of the engine.
+# _el_get_attribute() already resolves BOTH, in that order, so READING one
+# attribute has a single answer. What was missing is the matching ENUMERATION:
+# getAttributeNames() and el.attributes could only see the nsa_ store, so an
+# attribute whose value lives on the JS property side was invisible to them
+# even though getAttribute() returned it. `__attrs` closes that gap by
+# recording the NAME (never a second copy of the value) of every content
+# attribute parked on the property side, so one enumerator — _cre_all_names()
+# below — can list exactly the set _el_get_attribute() can resolve.
+def _cre_note_attr(co: int32, np: Ptr[uint8], nn: int32):
+    lst: int32 = js_get_prop(co, cast[Ptr[uint8]]("__attrs"), 7)
+    if js_is_array(lst) == 0:
+        lst = js_new_array_v()
+        js_set_prop(co, cast[Ptr[uint8]]("__attrs"), 7, lst)
+    js_array_push(lst, js_new_string(np, cast[uint64](nn)))
+
+
+# removeAttribute() on a created element clears the backing property to "",
+# which is indistinguishable from a genuinely empty attribute; drop the name so
+# the attribute really disappears from the enumeration rather than turning into
+# `name=""`.
+def _cre_drop_attr(co: int32, np: Ptr[uint8], nn: int32):
+    lst2: int32 = js_get_prop(co, cast[Ptr[uint8]]("__attrs"), 7)
+    if js_is_array(lst2) == 0:
+        return
+    keep: int32 = js_new_array_v()
+    n2: int32 = js_array_len(lst2)
+    i2: int32 = 0
+    while i2 < n2:
+        sv: int32 = js_array_get(lst2, i2)
+        if js_type_of(sv) != TAG_STR or \
+           _bytes_eq(js_str_bytes(sv), js_str_bytelen(sv), np, nn) == 0:
+            js_array_push(keep, sv)
+        i2 = i2 + 1
+    js_set_prop(co, cast[Ptr[uint8]]("__attrs"), 7, keep)
+
+
 # Parse the attributes region sp[a..b) of a fragment start tag onto node obj
 # `co`: class -> className, id -> id, everything else name->value verbatim.
 def _frag_set_attrs(co: int32, sp: Ptr[uint8], a: int32, b: int32):
@@ -653,8 +695,18 @@ def _frag_set_attrs(co: int32, sp: Ptr[uint8], a: int32, b: int32):
             js_set_prop(co, cast[Ptr[uint8]]("disabled"), 8, js_bool(1))
         elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("selected"), 8) != 0:
             js_set_prop(co, cast[Ptr[uint8]]("selected"), 8, js_bool(1))
+        elif _bytes_eq(&sp[ns], ne - ns, cast[Ptr[uint8]]("style"), 5) != 0:
+            # `style` is a CSSStyleDeclaration OBJECT on every element; storing
+            # the source string over it left `.style.color` undefined for every
+            # innerHTML-built node and made getAttribute('style') re-serialise a
+            # string. Route it into the style store, exactly as
+            # setAttribute('style', ...) does.
+            fsto: int32 = js_get_prop(co, cast[Ptr[uint8]]("style"), 5)
+            _style_apply_csstext(fsto, &sp[vs], vlen)
+            _cre_note_attr(co, &sp[ns], ne - ns)
         else:
             js_set_prop(co, &sp[ns], cast[uint64](ne - ns), av)
+            _cre_note_attr(co, &sp[ns], ne - ns)
 
 
 # Close the top open element on the fragment stack: finalize its textContent
@@ -1269,17 +1321,19 @@ def _nsa_collect(objv: int32, m: int32):
     i: int32 = 0
     while i < nsa_n:
         if nsa_obj[i] == objv:
+            # nnm_name is 80 bytes; the old 250/251 bounds here wrote up to 171
+            # bytes PAST it for any long prefixed attribute name.
             qw: int32 = 0
             if nsa_pflen[i] > 0:
                 k: int32 = 0
-                while k < nsa_pflen[i] and qw < 250:
+                while k < nsa_pflen[i] and qw < 77:
                     nnm_name[qw] = nsa_buf[nsa_pfoff[i] + k]
                     qw = qw + 1
                     k = k + 1
                 nnm_name[qw] = 58                          # ':'
                 qw = qw + 1
             j: int32 = 0
-            while j < nsa_lnlen[i] and qw < 251:
+            while j < nsa_lnlen[i] and qw < 79:
                 nnm_name[qw] = nsa_buf[nsa_lnoff[i] + j]
                 qw = qw + 1
                 j = j + 1
@@ -1609,6 +1663,87 @@ def _el_get_attribute(thisv: int32, nmp: Ptr[uint8], an: int32) -> int32:
                                cast[Ptr[uint8]]("className"), 9)
         return js_get_prop(cre_obj[gcid], nmp, cast[uint64](an))
     return js_null()
+
+
+# Does JS string array `arr` already carry the name p[0..n)?
+def _arr_has_name(arr: int32, p: Ptr[uint8], n: int32) -> int32:
+    an2: int32 = js_array_len(arr)
+    i: int32 = 0
+    while i < an2:
+        sv: int32 = js_array_get(arr, i)
+        if js_type_of(sv) == TAG_STR and \
+           _bytes_eq(js_str_bytes(sv), js_str_bytelen(sv), p, n) != 0:
+            return 1
+        i = i + 1
+    return 0
+
+
+# THE enumerator for a created element's content attributes. getAttributeNames()
+# and el.attributes both go through this, so the two can no longer disagree —
+# which is what they did: the NamedNodeMap listed only the nsa_ store while
+# getAttribute() also answered from the reflected property, so a node built as
+#     var b = document.createElement('button'); b.id = 'go';
+# reported getAttribute('id') === 'go' and el.attributes.length === 0. Every
+# name produced here is one _el_get_attribute() can resolve; the three sources
+# are the nsa_ store (setAttribute / setAttributeNS), the `__attrs` list (the
+# innerHTML fragment parser's property-side attributes) and the reflected
+# id / className properties, which ARE the storage for id / class on a created
+# node and therefore never appear in the nsa_ store.
+def _cre_all_names(objv: int32, arr: int32):
+    cnm: Array[96, uint8]
+    q: int32 = 0
+    while q < nsa_n:
+        if nsa_obj[q] == objv:
+            w: int32 = 0
+            if nsa_pflen[q] > 0:
+                k: int32 = 0
+                while k < nsa_pflen[q] and w < 94:
+                    cnm[w] = nsa_buf[nsa_pfoff[q] + k]
+                    w = w + 1
+                    k = k + 1
+                cnm[w] = 58                                # ':'
+                w = w + 1
+            j: int32 = 0
+            while j < nsa_lnlen[q] and w < 95:
+                cnm[w] = nsa_buf[nsa_lnoff[q] + j]
+                w = w + 1
+                j = j + 1
+            cnm[w] = 0
+            # NO de-duplication here, on purpose. Two attributes may share a
+            # QUALIFIED NAME while differing in namespace — setAttribute("foo")
+            # (null namespace) and setAttributeNS("dummy1", "foo") are two
+            # distinct attributes that both serialise as "foo", and
+            # getAttributeNames() must return one entry per attribute, in order,
+            # duplicates included. _nsa_set() already keys the store on
+            # (namespace, localName) and replaces in place on a re-set, so every
+            # nsa_ row for this object IS a distinct attribute and a name-only
+            # dedupe could only ever drop a real one. It did: WPT
+            # dom/nodes/attributes.html "getAttributeNames tests" expects
+            # ["foo","FOO","foo","dummy:foo"] and got ["foo","FOO","dummy:foo"].
+            # The guard is still correct for the two sources below, which are
+            # ALTERNATE STORAGE for an attribute the nsa_ store may already hold.
+            js_array_push(arr, js_new_string(&cnm[0], cast[uint64](w)))
+        q = q + 1
+    if _find_cre_by_obj(objv) < 0:
+        return
+    lst: int32 = js_get_prop(objv, cast[Ptr[uint8]]("__attrs"), 7)
+    if js_is_array(lst) != 0:
+        ln2: int32 = js_array_len(lst)
+        li: int32 = 0
+        while li < ln2:
+            lv: int32 = js_array_get(lst, li)
+            if js_type_of(lv) == TAG_STR and \
+               _arr_has_name(arr, js_str_bytes(lv), js_str_bytelen(lv)) == 0:
+                js_array_push(arr, lv)
+            li = li + 1
+    idv: int32 = js_get_prop(objv, cast[Ptr[uint8]]("id"), 2)
+    if js_type_of(idv) == TAG_STR and js_str_bytelen(idv) > 0 and \
+       _arr_has_name(arr, cast[Ptr[uint8]]("id"), 2) == 0:
+        js_array_push(arr, js_new_string(cast[Ptr[uint8]]("id"), 2))
+    clv2: int32 = js_get_prop(objv, cast[Ptr[uint8]]("className"), 9)
+    if js_type_of(clv2) == TAG_STR and js_str_bytelen(clv2) > 0 and \
+       _arr_has_name(arr, cast[Ptr[uint8]]("class"), 5) == 0:
+        js_array_push(arr, js_new_string(cast[Ptr[uint8]]("class"), 5))
 
 
 # ---- Constraint Validation helpers ---------------------------------
@@ -5611,6 +5746,12 @@ def _js_host_dispatch(id: int32) -> int32:
                                         &nsa_lp[0], rla)
                 if rnsi >= 0:
                     nsa_obj[rnsi] = -1
+                # A created node's property side was just cleared to "", which
+                # is indistinguishable from a genuinely empty attribute; forget
+                # the NAME too so the attribute really leaves el.attributes
+                # instead of reappearing as `name=""`.
+                if rel_i < 0:
+                    _cre_drop_attr(rtgt, &rn[0], ran)
                 _mo_record_attr(js_this(), &rn[0], ran, rm_oldattr)
         return js_undefined()
     if rel == NID_REMEVT:
@@ -6041,42 +6182,14 @@ def _js_host_dispatch(id: int32) -> int32:
         if gnel >= 0:
             _collect_attr_names(gnel, gnarr)
             return gnarr
-        # CREATED node: its attributes live in the object-keyed nsa_ store
-        # (that is where setAttribute puts them), plus the two reflected
-        # properties id / className. This returned an EMPTY array before, so
-        # anything that enumerates an element's attributes — cloneNode, an
-        # attribute-preserving serialiser, a test's assert_array_equals on
-        # getAttributeNames() — silently saw a created element as attributeless.
-        gnq: int32 = 0
-        while gnq < nsa_n:
-            if nsa_obj[gnq] == js_this():
-                gnw: int32 = 0
-                if nsa_pflen[gnq] > 0:
-                    gnk: int32 = 0
-                    while gnk < nsa_pflen[gnq] and gnw < 250:
-                        nnm_name[gnw] = nsa_buf[nsa_pfoff[gnq] + gnk]
-                        gnw = gnw + 1
-                        gnk = gnk + 1
-                    nnm_name[gnw] = 58                     # ':'
-                    gnw = gnw + 1
-                gnj: int32 = 0
-                while gnj < nsa_lnlen[gnq] and gnw < 251:
-                    nnm_name[gnw] = nsa_buf[nsa_lnoff[gnq] + gnj]
-                    gnw = gnw + 1
-                    gnj = gnj + 1
-                js_array_push(gnarr, js_new_string(&nnm_name[0], cast[uint64](gnw)))
-            gnq = gnq + 1
-        if _find_cre_by_obj(js_this()) >= 0:
-            gnid: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("id"), 2)
-            if js_type_of(gnid) == TAG_STR and js_str_bytelen(gnid) > 0 and \
-               _nsa_find(js_this(), cast[Ptr[uint8]](""), -1, \
-                         cast[Ptr[uint8]]("id"), 2) < 0:
-                js_array_push(gnarr, js_new_string(cast[Ptr[uint8]]("id"), 2))
-            gncl: int32 = js_get_prop(js_this(), cast[Ptr[uint8]]("className"), 9)
-            if js_type_of(gncl) == TAG_STR and js_str_bytelen(gncl) > 0 and \
-               _nsa_find(js_this(), cast[Ptr[uint8]](""), -1, \
-                         cast[Ptr[uint8]]("class"), 5) < 0:
-                js_array_push(gnarr, js_new_string(cast[Ptr[uint8]]("class"), 5))
+        # CREATED node: enumerate through the ONE created-element enumerator
+        # (_cre_all_names) that el.attributes also uses — the nsa_ store, the
+        # fragment parser's `__attrs` names and the reflected id / className.
+        # This returned an EMPTY array before, so anything that enumerates an
+        # element's attributes — cloneNode, an attribute-preserving serialiser,
+        # a test's assert_array_equals on getAttributeNames() — silently saw a
+        # created element as attributeless.
+        _cre_all_names(js_this(), gnarr)
         return gnarr
     if rel == NID_HASATTRS:
         # element.hasAttributes() -> true if the start tag declares >=1 attribute.
@@ -6862,7 +6975,15 @@ def _js_host_dispatch(id: int32) -> int32:
                 # sattr_* entry, so before this its setAttribute() was invisible
                 # to element.attributes (dom/nodes/case.html asserts
                 # node.attributes[0].localName after setAttribute).
-                if el3 < 0:
+                # ... except `class` and `id`, whose storage on a created node
+                # IS the reflected className / id property (that is what
+                # classList and getElementById read). Writing a second copy into
+                # the nsa_ store made the two drift: getAttribute('class') came
+                # back from nsa_ and so still answered the pre-classList.add()
+                # value. _cre_all_names() enumerates them off the property.
+                if el3 < 0 and \
+                   _bytes_eq(&nm2[0], an2, cast[Ptr[uint8]]("class"), 5) == 0 and \
+                   _bytes_eq(&nm2[0], an2, cast[Ptr[uint8]]("id"), 2) == 0:
                     la: int32 = 0
                     while la < an2 and la < 128:
                         nsa_lp[la] = _hx_lower(nm2[la])
@@ -7382,6 +7503,22 @@ def _new_attr_obj(np: Ptr[uint8], nn: int32, valv: int32, ownerv: int32) -> int3
     return a
 
 
+# Does the NamedNodeMap being built already carry an attr named p[0..n)?
+# Compares against the attr objects' own `name`, so it never touches the
+# nnm_name scratch its caller is holding.
+def _nnm_has_name(m: int32, p: Ptr[uint8], n: int32) -> int32:
+    mn: int32 = js_array_len(m)
+    i: int32 = 0
+    while i < mn:
+        av2: int32 = js_array_get(m, i)
+        nv2: int32 = js_get_prop(av2, cast[Ptr[uint8]]("name"), 4)
+        if js_type_of(nv2) == TAG_STR and \
+           _bytes_eq(js_str_bytes(nv2), js_str_bytelen(nv2), p, n) != 0:
+            return 1
+        i = i + 1
+    return 0
+
+
 # Build the element's NamedNodeMap. It is an ARRAY so `length` and `[i]` are
 # the engine's own fast paths (a browser's NamedNodeMap is indexed the same
 # way); getNamedItem/item are attached on top.
@@ -7423,6 +7560,26 @@ def _build_attrs_map(thisv: int32) -> int32:
                                   thisv))
             s = s + 1
     _nsa_collect(thisv, m)
+    # CREATED node: everything _cre_all_names() can name and _el_get_attribute()
+    # can resolve, minus what _nsa_collect() already emitted (it carries the
+    # namespaceURI, which a name-only round trip would drop). This is the half
+    # the NamedNodeMap used to be missing: a node built by createElement +
+    # `el.id = 'x'`, or by the innerHTML fragment parser, keeps those values on
+    # the JS property side, so el.attributes reported [] for it while
+    # getAttribute() answered correctly.
+    if el < 0 and _find_cre_by_obj(thisv) >= 0:
+        cnames: int32 = js_new_array_v()
+        _cre_all_names(thisv, cnames)
+        ccount: int32 = js_array_len(cnames)
+        cidx: int32 = 0
+        while cidx < ccount:
+            cl2: int32 = _js_str_to_cbuf(js_array_get(cnames, cidx), \
+                                         &nnm_name[0], 80)
+            if _nnm_has_name(m, &nnm_name[0], cl2) == 0:
+                cv2: int32 = _el_get_attribute(thisv, &nnm_name[0], cl2)
+                if js_type_of(cv2) == TAG_STR:
+                    js_array_push(m, _new_attr_obj(&nnm_name[0], cl2, cv2, thisv))
+            cidx = cidx + 1
     js_set_prop(m, cast[Ptr[uint8]]("getNamedItem"), 12, \
                 js_new_native_fn(js_hbase + NID_NNM_GETNAMED))
     js_set_prop(m, cast[Ptr[uint8]]("item"), 4, \
@@ -10380,6 +10537,8 @@ def _dom_readback():
         dom_ov_cls_off[idx] = -1
         dom_ov_cls_len[idx] = -1
         dom_ov_hide[idx] = 0
+        dom_ov_disp_off[idx] = -1
+        dom_ov_disp_len[idx] = -1
         dom_ov_val_off[idx] = -1
         dom_ov_val_len[idx] = -1
         dom_ov_checked[idx] = -1
@@ -10479,13 +10638,24 @@ def _dom_readback():
               dom_ov_wd_off[idx] = g_rb_off
               dom_ov_wd_len[idx] = r
               changed = 1
-          # display:none
+          # display — BOTH directions. "none" drops the element from the render
+          # outright (the cheap path); any other value is recorded so
+          # _emit_merged_style() can write it back as an inline declaration,
+          # which outranks the stylesheet rule that hid the element in the first
+          # place. Without the second branch `el.style.display='block'` on a
+          # `display:none` rule was a silent no-op.
           dv: int32 = js_get_prop(stv, cast[Ptr[uint8]]("display"), 7)
           dp: Ptr[uint8] = js_str_ptr(dv)
           dn: int32 = _cstr_len(dp)
           if _bytes_eq(dp, dn, cast[Ptr[uint8]]("none"), 4) != 0:
               dom_ov_hide[idx] = 1
               changed = 1
+          else:
+              r = _readback_str(stv, cast[Ptr[uint8]]("display"), 7)
+              if r >= 0:
+                  dom_ov_disp_off[idx] = g_rb_off
+                  dom_ov_disp_len[idx] = r
+                  changed = 1
         # className
         clv: int32 = js_get_prop(o, cast[Ptr[uint8]]("className"), 9)
         clp: Ptr[uint8] = js_str_ptr(clv)
@@ -11047,7 +11217,7 @@ def _el_has_override(idx: int32) -> int32:
     if dom_ov_hide[idx] != 0 or dom_ov_inner_len[idx] >= 0 or \
        dom_ov_col_len[idx] >= 0 or dom_ov_bg_len[idx] >= 0 or \
        dom_ov_wt_len[idx] >= 0 or dom_ov_al_len[idx] >= 0 or \
-       dom_ov_wd_len[idx] >= 0 or \
+       dom_ov_wd_len[idx] >= 0 or dom_ov_disp_len[idx] >= 0 or \
        dom_ov_cls_len[idx] >= 0 or dom_ov_val_len[idx] >= 0 or \
        dom_ov_checked[idx] >= 0:
         return 1
@@ -11374,11 +11544,17 @@ def _emit_merged_style(idx: int32):
         ser_disp = 1
     if dom_ov_col_len[idx] < 0 and dom_ov_bg_len[idx] < 0 and \
        dom_ov_wt_len[idx] < 0 and dom_ov_al_len[idx] < 0 and \
-       dom_ov_wd_len[idx] < 0 and ser_disp == 0:
+       dom_ov_wd_len[idx] < 0 and dom_ov_disp_len[idx] < 0 and ser_disp == 0:
         return
     _rw_cstr(cast[Ptr[uint8]](" style=\""))
     if ser_disp != 0:
         _rw_cstr(cast[Ptr[uint8]]("display:none;"))
+    # A script-set NON-none display, emitted inline so it beats the stylesheet
+    # rule the reveal is undoing.
+    if dom_ov_disp_len[idx] >= 0:
+        _rw_cstr(cast[Ptr[uint8]]("display:"))
+        _rw_ovbuf(dom_ov_disp_off[idx], dom_ov_disp_len[idx])
+        _rw_ch(59)
     if dom_ov_col_len[idx] >= 0:
         _rw_cstr(cast[Ptr[uint8]]("color:"))
         _rw_ovbuf(dom_ov_col_off[idx], dom_ov_col_len[idx])
