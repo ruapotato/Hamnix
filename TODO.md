@@ -166,11 +166,22 @@ fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
       wrote the dataset object and no attribute. Floor **pass=7 fail=8 →
       pass=12 fail=6**, orchestrator-re-measured; guards proved RED by
       `git archive`ing the pre-fix tree, not by assertion.
-- [ ] **D5** `checkbox.click()` runs no activation behaviour — `.checked` never
-      flips, no `change` event, radio-group exclusivity never runs.
-- [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
-- [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text
-      node. Causes fixtures `07` and `12` to fail.
+- [x] ✔ **D5/D6/D7 CLOSED 2026-08-04** (`3aec4142`) — floor **pass=12 fail=6 →
+      pass=16 fail=2**; fixtures `07`, `09`, `10`, `12`. All three were the
+      two-writers shape. **D7:** two writers for where a raw-text element's body
+      ends — a correct byte scan and a wrong *markup* scan, and the wrong one fed
+      `tx_ce`, which every tree reader walks; the `<` in `i < 3` was read as a
+      start tag and the skip-to-`>` ate the script's own `</script>`, so the
+      whole JS source came out as a sibling text node. Unified onto
+      `_rawtext_close`. **D5:** `click()`'s scripted path dispatched and stopped
+      while the mouse path was complete; both now run the activation behaviour,
+      with `input`/`change` fired only for a **connected** element. **D6:**
+      three writers for the selection; `selectedIndex` is now a pure view over
+      `.value`. Verified: ratchet PASS 0-newly-failing (floor 13945 → **14077**)
+      and the **full 200-gate `test_hambrowse_*_host.sh` sweep 200/200**.
+      ⚠ **`17` had been green BY ACCIDENT** — same `i < 3`, but no `>` before the
+      close tag, so the bogus span ran past the leak. A green fixture is not
+      evidence the code path is right.
 - [ ] **★ D8 — fixed, merged, then REVERTED (`179eac42` → `b15a1588`); re-land
       in flight on `livedom/d8-reland`.** The fix is correct and moves the floor
       `pass=12 fail=6 → pass=14 fail=5`, but the WPT ratchet is per-subtest and
@@ -1224,3 +1235,19 @@ modules via the L-shim ARE used (`i915.ko`); `.ko` ≠ namespace.
 - [ ] **Arch convergence** — factor an arch-interface; link a shared
   portable core into ARM64. Do once ARM64 bring-up is stable.
 - [ ] Signed package indexes (sha256 covers tarballs; index unsigned).
+
+## 2026-08-04 — host/CI tooling: Pillow was never installed
+
+- [x] ✔ **FIXED (`7d41bb3f`)** — `test_hambrowse_{flexwrap_qa,gridareas,gridpng}_host.sh`
+      were DARK, not failing: `ModuleNotFoundError: No module named 'PIL'`, and
+      all three PASS on unmodified main once it is installed. Ten scripts import
+      PIL, including `render_hambrowse_png.py` and `framediff_*` — the whole
+      visual-QA path. Installed on the dev host; added to the CI host-selftest
+      job with `pip` (not apt's `python3-pil`: that job runs `actions/setup-python`,
+      so the apt package installs into a different interpreter).
+- [ ] **Sweep the rest of the gate corpus for the same class.** Three of 200
+      hambrowse gates were dark on ONE missing dependency, and they were only
+      found because a merge forced a full sweep. `list_host_gates.sh` counts
+      ~583 gates; nobody knows how many of the other ~383 have never executed.
+      A cheap first pass: run every gate once on a quiet host and classify
+      non-PASS into {real red, missing dependency, dead gate}.
