@@ -147,6 +147,11 @@ from compiler.codegen import (
     binop_use_signed,
     rel_setcc,
     syscall_builtin_args,
+    io_intrinsic_id,
+    expr_slice_type,
+    aggregate_class,
+    runtime_syscall_num,
+    cg_target_kernel,
     glob_lookup,
     glob_offset,
     glob_elem_size,
@@ -414,6 +419,14 @@ SBR_CALL: uint32 = 13
 SBR_NREASONS: uint32 = 16
 ssa_bail_hist: Array[16, uint32]
 
+# Per-CALL-SITE bail histogram (the ~86 distinct subset gates / arena caps).
+# A per-REASON histogram is far too coarse to steer subset broadening: e.g.
+# SBR_MEMORY covers ~40 different gates, and knowing "memory" is the top reason
+# says nothing about WHICH construct to implement.  Analysis-only: read out by
+# the --dump-ssa driver lane; never consulted by codegen.
+SSA_BAIL_SITE_MAX: uint32 = 128
+ssa_bail_site_hist: Array[128, uint32]
+
 # aggregate program stats (driver lane)
 ssa_stat_funcs: uint32 = 0
 ssa_stat_accepted: uint32 = 0
@@ -521,6 +534,146 @@ def ssa_callee_rettype_ok(off: uint32, len_: uint32) -> uint32:
     return 0
 
 
+# NATIVE-path call-result gate (subset broadening, § "narrow / extern results").
+#
+# ssa_callee_rettype_ok demands an in-unit ND_FUNCTION whose return type is an
+# 8-byte non-float scalar.  Measured over the real tree that single gate was the
+# THIRD-largest bail (18.0% of every fallback; 3175 functions), because it
+# rejects the two most ordinary callees in the codebase: an `extern def` and any
+# in-unit function returning int32/uint32/uint8/bool.
+#
+# The demand was never necessary.  Legacy gen_call does NOT narrow %rax after a
+# call — call_return_type is consulted only for signedness / float width /
+# member-base typing, never to truncate — so the legacy value of a call
+# expression IS the raw 64-bit %rax.  Modeling the SVO_CALL as a full-width i64
+# therefore reproduces legacy EXACTLY; a narrow destination gets its truncation
+# from ssa_trunc_to_local at the assignment, precisely as legacy does via the
+# store width.  (This is the same reasoning the LLVM path already relies on.)
+#
+# What must still bail on the native path:
+#   * a FLOAT return — the result lands in xmm0, not %rax, and the native
+#     emitter has no float lowering at all;
+#   * a by-value AGGREGATE return — <=16-byte pure-integer structs / slices come
+#     back in the rax:rdx PAIR, and an i64 model would silently drop %rdx.
+# Returns 1 when the raw-%rax i64 model is faithful, else 0.
+def ssa_callee_ret_native_ok(off: uint32, len_: uint32) -> uint32:
+    cur: uint32 = ssa_prog_decls
+    while cur != 0:
+        if nd_kind[cur] == ND_FUNCTION or nd_kind[cur] == ND_EXTERN:
+            if ssa_name_bytes_eq(nd_name_off[cur], nd_name_len[cur], off, len_) != 0:
+                rt: uint32 = nd_b[cur]
+                if type_float_width(rt) != 0:
+                    return 0
+                if aggregate_class(rt) != 0:
+                    return 0
+                return 1
+        cur = nd_next[cur]
+    # Unknown callee: the raw-%rax model is faithful for anything that really is
+    # a `call` — ssa_callee_direct_symbol_ok is what guarantees it IS one.
+    return 1
+
+
+# NATIVE-path DIRECT-CALL WHITELIST.  1 iff `off/len` names a callee that
+# codegen.ad's legacy path would lower as a real `call <sym>` AND whose symbol is
+# guaranteed to resolve; 0 for everything else.
+#
+# THIS IS THE LOAD-BEARING SAFETY GATE, and it is deliberately a WHITELIST.
+#
+# The SSA builder sees an ND_CALL and lowers it to SVO_CALL -> `call rel32` +
+# a call fixup naming the callee.  But an ND_CALL reaching codegen.ad's gen_expr
+# is NOT necessarily a function call: gen_expr and gen_call between them
+# INTERCEPT a whole family of ND_CALL shapes BY NAME and lower them to something
+# with no linkable symbol at all —
+#
+#   * enum-variant CONSTRUCTORS   `Second(v)`   (gen_expr, enum_ctor_ev)
+#   * `len(slice)`                              (gen_call, fat-pointer .len)
+#   * port-I/O + atomic intrinsics `outb(...)`  (gen_call, gen_io_intrinsic)
+#   * `__syscallN(num, a1..aN)`                 (gen_call, inline `syscall`)
+#   * `asm_volatile("...")`                     (gen_call, verbatim bytes)
+#   * a GLOBAL function-pointer  `hook()`       (gen_call, indirect `call *%r11`)
+#
+# When such a shape is accepted into the subset the emitter records a fixup
+# naming a symbol that does not exist.  resolve_calls then either hard-fails
+# cg_fail(7) (userland) or — far worse — SILENTLY records a PLT32 extern
+# relocation against a nonexistent symbol (kernel target).
+#
+# Enumerating the interceptions as a BLACKLIST is what let this bug exist: the
+# previous attempt listed four of the six families, missed enum constructors,
+# and turned `tests/fuzz/regress_match_liveness.ad` (whose main calls
+# `repro(Second(...))`) from a correct binary into STATUS cgfail reason=7.  The
+# blacklist is unmaintainable by construction — every future gen_expr special
+# case silently re-opens the hole.  So: accept ONLY what is provably a call.
+#
+#   * an in-unit ND_FUNCTION            -> fn_define'd during this same program
+#                                          emission; resolve_calls patches it.
+#   * an `extern def`, KERNEL target    -> collect_externs saw it; resolve_calls'
+#                                          PLT32 extern reloc is the legitimate,
+#                                          intended lowering and `ld` resolves it.
+#   * an `extern def`, USERLAND target  -> only if link_runtime_externs will
+#                                          synthesize its wrapper in-image
+#                                          (runtime_syscall_num != 0).  Any other
+#                                          userland extern cg_fail(7)s on the
+#                                          legacy path too, so bailing hands the
+#                                          identical diagnostic to legacy rather
+#                                          than inventing one.
+#
+# Everything else — intrinsic, constructor, global fn-pointer, genuinely unknown
+# name — falls back to legacy, which knows how to lower it.
+def ssa_callee_direct_symbol_ok(off: uint32, len_: uint32) -> uint32:
+    cur: uint32 = ssa_prog_decls
+    while cur != 0:
+        if nd_kind[cur] == ND_FUNCTION:
+            if ssa_name_bytes_eq(nd_name_off[cur], nd_name_len[cur], off, len_) != 0:
+                return 1
+        elif nd_kind[cur] == ND_EXTERN:
+            if ssa_name_bytes_eq(nd_name_off[cur], nd_name_len[cur], off, len_) != 0:
+                if cg_target_kernel != 0:
+                    return 1
+                if runtime_syscall_num(off, len_) != 0:
+                    return 1
+                return 0
+        cur = nd_next[cur]
+    return 0
+
+
+# 1 if the direct call `node` is one that legacy gen_call RE-SHAPES before
+# marshalling — i.e. normalize_call_args fires — else 0.
+#
+# gen_call resolves KEYWORD arguments (`g(b=1, a=2)`, parsed as ND_ASSIGN arg
+# nodes) to their parameter POSITIONS and fills omitted trailing DEFAULTS
+# (`g(3)` for `def g(a, b = 7)`).  The SSA builder lowers the argument chain
+# strictly positionally, in written order, so under ADDER_OPT2 both shapes
+# marshalled the WRONG registers:
+#
+#   def g(a: uint64, b: uint64 = 7) -> uint64: return a * 10 + b
+#   def main() -> uint64: return g(3)
+#
+# returned 37 with the gate off and 30 with it on — a live SSA-lane MISCOMPILE
+# that predates this change (reproduced on pristine HEAD).  The call shape sits
+# squarely inside the accepted subset (8-byte scalar return, <=6 args), so
+# nothing else was stopping it.
+#
+# Bail these calls to legacy rather than duplicating normalize_call_args'
+# window machinery inside the builder.  Deliberately slightly WIDER than
+# legacy's trigger: an under-supplied call whose missing slots have no default
+# is left alone by legacy, and is bailed here — correctness over one bail.
+def ssa_call_needs_normalization(node: uint32, off: uint32, len_: uint32) -> uint32:
+    a: uint32 = nd_b[node]
+    while a != 0:
+        if nd_kind[a] == ND_ASSIGN:
+            return 1                       # keyword argument
+        a = nd_next[a]
+    cur: uint32 = ssa_prog_decls
+    while cur != 0:
+        if nd_kind[cur] == ND_FUNCTION:
+            if ssa_name_bytes_eq(nd_name_off[cur], nd_name_len[cur], off, len_) != 0:
+                if nd_aux[node] < nd_aux[cur]:
+                    return 1               # omitted trailing parameter(s)
+                return 0
+        cur = nd_next[cur]
+    return 0
+
+
 # 1 if `off/len` names a FUNCTION in the compiled closure (an ND_FUNCTION decl —
 # in-unit definition OR extern declaration), else 0.  Used by the LLVM path to
 # recognise `&function` / a bare function-name-as-value (function-to-pointer
@@ -557,7 +710,13 @@ def ssa_callee_ret_fw(off: uint32, len_: uint32) -> uint32:
 def ssa_callee_rettype_sgn(off: uint32, len_: uint32) -> uint32:
     cur: uint32 = ssa_prog_decls
     while cur != 0:
-        if nd_kind[cur] == ND_FUNCTION:
+        # ND_EXTERN as well as ND_FUNCTION: legacy expr_signedness resolves a
+        # call through call_return_type, which matches BOTH decl kinds.  Scanning
+        # only ND_FUNCTION answered "unknown" for every `extern def` callee, so
+        # `sys_read(...) >> 32` / `... < 0` picked the UNSIGNED machine op where
+        # legacy picks the signed one.  Latent while extern-returning calls were
+        # bailed out of the subset; load-bearing the moment they are accepted.
+        if nd_kind[cur] == ND_FUNCTION or nd_kind[cur] == ND_EXTERN:
             if ssa_name_bytes_eq(nd_name_off[cur], nd_name_len[cur], off, len_) != 0:
                 return type_signedness(nd_b[cur])
         cur = nd_next[cur]
@@ -843,6 +1002,8 @@ def ssa_set_bail(reason: uint32):
 def ssa_set_bail_at(reason: uint32, site: uint32):
     if ssa_bail == 0:
         ssa_bail_site = site
+        if site < SSA_BAIL_SITE_MAX:
+            ssa_bail_site_hist[site] = ssa_bail_site_hist[site] + 1
     ssa_set_bail(reason)
 
 
@@ -3150,6 +3311,61 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
         callee_val = ssa_lower_expr(callee, ssa_cur_bb)
         if callee_val == 0:
             return 0
+    # ---- keyword args / omitted defaults (BOTH paths) --------------------
+    # See ssa_call_needs_normalization: the builder marshals the argument chain
+    # positionally, so any call legacy would re-shape must go to legacy.
+    if ssa_call_needs_normalization(node, nd_name_off[callee], nd_name_len[callee]) != 0:
+        ssa_set_bail_at(SBR_CALL, 91)
+        return 0
+
+    # ---- NATIVE path: codegen.ad's by-NAME call interceptions ------------
+    # gen_call does NOT emit a `call` for four families of callee: __syscallN,
+    # asm_volatile, the port-I/O + atomic intrinsics (outb/inb/...), and
+    # `len(slice)`.  Each lowers to INLINE bytes and has NO linkable symbol.
+    #
+    # This mattered the moment ADDER_OPT2 started EMITTING (Phase 3): under the
+    # SSA lane the function never enters gen_call, so a statement-position
+    # `__syscall1(60, x)` lowered to a generic SVO_CALL and emitted `call rel32`
+    # + a fixup naming "__syscall1".  resolve_calls finds no such function, so a
+    # userland target hard-fails cg_fail(7) and — far worse — a KERNEL target
+    # silently records a PLT32 extern relocation against a symbol that does not
+    # exist.  Verified before this guard: a 4-line function containing a
+    # statement `__syscall1(60, b)` compiled clean with ADDER_OPT2 unset and
+    # returned `STATUS cgfail reason=7` with ADDER_OPT2=1.
+    #
+    # These are only reachable in STATEMENT position today (result_used == 0
+    # skips the return-width gate), which is exactly where the syscall/asm forms
+    # are used, so the exposure was real rather than theoretical.  Bail the
+    # whole function to legacy — the constructs stay outside the subset until
+    # the native emitter grows real inline lowering for them.
+    if ssa_mem_model == 0:
+        if syscall_builtin_args(nd_name_off[callee], nd_name_len[callee]) != 0:
+            ssa_set_bail_at(SBR_CALL, 87)
+            return 0
+        if name_eq_cstr(nd_name_off[callee], nd_name_len[callee], "asm_volatile") != 0:
+            ssa_set_bail_at(SBR_CALL, 88)
+            return 0
+        if cid >= NM_MAX or ssa_islocal[cid] == 0:
+            if io_intrinsic_id(nd_name_off[callee], nd_name_len[callee]) != 0:
+                ssa_set_bail_at(SBR_CALL, 89)
+                return 0
+        if name_eq_cstr(nd_name_off[callee], nd_name_len[callee], "len") != 0:
+            larg: uint32 = nd_b[node]
+            if larg != 0 and nd_next[larg] == 0 and expr_slice_type(larg) != 0:
+                ssa_set_bail_at(SBR_CALL, 90)
+                return 0
+        # THE CATCH-ALL.  Sites 87-90 above are diagnostics (they keep the census
+        # histogram able to name WHICH intrinsic family bailed); this gate is the
+        # one that is actually load-bearing.  Anything that is not provably a
+        # resolvable direct-call symbol goes to legacy — see
+        # ssa_callee_direct_symbol_ok for why this MUST be a whitelist.  Without
+        # it an enum-variant constructor `Second(v)` lowered to a `call Second`
+        # fixup: cg_fail(7) on userland, a silent PLT32 reloc against a
+        # nonexistent symbol on a kernel target.
+        if ssa_callee_direct_symbol_ok(nd_name_off[callee], nd_name_len[callee]) == 0:
+            ssa_set_bail_at(SBR_CALL, 92)
+            return 0
+
     # `asm_volatile("<text>")` is a ZERO-OPERAND inline-asm builtin.  On the
     # native path codegen.ad lowers it to verbatim bytes, so this LLVM-only
     # (ssa_mem_model != 0) special-case is byte-neutral there.  Without it the
@@ -3217,8 +3433,14 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
             # result lands in xmm0 and is typed float).
             cfw = ssa_callee_ret_fw(nd_name_off[callee], nd_name_len[callee])
             if ssa_mem_model == 0:
-                ssa_set_bail_at(SBR_CALL, 31)        # native path: unchanged (bails)
-                return 0
+                # Native path: accept the raw-%rax i64 model for an extern /
+                # narrow-int / unknown callee (identical to legacy gen_call,
+                # which never narrows %rax); only float and by-value-aggregate
+                # returns still bail.  See ssa_callee_ret_native_ok.
+                if ssa_callee_ret_native_ok(nd_name_off[callee], nd_name_len[callee]) == 0:
+                    ssa_set_bail_at(SBR_CALL, 31)
+                    return 0
+                cfw = 0                              # %rax integer model
             # LLVM path: an extern / narrow-int / unknown callee is modeled as an
             # i64 result — its `declare` is i64 and a narrow assignment truncates
             # (e.g. `fd: int32 = sys_open(...)`), so the upper bits are discarded.
