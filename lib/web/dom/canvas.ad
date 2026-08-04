@@ -704,6 +704,24 @@ def _frag_set_attrs(co: int32, sp: Ptr[uint8], a: int32, b: int32):
             fsto: int32 = js_get_prop(co, cast[Ptr[uint8]]("style"), 5)
             _style_apply_csstext(fsto, &sp[vs], vlen)
             _cre_note_attr(co, &sp[ns], ne - ns)
+        elif _eh_index(&sp[ns], ne - ns) >= 0:
+            # An event-handler content attribute inside innerHTML. It must NOT
+            # go to the property side: on<type> is an IDL attribute whose value
+            # is a FUNCTION, and the accessor pair would turn the source string
+            # into null. Park the string in the content-attribute store — which
+            # is what getAttribute() and el.attributes read — and let the IDL
+            # getter compile it on first read. Compiling HERE would run a nested
+            # js_eval in the middle of the attribute loop, with `sp` still live.
+            fla: int32 = 0
+            while fla < ne - ns and fla < 128:
+                nsa_lp[fla] = _hx_lower(sp[ns + fla])
+                fla = fla + 1
+            fvl: int32 = 0
+            while fvl < vlen and fvl < 4095:
+                nsa_vv[fvl] = sp[vs + fvl]
+                fvl = fvl + 1
+            _nsa_set(co, cast[Ptr[uint8]](""), -1, cast[Ptr[uint8]](""), -1, \
+                     &nsa_lp[0], fla, &nsa_vv[0], fvl)
         else:
             js_set_prop(co, &sp[ns], cast[uint64](ne - ns), av)
             _cre_note_attr(co, &sp[ns], ne - ns)
@@ -5581,6 +5599,8 @@ def _js_host_dispatch(id: int32) -> int32:
         return _cookie_read()
     if rel == NID_COOKIE_SET:
         return _cookie_write()
+    if rel >= NID_EH_GET and rel <= NID_EH_LAST:
+        return _eh_accessor(rel)
     if rel >= NID_TC_GET and rel <= NID_IH_SET:
         return _inner_accessor(rel)
     if rel >= NID_STYLE_ACC and rel <= NID_DS_ACC_SET:
@@ -5941,6 +5961,12 @@ def _js_host_dispatch(id: int32) -> int32:
                 if _bytes_eq(&rn[0], ran, cast[Ptr[uint8]]("class"), 5) != 0:
                     js_set_prop(rtgt, cast[Ptr[uint8]]("className"), 9, \
                                 js_new_string(&dom_txtbuf[0], 0))
+                elif _eh_index(&rn[0], ran) >= 0:
+                    # removeAttribute('onclick') un-installs the IDL attribute
+                    # too (el.onclick reads back null), and drops the compiled
+                    # function out of the dispatch slot. Writing "" through the
+                    # generic branch would leave the memo in place.
+                    _eh_install(rtgt, _eh_index(&rn[0], ran), -1)
                 else:
                     js_set_prop(rtgt, &rn[0], cast[uint64](ran), \
                                 js_new_string(&dom_txtbuf[0], 0))
@@ -7150,6 +7176,19 @@ def _js_host_dispatch(id: int32) -> int32:
                     san: int32 = _cstr_len(sap)
                     if _is_undef_str(sap, san) == 0:
                         _style_apply_csstext(sto, sap, san)
+                elif _eh_index(&nm2[0], an2) >= 0:
+                    # AN EVENT-HANDLER CONTENT ATTRIBUTE. Storing the raw string
+                    # on the JS object (what the generic branch below does) left
+                    # el.onclick holding a STRING, which no dispatch path can
+                    # call — so `createElement('div')` + `setAttribute('onclick',
+                    # …)` produced a node whose handler could never run. Compile
+                    # it here, once, and install it as the IDL attribute.
+                    ehi: int32 = _eh_index(&nm2[0], an2)
+                    ehp: Ptr[uint8] = js_str_bytes(js_arg(1))
+                    ehn: int32 = js_str_bytelen(js_arg(1))
+                    if _is_undef_str(ehp, ehn) != 0:
+                        ehn = 0
+                    _eh_install(tgt, ehi, _compile_handler_bytes(ehp, ehn))
                 elif _is_url_attr(&nm2[0], an2) != 0:
                     # href/src reflect the URL RESOLVED against the document
                     # base (chromium: setAttribute('href','b.html') then .href
@@ -8780,6 +8819,17 @@ def _build_dom_interfaces():
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("innerHTML"), 9, \
                        js_new_native_fn(js_hbase + NID_IH_GET), \
                        js_new_native_fn(js_hbase + NID_IH_SET))
+    # Event-handler IDL attributes (el.onclick, el.onchange, …). ONE accessor
+    # pair per name on the prototype: the getter compiles the element's content
+    # attribute on first read and memoises it, so the content attribute and the
+    # IDL attribute can never be two different pieces of state again.
+    ehr: int32 = 0
+    while ehr < EH_N:
+        ehnm: Ptr[uint8] = _eh_name(ehr)
+        js_define_accessor(g_proto_elem, ehnm, cast[uint64](_cstr_len(ehnm)), \
+                           js_new_native_fn(js_hbase + NID_EH_GET + ehr), \
+                           js_new_native_fn(js_hbase + NID_EH_SET + ehr))
+        ehr = ehr + 1
     # style / classList / dataset: built on first access, not on registration.
     js_define_accessor(g_proto_elem, cast[Ptr[uint8]]("style"), 5, \
                        js_new_native_fn(js_hbase + NID_STYLE_ACC), \
@@ -10062,28 +10112,20 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("if(typeof Document!=='undefined'&&!Document.prototype.moveBefore)Document.prototype.moveBefore=mvBefore;"))
     _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("var EHS=['onblur','onerror','onfocus','onload','onscroll','onresize'],ehv={};"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("function ehCompile(s){try{return new Function('event',s);}catch(e){return null;}}"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("function ehDefine(P,name){def(P,name,function(){"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("var v=ehv[name];if(typeof v==='function')return v;"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("var s=this.getAttribute?gat(this,name):null;"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("if(s!==null&&s!==undefined){var f=ehCompile(s);if(f){ehv[name]=f;return f;}}"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("return null;},function(v){ehv[name]=(typeof v==='function')?v:null;});}"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("for(var ehi=0;ehi<EHS.length;ehi++){var ehn=EHS[ehi];"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("ehDefine(HTMLBodyElement.prototype,ehn);"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("if(typeof HTMLFrameSetElement!=='undefined')ehDefine(HTMLFrameSetElement.prototype,ehn);"))
-    _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("}"))
-    _pre_nl()
+    # NOTE: onblur/onerror/onfocus/onload/onscroll/onresize on
+    # HTMLBodyElement.prototype and HTMLFrameSetElement.prototype used to be
+    # shimmed HERE, in JS, by a getter/setter pair closing over a single `ehv`
+    # object keyed by HANDLER NAME. That is ONE store for EVERY body and
+    # frameset in the document: `a.onblur = f` read back as `b.onblur` and as
+    # `document.body.onblur`, and a handler compiled for one element stayed
+    # visible on the next element created. It is the two-writers shape — the
+    # real per-element handler state (the "@H<name>" own property; see
+    # _eh_install) and this name-keyed cache both claimed to BE el.on<name>,
+    # and because the shim sat on a MORE DERIVED prototype it won the lookup
+    # for exactly the two element types HTML singles out. Deleted: the
+    # per-element accessor pair on HTMLElement.prototype is now the only
+    # definition, and _eh_name() carries onerror/onload/onresize so <body> and
+    # <frameset> keep reflecting every name the shim covered.
     # CommandEvent (HTML "invokers"): the event a <button command=...
     # commandfor=...> dispatches at its target. Engine-authored rather than
     # native because it is pure IDL — an Event subclass with two readonly
@@ -10923,19 +10965,21 @@ def _dom_readback():
             if ckb != dom_origchecked[idx]:
                 dom_ov_checked[idx] = ckb
                 changed = 1
-        # assigned handler-function properties (el.onX = fn).
-        ocv: int32 = js_get_prop(o, cast[Ptr[uint8]]("onclick"), 7)
-        if js_is_callable(ocv) != 0:
-            dom_onclick_fn[idx] = ocv
-        oiv: int32 = js_get_prop(o, cast[Ptr[uint8]]("oninput"), 7)
-        if js_is_callable(oiv) != 0:
-            dom_oninput_fn[idx] = oiv
-        ocgv: int32 = js_get_prop(o, cast[Ptr[uint8]]("onchange"), 8)
-        if js_is_callable(ocgv) != 0:
-            dom_onchange_fn[idx] = ocgv
-        osv: int32 = js_get_prop(o, cast[Ptr[uint8]]("onsubmit"), 8)
-        if js_is_callable(osv) != 0:
-            dom_onsubmit_fn[idx] = osv
+        # assigned handler-function properties (el.onX = fn). Read the OWN
+        # "@H<name>" store, not el.onX: the IDL accessor MATERIALISES a handler
+        # from the content attribute on read, and doing that here — for every
+        # registered element, on every readback — would compile every inline
+        # handler on the page whether or not anything ever dispatches to it.
+        # The accessor's setter already writes the slot directly, so this is a
+        # resync, not the only writer.
+        ehk: int32 = 0
+        while ehk < 4:
+            ehkl2: int32 = _eh_key(ehk)
+            if js_has_own(o, &eh_key[0], cast[uint64](ehkl2)) != 0:
+                ehv: int32 = js_get_prop(o, &eh_key[0], cast[uint64](ehkl2))
+                if js_is_callable(ehv) != 0:
+                    _store_handler_fn(idx, ehk, ehv)
+            ehk = ehk + 1
         # appended children force a rewrite of this element too.
         a: int32 = 0
         while a < ap_n:
@@ -12308,7 +12352,7 @@ HB_HWRAP_CAP: int32 = 8192
 hb_hwrap: Array[8192, uint8]
 
 
-def _compile_inline_handler(src: int32, srclen: int32) -> int32:
+def _compile_handler_bytes(p: Ptr[uint8], n: int32) -> int32:
     pfx: Ptr[uint8] = cast[Ptr[uint8]]("var __hb_ev_fn__=function(event){\n")
     w: int32 = 0
     i: int32 = 0
@@ -12317,8 +12361,8 @@ def _compile_inline_handler(src: int32, srclen: int32) -> int32:
         w = w + 1
         i = i + 1
     j: int32 = 0
-    while j < srclen and w < HB_HWRAP_CAP - 4:
-        hb_hwrap[w] = dom_txtbuf[src + j]
+    while j < n and w < HB_HWRAP_CAP - 4:
+        hb_hwrap[w] = p[j]
         w = w + 1
         j = j + 1
     hb_hwrap[w] = 10                                          # '\n' (end any // comment)
@@ -12336,6 +12380,225 @@ def _compile_inline_handler(src: int32, srclen: int32) -> int32:
         js_had_error = 1
         return -1
     return js_global_get(cast[Ptr[uint8]]("__hb_ev_fn__"), 12)
+
+
+# The dom_txtbuf-resident twin, for the parse-time inline sources captured into
+# dom_on*_src at element registration.
+def _compile_inline_handler(src: int32, srclen: int32) -> int32:
+    return _compile_handler_bytes(&dom_txtbuf[src], srclen)
+
+
+# ---- event-handler content/IDL attributes -----------------------------------
+# HTML: setting the CONTENT attribute (onclick="…", from the parse tag or from
+# setAttribute) compiles the string into a function whose body is that string
+# and whose `this` is the element, and INSTALLS it as the IDL attribute
+# (el.onclick). Setting the IDL attribute to a non-callable clears it. Reading
+# el.onclick answers whichever of the two wrote last. There is exactly ONE piece
+# of state; the whole point of this block is that there is exactly one store for
+# it too, keyed "@H<name>" as an own property of the element object, with an
+# accessor pair on HTMLElement.prototype as its only reader.
+#
+# Indices 0..3 are deliberately the four dom_on*_fn kinds (click/input/change/
+# submit) so _eh_sync_slot can keep the legacy slot honest for the source-element
+# dispatch path; 4.. are types that only ever had an addEventListener route.
+def _eh_name(i: int32) -> Ptr[uint8]:
+    if i == 0:
+        return cast[Ptr[uint8]]("onclick")
+    if i == 1:
+        return cast[Ptr[uint8]]("oninput")
+    if i == 2:
+        return cast[Ptr[uint8]]("onchange")
+    if i == 3:
+        return cast[Ptr[uint8]]("onsubmit")
+    if i == 4:
+        return cast[Ptr[uint8]]("ondblclick")
+    if i == 5:
+        return cast[Ptr[uint8]]("onmousedown")
+    if i == 6:
+        return cast[Ptr[uint8]]("onmouseup")
+    if i == 7:
+        return cast[Ptr[uint8]]("onmouseover")
+    if i == 8:
+        return cast[Ptr[uint8]]("onmouseout")
+    if i == 9:
+        return cast[Ptr[uint8]]("onmousemove")
+    if i == 10:
+        return cast[Ptr[uint8]]("onkeydown")
+    if i == 11:
+        return cast[Ptr[uint8]]("onkeyup")
+    if i == 12:
+        return cast[Ptr[uint8]]("onkeypress")
+    if i == 13:
+        return cast[Ptr[uint8]]("onfocus")
+    if i == 14:
+        return cast[Ptr[uint8]]("onblur")
+    if i == 15:
+        return cast[Ptr[uint8]]("onreset")
+    if i == 16:
+        return cast[Ptr[uint8]]("onscroll")
+    if i == 17:
+        return cast[Ptr[uint8]]("oncontextmenu")
+    if i == 18:
+        return cast[Ptr[uint8]]("ontoggle")
+    if i == 19:
+        return cast[Ptr[uint8]]("oninvalid")
+    # 20..22 are the remaining names HTML also reflects on <body>/<frameset>.
+    # They are here because the JS `ehv` shim that used to define them (and only
+    # them, and only on those two prototypes) has been deleted — see the note in
+    # the prelude builder. On <body>/<frameset> they are additionally
+    # Window-reflecting, which this engine does not implement; that is the
+    # standing "Forward … to Window" WPT failure, unchanged by this.
+    if i == 20:
+        return cast[Ptr[uint8]]("onerror")
+    if i == 21:
+        return cast[Ptr[uint8]]("onload")
+    if i == 22:
+        return cast[Ptr[uint8]]("onresize")
+    return cast[Ptr[uint8]]("")
+
+
+# The handler index for content-attribute name np[0..nn) (ASCII case-insensitive
+# — content attribute names are lowercased by the parser but setAttribute is
+# not), or -1 when the name is not a reflected event-handler attribute. Names
+# outside this table keep the plain string-property behaviour they always had:
+# chromium does not create a handler for `setAttribute('onfoo', …)` either.
+def _eh_index(np: Ptr[uint8], nn: int32) -> int32:
+    if nn < 5 or _hx_lower(np[0]) != 111 or _hx_lower(np[1]) != 110:   # "on"
+        return -1
+    i: int32 = 0
+    while i < EH_N:
+        p: Ptr[uint8] = _eh_name(i)
+        if _cstr_len(p) == nn:
+            k: int32 = 0
+            ok: int32 = 1
+            while k < nn:
+                if _hx_lower(np[k]) != p[k]:
+                    ok = 0
+                    k = nn
+                else:
+                    k = k + 1
+            if ok != 0:
+                return i
+        i = i + 1
+    return -1
+
+
+eh_key: Array[64, uint8]             # "@H" + handler name (the ONE store's key)
+
+
+def _eh_key(i: int32) -> int32:
+    eh_key[0] = 64                                            # '@'
+    eh_key[1] = 72                                            # 'H'
+    p: Ptr[uint8] = _eh_name(i)
+    k: int32 = 0
+    while p[k] != 0 and k < 60:
+        eh_key[2 + k] = p[k]
+        k = k + 1
+    eh_key[2 + k] = 0
+    return 2 + k
+
+
+# Keep the legacy per-kind slot in step for a SOURCE-anchored element. The slot
+# is what _fire_handler consults first, so an element whose parse-time inline
+# handler had already been compiled and cached there would otherwise keep firing
+# the OLD function after `el.onclick = other` or `setAttribute('onclick', …)`.
+# The parse-time SOURCE is dropped at the same time: it has been superseded.
+def _eh_sync_slot(objv: int32, i: int32, fnval: int32):
+    if i >= 4:
+        return
+    el: int32 = _find_el_by_obj(objv)
+    if el < 0:
+        return
+    if js_is_callable(fnval) != 0:
+        _store_handler_fn(el, i, fnval)
+    else:
+        _store_handler_fn(el, i, -1)
+    if i == 0:
+        dom_onclick_src[el] = -1
+    elif i == 1:
+        dom_oninput_src[el] = -1
+    elif i == 2:
+        dom_onchange_src[el] = -1
+    elif i == 3:
+        dom_onsubmit_src[el] = -1
+
+
+# Install handler function `fnval` (or a non-callable to clear) as element
+# `objv`'s on<i> IDL attribute. THE single writer.
+def _eh_install(objv: int32, i: int32, fnval: int32):
+    kl: int32 = _eh_key(i)
+    v: int32 = fnval
+    if v < 0:
+        v = js_null()                                         # compile error
+    if js_is_callable(v) == 0:
+        v = js_null()
+    js_set_own(objv, &eh_key[0], cast[uint64](kl), v)
+    _eh_sync_slot(objv, i, v)
+
+
+# Compile handler index `i`'s CONTENT attribute on `objv`, or -1 when the
+# element carries no such attribute (or it does not compile). Reads the
+# attribute stores DIRECTLY rather than through _el_get_attribute, whose
+# source-element fallback path reads the JS object — which would re-enter the
+# very getter that calls this.
+def _eh_from_attr(objv: int32, i: int32) -> int32:
+    nm: Ptr[uint8] = _eh_name(i)
+    nn: int32 = _cstr_len(nm)
+    el: int32 = _find_el_by_obj(objv)
+    if el >= 0:
+        so: int32 = _sattr_find(el, nm, nn)
+        if so >= 0:
+            if sattr_vlen[so] < 0:
+                return -1                                     # tombstoned
+            return _compile_handler_bytes(&sattr_buf[sattr_voff[so]], \
+                                          sattr_vlen[so])
+        te: uint64 = cast[uint64](dom_cstart[el]) - 1
+        if _hx_find_attr(cast[uint64](dom_ns[el]), te, nm) != 0:
+            vlen: int32 = _attr_decode_scratch()
+            return _compile_handler_bytes(&g_attrdec[0], vlen)
+        return -1
+    # created node: the object-keyed store setAttribute()/the fragment parser
+    # write into.
+    gi: int32 = 0
+    while gi < nn and gi < 128:
+        nsa_lp[gi] = nm[gi]
+        gi = gi + 1
+    ns: int32 = _nsa_find(objv, cast[Ptr[uint8]](""), -1, &nsa_lp[0], gi)
+    if ns >= 0:
+        return _compile_handler_bytes(&nsa_buf[nsa_vloff[ns]], nsa_vllen[ns])
+    return -1
+
+
+# The HTMLElement.prototype accessor pair, shared by all EH_N names (the name is
+# recovered from the NID). An own "@H<name>" property is the memo: the getter
+# compiles the content attribute at most once per element, and every later read
+# — including el.onclick === el.onclick, which chromium requires to be true —
+# answers the same function object.
+def _eh_accessor(rel: int32) -> int32:
+    i: int32 = rel - NID_EH_GET
+    setting: int32 = 0
+    if rel >= NID_EH_SET:
+        i = rel - NID_EH_SET
+        setting = 1
+    if i < 0 or i >= EH_N:
+        return js_undefined()
+    thisv: int32 = js_this()
+    if js_type_of(thisv) != TAG_OBJ:
+        return js_undefined()
+    kl: int32 = _eh_key(i)
+    if setting != 0:
+        av: int32 = js_null()
+        if js_arg_count() >= 1:
+            av = js_arg(0)
+        _eh_install(thisv, i, av)
+        return js_undefined()
+    if js_has_own(thisv, &eh_key[0], cast[uint64](kl)) != 0:
+        return js_get_prop(thisv, &eh_key[0], cast[uint64](kl))
+    fn: int32 = _eh_from_attr(thisv, i)
+    if fn < 0 or js_is_callable(fn) == 0:
+        return js_null()
+    _eh_install(thisv, i, fn)
+    return fn
 
 
 # Cache a just-compiled inline-handler function value into element `idx`'s slot
@@ -12502,6 +12765,31 @@ def _fire_generic(idx: int32, typp: Ptr[uint8], typn: int32, \
                 if g_stop_immediate != 0:
                     return ran
         li = li + 1
+    # The event-handler content/IDL attribute for this type (onmouseover=…,
+    # el.onkeydown = fn). Only the four "kinds" had an attribute-handler slot,
+    # so every other type's inline handler was unreachable on a SOURCE element —
+    # `<div onmouseover="…">` never ran. Like the kind path, it is a bubble-side
+    # listener and never fires during capture.
+    if phase == EPHASE_CAPTURE or g_stop_immediate != 0:
+        return ran
+    gonm: Array[64, uint8]
+    gonm[0] = 111                                             # 'o'
+    gonm[1] = 110                                             # 'n'
+    gj: int32 = 0
+    while gj < typn and gj < 60:
+        gonm[2 + gj] = typp[gj]
+        gj = gj + 1
+    gonm[2 + gj] = 0
+    if _eh_index(&gonm[0], 2 + gj) < 0:
+        return ran
+    gfn: int32 = js_get_prop(dom_obj[idx], &gonm[0], cast[uint64](2 + gj))
+    if js_is_callable(gfn) != 0:
+        if evtobj >= 0:
+            g_argv1[0] = evtobj
+            js_call_fn(gfn, dom_obj[idx], &g_argv1[0], 1)
+        else:
+            js_call_fn(gfn, dom_obj[idx], cast[Ptr[int32]](0), 0)
+        ran = 1
     return ran
 
 

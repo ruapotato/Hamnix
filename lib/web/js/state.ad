@@ -138,15 +138,15 @@ MAX_STR: int32 = 400000
 SP_CAP:  int32 = 33554432
 sp_buf: Array[33554432, uint8]           # 32 MiB string pool (bump; freed only at js_init)
 sp_top: int32 = 0
-st_off: Array[400000, int32]
-st_len: Array[400000, int32]
+st_off: Array[480000, int32]
+st_len: Array[480000, int32]
 # UTF-16 fast-path cache, one byte per string id (see value.ad str_is_ascii):
 #   0 = not yet computed, 1 = pure ASCII (byte index == UTF-16 index),
 #   2 = has bytes >= 0x80 (indices must be converted).
 # Computed LAZILY on the first index/length query, so the overwhelming majority
 # of ids (identifiers, property keys, internal cstrings) never pay for it, and
 # a string whose length is read repeatedly pays exactly one scan.
-st_asc: Array[400000, uint8]
+st_asc: Array[480000, uint8]
 n_strs: int32 = 0
 
 # ====================================================================
@@ -191,7 +191,7 @@ n_strs: int32 = 0
 #     v_string_id, where the just-built sid is momentarily un-rooted). Default
 #     str_hi_water is 80% of MAX_STR, so a program that fit the id table before
 #     NEVER triggers and stays byte-for-byte identical.
-str_mark:  Array[400000, uint8]   # per-id mark bit (GC scratch; parallels st_*)
+str_mark:  Array[480000, uint8]   # per-id mark bit (GC scratch; parallels st_*)
 str_free_head: int32 = -1         # free-id list head; chained through st_off (-1 = empty)
 STR_STRESS_GAP: int32 = 64        # stress: collect every ~this-many new string ids
 STR_MIN_FREE:  int32 = 8192       # a collection freeing fewer ids "did not free enough"
@@ -241,9 +241,9 @@ tk_pos:  int32 = 0
 
 # ---- REGEX pools (all BSS; compiled programs persist for the run) ----
 MAX_REPROG: int32 = 40000
-re_op: Array[40000, int32]
-re_x:  Array[40000, int32]
-re_y:  Array[40000, int32]
+re_op: Array[48000, int32]
+re_x:  Array[48000, int32]
+re_y:  Array[48000, int32]
 re_n:  int32 = 0                   # next free program slot
 
 MAX_RENODE: int32 = 20000          # regex AST scratch (reset per compile)
@@ -298,64 +298,92 @@ rx_off: int32 = 0                  # subject byte offset (into sp_buf)
 rx_len: int32 = 0                  # subject length
 rx_matchend: int32 = 0             # end position set by a successful match
 
-MAX_OBJ: int32 = 40000
-obj_kind: Array[40000, uint8]
-obj_head: Array[40000, int32]     # prop chain head (-1)
-obj_fn_node:   Array[40000, int32]
-obj_fn_env:    Array[40000, int32]
-obj_fn_native: Array[40000, int32]
-arr_len:  Array[40000, int32]
-arr_cap:  Array[40000, int32]
-arr_base: Array[40000, int32]     # offset into ax_val
-obj_proto:    Array[40000, int32] # [[Prototype]] chain: another object id, or -1
-obj_fn_this:  Array[40000, int32] # arrow: captured lexical `this` handle; -2 = not-arrow
-obj_fn_home:  Array[40000, int32] # method/ctor: home prototype object id (for `super`); -1 none
-obj_fn_super: Array[40000, int32] # class constructor: superclass function VALUE handle; -1 none
-obj_fn_btarget: Array[40000, int32] # bound function (.bind): target function VALUE handle; -1 = not bound
-obj_fn_bthis:  Array[40000, int32] # bound function: the bound `this` VALUE handle
-obj_fn_bargs:  Array[40000, int32] # bound function: JS array handle of pre-applied args, or -1
-obj_class:    Array[40000, uint8] # bit0 = class constructor, bit1 = default (implicit) constructor
-obj_class_node: Array[40000, int32] # class constructor: ND_CLASS node id (for instance-field init), else -1
-obj_re_prog:  Array[40000, int32] # regex object: start pc of compiled program, else -1
-obj_re_ncap:  Array[40000, int32] # regex object: number of capture groups
-obj_re_flags: Array[40000, int32] # regex object: bit0=g, bit1=i, bit2=m
-obj_re_gnstart: Array[40000, int32] # regex object: first named-group row (gname_*)
-obj_re_gncount: Array[40000, int32] # regex object: number of named groups
-obj_is_date:  Array[40000, uint8] # 1 if this object is a Date instance
-obj_date_ms:  Array[40000, float64] # Date instance: epoch-ms as float64 (exact for integer ms)
+# OBJECT ARENA SIZE. 40000 -> 48000 (+1.5 MB of BSS; 187 bytes of obj_* metadata
+# per slot). NOT a round-number bump: 40000 was the LIVE-SET ceiling for a big
+# testharness page, and testharness.js retains every Test object it ever created
+# for the final report, so the arena — not conformance — was deciding the score.
+# dom/ranges/Range-intersectsNode.html and Range-comparePoint.html both ran until
+# "object pool exhausted" and were CUT OFF mid-run, at 1684 and 1477 subtests.
+# Those two numbers were banked in scripts/wpt_baseline.txt as if they were
+# results. They are not: they are a memory reading, and a MEASURED-chaotic one —
+# allocating FOUR more objects anywhere before the page runs moved
+# Range-intersectsNode by -67 subtests and Range-comparePoint by +124, because
+# the collector's hi_water adapts on low-yield collections and small shifts
+# change what survives which cycle. Any engine change that allocates at startup
+# therefore "regressed" ~140 banked passes while fixing nothing and breaking
+# nothing.
+#
+# 48000 buys HEADROOM, not completion — and the difference matters, because an
+# earlier draft of this comment claimed completion and it was measured FALSE.
+# At 48000 the two files reach 2019 and 1925 subtests (every one of them
+# passing, and every one a prefix of chromium's own subtest order). Chromium
+# runs 2356 and 5580. So Range-comparePoint is still cut off at ~34% and the
+# wall is still the instrument for it; the bump only moved the wall out past
+# the banked numbers with room to spare, so a change that allocates a few more
+# objects at startup no longer drops banked passes. The real fix is not a
+# bigger constant: testharness.js holds every Test object live until the final
+# report, so the live set is LINEAR in subtest count and no constant makes a
+# 5580-subtest file fit. That needs a streaming report or a per-test object
+# budget, and it is not this change's job. Do not read the banked counts for
+# these two files as conformance.
+MAX_OBJ: int32 = 48000
+obj_kind: Array[48000, uint8]
+obj_head: Array[48000, int32]     # prop chain head (-1)
+obj_fn_node:   Array[48000, int32]
+obj_fn_env:    Array[48000, int32]
+obj_fn_native: Array[48000, int32]
+arr_len:  Array[48000, int32]
+arr_cap:  Array[48000, int32]
+arr_base: Array[48000, int32]     # offset into ax_val
+obj_proto:    Array[48000, int32] # [[Prototype]] chain: another object id, or -1
+obj_fn_this:  Array[48000, int32] # arrow: captured lexical `this` handle; -2 = not-arrow
+obj_fn_home:  Array[48000, int32] # method/ctor: home prototype object id (for `super`); -1 none
+obj_fn_super: Array[48000, int32] # class constructor: superclass function VALUE handle; -1 none
+obj_fn_btarget: Array[48000, int32] # bound function (.bind): target function VALUE handle; -1 = not bound
+obj_fn_bthis:  Array[48000, int32] # bound function: the bound `this` VALUE handle
+obj_fn_bargs:  Array[48000, int32] # bound function: JS array handle of pre-applied args, or -1
+obj_class:    Array[48000, uint8] # bit0 = class constructor, bit1 = default (implicit) constructor
+obj_class_node: Array[48000, int32] # class constructor: ND_CLASS node id (for instance-field init), else -1
+obj_re_prog:  Array[48000, int32] # regex object: start pc of compiled program, else -1
+obj_re_ncap:  Array[48000, int32] # regex object: number of capture groups
+obj_re_flags: Array[48000, int32] # regex object: bit0=g, bit1=i, bit2=m
+obj_re_gnstart: Array[48000, int32] # regex object: first named-group row (gname_*)
+obj_re_gncount: Array[48000, int32] # regex object: number of named groups
+obj_is_date:  Array[48000, uint8] # 1 if this object is a Date instance
+obj_date_ms:  Array[48000, float64] # Date instance: epoch-ms as float64 (exact for integer ms)
 # ---- Map / Set state (indexed by object id; obj_map_kind gates the rest) ----
-obj_frozen:   Array[40000, uint8]  # 1 if Object.freeze'd (writes/adds are dropped)
-obj_nonext:   Array[40000, uint8]  # 1 if Object.preventExtensions/seal'd (adds dropped, existing writes OK)
-obj_map_kind: Array[40000, uint8]  # 0 none, 1 Map, 2 Set
-obj_ms_head:  Array[40000, int32]  # first entry index in the mse_* pool (-1)
-obj_ms_tail:  Array[40000, int32]  # last entry index (O(1) append), -1
-obj_ms_size:  Array[40000, int32]  # live (non-deleted) entry count
+obj_frozen:   Array[48000, uint8]  # 1 if Object.freeze'd (writes/adds are dropped)
+obj_nonext:   Array[48000, uint8]  # 1 if Object.preventExtensions/seal'd (adds dropped, existing writes OK)
+obj_map_kind: Array[48000, uint8]  # 0 none, 1 Map, 2 Set
+obj_ms_head:  Array[48000, int32]  # first entry index in the mse_* pool (-1)
+obj_ms_tail:  Array[48000, int32]  # last entry index (O(1) append), -1
+obj_ms_size:  Array[48000, int32]  # live (non-deleted) entry count
 # ---- Promise state (indexed by object id; obj_is_prom gates the rest) ----
-obj_is_prom:  Array[40000, uint8] # 1 if this object is a Promise instance
-prom_state:   Array[40000, uint8] # 0 pending, 1 fulfilled, 2 rejected
-prom_result:  Array[40000, int32] # settled value (fulfilled) / reason (rejected)
-prom_react:   Array[40000, int32] # head of the pending-reaction list (-1 = none)
-prom_alreadyres: Array[40000, uint8] # resolution-procedure guard (settle-once)
+obj_is_prom:  Array[48000, uint8] # 1 if this object is a Promise instance
+prom_state:   Array[48000, uint8] # 0 pending, 1 fulfilled, 2 rejected
+prom_result:  Array[48000, int32] # settled value (fulfilled) / reason (rejected)
+prom_react:   Array[48000, int32] # head of the pending-reaction list (-1 = none)
+prom_alreadyres: Array[48000, uint8] # resolution-procedure guard (settle-once)
 # generic per-native-function-object payload: for a resolve/reject closure it is
 # the target promise obj id; for a combinator hook it is (comb cell id, index);
 # for a finally wrapper it is the user callback value handle.
-obj_p_a:      Array[40000, int32]
-obj_p_b:      Array[40000, int32]
+obj_p_a:      Array[48000, int32]
+obj_p_b:      Array[48000, int32]
 # ---- Proxy state (round 7). obj_proxy_target >= 0 gates a proxy exotic object;
 # both hold VALUE handles (target object value, handler object value). Common
 # traps (get/set/has/deleteProperty/ownKeys) route through member_get/set,
 # op_in, eval_delete, and object_keys; apply/construct traps are NOT wired. ----
-obj_proxy_target:  Array[40000, int32]   # target VALUE handle, or -1 = not a proxy
-obj_proxy_handler: Array[40000, int32]   # handler VALUE handle
+obj_proxy_target:  Array[48000, int32]   # target VALUE handle, or -1 = not a proxy
+obj_proxy_handler: Array[48000, int32]   # handler VALUE handle
 # ---- Typed-array + ArrayBuffer state (round 7). ----
 # ArrayBuffer: obj_ab_off >= 0 gates it; a [off,off+len) slice of the ta_bytes pool.
-obj_ab_off:  Array[40000, int32]    # byte offset into ta_bytes, or -1 = not an ArrayBuffer
-obj_ab_len:  Array[40000, int32]    # byte length
+obj_ab_off:  Array[48000, int32]    # byte offset into ta_bytes, or -1 = not an ArrayBuffer
+obj_ab_len:  Array[48000, int32]    # byte length
 # TypedArray view: obj_ta_kind != 0 gates it; a typed window over an ArrayBuffer.
-obj_ta_kind: Array[40000, uint8]    # element type code TA_* (0 = not a typed array)
-obj_ta_buf:  Array[40000, int32]    # backing ArrayBuffer VALUE handle
-obj_ta_off:  Array[40000, int32]    # byte offset of element 0 within the buffer
-obj_ta_len:  Array[40000, int32]    # element count
+obj_ta_kind: Array[48000, uint8]    # element type code TA_* (0 = not a typed array)
+obj_ta_buf:  Array[48000, int32]    # backing ArrayBuffer VALUE handle
+obj_ta_off:  Array[48000, int32]    # byte offset of element 0 within the buffer
+obj_ta_len:  Array[48000, int32]    # element count
 n_objs: int32 = 0
 
 # ====================================================================
@@ -411,18 +439,18 @@ n_objs: int32 = 0
 #     which has no such exposure, objects are handled by every builtin.)
 #   * CYCLES terminate: marking is a worklist trace (obj_work), never recursion,
 #     and an object is pushed at most once (marked on push).
-obj_mark:  Array[40000, uint8]    # per-object mark bit (GC scratch)
-obj_freed: Array[40000, uint8]    # 1 while the slot sits on the object free list
-obj_pin:   Array[40000, uint8]    # 1 = permanently rooted (handle crossed the js_* API)
+obj_mark:  Array[48000, uint8]    # per-object mark bit (GC scratch)
+obj_freed: Array[48000, uint8]    # 1 while the slot sits on the object free list
+obj_pin:   Array[48000, uint8]    # 1 = permanently rooted (handle crossed the js_* API)
 obj_free_head: int32 = -1         # free-slot list head; chained through obj_head (-1 = empty)
 OBJ_WORK_CAP: int32 = 40000
-obj_work: Array[40000, int32]     # mark worklist (bounded by MAX_OBJ: each id enters once)
+obj_work: Array[48000, int32]     # mark worklist (bounded by MAX_OBJ: each id enters once)
 obj_work_n: int32 = 0
 OBJ_STRESS_GAP: int32 = 64        # stress: collect every ~this-many new objects
 OBJ_MIN_FREE:  int32 = 4096       # a collection freeing fewer slots "did not free enough"
 OBJ_GROW:      int32 = 4000       # then raise the object water mark by this before retrying
-obj_base_water: int32 = 32000     # normal object high-water (80% of MAX_OBJ)
-obj_hi_water:  int32 = 32000      # current object high-water (raised on low-yield collections)
+obj_base_water: int32 = 38400     # normal object high-water (80% of MAX_OBJ)
+obj_hi_water:  int32 = 38400      # current object high-water (raised on low-yield collections)
 obj_last_freed: int32 = 0         # slots reclaimed by the most recent object collection
 obj_collections: int32 = 0        # total object collections this run (stats/debug)
 # Object collection is DISARMED until js_init has finished installing the
@@ -628,12 +656,12 @@ MAP_KIND_MAP:  int32 = 1
 MAP_KIND_SET:  int32 = 2
 
 MAX_PROP: int32 = 400000
-p_next: Array[400000, int32]
-p_key:  Array[400000, int32]      # string id
-p_val:  Array[400000, int32]
-p_acc:  Array[400000, uint8]      # 1 = accessor property (p_get/p_set), 0 = data (p_val)
-p_get:  Array[400000, int32]      # accessor getter function VALUE handle, or -1
-p_set:  Array[400000, int32]      # accessor setter function VALUE handle, or -1
+p_next: Array[480000, int32]
+p_key:  Array[480000, int32]      # string id
+p_val:  Array[480000, int32]
+p_acc:  Array[480000, uint8]      # 1 = accessor property (p_get/p_set), 0 = data (p_val)
+p_get:  Array[480000, int32]      # accessor getter function VALUE handle, or -1
+p_set:  Array[480000, int32]      # accessor setter function VALUE handle, or -1
 # ES property ATTRIBUTES, one bitmask per property slot:
 #   bit0 PF_ENUM  — [[Enumerable]]: shows in for-in / Object.keys|values|entries /
 #                   JSON.stringify / Object.assign / object spread / rest.
@@ -645,7 +673,7 @@ p_set:  Array[400000, int32]      # accessor setter function VALUE handle, or -1
 # existing value alone for an existing one. Engine-internal installs (builtin
 # methods, `Function.prototype.constructor`, class methods) clear PF_ENUM to
 # match the spec's non-enumerable built-ins.
-p_flags: Array[400000, uint8]
+p_flags: Array[480000, uint8]
 n_props: int32 = 0
 
 MAX_ENV: int32 = 80000
@@ -827,11 +855,11 @@ native_self: int32 = -1            # obj id of the native fn currently being inv
 # buffer. Limits: side effects run at call time (not lazily per .next()); two-way
 # .next(v) communication is unsupported (yield evaluates to undefined); an
 # unbounded generator is capped at GEN_YIELD_CAP yields.
-obj_is_gen: Array[40000, uint8]    # 1 if this object is a generator instance
-gen_buf:    Array[40000, int32]    # materialized yielded-values ARRAY value handle
-gen_idx:    Array[40000, int32]    # replay cursor into gen_buf
-gen_done:   Array[40000, uint8]    # 1 once exhausted / returned / thrown
-gen_ret:    Array[40000, int32]    # the generator body's `return` value handle
+obj_is_gen: Array[48000, uint8]    # 1 if this object is a generator instance
+gen_buf:    Array[48000, int32]    # materialized yielded-values ARRAY value handle
+gen_idx:    Array[48000, int32]    # replay cursor into gen_buf
+gen_done:   Array[48000, uint8]    # 1 once exhausted / returned / thrown
+gen_ret:    Array[48000, int32]    # the generator body's `return` value handle
 
 # ---- generator body-collection state (active only while running a gen body) ----
 # gen_collect is the obj id of the array currently being filled by `yield`, or -1
