@@ -6014,12 +6014,26 @@ def _js_host_dispatch(id: int32) -> int32:
         # element.click() — synthesize a bubbling, cancelable click and dispatch
         # it. Source elements route through the tx-tree bubbling core; created
         # nodes through the live-parentNode object-dispatch path.
+        #
+        # ACTIVATION BEHAVIOUR (D5). This used to dispatch and stop, so a
+        # scripted checkbox.click() left .checked untouched and fired no change
+        # event — while a REAL click through he_dom_set_checked did the whole
+        # thing. Two implementations of "activate a checkable input", and only
+        # the one the user's mouse reaches was complete; every page that drives
+        # its own controls from script saw a dead checkbox. _click_activate_pre
+        # / _click_activate_post are now that one implementation, shared by both
+        # entry points.
         clkel: int32 = _find_el_by_obj(js_this())
+        clkck: int32 = _checkable_kind(js_this())
+        clkwas: int32 = _click_activate_pre(js_this(), clkck, clkel)
         if clkel >= 0:
             clkev: int32 = _new_event_obj()
             js_set_prop(clkev, cast[Ptr[uint8]]("type"), 4, \
                         js_new_string(cast[Ptr[uint8]]("click"), 5))
+            js_set_prop(clkev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(1))
             _dispatch_event(clkel, 0, clkev)
+            _click_activate_post(js_this(), clkck, clkel, clkwas, \
+                                 g_prevent_default)
             return js_undefined()
         clkcid: int32 = _find_cre_by_obj(js_this())
         if clkcid >= 0:
@@ -6029,6 +6043,9 @@ def _js_host_dispatch(id: int32) -> int32:
             js_set_prop(clkev2, cast[Ptr[uint8]]("bubbles"), 7, js_bool(1))
             js_set_prop(clkev2, cast[Ptr[uint8]]("cancelable"), 10, js_bool(1))
             _obj_dispatch(js_this(), cast[Ptr[uint8]]("click"), 5, clkev2, 1)
+            _click_activate_post(js_this(), clkck, \
+                                 CRE_IDX_BASE + clkcid, clkwas, \
+                                 g_prevent_default)
         return js_undefined()
     if rel == NID_DISPATCH:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
@@ -9957,6 +9974,37 @@ def _js_install_prelude():
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("def(HTMLTitleElement.prototype,'text',function(){var k=this.childNodes,s='',i;for(i=0;i<k.length;i++){if(k[i].nodeType===3)s+=k[i].data;}return s;},function(v){this.textContent=v;});"))
     _pre_nl()
+    # ---- <option>/<select> SELECTION: one store, one writer ----------------
+    # HTMLOptionElement.value REFLECTS the value content attribute (falling back
+    # to the option's text when the attribute is absent), and .text is the
+    # stripped-and-collapsed text content. Both were missing entirely, so
+    # `opt.value = 'c'` on a created <option> parked a plain JS property that no
+    # attribute reader could ever see — the node serialised with NO value=.
+    #
+    # HTMLSelectElement.selectedIndex used to be a SECOND, INDEPENDENT store:
+    # an own data property seeded once from the source scan, which no `.value`
+    # write ever touched and which nothing but the render read-back consulted.
+    # `sel.value = 'c'` moved .value and left .selectedIndex on 0 forever — the
+    # exact split every dependent-dropdown does. It is now a pure VIEW over
+    # .value (the one store): the getter resolves the matching option, the
+    # setter writes .value. The native seeding in _dom_register_el and the
+    # native selectedIndex branch of the render read-back — the other two
+    # writers — are gone with it.
+    _pre_put(cast[Ptr[uint8]]("function optTrim(s){var a=0,b=s.length;while(a<b&&s.charCodeAt(a)<33)a++;while(b>a&&s.charCodeAt(b-1)<33)b--;return s.slice(a,b);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function optText(o){var t=o.textContent;return optTrim(t===null||t===undefined?'':''+t);}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLOptionElement.prototype,'text',function(){return optText(this);},function(v){this.textContent=v;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLOptionElement.prototype,'value',function(){var v=gat(this,'value');return v===null||v===undefined?optText(this):v;},function(v){if(reflBusy)return;reflBusy=1;this.setAttribute('value',''+v);reflBusy=0;});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("function selOpts(s){var r=[],k=s.childNodes,i,c,g,j;for(i=0;i<k.length;i++){c=k[i];if(c.nodeType!==1)continue;"))
+    _pre_put(cast[Ptr[uint8]]("if(c.tagName==='OPTION'){r.push(c);}else if(c.tagName==='OPTGROUP'){g=c.childNodes;for(j=0;j<g.length;j++){if(g[j].nodeType===1&&g[j].tagName==='OPTION')r.push(g[j]);}}}return r;}"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLSelectElement.prototype,'selectedIndex',function(){var o=selOpts(this),v=this.value,i;"))
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<o.length;i++){if(o[i].value===v)return i;}for(i=0;i<o.length;i++){if(optText(o[i])===v)return i;}return -1;},"))
+    _pre_put(cast[Ptr[uint8]]("function(n){var o=selOpts(this);n=n|0;if(n>=0&&n<o.length)this.value=o[n].value;else this.value='';});"))
+    _pre_nl()
     _pre_put(cast[Ptr[uint8]]("function urlOf(e){var h=e.getAttribute('href');if(h===null)return null;try{return new URL(h,document.baseURI||location.href);}catch(x){return null;}}"))
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("function urlPart(P,prop,key,dflt){def(P,prop,function(){var u=urlOf(this);return u?u[key]:dflt;});}"))
@@ -10862,26 +10910,11 @@ def _dom_readback():
                 dom_ov_val_off[idx] = voff
                 dom_ov_val_len[idx] = kv
                 changed = 1
-        # select: a JS `selectedIndex = N` write with no matching value write
-        # resolves to the Nth option's text so the control re-marks + re-renders.
-        if dom_kind[idx] == 3 and dom_ov_val_len[idx] < 0:
-            siv: int32 = js_get_prop(o, cast[Ptr[uint8]]("selectedIndex"), 13)
-            si: int32 = cast[int32](js_to_number(siv))
-            oi: int32 = _select_index(cast[uint64](dom_cstart[idx]))
-            if si != oi and si >= 0:
-                sn: int32 = _select_optext_at(cast[uint64](dom_cstart[idx]), si)
-                if sn >= 0:
-                    soff: int32 = dom_ov_len
-                    ks: int32 = 0
-                    while ks < sn and dom_ov_len < DOM_OV_CAP:
-                        dom_ovbuf[dom_ov_len] = fbuf[ks]
-                        dom_ov_len = dom_ov_len + 1
-                        ks = ks + 1
-                    dom_ov_val_off[idx] = soff
-                    dom_ov_val_len[idx] = ks
-                    js_set_prop(o, cast[Ptr[uint8]]("value"), 5, \
-                                js_new_string(&fbuf[0], cast[uint64](ks)))
-                    changed = 1
+        # NO separate `selectedIndex` branch here any more. It existed because a
+        # JS `selectedIndex = N` write moved a store the .value read-back above
+        # could not see — the third writer of one piece of state. selectedIndex
+        # is now an accessor over .value, so such a write lands in .value and
+        # the branch above already renders it.
         if dom_origchecked[idx] >= 0:
             ckv: int32 = js_get_prop(o, cast[Ptr[uint8]]("checked"), 7)
             ckb: int32 = 0
@@ -14151,6 +14184,81 @@ def _radio_enforce_group(keep: int32):
             i = skip_to
             continue
         i = i + 1
+
+
+# ---- CHECKABLE-INPUT ACTIVATION BEHAVIOUR (one implementation) -------------
+# The HTML spec splits a click on a checkbox/radio into three parts: the
+# PRE-CLICK ACTIVATION STEPS (flip/set checkedness) which run BEFORE the click
+# event, so a listener already sees the new state; the CANCELED ACTIVATION
+# STEPS (put it back) when the click was preventDefault()ed; and the ACTIVATION
+# BEHAVIOUR (fire input, then change) when it was not.
+#
+# The real-input entry point (he_dom_set_checked, below) did all of that; the
+# scripted entry point (element.click(), NID_CLICK) did NONE of it and merely
+# dispatched. Both now call these.
+#
+# KNOWN GAP: a CANCELED radio click restores the clicked radio but not the
+# group sibling it un-checked, because _radio_enforce_group does not record
+# what it cleared. Uncanceled clicks — the overwhelming majority, and all of
+# the coverage here — are exact.
+
+# Is `obj` an input whose click carries checkedness activation behaviour?
+# 1 = checkbox, 2 = radio, 0 = anything else.
+def _checkable_kind(obj: int32) -> int32:
+    tv: int32 = js_get_prop(obj, cast[Ptr[uint8]]("type"), 4)
+    tp: Ptr[uint8] = js_str_ptr(tv)
+    tn: int32 = _cstr_len(tp)
+    if _bytes_eq(tp, tn, cast[Ptr[uint8]]("checkbox"), 8) != 0:
+        return 1
+    if _bytes_eq(tp, tn, cast[Ptr[uint8]]("radio"), 5) != 0:
+        return 2
+    return 0
+
+
+# Pre-click activation steps. Returns the checkedness to restore if the click
+# turns out to be canceled (-1 when there is nothing to restore). `el` is the
+# registered source-element index, or < 0 for a created node (no source scan,
+# so no radio-group enforcement).
+def _click_activate_pre(obj: int32, kind: int32, el: int32) -> int32:
+    if kind == 0:
+        return -1
+    was: int32 = 0
+    if js_to_bool(js_get_prop(obj, cast[Ptr[uint8]]("checked"), 7)) != 0:
+        was = 1
+    if kind == 1:                                        # checkbox: toggle
+        if was != 0:
+            js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(0))
+        else:
+            js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(1))
+    else:                                                # radio: set + exclude
+        js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(1))
+        if el >= 0:
+            _radio_enforce_group(el)
+    return was
+
+
+# Canceled-activation steps / activation behaviour, after the click dispatch.
+# `evtidx` is a _fire_value_evt index: a dom index, or CRE_IDX_BASE + created id.
+#
+# CONNECTEDNESS gates the EVENTS ONLY, not the checkedness. The checkbox/radio
+# activation behaviour is two separate steps: set the checkedness (always), and
+# then "if the element is CONNECTED, fire an event named input ... and fire an
+# event named change". A detached `document.createElement('input')` that is
+# clicked must therefore come back .checked === true while emitting NOTHING —
+# see WPT dom/events/Event-dispatch-detached-input-and-change.html, whose
+# "detached ... should not emit" and "disconnected ... should be checked"
+# subtests assert exactly the two halves of that split.
+def _click_activate_post(obj: int32, kind: int32, evtidx: int32, \
+                         was: int32, canceled: int32):
+    if kind == 0:
+        return
+    if canceled != 0:
+        js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(was))
+        return
+    if _nd_is_connected(obj) == 0:
+        return
+    _fire_value_evt(evtidx, cast[Ptr[uint8]]("input"), 5)
+    _fire_value_evt(evtidx, cast[Ptr[uint8]]("change"), 6)
 
 
 # Set a checkbox/radio's checked state by id, fire oninput + onchange, re-lay.
