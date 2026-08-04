@@ -3,9 +3,12 @@
 <style>
   .red   { color: #111111; }
   .box   { background-color: #010203; }
+  .stash { display: none; }
 </style></head>
 <body>
 <p id="hide">HIDEME hidden paragraph</p>
+<p id="rev"  class="stash">REVEALWORD revealed paragraph</p>
+<p id="keep" class="stash">STAYHIDDEN never revealed paragraph</p>
 <p id="col" class="red">COLORWORD recoloured paragraph</p>
 <div id="bg" class="box">BOXWORD background box</div>
 <p id="wt">WEIGHTWORD weighted paragraph</p>
@@ -15,6 +18,13 @@
 <script>
   // display:none removes the element from layout entirely
   document.getElementById('hide').style.display = 'none';
+
+  // ...and the REVERSE direction, which was write-only until now: an element a
+  // STYLESHEET rule hid, revealed by a script. This is the show/hide primitive
+  // behind every modal, dropdown, accordion and tab strip on the web. The
+  // inline declaration must outrank the .stash rule so the element PAINTS.
+  // #keep is the negative control: same rule, no reveal, must stay unpainted.
+  document.getElementById('rev').style.display = 'block';
 
   // color via .style beats the .red stylesheet class (inline specificity)
   document.getElementById('col').style.color = '#ee2244';
