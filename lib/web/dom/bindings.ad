@@ -1402,6 +1402,24 @@ NID_INSADJ_TXT:    int32 = 263       # element.insertAdjacentText(pos, data)
 NID_CREATECDATA:   int32 = 264       # document.createCDATASection(data)
 NID_DOCUMENT_CTOR: int32 = 265       # new Document() -> XML document
 NID_CREATE_XML:    int32 = 177       # xmlDoc.createElement(tag) — case-PRESERVING
+# --- event-handler IDL attributes (el.onclick / el.onchange / ...) ------------
+# HTML defines an "event handler content attribute" (onclick="...") and an
+# "event handler IDL attribute" (el.onclick) as ONE piece of state: setting the
+# content attribute COMPILES its string into a function body with the element as
+# `this`, and that function IS what el.onclick reads back. This engine had two
+# unrelated stores instead — the parse-time inline source in dom_on*_src (four
+# hard-coded types, captured only at element registration) and whatever
+# setAttribute() happened to stash on the JS object (a STRING, which no dispatch
+# path can call). A handler installed by setAttribute — the only way to give a
+# createElement()'d node an inline handler — therefore never ran.
+# One accessor pair per handler name on HTMLElement.prototype is now the single
+# reader; every writer (setAttribute, removeAttribute, el.onX = fn, the parse
+# tag) feeds it. NIDs 270..289 are the getters, 290..309 the setters, indexed by
+# EH_ORDER below (0..3 deliberately equal the four dom_on*_fn kinds).
+EH_N:          int32 = 20            # number of reflected handler names
+NID_EH_GET:    int32 = 270           # .. 289: get el.on<name>
+NID_EH_SET:    int32 = 290           # .. 309: set el.on<name>
+NID_EH_LAST:   int32 = 309
 # --- Node.prototype generics (round 10) --------------------------------------
 # Live on Node.prototype (see _attach_node_natives), so EVERY node type carries
 # them, not just elements.
