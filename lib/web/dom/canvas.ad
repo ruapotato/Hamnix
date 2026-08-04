@@ -3043,17 +3043,36 @@ def _inner_accessor(rel: int32) -> int32:
     if js_arg_count() > 0:
         val = js_arg(0)
     if rel == NID_TC_SET:
-        if idx < 0:
-            # Created element / DocumentFragment: run the SPEC algorithm --
-            # replace every child with (at most) one Text node. Storing the
-            # string as an own property, which is all this did, left
-            # firstChild/childNodes pointing at the old children and the
-            # detached ones still claiming the node as their parent.
-            _node_set_text_content(thisv, val)
-            if mreg_n != 0:
-                _mo_record_chardata(thisv)
-            return js_undefined()
-        js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, val)
+        # ONE algorithm for BOTH kinds of node. `textContent =` is defined as
+        # "replace every child with (at most) one Text node", and until now only
+        # a CREATED node ran it: a SOURCE-anchored element took the branch below
+        # and did nothing but stash the string as an own property, which is a
+        # store only the render read-back (_dom_readback -> dom_ov_inner) ever
+        # looks at. So the element had TWO representations of its content that
+        # no longer agreed — measured against chromium after
+        # `src.textContent = 'NEW'`:
+        #     src.textContent          -> 'NEW'   (the stashed own property)
+        #     src.childNodes[0].nodeValue -> 'ORIG'  (the parse-time Text node)
+        #     src.firstChild.data      -> 'ORIG'
+        # and a document-order walk of the live tree — which is what every
+        # framework, every delegated handler that reads its output element back,
+        # and scripts/test_livedom_functional_host.sh all do — saw the ORIGINAL
+        # source text. Nine of that gate's twelve failures were this one line.
+        # Same shape as D1 (two attribute enumerators): the fix is to delete the
+        # second writer, not to teach the readers about it.
+        #
+        # The own property STAYS: _dom_readback keys the render override off
+        # `js_has_own(o,"textContent")`, and the getter is shadowed by it, so
+        # dropping it would trade a stale child list for a stale paint.
+        if idx >= 0:
+            # Bootstrap the live child list from the source tree first, so the
+            # children we are about to unlink are the real ones. (_nd_kids
+            # inside _node_set_text_content would trigger this anyway through
+            # the lazy childNodes accessor; doing it here makes the dependency
+            # explicit rather than incidental.)
+            _dom_wire_tree(idx)
+            js_set_own(thisv, cast[Ptr[uint8]]("textContent"), 11, val)
+        _node_set_text_content(thisv, val)
         if mreg_n != 0:
             _mo_record_chardata(thisv)
         return js_undefined()
