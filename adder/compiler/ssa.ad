@@ -3522,6 +3522,34 @@ def ssa_intern_string_global(src_off: uint32, src_len: uint32) -> uint32:
     return gi0 + 1
 
 
+# ---------------------------------------------------------------------------
+# Site-34 (ND_IDENT non-local rvalue) bail SUB-ATTRIBUTION.
+#
+# Site 34 was the single largest subset bail (27.4% of all bails, whole tree),
+# but "non-local ident that is not a scalar global" lumps together at least five
+# unrelated constructs.  A per-CONSTRUCT number is what tells you which one to
+# implement, so the bail records a distinct site per construct instead of one
+# blended 34.  Site 34 itself is retained as the "unknown name" bucket so the
+# historical number stays comparable.
+SSA_NLSITE_ARRGLOB: uint32 = 100      # aggregate/array global (needs indexing)
+SSA_NLSITE_PERCPU_SCALAR: uint32 = 101  # Percpu[T] scalar, native path
+SSA_NLSITE_PERCPU_AGG: uint32 = 102   # Percpu[aggregate]
+SSA_NLSITE_FUNCNAME: uint32 = 103     # bare function name (address decay)
+SSA_NLSITE_UNKNOWN: uint32 = 34       # not a global and not a function
+
+def ssa_nonlocal_subsite(off: uint32, len_: uint32) -> uint32:
+    gi: uint32 = glob_lookup(off, len_)
+    if gi != 0:
+        if glob_is_percpu[gi - 1] != 0:
+            if glob_elem_size[gi - 1] != 0:
+                return SSA_NLSITE_PERCPU_AGG
+            return SSA_NLSITE_PERCPU_SCALAR
+        return SSA_NLSITE_ARRGLOB
+    if ssa_is_function(off, len_) != 0:
+        return SSA_NLSITE_FUNCNAME
+    return SSA_NLSITE_UNKNOWN
+
+
 def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
     if ssa_bail != 0:
         return 0
@@ -3565,7 +3593,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
             # function pointer): `register_hook(the_fn)`.  LLVM path only.
             if ssa_mem_model != 0 and ssa_is_function(nd_name_off[node], nd_name_len[node]) != 0:
                 return ssa_funcaddr(node, ssa_cur_bb)
-            ssa_set_bail_at(SBR_NONLOCAL, 34)
+            ssa_set_bail_at(SBR_NONLOCAL, ssa_nonlocal_subsite(nd_name_off[node], nd_name_len[node]))
             return 0
         if ssa_ismem[nid] != 0:
             # Memory-modeled local.  An array ident used as an rvalue decays to

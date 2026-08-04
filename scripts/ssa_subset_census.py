@@ -38,6 +38,27 @@ SBR = {
 }
 
 
+# Human labels for the bail sites that needed explaining.  The 100-block is the
+# SUB-ATTRIBUTION of the old blended site 34 (non-local ND_IDENT rvalue), added
+# 2026-08-04 because "site 34" alone could not distinguish an array global from
+# an undeclared name — and the answer turned out to be neither.
+#
+# MEASUREMENT CAVEAT (read before acting on a site-34 number): the census
+# compiles each .ad file STANDALONE, while a real build import-MERGES the whole
+# module closure into one TU.  A global or function defined in another module is
+# therefore invisible here and bails at site 34, even though the real compiler
+# resolves it.  Site 34's residual is an upper bound, not a subset gap.
+SITE_NOTES = {
+    34: "non-local ident: name unknown in this TU (see caveat in this file)",
+    66: "address-taken scalar local, native path (no alloca lowering)",
+    92: "memory model",
+    100: "non-local ident: aggregate/array global",
+    101: "non-local ident: Percpu[T] scalar, native path",
+    102: "non-local ident: Percpu[aggregate]",
+    103: "non-local ident: bare function name (address decay)",
+}
+
+
 def sources(kernel_only):
     roots = KERNEL_DIRS if kernel_only else ["."]
     out = []
@@ -113,7 +134,9 @@ def main():
               f"{100.0*v/max(1,res['fallback']):5.1f}%")
     print(f"\n-- top {a.top} bail SITES (ssa_set_bail_at arg in ssa.ad) --")
     for k, v in sorted(res["sites"].items(), key=lambda kv: -kv[1])[:a.top]:
-        print(f"  site {k:<4} {v:6d}  {100.0*v/max(1,res['fallback']):5.1f}%")
+        note = SITE_NOTES.get(k, "")
+        print(f"  site {k:<4} {v:6d}  {100.0*v/max(1,res['fallback']):5.1f}%"
+              f"{('  ' + note) if note else ''}")
     if a.json:
         res["parsefail"] = [str(p[0]) for p in res["parsefail"]]
         Path(a.json).write_text(json.dumps(res, indent=1))

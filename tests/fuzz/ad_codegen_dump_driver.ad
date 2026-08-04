@@ -60,6 +60,12 @@ from compiler.lexer import (
 
 from compiler.codegen import (
     cg_init,
+    cg_prog_decls,
+    cg_target_kernel,
+    collect_externs,
+    layout_classes,
+    register_enums,
+    layout_globals,
     cg_err,
     cg_err_reason,
     cg_err_line,
@@ -859,6 +865,23 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # never emits code, never mutates the AST, so it cannot perturb codegen
     # output. The escape hatch bails non-subset functions (counted as fallback).
     if want_ssa != 0:
+        # CENSUS FIDELITY: the subset gate consults the GLOBALS table (a
+        # non-local ident is accepted only if glob_lookup finds a scalar
+        # global).  ssa_emit_program — the real --opt/ADDER_OPT2 lane — runs
+        # collect_externs/layout_classes/register_enums/layout_globals BEFORE
+        # any function is processed.  This lane used to call ssa_run_program on
+        # the bare AST, so glob_count was 0 and EVERY global read bailed
+        # (SBR_NONLOCAL site 34) in the census but NOT in the real compiler.
+        # That made site 34 the largest "subset gap" in the whole-tree census
+        # while it was in fact a measurement artifact of this driver.
+        # Mirror the real prologue so the census measures the real subset.
+        cg_init()
+        cg_prog_decls = nd_b[prog]
+        if cg_target_kernel != 0:
+            collect_externs(prog)
+        layout_classes(prog)
+        register_enums(prog)
+        layout_globals(prog)
         ssa_run_program(prog)
         emit("SSA_FUNCS ")
         put_u32(ssa_stat_funcs)
