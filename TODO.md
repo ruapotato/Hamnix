@@ -156,12 +156,16 @@ fail=8` @ `ecd24fa1`** (was zero), so the gate can finally rot-proof a win.
 - [ ] **D6** `select.value = x` moves `.value` but not `.selectedIndex`.
 - [ ] **D7** a `<script>`'s own source text sometimes appears as a sibling text
       node. Causes fixtures `07` and `12` to fail.
-- [ ] **★ D8 (NEW, found 2026-08-04 while closing D2b/D3/D4; on nobody's
-      brief)** — fixture `14`: an inline **`onclick=` content attribute never
-      runs**. The attribute is present and reads back correctly; the handler
-      simply never executes. Inline event-handler content attributes are
-      pervasive on the real web, so this matters for the "run MOST WEBSITES"
-      goal. Agent dispatched.
+- [x] ✔ **D8 CLOSED 2026-08-04** (`179eac42`) — fixture `14`'s inline
+      `onclick=` never ran because the content attribute and the IDL attribute
+      were **two writers for one piece of state** (the sixth instance of the
+      shape): the parse-time inline source lived in `dom_on*_src` (four
+      hard-coded types, captured only at element registration) while
+      `setAttribute` stashed a raw **string** on the JS object, which no
+      dispatch path can call. So the only way to give a `createElement()`'d node
+      an inline handler produced a handler that could never run. One accessor
+      pair per handler name on `HTMLElement.prototype` is now the single reader.
+      Floor **pass=12 fail=6 → pass=14 fail=5**.
 - [ ] **`06` is a FOURTH instance of the shape, deliberately deferred.** Its
       class half is now byte-identical; it diverges on the `style=` attribute
       alone. Closing it also needs CSSOM serialisation to match chromium
