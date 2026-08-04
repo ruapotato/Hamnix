@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>checkbox + radio</title></head><body>
+<form id="f">
+  <input type="checkbox" id="agree">
+  <input type="radio" name="pick" id="p1" value="one" checked>
+  <input type="radio" name="pick" id="p2" value="two">
+  <div id="out">-</div>
+</form>
+<script>
+// A click on a checkbox flips .checked BEFORE the handler sees it, and a radio
+// click un-checks its group siblings. Both are live state with no attribute
+// mirror, so the diff can only see them through #checked=.
+document.getElementById('agree').addEventListener('change', function (e) {
+  document.getElementById('out').textContent = 'agree=' + e.target.checked;
+});
+window.__act = function () {
+  document.getElementById('agree').click();
+  document.getElementById('p2').click();
+};
+</script>
+</body></html>

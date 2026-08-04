@@ -1,0 +1,18 @@
+<!doctype html><html><head><title>class/style toggle</title></head><body>
+<div id="box" class="panel">content</div>
+<button id="t">toggle</button>
+<script>
+// classList and el.style must MIRROR back into the class= / style= attributes,
+// which is how every "is this menu open" check on a real site reads state.
+var box = document.getElementById('box');
+document.getElementById('t').addEventListener('click', function () {
+  box.classList.add('open');
+  box.classList.toggle('panel');
+  box.classList.remove('gone');
+  box.style.display = 'block';
+  box.style.color = 'red';
+  box.setAttribute('data-state', box.classList.contains('open') ? 'open' : 'shut');
+});
+window.__act = function () { document.getElementById('t').click(); };
+</script>
+</body></html>

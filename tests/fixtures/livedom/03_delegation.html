@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>delegation</title></head><body>
+<ul id="list"><li id="seed">seed</li></ul>
+<div id="out">none</div>
+<script>
+// Event DELEGATION: the only listener is on the static parent; the clicked node
+// is added afterwards. This is how most real sites wire dynamic content, and it
+// needs bubbling from a script-created node to work at all.
+document.getElementById('list').addEventListener('click', function (e) {
+  if (e.target.tagName.toLowerCase() === 'li') {
+    document.getElementById('out').textContent = 'picked:' + e.target.id;
+    e.target.setAttribute('aria-selected', 'true');
+  }
+});
+var li = document.createElement('li');
+li.id = 'late';
+li.textContent = 'added later';
+document.getElementById('list').appendChild(li);
+window.__act = function () { document.getElementById('late').click(); };
+</script>
+</body></html>

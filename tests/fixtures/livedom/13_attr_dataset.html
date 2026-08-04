@@ -1,0 +1,17 @@
+<!doctype html><html><head><title>attributes + dataset</title></head><body>
+<div id="w" data-role="widget" title="hello" hidden>w</div>
+<div id="out">-</div>
+<script>
+// setAttribute / removeAttribute / dataset / toggling a boolean attribute, all
+// read back through the attribute list.
+var w = document.getElementById('w');
+w.addEventListener('click', function () {
+  w.removeAttribute('hidden');
+  w.setAttribute('title', 'clicked');
+  w.dataset.role = 'opened';
+  w.dataset.count = '1';
+  document.getElementById('out').textContent = 'role=' + w.dataset.role;
+});
+window.__act = function () { w.click(); };
+</script>
+</body></html>

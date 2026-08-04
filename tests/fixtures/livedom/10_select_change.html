@@ -1,0 +1,23 @@
+<!doctype html><html><head><title>select change</title></head><body>
+<select id="s">
+  <option value="a">Apple</option>
+  <option value="b">Banana</option>
+</select>
+<div id="out">-</div>
+<script>
+// Options added by script, then the selection is moved and a change event is
+// dispatched — the pattern behind every dependent dropdown.
+var s = document.getElementById('s');
+var o = document.createElement('option');
+o.value = 'c';
+o.textContent = 'Cherry';
+s.appendChild(o);
+s.addEventListener('change', function () {
+  document.getElementById('out').textContent = 'chose ' + s.value + '@' + s.selectedIndex;
+});
+window.__act = function () {
+  s.value = 'c';
+  s.dispatchEvent(new Event('change', { bubbles: true }));
+};
+</script>
+</body></html>

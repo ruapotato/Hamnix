@@ -1,0 +1,27 @@
+<!doctype html><html><head><title>deep nesting</title></head><body>
+<div id="root"></div>
+<div id="trail">-</div>
+<script>
+// The click lands on the DEEPEST created node; the only listener is 4 levels up.
+// This is bubbling across a wholly script-built tree.
+var root = document.getElementById('root');
+var cur = root;
+var i;
+for (i = 0; i < 4; i++) {
+  var d = document.createElement('div');
+  d.id = 'lvl' + i;
+  d.className = 'lvl';
+  cur.appendChild(d);
+  cur = d;
+}
+var leaf = document.createElement('a');
+leaf.id = 'leaf';
+leaf.textContent = 'deep';
+cur.appendChild(leaf);
+document.getElementById('lvl0').addEventListener('click', function (e) {
+  document.getElementById('trail').textContent =
+    'target=' + e.target.id + ' current=' + e.currentTarget.id;
+});
+window.__act = function () { document.getElementById('leaf').click(); };
+</script>
+</body></html>
