@@ -267,8 +267,8 @@ extern def sys_open(path: Ptr[char]) -> int32
 extern def sys_read(fd: int32, buf: Ptr[uint8], count: uint64) -> int64
 extern def sys_close(fd: int32) -> int32
 
-CC_SRC_CAP: uint32 = 393216
-cc_src: Array[393216, uint8]
+CC_SRC_CAP: uint32 = 3145728
+cc_src: Array[3145728, uint8]
 
 
 def strlen(s: Ptr[uint8]) -> uint64:
@@ -884,6 +884,27 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         emit("SSA_PHIS ")
         put_u32(ssa_stat_phis)
         emit("\n")
+        # Per-reason and per-call-site bail histograms.  These are what make the
+        # subset's gaps MEASURABLE: "SSA_BAILSITE <n> <count>" names exactly
+        # which of the ~86 subset gates rejected how many functions.
+        ri: uint32 = 0
+        while ri < SBR_NREASONS:
+            if ssa_bail_hist[ri] != 0:
+                emit("SSA_BAILREASON ")
+                put_u32(ri)
+                emit(" ")
+                put_u32(ssa_bail_hist[ri])
+                emit("\n")
+            ri = ri + 1
+        si: uint32 = 0
+        while si < SSA_BAIL_SITE_MAX:
+            if ssa_bail_site_hist[si] != 0:
+                emit("SSA_BAILSITE ")
+                put_u32(si)
+                emit(" ")
+                put_u32(ssa_bail_site_hist[si])
+                emit("\n")
+            si = si + 1
         if ssa_stat_verify_fail != 0:
             emit("STATUS ssafail code=")
             put_u32(ssa_stat_fail_code)
