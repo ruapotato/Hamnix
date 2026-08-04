@@ -6014,12 +6014,26 @@ def _js_host_dispatch(id: int32) -> int32:
         # element.click() — synthesize a bubbling, cancelable click and dispatch
         # it. Source elements route through the tx-tree bubbling core; created
         # nodes through the live-parentNode object-dispatch path.
+        #
+        # ACTIVATION BEHAVIOUR (D5). This used to dispatch and stop, so a
+        # scripted checkbox.click() left .checked untouched and fired no change
+        # event — while a REAL click through he_dom_set_checked did the whole
+        # thing. Two implementations of "activate a checkable input", and only
+        # the one the user's mouse reaches was complete; every page that drives
+        # its own controls from script saw a dead checkbox. _click_activate_pre
+        # / _click_activate_post are now that one implementation, shared by both
+        # entry points.
         clkel: int32 = _find_el_by_obj(js_this())
+        clkck: int32 = _checkable_kind(js_this())
+        clkwas: int32 = _click_activate_pre(js_this(), clkck, clkel)
         if clkel >= 0:
             clkev: int32 = _new_event_obj()
             js_set_prop(clkev, cast[Ptr[uint8]]("type"), 4, \
                         js_new_string(cast[Ptr[uint8]]("click"), 5))
+            js_set_prop(clkev, cast[Ptr[uint8]]("cancelable"), 10, js_bool(1))
             _dispatch_event(clkel, 0, clkev)
+            _click_activate_post(js_this(), clkck, clkel, clkwas, \
+                                 g_prevent_default)
             return js_undefined()
         clkcid: int32 = _find_cre_by_obj(js_this())
         if clkcid >= 0:
@@ -6029,6 +6043,9 @@ def _js_host_dispatch(id: int32) -> int32:
             js_set_prop(clkev2, cast[Ptr[uint8]]("bubbles"), 7, js_bool(1))
             js_set_prop(clkev2, cast[Ptr[uint8]]("cancelable"), 10, js_bool(1))
             _obj_dispatch(js_this(), cast[Ptr[uint8]]("click"), 5, clkev2, 1)
+            _click_activate_post(js_this(), clkck, \
+                                 CRE_IDX_BASE + clkcid, clkwas, \
+                                 g_prevent_default)
         return js_undefined()
     if rel == NID_DISPATCH:
         # element.dispatchEvent(ev) — fire the matching handler synchronously,
@@ -14151,6 +14168,70 @@ def _radio_enforce_group(keep: int32):
             i = skip_to
             continue
         i = i + 1
+
+
+# ---- CHECKABLE-INPUT ACTIVATION BEHAVIOUR (one implementation) -------------
+# The HTML spec splits a click on a checkbox/radio into three parts: the
+# PRE-CLICK ACTIVATION STEPS (flip/set checkedness) which run BEFORE the click
+# event, so a listener already sees the new state; the CANCELED ACTIVATION
+# STEPS (put it back) when the click was preventDefault()ed; and the ACTIVATION
+# BEHAVIOUR (fire input, then change) when it was not.
+#
+# The real-input entry point (he_dom_set_checked, below) did all of that; the
+# scripted entry point (element.click(), NID_CLICK) did NONE of it and merely
+# dispatched. Both now call these.
+#
+# KNOWN GAP: a CANCELED radio click restores the clicked radio but not the
+# group sibling it un-checked, because _radio_enforce_group does not record
+# what it cleared. Uncanceled clicks — the overwhelming majority, and all of
+# the coverage here — are exact.
+
+# Is `obj` an input whose click carries checkedness activation behaviour?
+# 1 = checkbox, 2 = radio, 0 = anything else.
+def _checkable_kind(obj: int32) -> int32:
+    tv: int32 = js_get_prop(obj, cast[Ptr[uint8]]("type"), 4)
+    tp: Ptr[uint8] = js_str_ptr(tv)
+    tn: int32 = _cstr_len(tp)
+    if _bytes_eq(tp, tn, cast[Ptr[uint8]]("checkbox"), 8) != 0:
+        return 1
+    if _bytes_eq(tp, tn, cast[Ptr[uint8]]("radio"), 5) != 0:
+        return 2
+    return 0
+
+
+# Pre-click activation steps. Returns the checkedness to restore if the click
+# turns out to be canceled (-1 when there is nothing to restore). `el` is the
+# registered source-element index, or < 0 for a created node (no source scan,
+# so no radio-group enforcement).
+def _click_activate_pre(obj: int32, kind: int32, el: int32) -> int32:
+    if kind == 0:
+        return -1
+    was: int32 = 0
+    if js_to_bool(js_get_prop(obj, cast[Ptr[uint8]]("checked"), 7)) != 0:
+        was = 1
+    if kind == 1:                                        # checkbox: toggle
+        if was != 0:
+            js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(0))
+        else:
+            js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(1))
+    else:                                                # radio: set + exclude
+        js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(1))
+        if el >= 0:
+            _radio_enforce_group(el)
+    return was
+
+
+# Canceled-activation steps / activation behaviour, after the click dispatch.
+# `evtidx` is a _fire_value_evt index: a dom index, or CRE_IDX_BASE + created id.
+def _click_activate_post(obj: int32, kind: int32, evtidx: int32, \
+                         was: int32, canceled: int32):
+    if kind == 0:
+        return
+    if canceled != 0:
+        js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(was))
+        return
+    _fire_value_evt(evtidx, cast[Ptr[uint8]]("input"), 5)
+    _fire_value_evt(evtidx, cast[Ptr[uint8]]("change"), 6)
 
 
 # Set a checkbox/radio's checked state by id, fire oninput + onchange, re-lay.
