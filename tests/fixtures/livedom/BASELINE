@@ -7,3 +7,15 @@
 # number, not a placeholder — see the "WHAT THE FIRST RUN FOUND" section of the
 # harness for the seven distinct causes. Add a name here the moment it goes
 # green so the win cannot silently rot.
+#
+# RAISED 2026-08-04 to THREE, by the D1 fix (created-element attribute
+# enumeration unified onto one enumerator, _cre_all_names). Every attribute-
+# valued line in all 15 diffs now agrees with chromium; these three fixtures
+# diverged on NOTHING ELSE, so they went byte-identical. The other twelve still
+# fail on D2-D7 (stale source-anchored text read-back, DocumentFragment
+# insertBefore, parentNode after removeChild, checkbox activation behaviour,
+# select.selectedIndex, script source leaking in as a text node) — none of which
+# is an attribute problem.
+01_create_click
+11_counter_chain
+15_innerhtml_rerender
