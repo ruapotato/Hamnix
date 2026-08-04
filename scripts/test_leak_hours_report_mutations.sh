@@ -195,6 +195,49 @@ case('no_sample_B', {}, {}, 125, 'only one sample was taken')
 case('longlived_grew_under_bar', {},
      dict(statm=merged(STATM_A, {7: 190})), 0,
      'the panel grew 70 pages: named in the report, under the bar')
+# Leak pass 20. The pass-19 adjudicator's ONLY growth assertion was on the
+# TOTAL, and a total is cancellable: site 9 (pgtable, a KERNEL site the orphan
+# census explicitly does not judge) takes 900 pages while site 6 returns 900,
+# and the machine's page count is unchanged. Every word of the pass-19 verdict
+# stayed true and the report said PASS — over a run in which a kernel site grew
+# 900 pages in a gap where nothing was launched. That is exactly the
+# "per-site attribution, not just a global total" rule this campaign keeps
+# writing down, missing from the instrument that enforces it.
+case('site_swap_nets_zero', {},
+     dict(sites={6: 1100, 9: 1200, 13: 500, 20: 64}), 1,
+     'a kernel site grew 900 pages; the TOTAL is unchanged and cancels it')
+# The negative control for that rule, and it is the one that matters: pass 19's
+# REAL run moved -151/+31/+2/+2 across four sites, i.e. frames returned by the
+# un-attributed population and re-allocated WITH attribution. Per-site motion
+# well under the bar must stay green, or the rule above turns every honest run
+# red and gets deleted.
+case('site_motion_under_bar', {},
+     dict(sites={6: 2031, 9: 302, 13: 500, 20: 64, 0: 0}), 0,
+     'pass 19\'s real per-site motion (+31/+2) is not a leak')
+# The RE-ATTRIBUTION CREDIT. Site 0 holds the population that was already live
+# when the tracker was armed; it can only shrink, and its frames reappear at
+# real sites as they are recycled. Pass 19 measured exactly this (-151 against
+# +31/+2/+2) and the effect grows with the gap. Frames are counted, not
+# identity-tracked, so "site 0 recycled into pgtable" and "pgtable leaked while
+# unrelated unknown frames were freed" are the same numbers: INCONCLUSIVE is
+# the only honest verdict, and calling it PASS would be the false green this
+# whole gate exists to avoid.
+case('site_grew_from_unknown',
+     dict(sites={0: 5000, 6: 2000, 9: 300, 13: 500, 20: 64}),
+     dict(sites={0: 4100, 6: 2000, 9: 1200, 13: 500, 20: 64}), 125,
+     'site 9 +900 fully covered by site 0 -900: unadjudicated, not clean')
+# Partial credit must NOT launder the residual: 100 pages of the 900 are
+# explainable and 800 are not, so this is a FAIL on the 800.
+case('site_grew_partial_credit',
+     dict(sites={0: 5000, 6: 2000, 9: 300, 13: 500, 20: 64}),
+     dict(sites={0: 4900, 6: 2000, 9: 1200, 13: 500, 20: 64}), 1,
+     'only 100 of 900 is re-attribution; the residual 800 is a leak')
+# Site 0 itself growing is condemned by the TOTAL bar, not exempted: an
+# untagged allocation path is the one bucket whose growth cannot be acted on.
+case('unknown_site_grew',
+     dict(sites={0: 5000, 6: 2000, 9: 300, 13: 500, 20: 64}),
+     dict(sites={0: 5900, 6: 2000, 9: 300, 13: 500, 20: 64}), 1,
+     'the unattributed bucket itself grew 900 pages')
 
 # `no_sample_B` needs its B half deleted after the fact.
 p = os.path.join(work, 'no_sample_B', 'serial.log')

@@ -355,6 +355,74 @@ def main():
         notes.append('total live pages grew %+d over the gap, within the %d '
                      'page bar' % (delta, growth_bar))
 
+    # THE PER-SITE BAR (leak pass 20). A TOTAL IS CANCELLABLE, and the bar
+    # above was the only growth assertion this adjudicator made. Demonstrated
+    # rather than argued: with site 9 (pgtable) at +900 and site 6 at -900 the
+    # pass-19 report printed "total live pages grew +0 ... within the 256 page
+    # bar" and returned PASS — over a run in which a KERNEL site, one the
+    # orphan census explicitly declines to judge ("scope: USER-MAPPED sites
+    # only"), took 900 pages in a gap where nothing was launched. Every word of
+    # that verdict was true and the run was a leak. The mutation is
+    # `site_swap_nets_zero`.
+    #
+    # The rule is per-site and uses the SAME bar, including site 0: after
+    # arming, an untagged allocation path is the one bucket whose growth cannot
+    # be acted on, so it is the last one that should get an exemption.
+    #
+    # Its negative control is `site_motion_under_bar`, and it is the one that
+    # keeps this rule alive: pass 19's real run moved -151/+31/+2/+2 across four
+    # sites — frames returned by the un-attributed population and re-allocated
+    # WITH attribution — and a per-site rule that reddened on that would be
+    # deleted within a pass.
+    # THE RE-ATTRIBUTION CREDIT, and why it is INCONCLUSIVE and not PASS.
+    # Site 0 is the population that was already live when the tracker was
+    # armed, so it carries no recorded site and can only shrink as those frames
+    # are freed and re-allocated WITH attribution. Pass 19's real 2.02 h run is
+    # exactly that shape: site 0 -151 against +31/+2/+2 elsewhere. The effect
+    # grows with the gap, so a naive per-site rule would redden every long run
+    # and be deleted.
+    #
+    # But a shrinking site 0 does NOT prove that an attributed site's growth
+    # came from it: frames are counted, not identity-tracked, so "the unknown
+    # bucket recycled into pgtable" and "pgtable leaked while unrelated unknown
+    # frames were freed" produce identical numbers. There is no discriminator
+    # in this data, so the honest verdict for growth covered by that credit is
+    # INCONCLUSIVE — named, with the reason — rather than the prettier of the
+    # two readings. (Pass 15's rule.) The fix that WOULD discriminate is arming
+    # the tracker at boot so site 0 is empty and no credit exists.
+    credit = max(0, sa.get(0, 0) - sb.get(0, 0))
+    for s in sorted(set(sa) | set(sb), key=lambda k: -(sb.get(k, 0)
+                                                       - sa.get(k, 0))):
+        d = sb.get(s, 0) - sa.get(s, 0)
+        if d <= growth_bar or s == 0:
+            continue
+        if born:
+            notes.append('site %d (%s) grew %+d pages (> bar %d) but %d '
+                         'process(es) STARTED during the gap — reported, not '
+                         'condemned'
+                         % (s, PGNAME.get(s, '?'), d, growth_bar, len(born)))
+            continue
+        used = min(credit, d)
+        credit -= used
+        resid = d - used
+        if resid > growth_bar:
+            bad.append('site %d (%s) grew %+d pages over the gap with an '
+                       'UNCHANGED live task set; site 0 (unknown) shrank by '
+                       'enough to explain %d of them and %d remain, past the '
+                       'bar of %d. The TOTAL does not condemn it because other '
+                       'ATTRIBUTED sites returned the same frames, but a named '
+                       'site accumulating at this rate is a leak with an '
+                       'address.'
+                       % (s, PGNAME.get(s, '?'), d, used, resid, growth_bar))
+        else:
+            inconc.append('site %d (%s) grew %+d pages past the bar of %d, and '
+                          'site 0 (unknown) shrank by enough to cover %d of '
+                          'them. Re-attribution of the pre-arming population '
+                          'and a real leak at this site produce identical '
+                          'counts, so this is UNADJUDICATED, not clean. Arm '
+                          'the tracker at boot to remove the ambiguity.'
+                          % (s, PGNAME.get(s, '?'), d, growth_bar, used))
+
     # ---- arms: inter-sample nets, adjudicated by the owner discriminator ----
     aa, ab = parse_arms(ta), parse_arms(tb)
     oa, ob = parse_owners(ta), parse_owners(tb)
