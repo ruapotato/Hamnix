@@ -577,6 +577,18 @@ CLSOWN_MAX:  int32 = 1024
 clsown_list: Array[1024, int32]      # the DOMTokenList object handle
 clsown_obj:  Array[1024, int32]      # the element object that owns it
 clsown_n:    int32 = 0
+
+# dataset owner map: the el.dataset object handle -> the element object that
+# owns it. `el.dataset.foo = 'x'` is a plain member-set on that object, which
+# stored the value there and NOWHERE ELSE — the data-foo CONTENT attribute was
+# never written, so getAttribute('data-foo') and el.attributes still answered
+# the parse-time value (or nothing at all for a name the source tag never
+# declared). The back-pointer is what lets the member-set hook mirror the write
+# into the one attribute store the readers walk.
+DSOWN_MAX:   int32 = 1024
+dsown_list:  Array[1024, int32]      # the dataset object handle
+dsown_obj:   Array[1024, int32]      # the element object that owns it
+dsown_n:     int32 = 0
 # Mutation counter. Zero means no structural/attribute mutation has run yet, so
 # innerHTML is provably the source slice and takes the old (cheap, byte-exact)
 # path. Bumped by every DOM-mutating native entry point.
@@ -1557,6 +1569,7 @@ def _dom_reset():
     sattr_n = 0
     sattr_buf_len = 0
     clsown_n = 0
+    dsown_n = 0
     implown_n = 0
     attrc_n = 0
     attrc_next = 0

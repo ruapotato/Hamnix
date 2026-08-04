@@ -1,0 +1,19 @@
+<!doctype html><html><head><title>insertBefore fragment</title></head><body>
+<ul id="list"><li id="last">last</li></ul>
+<div id="out">-</div>
+<script>
+var frag = document.createDocumentFragment();
+var i;
+for (i = 0; i < 3; i++) {
+  var li = document.createElement('li');
+  li.id = 'i' + i;
+  li.textContent = 'item ' + i;
+  frag.appendChild(li);
+}
+var list = document.getElementById('list');
+list.insertBefore(frag, document.getElementById('last'));
+document.getElementById('out').textContent =
+  'kids=' + list.childNodes.length + ' frag=' + frag.childNodes.length;
+window.__act = function () {};
+</script>
+</body></html>

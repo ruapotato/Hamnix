@@ -991,6 +991,52 @@ def _js_member_set_hook(dummy: int32) -> int32:
            _bytes_eq(kp, kn, cast[Ptr[uint8]]("nodeValue"), 9) != 0 or \
            _bytes_eq(kp, kn, cast[Ptr[uint8]]("data"), 4) != 0:
             _mo_record_chardata(js_mset_this())
+    # `el.dataset.foo = 'x'` — the dataset object is the element's data-*
+    # attributes, not a place to keep a private copy of them. The plain member
+    # store landed there and NOWHERE else, so getAttribute('data-foo'),
+    # el.attributes and getAttributeNames() all still answered the parse-time
+    # start tag (or nothing, for a name the tag never declared) while
+    # el.dataset.foo answered the new value. Same two-writers-one-reader shape
+    # as D1/D2/D2b. Mirror the write into the attribute store the readers walk.
+    if dsown_n != 0:
+        dsel: int32 = _dsown_el(js_mset_this())
+        if dsel != 0:
+            dsidx: int32 = _find_el_by_obj(dsel)
+            if dsidx >= 0:
+                dsnm: Array[96, uint8]
+                dsn: int32 = _dataset_attr_name(kp, kn, &dsnm[0], 96)
+                dsvv: int32 = js_mset_val()
+                dsvp: Ptr[uint8] = js_str_bytes(dsvv)
+                dsvn: int32 = js_str_bytelen(dsvv)
+                if _is_undef_str(dsvp, dsvn) != 0:
+                    dsvn = 0
+                _sattr_set(dsidx, &dsnm[0], dsn, dsvp, dsvn)
+                g_attr_gen = g_attr_gen + 1
+                g_dom_mutated = 1
+            return 0
+    # `el.textContent = x` on a SOURCE element, SECOND time onwards. The first
+    # assignment goes through the NID_TC_SET prototype accessor, which installs
+    # an own data property (the render read-back keys its override off
+    # js_has_own(o,"textContent")) — and an own data property SHADOWS the
+    # accessor in member_set as well as member_get. So every LATER assignment
+    # was a plain property store that never ran "replace every child with one
+    # Text node": .textContent answered the newest string while the live child
+    # list still held the text from the FIRST set. Measured against chromium,
+    # three successive `o.textContent = 'n=' + n` left childNodes[0] reading
+    # "n=1" forever. Exactly the D2 shape one level down — a writer off the
+    # readers' path — so route the shadowed writer into the same one algorithm.
+    #
+    # This branch can only be reached from SCRIPT: every engine-internal
+    # textContent write uses js_set_own(), which bypasses the member-set hook,
+    # and a first-time (unshadowed) assignment is taken by the accessor and
+    # never reaches here.
+    if _bytes_eq(kp, kn, cast[Ptr[uint8]]("textContent"), 11) != 0:
+        tcthis: int32 = js_mset_this()
+        tcidx: int32 = _find_el_by_obj(tcthis)
+        if tcidx >= 0:
+            _dom_wire_tree(tcidx)
+            _node_set_text_content(tcthis, js_mset_val())
+        return 0
     if _bytes_eq(kp, kn, cast[Ptr[uint8]]("innerHTML"), 9) == 0:
         return 0
     thisv: int32 = js_mset_this()
@@ -1219,6 +1265,55 @@ def _clsown_add(clsv: int32, objv: int32):
     clsown_n = clsown_n + 1
 
 
+# ---- dataset owner resolution ----------------------------------------------
+def _dsown_add(dsv: int32, objv: int32):
+    i: int32 = 0
+    while i < dsown_n:
+        if dsown_list[i] == dsv:
+            dsown_obj[i] = objv
+            return
+        i = i + 1
+    if dsown_n >= DSOWN_MAX:
+        return
+    dsown_list[dsown_n] = dsv
+    dsown_obj[dsown_n] = objv
+    dsown_n = dsown_n + 1
+
+
+def _dsown_el(dsv: int32) -> int32:
+    i: int32 = 0
+    while i < dsown_n:
+        if dsown_list[i] == dsv:
+            return dsown_obj[i]
+        i = i + 1
+    return 0
+
+
+# "role" -> "data-role", "fooBar" -> "data-foo-bar". The inverse of the
+# camelCasing _build_dataset_obj does when it reads the start tag.
+def _dataset_attr_name(p: Ptr[uint8], n: int32, out: Ptr[uint8], cap: int32) -> int32:
+    w: int32 = 0
+    pre: Ptr[uint8] = cast[Ptr[uint8]]("data-")
+    while w < 5 and w < cap:
+        out[w] = pre[w]
+        w = w + 1
+    i: int32 = 0
+    while i < n and w < cap - 1:
+        c: uint8 = p[i]
+        if c >= 65 and c <= 90:
+            out[w] = 45                                    # '-'
+            w = w + 1
+            if w < cap - 1:
+                out[w] = _hx_lower(c)
+                w = w + 1
+        else:
+            out[w] = c
+            w = w + 1
+        i = i + 1
+    out[w] = 0
+    return w
+
+
 def _cls_owner_obj(clsv: int32) -> int32:
     e: int32 = _find_el_by_clsobj(clsv)
     if e >= 0:
@@ -1249,9 +1344,22 @@ def _cls_read_o(objv: int32) -> Ptr[uint8]:
     return &g_cls_cur[0]
 
 
+# THE class writer. The `class` content attribute had ONE reader path
+# (_el_get_attribute -> the sattr_ override store -> the parsed start tag) and
+# TWO writers: setAttribute('class') wrote the override store AND the reflected
+# className property, while classList.add/remove/toggle/replace wrote only the
+# property. On a SOURCE-anchored element the override store therefore still
+# held the PARSE-TIME class string long after classList had changed it, so
+# getAttribute('class'), el.attributes and every attribute-shaped reader
+# answered the source while .className answered the DOM. Same defect shape as
+# D1/D2: a second writer off the readers' path. There is now one.
 def _cls_write_o(objv: int32, s: Ptr[uint8], sn: int32):
     js_set_prop(objv, cast[Ptr[uint8]]("className"), 9, \
                 js_new_string(s, cast[uint64](sn)))
+    cwe: int32 = _find_el_by_obj(objv)
+    if cwe >= 0:
+        _sattr_set(cwe, cast[Ptr[uint8]]("class"), 5, s, sn)
+        g_attr_gen = g_attr_gen + 1               # invalidate the el.attributes memo
 
 
 # ---- namespaced / created-element attribute store ---------------------------
@@ -2735,6 +2843,19 @@ def _node_set_text_content(v: int32, val: int32):
 
 # parent.appendChild(child) with explicit values — shared by the NID_APPEND
 # dispatch and the DocumentFragment flush (which replays each child through it).
+# Identity membership test over a JS array of node handles.
+def _js_arr_has_obj(arr: int32, v: int32) -> int32:
+    if js_is_array(arr) == 0:
+        return 0
+    i: int32 = 0
+    n: int32 = js_array_len(arr)
+    while i < n:
+        if js_array_get(arr, i) == v:
+            return 1
+        i = i + 1
+    return 0
+
+
 def _append_child_v(parentv: int32, childv: int32):
     _detach_from_parent_v(childv)
     ch: int32 = _find_cre_by_obj(childv)
@@ -2772,6 +2893,24 @@ def _append_child_v(parentv: int32, childv: int32):
                 _wire_node_links(parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
                 js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
+    else:
+        # RE-ATTACHING A SOURCE-ANCHORED ELEMENT. `remove + re-add` is what
+        # every reconciler does to move a node, and this branch did not exist:
+        # _find_cre_by_obj() fails for a parse-created element, so
+        # host.appendChild(el) after host.removeChild(el) was a total no-op —
+        # the node stayed dom_detached, invisible to the renderer AND absent
+        # from the parent's child list, and its listeners never fired again.
+        sre: int32 = _find_el_by_obj(childv)
+        if sre >= 0:
+            dom_detached[sre] = 0
+            spch: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8)
+            if js_is_array(spch) != 0 and _js_arr_has_obj(spch, childv) == 0:
+                js_array_push(spch, childv)
+                _wire_sibling_links(spch, parentv)
+            _dom_nodes_push(parentv, childv)
+            _wire_node_links(parentv)
+            js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
+            js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
     # A TEXT child extends the parent's live textContent. Without this an
     _append_sync_text(parentv, childv)
@@ -3200,6 +3339,7 @@ def _lazy_el_accessor(rel: int32) -> int32:
         dv: int32 = _build_dataset_obj(cast[uint64](dom_ns[idx] + dom_nl[idx]), \
                                        cast[uint64](dom_cstart[idx] - 1))
         js_set_own(thisv, cast[Ptr[uint8]]("dataset"), 7, dv)
+        _dsown_add(dv, thisv)
         return dv
     # Setters. An accessor with NO setter silently DROPS the write, so each one
     # installs the assigned value as an own data property — byte-for-byte the
@@ -4225,6 +4365,33 @@ def _ci_eq_cstr(p: Ptr[uint8], n: int32, lit: Ptr[uint8]) -> int32:
 # replaceChildren) can reuse the one insertion path instead of growing a second
 # copy of the source-element vs created-node bookkeeping.
 def _insert_before_v(parentv: int32, newv: int32, refv: int32):
+    # A DocumentFragment is NEVER itself inserted: per spec the pre-insert step
+    # moves its CHILDREN into the parent, in order, before `refv`, and leaves
+    # the fragment empty. appendChild has always done this; insertBefore did
+    # not, and its `_find_cre_by_obj(newv)` test fails for a fragment (a
+    # fragment is deliberately not a created-node-pool member), so the whole
+    # branch was skipped and the ENTIRE staged batch was silently dropped —
+    # host.childNodes never grew and the built nodes became unreachable. That is
+    # the single most common batched-DOM idiom on the web.
+    if _is_fragment(newv) != 0:
+        fkv: int32 = js_get_prop(newv, cast[Ptr[uint8]]("children"), 8)
+        fsnap: int32 = js_new_array_v()
+        if js_is_array(fkv) != 0:
+            fq: int32 = 0
+            fqn: int32 = js_array_len(fkv)
+            while fq < fqn:
+                js_array_push(fsnap, js_array_get(fkv, fq))
+                fq = fq + 1
+        # Empty the fragment BEFORE the moves: each _insert_before_v below
+        # detaches its child from its current parent (the fragment), which
+        # would otherwise mutate the very list we are iterating.
+        _frag_clear(newv)
+        fs: int32 = 0
+        fsn: int32 = js_array_len(fsnap)
+        while fs < fsn:
+            _insert_before_v(parentv, js_array_get(fsnap, fs), refv)
+            fs = fs + 1
+        return
     _detach_from_parent_v(newv)
     nch: int32 = _find_cre_by_obj(newv)
     if nch >= 0:
@@ -4257,23 +4424,43 @@ def _insert_before_v(parentv: int32, newv: int32, refv: int32):
     _maybe_run_inserted_script(newv)
 
 
-# Detach `childv` from `parentv`, mirroring the NID_REMCHILD handler.
+# THE removeChild implementation. NID_REMCHILD used to carry a second, subtly
+# different copy of this; both are now this one function.
+#
+# ORDER IS LOAD-BEARING. Both copies used to null the child's parentNode FIRST
+# and touch the parent's child list second — and the child-list surgery reads
+# `parentv.children`, which for a source-anchored parent is a LAZY accessor that
+# materialises the subtree from the parse tree and, in doing so, re-writes
+# parentNode/parentElement on EVERY child. The null we had just written was
+# immediately overwritten from the source, so `p.removeChild(el); el.parentNode`
+# still answered `p`. Force the wiring first, unlink second.
+#
+# The created-node branch never nulled parentNode at all, which is the same bug
+# by a shorter route.
 def _remove_child_v(parentv: int32, childv: int32):
     rc: int32 = _find_cre_by_obj(childv)
     rcs: int32 = -1
     if rc < 0:
         rcs = _find_el_by_obj(childv)
-    if rc >= 0 or rcs >= 0:
-        if rc >= 0:
-            cre_gone[rc] = 1
-        else:
-            dom_detached[rcs] = 1
-        js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
-        js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
-        _dom_children_drop(parentv, childv)
-        _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
-                            parentv)
-        _mo_record_childlist(parentv, -1, childv)
+    if rc >= 0:
+        cre_gone[rc] = 1
+    elif rcs >= 0:
+        dom_detached[rcs] = 1
+    elif js_type_of(childv) != TAG_OBJ or _nd_type(childv) != 3:
+        # Not a created node, not a registered source element, not a source
+        # Text node -> nothing this engine can detach.
+        return
+    # A SOURCE text node is in neither registry (it is minted on demand by
+    # _stx_text_node), but it still has to leave the parent's child list:
+    # `while (el.firstChild) el.removeChild(el.firstChild)` is the standard
+    # "empty this element" idiom and a no-op turns it into an infinite loop.
+    _dom_children_drop(parentv, childv)
+    _wire_sibling_links(js_get_prop(parentv, cast[Ptr[uint8]]("children"), 8), \
+                        parentv)
+    _wire_node_links(parentv)
+    js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, js_null())
+    js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, js_null())
+    _mo_record_childlist(parentv, -1, childv)
 
 
 # ChildNode / ParentNode take (Node or DOMString)... — a bare string argument
@@ -6806,43 +6993,12 @@ def _js_host_dispatch(id: int32) -> int32:
             _insert_before_v(js_this(), js_arg(0), refv)
         return js_arg(0)
     if rel == NID_REMCHILD:
-        # parent.removeChild(child) — detach the child. Created nodes flip
-        # cre_gone; a SOURCE-anchored child (which this used to ignore entirely,
-        # leaving the node on screen AND in the parent's innerHTML) flips
-        # dom_detached, which both the renderer and the innerHTML serialiser
-        # treat as "no longer in the tree".
+        # parent.removeChild(child) — ONE implementation, shared with the
+        # ChildNode/ParentNode mutation methods. This handler used to carry its
+        # own copy that differed from _remove_child_v in exactly the way that
+        # made `el.parentNode` stale after a remove; see _remove_child_v.
         if js_arg_count() >= 1:
-            rc: int32 = _find_cre_by_obj(js_arg(0))
-            rcs: int32 = -1
-            if rc < 0:
-                rcs = _find_el_by_obj(js_arg(0))
-            if rc >= 0 or rcs >= 0:
-                if rc >= 0:
-                    cre_gone[rc] = 1
-                else:
-                    dom_detached[rcs] = 1
-                    js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                                js_null())
-                    js_set_prop(js_arg(0), \
-                                cast[Ptr[uint8]]("parentElement"), 13, js_null())
-                # keep the parent's live JS .children/.childNodes in sync so a
-                # subsequent read no longer sees the detached node.
-                _dom_children_drop(js_this(), js_arg(0))
-                _wire_sibling_links(js_get_prop(js_this(), \
-                                    cast[Ptr[uint8]]("children"), 8), js_this())
-                _mo_record_childlist(js_this(), -1, js_arg(0))
-            elif js_type_of(js_arg(0)) == TAG_OBJ and \
-                 _nd_type(js_arg(0)) == 3:
-                # A SOURCE text node is in neither registry (see NID_REMOVE);
-                # `while (el.firstChild) el.removeChild(el.firstChild)` is the
-                # same never-terminating loop without this.
-                _dom_children_drop(js_this(), js_arg(0))
-                _wire_node_links(js_this())
-                _mo_record_childlist(js_this(), -1, js_arg(0))
-                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentNode"), 10, \
-                            js_null())
-                js_set_prop(js_arg(0), cast[Ptr[uint8]]("parentElement"), 13, \
-                            js_null())
+            _remove_child_v(js_this(), js_arg(0))
         return js_arg(0)
     if rel == NID_REPLCHILD:
         # parent.replaceChild(newNode, oldNode) — mount newNode at oldNode's
