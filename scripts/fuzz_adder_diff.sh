@@ -188,6 +188,43 @@ echo "[fuzz_adder_diff] ptr-signedness result: $REGP_OUT" \
 [ "$REGP_OUT" = "ok/ok off=18446744073709550828 on=18446744073709550828" ] \
     || fail "element-signedness miscompile (ssa_expr_sgn unknown-default): $REGP_OUT"
 
+# ---- Regression: --opt / SSA-lane CALL SHAPES
+#      (tests/fuzz/regress_opt2_call_shapes.ad).
+#      codegen.ad's legacy -O0 path does NOT lower every ND_CALL as `call <sym>`:
+#      gen_call/gen_expr intercept several shapes BY NAME, and gen_call also
+#      RE-SHAPES an argument list through normalize_call_args. The SSA builder
+#      never enters gen_call and reproduced neither, giving two live --opt bugs:
+#        1. an OMITTED TRAILING DEFAULT was marshalled positionally in written
+#           order — `defaulted(3)` for `def defaulted(a, b = 7)` returned 30
+#           instead of 37, a silent wrong answer with no diagnostic;
+#        2. a statement-position `__syscall1(...)` (inline `syscall`, no symbol)
+#           emitted `call rel32` + a fixup naming "__syscall1" — cg_fail(7) on a
+#           userland target and, far worse, a SILENT PLT32 extern relocation
+#           against a nonexistent symbol on a kernel target. Enum-variant
+#           constructors, `len(slice)`, `asm_volatile` and the port-I/O
+#           intrinsics are the same class.
+#      The fixture also pins the shapes a WHITELIST must keep accepting, which is
+#      the point: the first attempt at this fix enumerated the intercepted
+#      families as a BLACKLIST, missed enum constructors, and turned
+#      regress_match_liveness.ad (whose main calls `repro(Second(...))`) from a
+#      correct binary into STATUS cgfail reason=7. Both lanes must print 399;
+#      pre-fix, --opt printed 392 and (with shape 5) cgfail'd outright.
+echo "[fuzz_adder_diff] regression: regress_opt2_call_shapes.ad (opt ON+OFF)"
+REGC_OUT="$(python3 - <<'PY'
+import sys; sys.path.insert(0, "tests/fuzz")
+import ad_codegen_host as h
+from pathlib import Path
+wd = Path("build/fuzz_ad_codegen")
+body = open("tests/fuzz/regress_opt2_call_shapes.ad").read()
+off = h.run_through_codegen_ad("regrc_off", body, wd, opt=False)
+on  = h.run_through_codegen_ad("regrc_on",  body, wd, opt=True)
+print(f"{off.kind}/{on.kind} off={off.stdout} on={on.stdout}")
+PY
+)"
+echo "[fuzz_adder_diff] call-shapes result: $REGC_OUT (expect 'ok/ok off=399 on=399')"
+[ "$REGC_OUT" = "ok/ok off=399 on=399" ] \
+    || fail "codegen.ad --opt miscompiled the SSA call-shape fixture: $REGC_OUT"
+
 # ---- Seeded differential batch -----------------------------------------
 echo "[fuzz_adder_diff] differential: count=$FUZZ_COUNT seed=$FUZZ_SEED"
 python3 tests/fuzz/adder_fuzzer.py --ad-codegen \

@@ -105,11 +105,49 @@ def slice_len(n: uint64) -> uint64:
     return len(s) + n
 
 
-def main(argc: int32, argv: Ptr[uint64]) -> int32:
-    a: uint64 = defaulted(cast[uint64](3))              # 37 (was 30 under --opt)
-    b: uint64 = kw2(b=cast[uint64](1), a=cast[uint64](2))  # 21
+# ---- the CALL SITES, deliberately isolated ------------------------------
+# Each shape is invoked from its own 8-BYTE-RETURNING wrapper that calls only
+# 8-byte-returning IN-UNIT functions.  That matters: it is the shape that the
+# PRE-fix subset already accepted and EMITTED, so this fixture goes red on the
+# buggy compiler instead of being silently rescued by an unrelated bail.
+#
+# An earlier draft put these calls directly in main(), which also calls the
+# narrow-returning print_u64 — pre-fix that bailed main() at site 31 and the
+# fixture printed the RIGHT answer on the BROKEN compiler.  A regression fixture
+# that is green on the bug it guards is not a guard.  Verified: with ssa.ad
+# reverted to the pre-fix state this file prints 392 under --opt and 399 without
+# it (call_defaulted returns 30 instead of 37).
+def call_defaulted() -> uint64:
+    return defaulted(cast[uint64](3))                      # 37 (--opt gave 30)
+
+
+def call_kw() -> uint64:
+    return kw2(b=cast[uint64](1), a=cast[uint64](2))       # 21
+
+
+# ---- shape 5: a STATEMENT-position __syscallN ---------------------------
+# gen_call lowers `__syscallN` to an INLINE `syscall` instruction; there is no
+# `__syscall1` symbol anywhere.  Accepted into the SSA subset it emitted
+# `call rel32` + a fixup naming "__syscall1", and resolve_calls then hard-failed
+# cg_fail(7) on this userland target (a KERNEL target instead records a SILENT
+# PLT32 extern relocation against a nonexistent symbol — the dangerous case).
+# Verified pre-fix: this function alone made the whole compile return
+# `STATUS cgfail reason=7` under --opt while compiling clean without it.
+# syscall 39 is getpid: no arguments read, no side effects, result discarded.
+def syscall_stmt(n: uint64) -> uint64:
+    __syscall1(cast[uint64](39), cast[uint64](0))
+    return n
+
+
+def total_all() -> uint64:
+    a: uint64 = syscall_stmt(call_defaulted())
+    b: uint64 = call_kw()
     c: uint64 = cast[uint64](tagged_sum(cast[int32](0)))   # 333
     d: uint64 = slice_len(cast[uint64](0))                 # 8
-    total: uint64 = a + b + c + d                          # 399
+    return a + b + c + d
+
+
+def main(argc: int32, argv: Ptr[uint64]) -> int32:
+    total: uint64 = total_all()                            # 399
     print_u64(total)
     return cast[int32](total & cast[uint64](255))
