@@ -1,0 +1,40 @@
+<!doctype html><html><head><title>select selectedness</title></head><body>
+<select id="s">
+  <option value="a">Apple</option>
+  <option value="b">Banana</option>
+  <option value="c" selected>Cherry</option>
+</select>
+<div id="log">-</div>
+<script>
+// D6 guard. value, selectedIndex and the option elements' own selectedness are
+// THREE spellings of ONE state and must agree in every direction:
+//   * the parsed `selected` attribute is what both spellings start from,
+//   * a value write moves selectedIndex AND the options,
+//   * a selectedIndex write moves value AND the options,
+//   * a value nobody offers deselects everything (selectedIndex -1, value ""),
+//   * an option with no value attribute takes its text as its value.
+window.__act = function () {
+  var s = document.getElementById('s');
+  var k = s.children;
+  var out = [];
+  function shot(tag) {
+    out.push(tag + ':' + s.value + '/' + s.selectedIndex +
+             '/' + (k[0].selected ? 1 : 0) + (k[1].selected ? 1 : 0) +
+             (k[2].selected ? 1 : 0));
+  }
+  shot('parse');
+  s.value = 'a';
+  shot('byval');
+  s.selectedIndex = 1;
+  shot('byidx');
+  s.value = 'nope';
+  shot('miss');
+  var extra = document.createElement('option');
+  extra.textContent = 'Damson';
+  s.appendChild(extra);
+  s.value = 'Damson';
+  out.push('bytext:' + s.value + '/' + s.selectedIndex);
+  document.getElementById('log').textContent = out.join(' ');
+};
+</script>
+</body></html>
