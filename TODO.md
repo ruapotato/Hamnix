@@ -121,10 +121,66 @@ as if it were open.
       x86 emitter has no lowering for. Verified before merge:
       `test_ssa_census_fidelity` PASS, `test_ssa_native_mem` PASS,
       `test_ssa_bailsite_66_split` PASS.
-      Follow-on in flight: `ssa/next-lever-census-r1` — rank the remaining bail gates
-      **clustered by construct** and size each cluster by whole-tree lift-and-diff,
-      including joint lifts (entanglement is the point: the memory model's halves were
-      each +0 and together +51.6 points).
+- [x] ✔ **DONE 2026-08-05 (`b14e7cca`) — the ceiling is decomposed by CONSTRUCT
+      CLUSTER, and the next lever is CALL SHAPES.** Baseline 13026/21302 =
+      **61.15%** (matches the briefed figure exactly); ceiling with the whole memory
+      model armed **18795 = 88.23%**, a gap of **5769 functions**. Sized by whole-tree
+      lift-and-diff, not by bail share:
+
+      | cluster | sites | +funcs | +points |
+      |---|---|---|---|
+      | **call** | 28/31/87-92 | **+3074** | **+14.43** |
+      | member | 47/61/69/86 | +807 | +3.79 |
+      | addr | 22-26/41/43/49/51 | +400 | +1.88 |
+      | arity | 32/79 | +272 | +1.28 |
+      | float | 40/46/53/63 | +57 | +0.27 |
+      | nonlocal | 101-103 | +5 | +0.02 |
+
+      Joint `call+member+addr+arity` = **+5445, 94% of the entire reachable ceiling**.
+      **★ THE FINDING: this is NOT the site-66 shape.** Site 66 held 36.9% of bails
+      and was worth +0.13 points alone, because its functions re-bailed one line
+      later — it only ever paid as a whole cluster. Here **every cluster has real
+      standalone value** and pairs are only mildly super-additive (call+member beats
+      its halves by 7%), so **the call cluster is individually actionable and does not
+      need to wait on struct typing**. The histogram still overstates it — 4793
+      first-bails vs a measured 3074 — but by 36%, not the ~100x that made site 66 a
+      trap. Entanglement is real but **bounded**: the six additive lifts sum to +4615
+      of +5769, so 1154 functions (20%) need at least two clusters.
+      ⚠ **Every row is an UPPER BOUND, never a promise.** An analysis-lane lift can
+      leave SVO ops the x86 emitter has no lowering for, and `se_op_lowerable` falls
+      the function back regardless. **Lowerability is NOT measured** — that is the
+      whole gap between these numbers and a real landing.
+      Guarded by `scripts/test_ssa_cluster_exhaustive.sh` (memmodel + all six keeps
+      must reproduce the unflagged baseline **site-for-site**, not just by accepted
+      count — verified RED first, and how it went red drove the design: reverting one
+      lever left the accepted count unchanged at 16 while the histogram moved a
+      function from site 79 to 92, so an accept-count assertion would have stayed
+      green) and `scripts/ssa_census_lever_byte_identity.sh` (orchestrator-reverified:
+      byte-identical `--opt` output across 30 real sources against base `983b1335`).
+- [ ] **★ NEXT: implement the CALL-SHAPE cluster on the emit lane** — sites
+      28/31/87-92: indirect calls through a local or global fn-pointer, the by-name
+      intrinsic families `codegen.ad` intercepts inline (`__syscallN`,
+      `asm_volatile`, port-I/O, `len(slice)`), keyword/default-arg normalisation, and
+      the direct-call-symbol whitelist `63131c78` had to install after a blacklist
+      miscompiled enum-variant constructors. Measured upper bound **+3074 functions /
+      +14.43 points**, four times anything else. Sequence after it: member (+807),
+      then addr and arity. **Do NOT start with float or nonlocal** — both are noise
+      (+57, +5) despite float carrying six distinct bail sites.
+- [ ] **The census still compiles each `.ad` STANDALONE — so 61.15% is an
+      UNDER-count.** Site 34 (non-local ident unknown in TU) is 8.7% of baseline
+      bails and grows to **67% of the residual at the ceiling**, but a real build
+      import-merges the module closure, so cross-module names bail in the census and
+      resolve in the real compiler. **The true whole-program subset is somewhat above
+      61.15%.** This is the same defect class as the 17.49% census bug (a driver that
+      skipped the `collect_externs`/`layout_globals` prologue the real `--opt` lane
+      runs) — `scripts/test_ssa_census_fidelity.sh` pins that one but not this one.
+      Needs its own round before any subset number is quoted as final.
+- [ ] ⚠ **Worktree-provisioning hazard (found 2026-08-05):** an agent's worktree was
+      cut from `97cf1c9c` while real `main` was `983b1335` — one commit behind, and
+      the missing commit was the very tooling the agent was briefed to use. It
+      recovered by branching from the right base, but **an agent cannot assume its
+      worktree base is current `main`**; brief agents to check, and state the expected
+      base SHA in the brief.
 - [ ] **Next: SSA rewrite Phase 4 cutover** (make the native SSA lane the
       default path, not the opt-in one). Re-measure the subset first — do not
       brief it from the 61.15% figure above without re-running the census, and

@@ -150,10 +150,21 @@ jobs:
         #     the fidelity corollary from the other side: the SAME fixtures must
         #     be ACCEPTED with no lever, i.e. the census lane arms ssa_mem_native
         #     exactly as ssa_emit_program does.
+        #   test_ssa_cluster_exhaustive — the six construct-cluster census levers
+        #     (ssa_census_keep_call/_arity/_member/_float/_addr/_nonlocal) must
+        #     account for the WHOLE native-vs-ssa_mem_model gap: memmodel plus
+        #     all six keeps must reproduce the unflagged census EXACTLY, bail
+        #     histogram included.  If a new ssa_mem_model construct lands without
+        #     a keep lever, its functions ride along inside whichever cluster is
+        #     lifted and every additive row in ssa_cluster_lift_diff.sh silently
+        #     over-credits that cluster — i.e. the instrument that picks the
+        #     optimizer's next target starts lying again.  Verified RED by
+        #     reverting one lever: the histogram moved (site 79 -> 92) while the
+        #     accepted COUNT did not, so the count alone would not have caught it.
         # Host-only, no QEMU, a few seconds each.
         run: |
           fail=0
-          for t in test_ssa_census_fidelity test_ssa_native_mem test_ssa_bailsite_66_split ; do
+          for t in test_ssa_census_fidelity test_ssa_native_mem test_ssa_bailsite_66_split test_ssa_cluster_exhaustive ; do
             echo "::group::$t"
             if bash "scripts/$t.sh"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
             echo "::endgroup::"

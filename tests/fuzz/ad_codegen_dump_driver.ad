@@ -215,6 +215,12 @@ from compiler.ssa import (
     ssa_stat_fail_code,
     ssa_census_mem_native,
     ssa_census_mem_model,
+    ssa_census_keep_call,
+    ssa_census_keep_arity,
+    ssa_census_keep_member,
+    ssa_census_keep_float,
+    ssa_census_keep_addr,
+    ssa_census_keep_nonlocal,
 )
 
 # Phase-1b SSA machine-code emission lane.  Under ADDER_OPT2 (env), each
@@ -818,6 +824,16 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     # codegen can never see a lift.  Defaults mirror the real --opt lane.
     want_memnative: uint32 = 1
     want_memmodel: uint32 = 0
+    # Per-CLUSTER keep levers (measurement only; see ssa.ad's ssa_census_keep_*).
+    # Each is SUBTRACTIVE: combined with --ssa-memmodel it holds one construct
+    # cluster at its NATIVE behaviour so the cluster's own contribution to the
+    # 61.14% -> 88.23% ceiling can be diffed out.  All default 0 = no keep.
+    keep_call: uint32 = 0
+    keep_arity: uint32 = 0
+    keep_member: uint32 = 0
+    keep_float: uint32 = 0
+    keep_addr: uint32 = 0
+    keep_nonlocal: uint32 = 0
     ai: int32 = 1
     while ai < argc:
         a: Ptr[uint8] = cast[Ptr[uint8]](argv[ai])
@@ -849,6 +865,18 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             want_memnative = 0
         elif flag_eq(a, "--ssa-memmodel") != 0:
             want_memmodel = 1
+        elif flag_eq(a, "--ssa-keep-call") != 0:
+            keep_call = 1
+        elif flag_eq(a, "--ssa-keep-arity") != 0:
+            keep_arity = 1
+        elif flag_eq(a, "--ssa-keep-member") != 0:
+            keep_member = 1
+        elif flag_eq(a, "--ssa-keep-float") != 0:
+            keep_float = 1
+        elif flag_eq(a, "--ssa-keep-addr") != 0:
+            keep_addr = 1
+        elif flag_eq(a, "--ssa-keep-nonlocal") != 0:
+            keep_nonlocal = 1
         elif is_checkbounds_flag(a) != 0:
             # Opt-in userspace array-bounds checking. The dump driver always
             # emits a userspace (Linux exit_group) image, so it is the userspace
@@ -915,6 +943,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         # ssa_emit_program arms, so the census still measures the real subset.
         ssa_census_mem_native = want_memnative
         ssa_census_mem_model = want_memmodel
+        ssa_census_keep_call = keep_call
+        ssa_census_keep_arity = keep_arity
+        ssa_census_keep_member = keep_member
+        ssa_census_keep_float = keep_float
+        ssa_census_keep_addr = keep_addr
+        ssa_census_keep_nonlocal = keep_nonlocal
         ssa_run_program(prog)
         emit("SSA_FUNCS ")
         put_u32(ssa_stat_funcs)
