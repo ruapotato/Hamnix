@@ -44,14 +44,32 @@ def gc_collect():
         v_mark[i] = cast[uint8](0)
         i = i + 1
     # ---- ROOTS (wholesale over every value-bearing arena) ----
-    # EXTERNAL (embedder) handles: permanently pinned at the js_* API boundary
-    # (see ext_pin / v_pin). The embedder's own tables are invisible to this
-    # scan, so a cell it holds must never be recycled underneath it.
+    # EXTERNAL (embedder) handles pinned at the js_* API boundary (see ext_pin /
+    # v_pin): strength 1 permanent, strength 2 scoped to an in-flight host
+    # dispatch. Both must survive.
     pn: int32 = 0
-    while pn < v_pin_hi:
-        if v_pin[pn] != 0:
-            v_mark[pn] = cast[uint8](1)
-        pn = pn + 1
+    if ext_perm_of != 0:                   # list overflowed: scan the array
+        while pn < v_pin_hi:
+            if v_pin[pn] != 0:
+                v_mark[pn] = cast[uint8](1)
+            pn = pn + 1
+    else:
+        while pn < ext_perm_top:
+            gc_m(ext_perm[pn])
+            pn = pn + 1
+        pn = 0
+        while pn < ext_pj_top:
+            gc_m(ext_pj[pn])
+            pn = pn + 1
+    # EXTERNAL (embedder) TABLES: what the embedder is actually holding. The
+    # scoped pin above is released when a host dispatch returns, so this hook —
+    # not the pin — is what keeps a DOM wrapper the page still owns alive.
+    ext_mark_phase = 1
+    if ext_root_hook_set != 0:
+        erf: Fn[int32, int32] = cast[Fn[int32, int32]](ext_root_hook_addr)
+        erf(0)
+    ext_mark_phase = 0
+    gc_m(ext_last_result)              # result of the last host dispatch
     # explicit transient pins
     r: int32 = 0
     while r < gc_top:
@@ -520,6 +538,42 @@ def obj_gc_free(o: int32):
     obj_free_head = o
 
 
+# Mark the object named by pinned value cell `p`, if it names one.
+def ext_pin_note_obj(p: int32):
+    if p >= 0 and p < n_vals:
+        if cast[int32](v_tag[p]) == TAG_OBJ:
+            o: int32 = v_ref[p]
+            if o >= 0 and o < n_objs:
+                obj_pin[o] = cast[uint8](1)
+
+
+# Recompute obj_pin from the pinned VALUE cells: an object is externally pinned
+# exactly when some pinned cell still names it. ext_pin used to set obj_pin
+# directly, which could not be undone when the scoped half of the pin was
+# released — two pinned cells can name the same object, so clearing one cell's
+# pin must not clear the object's. Allocation-free, so it is also safe to call
+# from the census at arena exhaustion.
+def ext_pin_rebuild_objs():
+    i: int32 = 0
+    while i < n_objs:
+        obj_pin[i] = cast[uint8](0)
+        i = i + 1
+    p: int32 = 0
+    if ext_perm_of != 0:                   # list overflowed: scan the array
+        while p < v_pin_hi:
+            if v_pin[p] != 0:
+                ext_pin_note_obj(p)
+            p = p + 1
+        return
+    while p < ext_perm_top:
+        ext_pin_note_obj(ext_perm[p])
+        p = p + 1
+    p = 0
+    while p < ext_pj_top:
+        ext_pin_note_obj(ext_pj[p])
+        p = p + 1
+
+
 # Stop-the-world tracing mark-sweep of the OBJECT arena. SOUND at obj_new entry
 # (the only trigger) with gc_disabled == 0: at that moment every live object is
 # reachable from a root below — a pinned value handle, an arena slot, a raw-id
@@ -542,12 +596,23 @@ def gc_collect_objs():
         if obj_freed[r] != 0:
             obj_mark[r] = cast[uint8](1)
         r = r + 1
-    # EXTERNAL (embedder) handles: permanently pinned. See ext_pin in api.ad.
+    # EXTERNAL (embedder) handles. obj_pin is DERIVED from v_pin here rather
+    # than written by ext_pin: a scoped pin is released when its host dispatch
+    # returns, and two value cells can name the same object, so clearing one
+    # cell's pin must not clear the object's.
+    ext_pin_rebuild_objs()
     r = 0
     while r < n_objs:
         if obj_pin[r] != 0:
             obj_gc_m(r)
         r = r + 1
+    # EXTERNAL (embedder) TABLES: see the identical block in gc_collect().
+    ext_mark_phase = 2
+    if ext_root_hook_set != 0:
+        erf: Fn[int32, int32] = cast[Fn[int32, int32]](ext_root_hook_addr)
+        erf(0)
+    ext_mark_phase = 0
+    obj_gc_mv(ext_last_result)         # result of the last host dispatch
     # explicit transient value pins (the shared gc_root stack)
     r = 0
     while r < gc_top:
@@ -1067,6 +1132,7 @@ def js_arena_stat(which: int32) -> int32:
     # full of IMMORTAL embedder handles, and they need completely different
     # fixes. Without it, both read as n_objs == MAX_OBJ.
     if which == 54:
+        ext_pin_rebuild_objs()        # obj_pin is derived, not maintained
         pc: int32 = 0
         j: int32 = 0
         while j < n_objs:

@@ -38,7 +38,7 @@ from lib.htmlengine import he_layout, he_seg_color_hex, he_rgb_hex, \
     he_dom_is_submit, he_dom_field_form, he_dom_set_value_index, \
     he_dom_submit_index, he_dom_get_value, \
     he_css_reset, he_css_append, he_set_module_resolver, he_set_document_url
-from lib.jsengine import js_arena_stat
+from lib.jsengine import js_arena_stat, js_set_gc_stress
 
 
 # ---- tiny libc-free helpers ----------------------------------------
@@ -592,6 +592,15 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     if argc < 2:
         _writeall(2, cast[Ptr[uint8]]("usage: hambrowse_host FILE.html [WIDTH] [CLICK_ID]\n"))
         return 2
+    # HAMNIX_JS_GC_STRESS=1 collapses the collector's water marks so a
+    # collection fires every few allocations. It is the instrument for the DOM's
+    # EXTERNAL ROOT SET (_dom_gc_ext_roots in lib/web/dom/canvas.ad): a table
+    # missing from that hook is a use-after-free that a normal run almost never
+    # reaches, because a normal page never collects at all. Under stress it
+    # shows up on the first fixture. Must be set BEFORE js_init(), which reads
+    # it to pick its water marks.
+    if _env_is_set(argc, argv, cast[Ptr[uint8]]("HAMNIX_JS_GC_STRESS=")) != 0:
+        js_set_gc_stress(1)
     path: Ptr[char] = cast[Ptr[char]](argv[1])
     if _read_file(path) != 0:
         _writeall(2, cast[Ptr[uint8]]("hambrowse_host: cannot open file\n"))

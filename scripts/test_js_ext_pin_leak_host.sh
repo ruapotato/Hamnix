@@ -56,10 +56,38 @@ mkdir -p "$OUT"
 # on the next property access. That is a fifth silent cap on top of the four
 # arena ceilings, and it is why this probe must stay under it: a probe that
 # trips a DIFFERENT limit measures that limit instead of the one it names.
+#
+# RE-BANKED 2026-08-05, after ext_pin was split into a scoped pin plus an
+# enumerated embedder root set (see the note above ext_pin). The pinned set
+# stopped being a function of what the page does:
+#     20,000 dropped AbortControllers  objpinned 40,600 -> 596
+#      8,000 dropped detached <div>s   objpinned 24,600 -> 596
+# 596 is the DOM's own permanent set (prototypes, document, window) and does not
+# move with N.
+#
+# WHY THERE IS ALSO A LIVE-OBJECT CEILING NOW. objpinned alone can no longer
+# carry this gate: retention MOVED from the pin to the root hook, so a table the
+# hook marks conservatively (cre_obj, dom_obj, ...) retains objects that
+# objpinned does not count. Reading only objpinned would score that as a fix.
+# The LIVE object total (plain+array+func+symbol) is the honest number and is
+# what a future reclamation fix has to move.
 N_AC=20000
 N_EL=8000
-CEILING_AC=41000        # objpinned after 20k dropped AbortControllers
-CEILING_EL=25500        # objpinned after 8k dropped detached <div>s (~3.07 each)
+#
+# AND WHAT IS STILL OPEN, said plainly: only the AbortController number fell.
+#     AbortController  live objects 41,391-ish -> 4,431 of 48,000, and one
+#         collection reclaims 37,008. The controllers are genuinely dead and
+#         are genuinely reclaimed.
+#     detached <div>   live objects 25,439 and ZERO collections. A created node
+#         is still immortal — not because of the pin any more, but because the
+#         DOM's own cre_obj / dom_obj tables keep every node it ever made, and
+#         the root hook faithfully reports that. Reclaiming those needs a
+#         DETACH path in the DOM, which is a separate open item.
+# Reading only objpinned would score the second case as fixed. It is not.
+CEILING_AC=1000         # objpinned after 20k dropped AbortControllers
+CEILING_EL=1000         # objpinned after 8k dropped detached <div>s
+CEILING_AC_LIVE=5000    # LIVE objects, same probe
+CEILING_EL_LIVE=26000   # LIVE objects, same probe — still the open half
 
 echo "$TAG compiling engine for x86_64-linux ..."
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_adder_bin.sh"
@@ -85,6 +113,16 @@ read_stat() {   # $1 = out file, $2 = key
     sed -n 's/.*[^a-z]'"$2"'=\([0-9]*\).*/\1/p' "$1" | head -1
 }
 
+# LIVE objects = every arena slot the collector could not reclaim, by kind.
+# n_objs is an EXTENT and never falls, so it cannot answer this.
+read_live() {   # $1 = out file
+    local a b c d
+    a=$(read_stat "$1" objplain);  b=$(read_stat "$1" objarray)
+    c=$(read_stat "$1" objfunc);   d=$(read_stat "$1" objsym)
+    [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ] || return 1
+    echo $((a + b + c + d))
+}
+
 rc=0
 
 probe ac "$N_AC" 'var c = new AbortController(); sink += c.signal ? 1 : 0;'
@@ -106,24 +144,39 @@ fi
 EL=$(read_stat "$OUT/extpin_el.out" objpinned)
 [ -n "$EL" ] || { echo "$TAG INCONCLUSIVE: no ARENA census line in the probe output."; exit 125; }
 
-echo "$TAG $N_AC dropped AbortControllers -> objpinned=$AC (ceiling $CEILING_AC)"
-echo "$TAG $N_EL dropped detached <div>s  -> objpinned=$EL (ceiling $CEILING_EL)"
+ACL=$(read_live "$OUT/extpin_ac.out")
+ELL=$(read_live "$OUT/extpin_el.out")
+[ -n "$ACL" ] && [ -n "$ELL" ] || {
+    echo "$TAG INCONCLUSIVE: the census did not report live objects by kind."; exit 125; }
+
+echo "$TAG $N_AC dropped AbortControllers -> objpinned=$AC (ceiling $CEILING_AC), live=$ACL (ceiling $CEILING_AC_LIVE)"
+echo "$TAG $N_EL dropped detached <div>s  -> objpinned=$EL (ceiling $CEILING_EL), live=$ELL (ceiling $CEILING_EL_LIVE)"
 
 if [ "$AC" -gt "$CEILING_AC" ]; then
-    echo "$TAG FAIL: the immortal set per dropped AbortController GREW."
+    echo "$TAG FAIL: the PINNED set per dropped AbortController GREW."
     rc=1
 fi
 if [ "$EL" -gt "$CEILING_EL" ]; then
-    echo "$TAG FAIL: the immortal set per dropped detached element GREW."
+    echo "$TAG FAIL: the PINNED set per dropped detached element GREW."
+    rc=1
+fi
+if [ "$ACL" -gt "$CEILING_AC_LIVE" ]; then
+    echo "$TAG FAIL: the UNRECLAIMED set per dropped AbortController GREW."
+    rc=1
+fi
+if [ "$ELL" -gt "$CEILING_EL_LIVE" ]; then
+    echo "$TAG FAIL: the UNRECLAIMED set per dropped detached element GREW."
     rc=1
 fi
 
 if [ "$rc" = 0 ]; then
-    echo "$TAG RESULT: PASS (leak did not worsen)"
-    echo "$TAG NOTE: these are not healthy numbers, they are BANKED ones. Every"
-    echo "$TAG   object counted here was dropped by the page and can never be"
-    echo "$TAG   reclaimed. See the comment above ext_pin in lib/web/js/api.ad."
+    echo "$TAG RESULT: PASS (the immortal set did not worsen)"
+    echo "$TAG NOTE: the AbortController numbers are now HEALTHY — the objects are"
+    echo "$TAG   reclaimed. The detached-element live count is NOT: the DOM's own"
+    echo "$TAG   cre_obj/dom_obj tables keep every node it ever made, so it is a"
+    echo "$TAG   banked ceiling on an OPEN item (a DOM detach path), not a target."
 else
-    echo "$TAG RESULT: FAIL — ext_pin's immortal set grew; see lib/web/js/api.ad."
+    echo "$TAG RESULT: FAIL — the immortal set grew; see ext_pin in lib/web/js/api.ad"
+    echo "$TAG   and _dom_gc_ext_roots in lib/web/dom/canvas.ad."
 fi
 exit $rc

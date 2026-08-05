@@ -1,0 +1,155 @@
+<!doctype html>
+<meta charset=utf-8>
+<title>ext roots</title>
+<!--
+  tests/fixtures/hambrowse_extroots.html — the sensitivity probe for the DOM's
+  EXTERNAL GC ROOT SET (_dom_gc_ext_roots in lib/web/dom/canvas.ad).
+
+  Every check here does the same three things:
+      1. make the DOM store a JS handle in one of ITS OWN Adder-side tables,
+      2. drop every JS-side reference to it and churn hard enough to force a
+         collection (run under HAMNIX_JS_GC_STRESS=1),
+      3. read it BACK through the DOM and prove it is still the same object.
+
+  Step 3 is the point. A missing root does not crash; it silently hands back a
+  recycled cell, so the only way to see it is to compare a value the DOM
+  returned before the collection with the one it returns after.
+-->
+<div id="host" class="a b" data-k="v" onclick="void 0">text</div>
+<div id="sink"></div>
+<canvas id="cv" width="40" height="20"></canvas>
+<script>
+var fails = [];
+function ck(name, cond) { if (!cond) fails.push(name); }
+
+// Force allocation churn between the "before" and "after" reads.
+function churn(n) {
+  var s = 0;
+  for (var i = 0; i < n; i++) {
+    var o = { a: i, b: [i, i + 1], c: function () { return i; } };
+    s += o.b[0] + o.c();
+  }
+  return s;
+}
+
+var host = document.getElementById("host");
+var sink = document.getElementById("sink");
+
+// --- dom_obj: the element wrapper itself -----------------------------------
+churn(400);
+ck("dom_obj identity", document.getElementById("host") === host);
+ck("dom_obj tag", host.tagName === "DIV");
+
+// --- dom_clsobj / clsown_*: the classList object ---------------------------
+var cl = host.classList;
+churn(400);
+ck("classList identity", host.classList === cl);
+ck("classList contents", host.classList.contains("a") && host.classList.contains("b"));
+
+// --- dsown_*: the dataset object -------------------------------------------
+var ds = host.dataset;
+churn(400);
+ck("dataset identity", host.dataset === ds);
+ck("dataset value", host.dataset.k === "v");
+
+// --- el.style: the CSSStyleDeclaration object ------------------------------
+var st = host.style;
+st.color = "red";
+churn(400);
+ck("style identity", host.style === st);
+ck("style value", host.style.color === "red");
+
+// --- attrc_*: the attributes NamedNodeMap ----------------------------------
+var am = host.attributes;
+churn(400);
+ck("attributes identity", host.attributes === am);
+ck("attributes id", host.getAttribute("id") === "host");
+
+// --- evl_fn: an addEventListener callback the page no longer references ----
+var beat = 0;
+host.addEventListener("hbtest", function () { beat = beat + 1; });
+churn(2000);
+var ev = document.createEvent("Event");
+ev.initEvent("hbtest", true, true);
+host.dispatchEvent(ev);
+ck("listener survived churn", beat === 1);
+
+// --- dom_on*_fn: the property-set handler form ------------------------------
+var beat2 = 0;
+host.onclick = function () { beat2 = beat2 + 1; };
+churn(2000);
+ck("onclick identity", typeof host.onclick === "function");
+
+// --- cre_obj: a created node kept only by the DOM tree ---------------------
+var made = document.createElement("span");
+made.id = "made";
+made.textContent = "kept";
+sink.appendChild(made);
+made = null;
+churn(2000);
+var back = document.getElementById("made");
+ck("created node survived", back !== null && back.textContent === "kept");
+
+// --- ihc_*: the innerHTML cache --------------------------------------------
+var h1 = sink.innerHTML;
+churn(600);
+ck("innerHTML stable", sink.innerHTML === h1);
+
+// --- g_cs_gpv: the cached getPropertyValue function -------------------------
+var cs = window.getComputedStyle(host);
+churn(600);
+ck("computed style readable", typeof window.getComputedStyle(host).getPropertyValue("color") === "string");
+
+// --- g_proto_range / g_proto_tw: interface prototypes -----------------------
+var rng = document.createRange();
+rng.selectNodeContents(host);
+churn(600);
+ck("range still works", rng.toString().length >= 0 && typeof rng.collapse === "function");
+var tw = document.createTreeWalker(document.body, 0xFFFFFFFF, null, false);
+churn(600);
+ck("treewalker still works", typeof tw.nextNode === "function");
+
+// --- g_cur_event / g_evpath / g_argv1: state live ACROSS a dispatch ---------
+// The handler allocates hard while the DOM is holding the event object and the
+// capture-path array in Adder globals, so a collection fires mid-dispatch.
+var seen = "";
+host.addEventListener("hbdeep", function (e) {
+  churn(2000);
+  seen = e.type + ":" + (e.target === host ? "self" : "other");
+});
+var ev2 = document.createEvent("Event");
+ev2.initEvent("hbdeep", true, true);
+host.dispatchEvent(ev2);
+ck("event object survived a mid-dispatch collection", seen === "hbdeep:self");
+
+// --- canv_ctxobj / cv_sstk_*: canvas context + its save() style stack -------
+var ctx = document.getElementById("cv").getContext("2d");
+ctx.fillStyle = "#112233";
+ctx.save();
+ctx.fillStyle = "#445566";
+churn(2000);
+ctx.restore();
+ck("canvas ctx identity", document.getElementById("cv").getContext("2d") === ctx);
+ck("canvas save/restore style", ctx.fillStyle === "#112233");
+
+// --- jshist_state: a pushState value -----------------------------------------
+if (window.history && history.pushState) {
+  history.pushState({ tag: "keep" }, "", "");
+  churn(2000);
+  ck("history state survived", history.state !== null && history.state.tag === "keep");
+}
+
+// --- mo_cb / mreg_target / mrec_*: MutationObserver --------------------------
+if (window.MutationObserver) {
+  var mo_hits = 0;
+  var mo = new MutationObserver(function (recs) { mo_hits += recs.length; });
+  mo.observe(sink, { childList: true });
+  churn(2000);
+  sink.appendChild(document.createElement("i"));
+  churn(600);
+  var taken = mo.takeRecords();
+  ck("mutation record survived", taken.length >= 1 && taken[0].target === sink);
+}
+
+console.log("EXTROOTS " + (fails.length === 0 ? "OK" : "FAIL " + fails.join(" | ")));
+</script>

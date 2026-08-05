@@ -617,7 +617,14 @@ def member_set(objv: int32, key_sid: int32, val: int32):
         mset_key_v = v_string_id(key_sid)
         mset_val_v = val
         mhf: Fn[int32, int32] = cast[Fn[int32, int32]](member_set_hook_addr)
+        # same external-pin scope as call_native's host branch: an innerHTML
+        # assignment builds a whole subtree of wrappers through js_new_object_v
+        # and every one of them used to be immortal.
+        ms_pj: int32 = ext_pj_top
+        ext_scope_depth = ext_scope_depth + 1
         ignore_mh: int32 = mhf(0)
+        ext_scope_depth = ext_scope_depth - 1
+        ext_scope_release(ms_pj)
         mset_in_hook = 0
 
 
@@ -1157,7 +1164,13 @@ def eval_expr(node: int32, env: int32) -> int32:
                 sv_nl: int32 = g_named_lookup_str
                 g_named_lookup_str = n_str[node]
                 nhf: Fn[int32, int32] = cast[Fn[int32, int32]](host_dispatch_addr)
+                # same external-pin scope as call_native's host branch
+                nl_pj: int32 = ext_pj_top
+                ext_scope_depth = ext_scope_depth + 1
                 nrv: int32 = nhf(g_named_lookup_nid)
+                ext_scope_depth = ext_scope_depth - 1
+                ext_last_result = nrv
+                ext_scope_release(nl_pj)
                 g_named_lookup_str = sv_nl
                 if tag_of(nrv) != TAG_UNDEF:
                     return nrv

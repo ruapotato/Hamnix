@@ -1058,6 +1058,23 @@ bash scripts/test_jsengine_gc_retain_host.sh
 # bodies). Asserts the stress run is BYTE-IDENTICAL to the normal run and matches
 # expected, exercising every gc_push/gc_popto-pinned core interpreter site.
 bash scripts/test_jsengine_gc_stress_host.sh
+# scripts/test_js_ext_root_set_host.sh: QEMU-free gate on the DOM's EXTERNAL GC
+# ROOT SET. ext_pin used to keep every embedder-visible handle alive by pinning
+# it FOREVER, which was safe by construction and was the WPT object-arena wall.
+# The pin is now scoped to a host-native dispatch and what the DOM RETAINS is
+# kept by an enumerated hook (_dom_gc_ext_roots) — sound only if that hook is
+# COMPLETE, and a gap there is a use-after-free, not a leak. Runs a targeted
+# probe that stores a handle in each table, drops every JS reference, forces a
+# collection and reads it back through the DOM; plus a byte-identity sweep of
+# every scripted fixture under HAMNIX_JS_GC_STRESS=1. Verified in BOTH
+# directions: with the hook unregistered the probe goes red (the sweep alone
+# does NOT — it is too small to collect anything, which is why the probe exists).
+bash scripts/test_js_ext_root_set_host.sh
+# scripts/test_js_ext_pin_leak_host.sh: QEMU-free ratchet on the immortal set —
+# how many objects a page makes unreclaimable per unit of ordinary work. Was
+# never registered while it was measuring an OPEN leak; registered now that the
+# leak is fixed, because a ratchet nobody runs cannot hold a fix in place.
+bash scripts/test_js_ext_pin_leak_host.sh
 # scripts/test_jsengine_gc_phase2_host.sh: QEMU-free gate for Phase-2 GC — the
 # higher-order Array builtins (map/filter/reduce/reduceRight/forEach/some/every/
 # find/findIndex/findLast/findLastIndex/flatMap/sort/toSorted) are now root-pinned
