@@ -142,10 +142,18 @@ jobs:
         #   test_ssa_native_mem     — the native --opt lane must EMIT (not fall
         #     back on) address-taken scalars, `*p`, `p[i]`, local arrays and
         #     string literals, and must agree with -O0 on every answer.
+        #   test_ssa_bailsite_66_split — the old blended site 66 must stay
+        #     sub-attributed into 104 (`&x` really escaped) / 105 (legacy
+        #     regalloc slot-read hint, no address taken).  Re-blending them is
+        #     what made a 36.9% bucket read as one actionable target when it was
+        #     two constructs, neither worth anything alone.  It also re-checks
+        #     the fidelity corollary from the other side: the SAME fixtures must
+        #     be ACCEPTED with no lever, i.e. the census lane arms ssa_mem_native
+        #     exactly as ssa_emit_program does.
         # Host-only, no QEMU, a few seconds each.
         run: |
           fail=0
-          for t in test_ssa_census_fidelity test_ssa_native_mem ; do
+          for t in test_ssa_census_fidelity test_ssa_native_mem test_ssa_bailsite_66_split ; do
             echo "::group::$t"
             if bash "scripts/$t.sh"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
             echo "::endgroup::"

@@ -372,6 +372,30 @@ ssa_mem_model: uint32 = 0               # 1 => model local memory (LLVM path)
 # call shapes.  Two named models, each opened construct by measured construct,
 # is the maintainable direction.
 ssa_mem_native: uint32 = 0              # 1 => native local-memory model
+
+# ----- SUBSET LIFT levers (MEASUREMENT ONLY; see scripts/ssa_lift_diff.sh) ----
+# A bail-site histogram counts which gate fires FIRST, so it cannot size a
+# target: the old blended site 66 held 36.9% of all bails yet implementing it
+# alone moved the accepted subset 36.65% -> 36.78% (+27 of 21281 functions).
+# The only sound sizing is the counterfactual — lift the gate, re-run the whole
+# tree census, diff the ACCEPTED count.  These two levers make the memory-model
+# axis liftable at run time so that diff is reproducible rather than a number in
+# a report.
+#
+# They are read ONLY by ssa_run_program (the --dump-ssa ANALYSIS lane), and
+# their defaults reproduce exactly what ssa_emit_program arms, so an unflagged
+# census still measures the real --opt subset (the census-fidelity invariant
+# scripts/test_ssa_census_fidelity.sh pins).  ssa_emit_program sets
+# ssa_mem_model/ssa_mem_native explicitly and never consults these, so the real
+# emit lane cannot observe a lift and its byte output is unchanged by
+# construction — verified by emitting the whole bare-metal kernel under --opt
+# with and without this commit: same md5, from two compilers of different size.
+#
+# VALID FOR COUNTING ONLY.  Arming ssa_mem_model on the analysis lane leaves SVO
+# ops the x86 emitter has no lowering for, so that row is an UPPER BOUND on what
+# implementing the construct could unlock, never a promise.
+ssa_census_mem_native: uint32 = 1       # analysis-lane value for ssa_mem_native
+ssa_census_mem_model: uint32 = 0        # analysis-lane value for ssa_mem_model
 ssa_ismem: Array[256, uint32]           # 1 => name id is a memory-modeled local
 ssa_mem_addr: Array[256, uint32]        # its SVO_ALLOCA vid (the slot's i64 address)
 ssa_mem_esz: Array[256, uint32]         # scalar/element byte width (1/2/4/8)
@@ -5548,8 +5572,12 @@ def ssa_run_program(prog: uint32):
     # lane must apply the SAME subset gates ssa_emit_program applies, or the
     # instrument that picks the optimizer's next target measures a subset no
     # compiler ever emits.  ssa_emit_program sets both of these; mirror them.
-    ssa_mem_model = 0
-    ssa_mem_native = 1
+    # The ssa_census_* levers DEFAULT to exactly those values, so an unflagged
+    # census is unchanged; scripts/ssa_lift_diff.sh moves them to run the
+    # lift-and-diff counterfactuals (measurement only — ssa_emit_program never
+    # reads them).
+    ssa_mem_model = ssa_census_mem_model
+    ssa_mem_native = ssa_census_mem_native
     ssa_stats_reset()
     if prog == 0:
         return
