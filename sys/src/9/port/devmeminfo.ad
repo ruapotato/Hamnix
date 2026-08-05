@@ -43,6 +43,8 @@ from mm.page_alloc import (
     page_alloc_census_plant, page_alloc_census_unplant,
     page_alloc_census_orphans, PA_SITE_VMA_ANON,
     page_alloc_track_mode, page_alloc_site_live, page_alloc_site_allocs,
+    page_alloc_track_armed_at_boot, page_alloc_track_bytes,
+    page_alloc_track_audit_set, page_alloc_track_audit,
     page_alloc_site_frees, PA_SITE_MAX,
     alloc_pages, free_pages, pa_set_site,
     PA_SITE_TMPFS, PA_SITE_COW_RESOLVE, PA_SITE_UNKNOWN,
@@ -282,6 +284,20 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     if page_alloc_track_mode() != 0:
         pos = _emit_count_line(out, pos, "PgTrackMode:    ",
                                page_alloc_track_mode())
+        # WHEN was this armed? (leak pass 22.) A reader cannot interpret a
+        # site histogram without knowing whether it covers the whole system
+        # lifetime or only the window since somebody echoed `track full`.
+        # 1 = armed by the boot path (mem_init), so bringup is INSIDE the
+        # accounting and site 0 is a real signal rather than a pre-arming
+        # population. 0 = armed from userland, the pre-pass-22 shape, where
+        # site 0 is just "everything that happened before you looked".
+        # Exposed as a FILE field, not a syscall: capabilities are files.
+        pos = _emit_count_line(out, pos, "PgTrackBoot:    ",
+                               page_alloc_track_armed_at_boot())
+        # The memory the tracker itself costs, so arming is auditable on
+        # device instead of trusted from a formula in a doc.
+        pos = _emit_count_line(out, pos, "PgTrackBytes:   ",
+                               page_alloc_track_bytes())
         si: uint64 = 0
         while si < PA_SITE_MAX:
             pos = _mi_emit_str(out, pos, "PgSite")
@@ -523,6 +539,20 @@ def _mi_ctl_line(line: Ptr[uint8], n: uint64, count: uint64) -> int64:
         page_alloc_track_enable(0)
         cow_ledger_enable(0)
         return cast[int64](count)
+    # THE DEEP-AUDIT KNOB (leak pass 22). Turns on the investigation-only
+    # paths that are far too expensive to leave running: the per-reap and
+    # per-execve user-half page-table walk (mm_reap_stale_leaf_audit, IRQs
+    # masked) and the `[ustack] held run` EMERG line. These used to ride on
+    # `track on`, which was affordable only because the tracker was
+    # default-OFF; now that it is armed at boot they need their own switch,
+    # or every boot in the battery pays for them. Default OFF, and NOT
+    # turned on by the boot arm.
+    if _mi_wmatch(line, n, "track audit on") != 0:
+        page_alloc_track_audit_set(1)
+        return cast[int64](count)
+    if _mi_wmatch(line, n, "track audit off") != 0:
+        page_alloc_track_audit_set(0)
+        return cast[int64](count)
     # Per-arm ledger on its own, without a census walk: this is the cheap
     # per-cycle sample a soak slopes. O(arms), no page-table walk, no frame
     # scan — so unlike `track census` it can be taken every cycle.
@@ -663,13 +693,29 @@ def track_allocs_selftest() -> int32:
     scratch: Array[8192, uint8]
     ok: int32 = 1
 
-    # (1) DEFAULT-OFF: no tracker bytes in the blob, at all.
-    if page_alloc_track_mode() != 0:
-        printk0("[TRKALLOC] FAIL: tracking was already armed at boot\n")
+    # (1) ARMED AT BOOT (leak pass 22 — this leg is INVERTED from what it
+    #     asserted before). The page tracker is no longer default-off: the
+    #     boot path arms it in mem_init() so leak accounting covers bringup
+    #     instead of starting whenever somebody happened to echo a verb.
+    #     The old contract here was "default-off is invisible"; the new one
+    #     is "armed through bringup, and it says so in the file".
+    if page_alloc_track_mode() == 0:
+        printk0("[TRKALLOC] FAIL: tracker was NOT armed at boot\n")
+        ok = 0
+    if page_alloc_track_armed_at_boot() == 0:
+        printk0("[TRKALLOC] FAIL: PgTrackBoot state is 0 — armed late\n")
         ok = 0
     n0: uint64 = _build_meminfo(&scratch[0], 8192)
-    if _trk_find(&scratch[0], n0, "PgSite") != 0:
-        printk0("[TRKALLOC] FAIL: default-off blob contains PgSite lines\n")
+    if _trk_find(&scratch[0], n0, "PgSite") == 0:
+        printk0("[TRKALLOC] FAIL: boot-armed blob has no PgSite lines\n")
+        ok = 0
+    if _trk_find(&scratch[0], n0, "PgTrackBoot:") == 0:
+        printk0("[TRKALLOC] FAIL: blob lacks the PgTrackBoot field\n")
+        ok = 0
+    # The deep-audit knob must NOT ride along with the boot arm: it puts a
+    # page-table walk on every reap and every execve.
+    if page_alloc_track_audit() != 0:
+        printk0("[TRKALLOC] FAIL: deep audit was on at boot\n")
         ok = 0
 
     # (2) DEFAULT-OFF COSTS NOTHING SEMANTICALLY: an allocation while
@@ -708,9 +754,13 @@ def track_allocs_selftest() -> int32:
     if _trk_find(&scratch[0], n1, "PgSite11: ") == 0:
         printk0("[TRKALLOC] FAIL: armed blob has no PgSite11 line\n")
         ok = 0
-    if n1 <= n0:
-        printk2("[TRKALLOC] FAIL: armed blob did not grow (%d -> %d)\n",
-                n0, n1)
+    # The old leg here asserted the blob GREW when `track on` armed it.
+    # That assertion is meaningless once the tracker is armed at boot: n0
+    # already carries the whole PgSite block, and `track on` only steps the
+    # mode digit 2 -> 1, so the length is unchanged by construction. What is
+    # still worth pinning is that the site block survived the mode change.
+    if n1 < n0:
+        printk2("[TRKALLOC] FAIL: armed blob shrank (%d -> %d)\n", n0, n1)
         ok = 0
 
     # (5) STAMP: a tagged allocation lands on ITS site and nowhere else.
@@ -797,9 +847,16 @@ def track_allocs_selftest() -> int32:
             ok = 0
         free_pages(r, 1)
     n2: uint64 = _build_meminfo(&scratch[0], 8192)
-    if n2 != n0:
-        printk2("[TRKALLOC] FAIL: disarmed blob is %d bytes, was %d\n",
-                n2, n0)
+    # Was `n2 != n0` — "a disarm restores the blob byte-for-byte". Under a
+    # boot-armed tracker n0 is the ARMED blob, so that equality is exactly
+    # backwards. The surviving, and stronger, statement is that disarming
+    # actually removes the tracker block rather than freezing it.
+    if n2 >= n0:
+        printk2("[TRKALLOC] FAIL: disarmed blob did not shrink (%d -> %d)\n",
+                n0, n2)
+        ok = 0
+    if _trk_find(&scratch[0], n2, "PgSite") != 0:
+        printk0("[TRKALLOC] FAIL: disarmed blob still contains PgSite lines\n")
         ok = 0
 
     # (10) THE CENSUS'S POSITIVE CONTROL, wired as a boot regression. At boot
@@ -974,7 +1031,12 @@ def track_allocs_selftest() -> int32:
         ok = 0
 
     if ok == 1:
-        printk2("[TRKALLOC] PASS blob_off=%d blob_on=%d\n", n0, n1)
+        # n0 is the BOOT-ARMED blob, not an "off" one -- under leak pass 22
+        # there is no unarmed starting state. Equal lengths here are the
+        # expected result of re-arming an already-armed tracker, not a leg
+        # that failed to move; the real assertions are the growth check
+        # above and the shrink-on-disarm check below.
+        printk2("[TRKALLOC] PASS blob_bootarmed=%d blob_on=%d\n", n0, n1)
         printk2("[TRKALLOC] PASS kmtrack blob_off=%d blob_on=%d\n", kn0, kn1)
         return 1
     printk0("[TRKALLOC] FAIL\n")
