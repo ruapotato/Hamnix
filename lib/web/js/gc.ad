@@ -1053,4 +1053,37 @@ def js_arena_stat(which: int32) -> int32:
         return sp_top
     if which == 48:
         return SP_CAP
+    # ---- LIVE-OBJECT CENSUS BY KIND -------------------------------------
+    #  49 live plain  50 live array  51 live func  52 live symbol  53 free
+    # n_objs is an EXTENT, not an occupancy: it never falls, because the
+    # collector recycles slots through obj_free_head instead of compacting. So
+    # "n_objs == MAX_OBJ" says the arena was once full, not that it is full
+    # now, and it cannot say WHAT is holding it. Walking obj_freed/obj_kind is
+    # the only honest answer, and the arena wall is not diagnosable without it:
+    # a retention bug and a genuine working-set both read as n_objs == MAX_OBJ.
+    # O(n_objs) and allocation-free, so it is safe to call at exhaustion.
+    #  54 live objects carrying the permanent external pin (api.ad ext_pin).
+    # This is the number that says whether an arena is full of WORKING SET or
+    # full of IMMORTAL embedder handles, and they need completely different
+    # fixes. Without it, both read as n_objs == MAX_OBJ.
+    if which == 54:
+        pc: int32 = 0
+        j: int32 = 0
+        while j < n_objs:
+            if obj_freed[j] == 0 and obj_pin[j] != 0:
+                pc = pc + 1
+            j = j + 1
+        return pc
+    if which >= 49 and which <= 53:
+        want: int32 = which - 49          # 49->OK_PLAIN .. 52->OK_SYMBOL
+        cnt: int32 = 0
+        i: int32 = 0
+        while i < n_objs:
+            if which == 53:
+                if obj_freed[i] != 0:
+                    cnt = cnt + 1
+            elif obj_freed[i] == 0 and cast[int32](obj_kind[i]) == want:
+                cnt = cnt + 1
+            i = i + 1
+        return cnt
     return -1

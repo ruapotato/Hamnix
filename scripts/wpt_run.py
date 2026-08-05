@@ -232,7 +232,8 @@ def run_hamnix(rel, timeout, mode="separate", keep=None):
             rc = p.returncode
         except subprocess.TimeoutExpired:
             return {"harness": None, "harness_note": "engine wall-clock timeout",
-                    "subtests": [], "missing": missing, "rc": None}
+                    "subtests": [], "missing": missing, "rc": None,
+                    "truncated": "engine wall-clock timeout"}
         if keep:
             open(keep, "wb").write(payload)
         return parse_console(raw, missing, rc)
@@ -240,10 +241,45 @@ def run_hamnix(rel, timeout, mode="separate", keep=None):
         os.unlink(tmp)
 
 
+# ARENA EXHAUSTION -- the difference between a score and a memory reading.
+#
+# The engine's arenas are fixed-size BSS arrays. When one fills, the engine
+# says so (set_error) and the page STOPS PART-WAY THROUGH. Everything the file
+# had reported up to that instant still arrived on the console and was still
+# scraped, so a truncated run looks exactly like a complete one that happens to
+# have fewer subtests -- and its cut-off point gets banked in wpt_baseline.txt
+# as though it were conformance.
+#
+# It is not conformance, and it is not even stable: the collector's hi_water
+# adapts on low-yield collections, so allocating four more objects ANYWHERE
+# before the page runs moves the cut-off by ~100 subtests. On 2026-08-04 a
+# correct commit (D8) was reverted over a phantom "-140 passes" that was
+# entirely this effect. The number was a reading of the object arena, not of
+# the engine's correctness.
+#
+# So: detect it, record it, and say so loudly. This deliberately does NOT
+# change the score -- moving the floor is a separate decision -- it makes the
+# instrument declare when it was measuring memory instead of conformance.
+EXHAUST_RE = re.compile(
+    r"(object|environment|env|string|value|property|prop) pool exhausted"
+    r"|CEILING [a-z ]*exhausted"
+    r"|gc root stack overflow")
+
+
 def parse_console(raw, missing, rc):
     subtests, harness, note = [], None, None
     jserr = False
+    truncated = None
     for line in raw.splitlines():
+        # Only the ENGINE's own diagnostics count. A WPT#RESULT line carries a
+        # subtest name and an assertion message straight from the test file, so
+        # a test that merely mentions "pool exhausted" must not be able to
+        # forge a truncation verdict -- an instrument that can be spoofed by
+        # its own input is not an instrument.
+        if truncated is None and not line.startswith("JSLOG WPT#"):
+            m = EXHAUST_RE.search(line)
+            if m:
+                truncated = m.group(0)
         if line.startswith("JSERR"):
             jserr = True
             continue
@@ -262,7 +298,7 @@ def parse_console(raw, missing, rc):
         elif payload.startswith("Uncaught"):
             note = payload
     res = {"harness": harness, "harness_note": note, "subtests": subtests,
-           "missing": missing, "rc": rc}
+           "missing": missing, "rc": rc, "truncated": truncated}
     if harness is None and not subtests:
         res["harness_note"] = note or (
             "no WPT# output: engine produced no harness results"
@@ -428,6 +464,7 @@ def main():
     jf = open(args.jsonl, "w") if args.jsonl else None
     tot_p = tot_f = tot_o = 0
     files_ok = files_err = 0
+    truncated_files = []
     for i, rel in enumerate(sel):
         if args.engine == "chromium":
             r = run_chromium(rel, args.timeout, mode=mode)
@@ -444,7 +481,9 @@ def main():
         rec = {"test": rel, "area": area_of(rel), "engine": args.engine,
                "mode": mode, "harness": r["harness"], "note": r["harness_note"],
                "pass": p, "fail": f, "other": o, "subtests": r["subtests"],
-               "missing_src": r["missing"]}
+               "missing_src": r["missing"], "truncated": r.get("truncated")}
+        if r.get("truncated"):
+            truncated_files.append((rel, len(r["subtests"]), r["truncated"]))
         if jf:
             jf.write(json.dumps(rec) + "\n")
             jf.flush()
@@ -465,6 +504,15 @@ def main():
           % (args.engine, mode, len(sel), files_ok, files_err))
     print("[wpt] subtests=%d  PASS=%d  FAIL=%d  OTHER=%d  score=%.2f%%"
           % (tot, tot_p, tot_f, tot_o, 100.0 * tot_p / tot if tot else 0.0))
+    if truncated_files:
+        trunc_sub = sum(n for _, n, _ in truncated_files)
+        print("[wpt] TRUNCATED %d file(s), %d subtest(s): the engine ran out of "
+              "arena part-way through." % (len(truncated_files), trunc_sub))
+        print("[wpt]   These counts are a MEMORY READING, not a conformance "
+              "score. They move when anything before the page allocates.")
+        for rel, n, why in truncated_files:
+            print("[wpt]   %-64s stopped after %5d subtests (%s)"
+                  % (rel[-64:], n, why))
     return 0
 
 

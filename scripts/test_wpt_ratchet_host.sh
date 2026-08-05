@@ -90,6 +90,22 @@ if ! python3 scripts/wpt_run.py --all --quiet --jsonl "$JSONL" >"$OUT/wpt_run.lo
 fi
 tail -3 "$OUT/wpt_run.log"
 
+# ARENA-TRUNCATED FILES. A file the engine ran out of arena part-way through
+# still reports every subtest it reached, so its cut-off point lands in the
+# score and then in the baseline as if it were conformance. It is not: it is a
+# reading of the object arena, and it moves by ~100 subtests when anything
+# before the page allocates. That is what reverted D8. `tail -3` above would
+# scroll it away, so hoist it -- an instrument that knows it was measuring
+# memory has to say so where the number is read.
+if grep -q '^\[wpt\] TRUNCATED' "$OUT/wpt_run.log"; then
+    echo "$TAG ------------------------------------------------------------"
+    sed -n '/^\[wpt\] TRUNCATED/,$p' "$OUT/wpt_run.log" | sed "s|^|$TAG |"
+    echo "$TAG WARNING: the subtest counts above are NOT conformance scores."
+    echo "$TAG   Do not treat a delta on a truncated file as a regression or"
+    echo "$TAG   a fix until the file RUNS TO COMPLETION."
+    echo "$TAG ------------------------------------------------------------"
+fi
+
 lines="$(wc -l < "$JSONL")"
 if [ "$lines" -lt 100 ]; then
     echo "$TAG INCONCLUSIVE: only $lines test records produced (expected ~708);"

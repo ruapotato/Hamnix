@@ -456,6 +456,48 @@ def js_error_msg() -> Ptr[uint8]:
 # reclaimed — exactly the pre-Phase-5 status quo, a leak and never a corruption.
 # Objects created and dropped purely inside JS — the render-loop shape this
 # phase exists for — never cross the boundary and ARE reclaimed.
+# ---------------------------------------------------------------------------
+# MEASURED COST, 2026-08-04 — this pin is the WPT "object arena wall".
+#
+# The cost above was believed to be bounded by "the set that was already
+# immortal before Phase 5". It is not. It is linear in how much a page DOES,
+# because a native CONSTRUCTOR builds its result with js_new_object_v() and
+# every one of those crosses this boundary. Measured with the live-object
+# census added to js_arena_stat (indices 49-54, HAMNIX_JS_ARENA_STATS=1):
+#
+#   20,000 `new AbortController()`, all dropped  -> 40,600 objects PINNED,
+#       41,391 of 48,000 slots consumed, 48 reclaimable. 2 immortal objects
+#       per controller, and AbortController/AbortSignal are built purely out
+#       of js_new_object_v + js_set_prop — NO embedder table ever stores them,
+#       so the pin buys nothing and costs everything.
+#   20,000 `document.createElement("div")`, never inserted -> 25,176 pinned.
+#       A detached node the page has dropped can never be reclaimed.
+#   200,000 closures/objects/arrays allocated and dropped in pure JS -> live
+#       set FLAT, 37,004 freed in one collection. The collector is healthy;
+#       what it cannot touch is anything this function has marked.
+#
+# That is what ends a WPT file. testharness.js constructs an AbortController
+# per Test, so a page with NO DOM INTERACTION AT ALL — 4,000 trivial
+# test(function(){assert_true(true)}) calls — dies at 2,211 subtests, the same
+# wall as the Range files (1,925 / 2,019). The wall was attributed to
+# testharness.js retaining Test objects for its final report; that retention is
+# real but secondary (dropping the dead sub-objects buys 2,211 -> 2,652 and the
+# growth stays linear). The primary term is this pin.
+#
+# WHY THE OBVIOUS FIX IS NOT A ONE-LINER. The pin serves ONE case: an embedder
+# handle held in an Adder local across a re-entry into the engine. It is
+# applied to ALL cases because the boundary cannot tell them apart. Splitting
+# them needs both halves, and half a fix is a silent live-free:
+#   (1) transient handles -> the scoped gc_push/gc_popto temp-root stack that
+#       already exists, driven by an explicit embedder scope API (there is
+#       currently no "this embedder call is over" signal to unwind on);
+#   (2) persistent handles -> TRACE the embedder's own tables (dom_obj,
+#       dom_clsobj, dom_on*_fn, evl_fn, mo_cb, cv_sstk_*, mrec_attr,
+#       g_cur_event) as roots, which inverts the js/ -> dom/ layering and so
+#       needs a registered mark callback, not a direct reference.
+# Verify any attempt under gc_stress with the census, not with a WPT score:
+# the score is chaotic (see scripts/wpt_run.py, EXHAUST_RE).
+# ---------------------------------------------------------------------------
 # Returns its argument so it can wrap a return expression.
 def ext_pin(h: int32) -> int32:
     if h >= 4 and h < n_vals:          # 0..3 are singletons; never swept
