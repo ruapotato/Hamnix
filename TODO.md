@@ -332,15 +332,29 @@ fixed population as site 0 drains into the named sites — not growth of the mac
     frame in the machine was the planted control.
   **There is no measurable leak at hours scale.** Pass 20's "+41 pages of real growth"
   is fully retired; it was site 0 draining into named sites, exactly as pass 21 argued.
-- [~] **Arm the page tracker AT BOOT** — now the single remaining hole, and the run
-  named it precisely: all 9 `owner-unrecorded` survivors on arm 23 carry `site=0 va=0`,
-  i.e. they were allocated *before* `track full` armed the tracker, and `pa_set_owner`
-  is a no-op while disarmed (`mm/page_alloc.ad`). No owner COULD have been recorded.
-  That is a pre-arming population, not a discriminator hole — arming at boot empties it
-  and turns `owner-unrecorded` into a genuine signal. Dispatched.
-- [ ] **Arm the page tracker AT BOOT** — the single highest-value kernel change here.
-  It empties site 0 and thereby retires the re-attribution credit, the
-  owner-unrecorded population, and the per-site attribution gap all at once.
+- [x] **Arm the page tracker AT BOOT — DONE 2026-08-05 (`7f4a116f`).** `mem_init()` calls
+  `page_alloc_track_boot_arm()` after the counters are zeroed and before one frame
+  leaves the buddy allocator, so site 0 starts EMPTY and every per-site number is an
+  attribution rather than a difference of attributions. This retires the
+  re-attribution credit, the `owner-unrecorded` population, and the per-site
+  attribution gap at once. (The old entry was listed twice; both are this item.)
+  - Verified by the orchestrator on the shipped image under UEFI/OVMF, RED on main
+    first: `scripts/test_track_boot_armed.sh` rc=1 on unmodified main ("no `[trk]
+    boot-arm` marker"), PASS on the merge. The load-bearing number is **13063
+    cumulative allocs against 6698 live pages** — those 6365 allocated-and-freed
+    frames can only have been counted by a tracker already running during bringup.
+    Site 0 is **0.1%** of the live population; it was ~100% under late arming.
+  - **Boot is not slower** (the red line this work was not allowed to cross):
+    boot-to-handoff main 8s/8s/9s vs 7s/7s merged.
+  - Permanent cost, read off the device rather than trusted from a formula:
+    **3.24 MiB** of tracker arrays, 13.0 bytes/frame for 261632 frames, exposed as
+    `PgTrackBytes`. The deep-audit page-table walk does NOT ride along — it gates on
+    an explicit `track audit on`, default OFF, because it walks a task's user half
+    with IRQs masked on every reap and every execve.
+- [ ] **Re-run the leak census now that site 0 is empty.** Every re-attribution argument
+  in passes 20 and 21 was an argument about frames the tracker never saw allocated;
+  those arguments are now testable directly. Brief from the highest-numbered
+  `docs/leak_pass*.md`, not from memory.
 - Rule the campaign keeps re-learning: the trend arm thresholds on **resolution**,
   never on a rate tolerance. A sustained positive rate is unbounded by definition,
   so no threshold on it is defensible; a smaller floor is bought by running longer.
