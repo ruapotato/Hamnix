@@ -384,6 +384,28 @@ fixed population as site 0 drains into the named sites — not growth of the mac
 ---
 
 ## 2026-08-05 — open items found while verifying (orchestrator)
+- [ ] **Two orphaned agent branches hold real unmerged work — both need a rebase
+  agent, neither may be fast-merged.** Found by sweeping ALL branches with
+  `git log main..<b>` after the second session death. Both worktrees are CLEAN (no
+  hidden half-fix), and both were cut before main's most recent landings.
+  - `worktree-agent-a2c468f66677acd3e` — the SSA lift-and-diff measurement (see the
+    site-92 withdrawal below). Conflicts in `ssa_emit.ad`, `ssa_subset_census.py`.
+  - `worktree-agent-af65fb2b6bac6d09f` — 4 commits of real live-DOM fixes:
+    `select.value`/`.selectedIndex`/`option.selected` are ONE state (the two-writers
+    shape again — see [[feedback_two_writers_defect_shape]]), activation behaviour
+    fires `input`/`change` only when connected, `el.click()` runs activation
+    behaviour, and a script's own body is raw text. Conflicts in
+    `lib/web/dom/{bindings,canvas,query}.ad` and `tests/fixtures/livedom/BASELINE`.
+  - ⚠ **FIXTURE-NUMBER COLLISION — do not resolve the BASELINE conflict by taking
+    either side.** The branch adds `16_activation_behaviour`,
+    `17_select_selectedness`, `18_script_rawtext`; main independently landed
+    `16_classlist_attr_mirror`, `17_insertbefore_fragment`,
+    `18_parentnode_after_remove` at the same numbers. Taking the branch's side
+    DELETES three landed fixtures and their BASELINE rows while the gate still
+    reports a plausible count. Renumber the incoming three to 20/21/22 and rebuild
+    BASELINE from both sets. This is [[feedback_worktree_stale_base]] with a fresh
+    face: the collision is invisible to `git merge`, which sees only a text conflict.
+
 - [ ] **The `ADDER_OPT=1` lever assertions are ALL DEAD.** `rm -rf build/fuzz_ad_codegen;
   ADDER_OPT=1 bash scripts/fuzz_adder_diff.sh` exits rc=1 with **20** `never fired`
   corpus failures and every lever counter at zero (const-fold, CSE, LICM, DCE,
