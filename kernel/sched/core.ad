@@ -31,7 +31,7 @@ from mm.page_alloc import (
     page_alloc_census_orphans, PA_SITE_COW_RESOLVE,
     page_alloc_orphan_collect, page_alloc_orphan_va,
     page_alloc_orphan_phys, page_alloc_orphan_owner,
-    page_alloc_track_mode, page_alloc_owns,
+    page_alloc_track_mode, page_alloc_owns, page_alloc_track_audit,
     page_alloc_census_mplant_alloc, page_alloc_census_mplant_arm,
     page_alloc_census_mplant_clear, page_alloc_census_mplanted,
     page_alloc_census_mplant_va, page_alloc_census_mplant_slot,
@@ -9171,7 +9171,12 @@ def mm_reap_stale_leaf_audit(su: uint64):
     # _mm_census_walk_task: this dereferences another task's PDPT/PD/PT by
     # RAW PHYSICAL address, and on a UEFI boot those pages can land above
     # the live CR3's identity coverage (the observed cr2=0x3e63a000 #PF).
-    if page_alloc_track_mode() == 0:
+    # Gated on the DEEP-AUDIT knob, not on the tracker mode (leak pass 22).
+    # This walk runs per task reap AND per execve with IRQs masked; once the
+    # tracker is armed at boot, `mode != 0` is true on every boot and this
+    # would become an unconditional cost the whole test battery pays.
+    # `echo track audit on > /proc/meminfo` turns it back on.
+    if page_alloc_track_audit() == 0:
         return
     if task_table[su].cr3 == 0:
         return

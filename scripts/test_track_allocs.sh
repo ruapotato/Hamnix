@@ -21,9 +21,19 @@
 # sys/src/9/port/devmeminfo.ad — no shell round trip, so hamsh dropping
 # its first serial command cannot flake it):
 #
-#   * DEFAULT-OFF IS INVISIBLE. With tracking unarmed the /proc/meminfo
-#     blob contains no tracker bytes at all, and it returns to EXACTLY its
-#     original length after a disarm.
+#   * ARMED AT BOOT (leak pass 22 — this REPLACES the old "default-off is
+#     invisible" contract, which asserted the exact opposite). The page
+#     tracker is armed by mem_init() before a single frame leaves the buddy
+#     allocator, so leak accounting covers bringup rather than starting
+#     whenever somebody echoed a verb. The blob carries the PgSite block and
+#     a PgTrackBoot: 1 field from boot, and a `track off` still removes the
+#     block (it shrinks) — a disarm is a real disarm, it just is not the
+#     starting state any more.
+#   * THE DEEP AUDIT DOES NOT RIDE ALONG. mm_reap_stale_leaf_audit walks a
+#     task's user half on every reap and every execve with IRQs masked; it
+#     used to gate on "tracker armed", which was affordable only while that
+#     meant "off". It now needs `track audit on`, and this gate asserts it
+#     is OFF at boot.
 #   * DEFAULT-OFF IS FREE. An allocation made while tracking is off moves
 #     no counter. This is the measured half of the zero-cost claim (the
 #     other half is scripts/test_native_vs_seed_kobjdiff.sh plus a soak).

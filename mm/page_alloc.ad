@@ -401,6 +401,19 @@ PA_TRK_BOOT_MODE: uint64 = 2
 _pa_trk_mode:   uint64 = 0
 _pa_trk_armed_at_boot: uint64 = 0  # 1 = armed by mem_init, not by userland
 _pa_trk_bytes:  uint64 = 0         # memblock bytes the arrays hold
+_pa_trk_stale:  uint64 = 0         # 1 = counters drifted during an OFF window
+
+# THE DEEP-AUDIT KNOB (leak pass 22). Two expensive investigation-only paths
+# — mm_reap_stale_leaf_audit() (a 256-entry user-half page-table walk, under
+# boot CR3 with IRQs masked, on EVERY task reap and EVERY execve) and the
+# `[ustack] held run` EMERG printk — used to gate themselves on
+# `page_alloc_track_mode() != 0`. That was a fine proxy for "a human is
+# running a leak investigation" while the tracker was default-OFF. Arming at
+# boot destroys the proxy: it would put a per-reap and per-exec page-table
+# walk on every boot of every gate in the battery, which is exactly the
+# "must not measurably slow boot" line this work is not allowed to cross.
+# They now gate on an explicit opt-in that nothing turns on by default.
+_pa_trk_audit:  uint64 = 0
 _pa_trk_frames: uint64 = 0
 _pa_trk_site:   uint64 = 0         # byte per frame: site id
 _pa_trk_meta:   uint64 = 0         # uint32 per frame: order | owner << 4
@@ -592,6 +605,16 @@ def page_alloc_track_enable(mode: uint64) -> int32:
     # arrays (in which case tracking stays OFF rather than half-armed).
     if mode == 0:
         _pa_trk_mode = 0
+        # Going OFF makes the counters untrustworthy from here on. The buddy
+        # stamp/unstamp paths gate on the MODE, so across an off window
+        # allocations are not stamped and — worse — frees are not unstamped,
+        # while the per-frame site bytes persist. The live histogram
+        # therefore drifts, and a later free of a stale-stamped frame
+        # decrements a site that no longer owns it. Before pass 22 the
+        # unconditional re-baseline in this function papered over that on
+        # the way back up; now that the re-baseline is conditional, the
+        # drift has to be remembered explicitly.
+        _pa_trk_stale = 1
         return 1
     _pa_own_init()
     fresh: uint64 = 0
@@ -632,10 +655,20 @@ def page_alloc_track_enable(mode: uint64) -> int32:
     # the ARRAY, not the mode), so the live histogram stays true across an
     # off/on cycle and needs no re-baseline either. `track reset` is still
     # there for anyone who explicitly wants a new baseline.
-    if fresh != 0:
+    if fresh != 0 or _pa_trk_stale != 0:
         page_alloc_track_reset()
+        _pa_trk_stale = 0
     _pa_trk_mode = mode
     return 1
+
+
+def page_alloc_track_audit() -> uint64:
+    # 1 = the expensive investigation-only audits are enabled. Default 0.
+    return _pa_trk_audit
+
+
+def page_alloc_track_audit_set(v: uint64):
+    _pa_trk_audit = v
 
 
 def page_alloc_track_boot_arm():
@@ -2381,7 +2414,10 @@ def ustack_free_cow_safe(base: uint64, size: uint64, order: uint64):
     while off < rsize:
         if cow_refcount(base + off) > 0:
             _ustack_runs_held = _ustack_runs_held + 1
-            if page_alloc_track_mode() != 0:
+            # Deep-audit knob, not the tracker mode (leak pass 22): armed at
+            # boot, `mode != 0` would make this EMERG line permanent serial
+            # noise on every boot.
+            if _pa_trk_audit != 0:
                 printk_set_level(PRINTK_LEVEL_EMERG)
                 printk2("[ustack] held run %p: frame %p still COW-mapped\n",
                         base, base + off)
