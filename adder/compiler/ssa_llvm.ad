@@ -98,6 +98,7 @@ from compiler.ssa import (
     arg_count,
     ssa_prog_decls,
     ssa_mem_model,
+    ssa_mem_native,
     SVT_I1,
     SVT_F32,
     SVT_F64,
@@ -1859,6 +1860,9 @@ def llvm_emit_program(prog: uint32):
     # This gate is OFF for the native --opt path, which keeps those functions
     # bailing (byte-identical).
     ssa_mem_model = 1
+    # The native-only scalar-slot whitelist is subsumed by ssa_mem_model (which
+    # models strictly more); keep it OFF so the LLVM lane has exactly one gate.
+    ssa_mem_native = 0
     # Populate the codegen globals/enum/class tables so the SSA global-array /
     # scalar-global paths resolve (mirrors gen_program_with_globals' prefix, but
     # never emits code).

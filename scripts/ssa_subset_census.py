@@ -50,13 +50,34 @@ SBR = {
 # resolves it.  Site 34's residual is an upper bound, not a subset gap.
 SITE_NOTES = {
     34: "non-local ident: name unknown in this TU (see caveat in this file)",
-    66: "address-taken scalar local, native path (no alloca lowering)",
-    92: "memory model",
+    47: "obj.field member access (needs struct typing on the native path)",
+    56: "local Array[N,T] (no memory model armed)",
+    63: "float scalar local (SSE, native path)",
+    66: "RETIRED 2026-08-05 -- was 'address-taken scalar local, native path'; "
+        "split into 104/105 and then MODELLED (see ssa_mem_native)",
+    79: "call with >6 arguments (native SysV round-trip spills 6)",
+    92: "callee is not a provably resolvable direct-call symbol (whitelist)",
     100: "non-local ident: aggregate/array global",
     101: "non-local ident: Percpu[T] scalar, native path",
     102: "non-local ident: Percpu[aggregate]",
     103: "non-local ident: bare function name (address decay)",
+    104: "non-promotable scalar: TRUE `&x` escape (cl_set)",
+    105: "non-promotable scalar: slot-read only, address never escapes",
 }
+
+# READ THIS BEFORE PICKING A TARGET FROM THE HISTOGRAM BELOW.
+#
+# The per-site counts are FIRST-BAIL counts: ssa_build_function stops at the
+# first gate a function trips, so a site's share is an UPPER BOUND on what
+# closing it can win, never the win itself.  Measured 2026-08-05: site 66 was
+# 36.9% of all bails and the largest single gap.  Implementing it alone moved
+# the accepted subset 36.65% -> 36.78% (+27 of 21281 functions), because the
+# same functions immediately re-bailed at `*p` / `p[i]` / a local array / a
+# string literal.  Opening those together took it to 61.15%.
+#
+# So read a hot site as "which CLUSTER of constructs is in the way", and close
+# the cluster.  Then re-measure -- the histogram after a landing looks nothing
+# like the histogram before it.
 
 
 def sources(kernel_only):
