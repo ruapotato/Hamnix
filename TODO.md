@@ -201,25 +201,63 @@ The one remaining failure is `06_class_style_toggle`, deferred on purpose
       - The 58 `Range-comparePoint` subtests were **not conformance at all** —
         see the arena-wall item below. A correct commit was reverted over a
         memory reading.
-- [ ] **★ OPEN — the WPT object-arena wall: banked numbers that are a memory
-      reading, not a score.** `testharness.js` holds every `Test` object live for
-      its final report, so the live set is **linear in subtest count**. At
-      `MAX_OBJ=40000`, `Range-comparePoint.html` and `Range-intersectsNode.html`
-      exhausted the pool and were **cut off mid-run** at 1477 and 1684 subtests —
-      and those cut-off points were banked in `wpt_baseline.txt` as if they were
-      conformance. The reading is chaotic: the collector's `hi_water` adapts on
-      low-yield collections, so allocating **four more objects anywhere before
-      the page runs** moves the cut-off by ±100 subtests. Any change that
-      allocates at startup therefore "regresses" ~140 banked passes while fixing
-      and breaking nothing — which is exactly what forced D8's revert.
-      `MAX_OBJ 40000 → 48000` (+4.1 MB BSS, 164.9 → 168.9 MB) buys **headroom,
-      not completion**: the two files now reach 2019 and 1925 subtests against
-      chromium's 2356 and 5580, each a prefix of chromium's own subtest order.
-      **Range-comparePoint is still cut off at ~34%, and no constant fixes that.**
-      The real fix is a **streaming report or a per-test object budget** so the
-      live set stops growing with subtest count. Until then: before treating any
-      baseline delta as conformance, check whether the file RAN TO COMPLETION.
-      *(Also note the BSS cost is charged on-device, not just on the host.)*
+- [ ] **★★★ OPEN — the WPT arena wall is `ext_pin`, and 44% of measured subtests
+      never run to completion.** Root-caused + instrumented 2026-08-04
+      (`a40f0af9`); orchestrator-reverified (ratchet PASS, 15433 = 15433, BSS +0).
+      **The framing below THIS line is the corrected one — the previous entry
+      blamed `testharness.js` report retention and BOTH of its proposed fixes
+      were measured and rejected.**
+      - **Cause: `ext_pin` (`lib/web/js/api.ad`) pins FOREVER every object handle
+        crossing the `js_*` boundary.** Native *constructors* build their results
+        with `js_new_object_v()`, so the immortal set is **linear in what the page
+        DOES**, not in what the embedder retains. Clinching experiment: a page
+        with **zero DOM interaction** — 4000 trivial
+        `test(function(){assert_true(true)})` calls — dies at **2211 subtests**,
+        the same wall as the Range files. 20 000 dropped `AbortController`s leave
+        **40 600 objects immortal** (41 391 of 48 000 slots); 200 000 closures
+        dropped in pure JS leave the live set **flat** (37 004 freed in one
+        collection). The collector is healthy; it cannot touch what `ext_pin`
+        marked. testharness builds one `AbortController` per `Test` — which is why
+        a DOM-free page hits a DOM-shaped wall — and AbortController/AbortSignal
+        are built from `js_new_object_v` + `js_set_prop` alone, so **no embedder
+        table holds them and the pin protects nothing**.
+      - **Both previously-briefed fixes are DEAD.** (a) The streaming report
+        **already exists** (`tests/wpt/hamnix_testharnessreport.js` streams via
+        `add_result_callback`); neutering its buffer moved 1925→1917 / 2019→2130,
+        inside the noise. The residual retainer is inside vendored
+        `testharness.js`, which must stay byte-identical. (b) A per-test object
+        budget is a **live-free** — the naive version drops the suite from 2211
+        subtests to **1**; the safe subset buys only 2211→2652 and stays linear.
+      - **`MAX_OBJ` is not the lever and no constant is:** 48000 → 1925/2019,
+        40000 → 1590/1612 — pure functions of a constant. (The "1477/1684 at
+        40000" previously recorded here was itself stale — same drift.)
+      - **The real fix needs BOTH halves, and half of it is a silent live-free:**
+        (1) transient handles → the scoped `gc_push`/`gc_popto` temp-root stack
+        that already exists, driven by an explicit embedder-scope API (there is
+        currently **no** "this embedder call is over" signal to unwind on);
+        (2) persistent handles → **trace** the embedder's own tables (`dom_obj`,
+        `dom_clsobj`, `dom_on*_fn`, `evl_fn`, `mo_cb`, `cv_sstk_*`, `mrec_attr`,
+        `g_cur_event`) as roots — which inverts the `js/` → `dom/` layering and so
+        needs a **registered mark callback**, not a direct reference.
+        Verify any attempt under `gc_stress` **with the census, not a WPT score**.
+      - [ ] **★ 42 of 706 files — 8044 of 18 422 subtests (44%) — do not run to
+        completion**, across **FOUR** ceilings, not one: **22** `gc root stack
+        overflow` (clustered on `dom/nodes/moveBefore/*` — a stuck-open root and a
+        real bug shape, own item), **13** string pool, **10** object pool, plus
+        engine wall-clock timeout. **24 produce ZERO subtests** and had been
+        sitting unexplained in the "no results" bucket. **So the banked floor
+        15433 is substantially a memory reading.** A fifth silent cap surfaced:
+        `document.createElement` has a hard per-page **`CRE_MAX=8192`**.
+      - **Now instrumented, so this can never silently recur:** the live-object
+        census (`js_arena_stat` 49-54, `HAMNIX_JS_ARENA_STATS=1` — `n_objs` is an
+        **extent** that never falls, so a retention bug and a genuine working set
+        both read as `n_objs == MAX_OBJ`, and nothing was diagnosable until the
+        arena could say what held it); truncation detection in `wpt_run.py`,
+        hoisted **above** the ratchet's PASS line and hardened so a test's own
+        output cannot forge the verdict; `scripts/test_js_ext_pin_leak_host.sh`
+        ratcheting the immortal set.
+      - **Standing rule:** before treating any baseline delta as conformance,
+        check whether the file RAN TO COMPLETION — the ratchet now prints this.
 - [x] ~~**D8 CLOSED 2026-08-04** (`179eac42`)~~ — fixture `14`'s inline
       `onclick=` never ran because the content attribute and the IDL attribute
       were **two writers for one piece of state** (the sixth instance of the
