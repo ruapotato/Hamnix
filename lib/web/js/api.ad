@@ -545,6 +545,27 @@ def js_error_msg() -> Ptr[uint8]:
 # cells can name the same object and clearing one cell's pin must not clear the
 # other's.
 # ---------------------------------------------------------------------------
+# WHAT THE SPLIT DID NOT MOVE, AND WHAT IS *NOT* THE NEXT LEVER, 2026-08-05.
+#
+# Retention moved from the pin to the root hook, and the immediate suspicion was
+# that the hook's node tables (cre_obj / stx_obj / dom_obj) had simply inherited
+# the leak: 8,000 dropped `document.createElement("div")` leave 25,439 live
+# objects and zero collections, so "the DOM keeps every node it ever made" was
+# logged as the open item and a DOM DETACH PATH as the fix.
+#
+# MEASURED, and it is not. js_arena_stat 55-58 (js_obj_reachable_census in
+# gc.ad) runs the collector's own roots and closure WITHOUT sweeping, with the
+# node stores omitted, so the difference is exactly the set a perfect detach
+# path could reclaim. It is 23,997 of 25,391 — 94.5% — on that probe, and:
+#     4,000 trivial test(), no DOM at all          0 of 47,606   0.0%
+#     4,000 test() + create/append/remove each 5,679 of 47,417  12.0%
+#     4 of the 5 WPT files that die "object pool exhausted"     0.0%
+# A page that does nothing but createElement is created nodes by construction;
+# the probe was measuring itself. The wall on a real page is testharness.js's
+# own LIVE graph (~22 reachable objects per Test) against MAX_OBJ, which is what
+# the note above already says. scripts/test_js_dom_store_share_host.sh holds the
+# table and gates the ceilings so this cannot be re-briefed from memory.
+# ---------------------------------------------------------------------------
 # Returns its argument so it can wrap a return expression.
 def ext_pin(h: int32) -> int32:
     if h >= 4 and h < n_vals:          # 0..3 are singletons; never swept

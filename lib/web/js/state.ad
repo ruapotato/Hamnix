@@ -129,6 +129,18 @@ ext_root_hook_addr: uint64 = 0
 ext_root_hook_set: int32 = 0
 ext_mark_phase: int32 = 0         # 0 = not collecting, 1 = value pass, 2 = object pass
 
+# COUNTERFACTUAL CENSUS SELECTOR — measurement only, never set during a real
+# collection. When non-zero, the embedder's root hook is asked to OMIT a named
+# subset of its tables, so a mark-only pass can answer "how many live objects
+# are held up by THAT TABLE ALONE" instead of guessing. Bit 1 = omit the
+# created-node stores (cre_obj / stx_obj), bit 2 = omit dom_obj. See
+# js_obj_reachable_census in gc.ad and _dom_gc_ext_roots in dom/canvas.ad.
+#
+# It exists because "cre_obj/dom_obj keep every node the DOM ever made" is a
+# claim about REACHABILITY, and the live-object total cannot distinguish a node
+# retained only by those tables from one the page still references.
+ext_census_skip: int32 = 0
+
 
 # Record a newly-PERMANENT pin on the compact list (see EXT_PERM_CAP). Called
 # only on the 0/2 -> 1 transition, so a handle appears at most once.
