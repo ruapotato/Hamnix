@@ -290,7 +290,18 @@ def call_native(id: int32, thisv: int32, base: int32, argc: int32) -> int32:
             hostcall_argc = argc
             hostcall_this = thisv
             hf: Fn[int32, int32] = cast[Fn[int32, int32]](host_dispatch_addr)
+            # EXTERNAL PIN SCOPE. This return is the ONE point where every Adder
+            # frame that could be holding a JS handle in a local has provably
+            # unwound, so it is where the handles this dispatch made can stop
+            # being immortal. Everything the embedder RETAINED is kept instead
+            # by its root hook (js_set_ext_root_hook). See ext_pin in api.ad —
+            # this pairing is the fix for the WPT object-arena wall.
+            s_pj: int32 = ext_pj_top
+            ext_scope_depth = ext_scope_depth + 1
             hrv: int32 = hf(id)
+            ext_scope_depth = ext_scope_depth - 1
+            ext_last_result = hrv       # rooted until the interpreter stores it
+            ext_scope_release(s_pj)
             hostcall_base = s_base
             hostcall_argc = s_argc
             hostcall_this = s_this

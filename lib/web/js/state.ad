@@ -59,14 +59,97 @@ gc_collections: int32 = 0         # total collections this run (stats/debug)
 # 200,000 turns of churn silently lost an addEventListener handler whose cell
 # had been recycled underneath evl_fn.
 #
-# Every handle crossing the js_* API boundary therefore pins its VALUE CELL
-# permanently, the same way it pins its object. A pinned cell is never swept, so
-# nothing an embedder holds can be recycled underneath it, and no per-call-site
-# audit in another module can be wrong. The cost is a leak bounded by the number
-# of distinct handles the embedder ever touched — which is exactly the set that
-# was already immortal before Phase 5.
-v_pin: Array[1000000, uint8]      # 1 = permanently rooted (handle crossed the js_* API)
+# Every handle crossing the js_* API boundary therefore pins its VALUE CELL,
+# the same way it pins its object. A pinned cell is never swept, so nothing an
+# embedder holds can be recycled underneath it.
+#
+# 2026-08-05: that pin used to be PERMANENT for every handle, and that was the
+# WPT object-arena wall (see the long note above ext_pin in api.ad). It is now
+# SCOPED for the handles created inside a host-native dispatch, which is where
+# the unbounded term lived. Two pin strengths share this array:
+#
+#   1 = PERMANENT. Taken outside any host-native dispatch: engine setup, the
+#       DOM's prototype/interface construction, js_call_fn from an embedder
+#       event turn. These are O(page), not O(work).
+#   2 = SCOPED. Taken inside a host-native dispatch and released when that
+#       dispatch returns (ext_scope_release). The embedder's own tables are
+#       kept alive instead by the EXTERNAL ROOT HOOK below, which is what makes
+#       dropping these safe: a handle the embedder actually retained is marked
+#       from the table that retains it, not from the fact that it once crossed
+#       the boundary.
+v_pin: Array[1000000, uint8]      # 0 = unpinned, 1 = permanent, 2 = scoped
 v_pin_hi: int32 = 0               # highest pinned index + 1 (bounds the js_init clear)
+
+# ---- SCOPED EXTERNAL PIN: the journal ------------------------------------
+# ext_pin appends every handle it pins with strength 2 here; a host dispatch
+# records ext_pj_top on entry and releases back to it on return. Nesting is a
+# plain stack: an inner dispatch can only release what it itself pinned, so a
+# handle the OUTER embedder frame is still holding (pinned below the inner
+# mark) survives.
+#
+# OVERFLOW IS SAFE BY DESIGN: past the cap ext_pin falls back to a PERMANENT
+# pin, which is the pre-2026-08-05 behaviour — a leak, never a live-free.
+EXT_PJ_CAP: int32 = 262144
+ext_pj: Array[262144, int32]      # journal of scope-pinned value handles
+ext_pj_top: int32 = 0
+ext_scope_depth: int32 = 0        # >0 while inside a host-native dispatch
+
+# ---- SCOPED EXTERNAL PIN: the permanent side ------------------------------
+# The pinned set used to be found by scanning v_pin[0..v_pin_hi), which was
+# affordable only because collections were rare. Now that the object collector
+# actually runs on an ordinary page, that scan is up to a million bytes on
+# EVERY collection, three times over (value roots, object roots, obj_pin
+# rebuild). Both pin strengths are therefore also kept as compact LISTS —
+# ext_perm for strength 1, ext_pj above for strength 2 — and the collectors walk
+# those. v_pin stays as the O(1) strength lookup.
+#
+# On overflow ext_perm_of latches and the collectors fall back to the full
+# v_pin_hi scan, so the cap is a performance bound, never a correctness one.
+EXT_PERM_CAP: int32 = 65536
+ext_perm: Array[65536, int32]     # handles carrying the PERMANENT pin
+ext_perm_top: int32 = 0
+ext_perm_of: int32 = 0            # 1 = list overflowed; scan v_pin instead
+# The value a just-finished host dispatch returned. It is unpinned by the
+# release, and its consumer (the interpreter) does not root it until it stores
+# it, so it is rooted here for that window. Overwritten by the next dispatch,
+# by which time the previous one's result has been consumed.
+ext_last_result: int32 = 0
+
+# ---- EXTERNAL ROOT HOOK ---------------------------------------------------
+# The embedder registers a callback (js_set_ext_root_hook) that walks ITS OWN
+# tables and calls js_ext_mark_root(h) for every JS handle it is holding. The
+# GC calls it once per collection, in both the value and the object pass; the
+# phase below selects which marker js_ext_mark_root routes to. Stored as a raw
+# address for the same elf32 relocation reason as host_dispatch_addr.
+#
+# This is the half of the split that makes the scoped pin sound. A table the
+# hook forgets is a live-free, so the hook is the load-bearing audit — see
+# _dom_gc_ext_roots in lib/web/dom/canvas.ad.
+ext_root_hook_addr: uint64 = 0
+ext_root_hook_set: int32 = 0
+ext_mark_phase: int32 = 0         # 0 = not collecting, 1 = value pass, 2 = object pass
+
+
+# Record a newly-PERMANENT pin on the compact list (see EXT_PERM_CAP). Called
+# only on the 0/2 -> 1 transition, so a handle appears at most once.
+def ext_perm_note(h: int32):
+    if ext_perm_top < EXT_PERM_CAP:
+        ext_perm[ext_perm_top] = h
+        ext_perm_top = ext_perm_top + 1
+    else:
+        ext_perm_of = 1
+
+
+# Release every SCOPED pin taken above journal slot `mark` (paired with a
+# `save = ext_pj_top` at dispatch entry). A handle promoted to a permanent pin
+# in the meantime (strength 1) is left alone.
+def ext_scope_release(mark: int32):
+    while ext_pj_top > mark:
+        ext_pj_top = ext_pj_top - 1
+        h: int32 = ext_pj[ext_pj_top]
+        if h >= 0 and h < MAX_VAL:
+            if cast[int32](v_pin[h]) == 2:
+                v_pin[h] = cast[uint8](0)
 
 
 # Pin a value handle so a collection triggered during a nested allocation cannot

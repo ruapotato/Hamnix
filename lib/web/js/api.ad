@@ -28,6 +28,12 @@ def js_init():
         v_pin[vpc] = cast[uint8](0)
         vpc = vpc + 1
     v_pin_hi = 0
+    ext_pj_top = 0                 # the scoped-pin journal dies with the run
+    ext_perm_top = 0
+    ext_perm_of = 0
+    ext_scope_depth = 0
+    ext_last_result = 0
+    ext_mark_phase = 0
     # Phase-3 env-arena GC: fresh free lists + pin stack every run. gc_stress
     # persists (set once by the embedder after js_init); env_hi_water resets to
     # base so a non-stress run starts from the near-ceiling water mark.
@@ -476,6 +482,17 @@ def js_error_msg() -> Ptr[uint8]:
 #       set FLAT, 37,004 freed in one collection. The collector is healthy;
 #       what it cannot touch is anything this function has marked.
 #
+# [SUPERSEDED 2026-08-05 by THE SPLIT below, which is implemented. Two of this
+#  block's claims did NOT survive being fixed, and they are corrected there:
+#  (a) "that is what ends a WPT file" — it is not. With the pin gone the
+#      DOM-free 4,000-test page still stops at 2,162 subtests (it was 2,211).
+#      What ends that file is testharness.js's own live retention, ~22 objects
+#      per Test that ARE reachable and that no collector may free.
+#  (b) the "no signal to unwind on" in the paragraph below — the host-native
+#      dispatch return is exactly that signal.
+#  The measurements themselves stand and are reproduced by
+#  scripts/test_js_ext_pin_leak_host.sh.]
+#
 # That is what ends a WPT file. testharness.js constructs an AbortController
 # per Test, so a page with NO DOM INTERACTION AT ALL — 4,000 trivial
 # test(function(){assert_true(true)}) calls — dies at 2,211 subtests, the same
@@ -498,16 +515,54 @@ def js_error_msg() -> Ptr[uint8]:
 # Verify any attempt under gc_stress with the census, not with a WPT score:
 # the score is chaotic (see scripts/wpt_run.py, EXHAUST_RE).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE SPLIT, 2026-08-05. Both halves landed together, because half of it is a
+# silent live-free:
+#
+#   (1) TRANSIENT handles are now SCOPED. Every handle ext_pin marks while a
+#       HOST-NATIVE DISPATCH is in flight is journalled and released when that
+#       dispatch returns (state.ad: ext_pj / ext_scope_release, driven from
+#       call_native in builtins/collections.ad). The dispatch return IS the
+#       "this embedder call is over" signal the note above said did not exist:
+#       it is the one place where every Adder frame that could be holding a
+#       handle in a local has provably unwound. Nesting is a stack, so an outer
+#       native's locals stay pinned across an inner one.
+#
+#   (2) PERSISTENT handles — the ones the embedder squirrels into its own
+#       tables — are now TRACED, via an embedder-registered root hook
+#       (js_set_ext_root_hook / js_ext_mark_root). The layering inversion the
+#       note worried about is avoided the same way host dispatch already avoids
+#       it: a registered address, not a direct reference. The DOM's hook is
+#       _dom_gc_ext_roots in lib/web/dom/canvas.ad and it is the load-bearing
+#       audit — a table missing from it is a use-after-free, not a leak.
+#
+# Handles pinned OUTSIDE a dispatch (engine setup, the DOM's one-time prototype
+# construction, js_call_fn from an embedder event turn) keep the PERMANENT pin.
+# Those are O(page), not O(work), so they were never the wall.
+#
+# The object pin is no longer written here. obj_pin is DERIVED from v_pin at
+# collection time (ext_pin_rebuild_objs in gc.ad), because two different value
+# cells can name the same object and clearing one cell's pin must not clear the
+# other's.
+# ---------------------------------------------------------------------------
 # Returns its argument so it can wrap a return expression.
 def ext_pin(h: int32) -> int32:
     if h >= 4 and h < n_vals:          # 0..3 are singletons; never swept
-        v_pin[h] = cast[uint8](1)      # the CELL: the DOM's tables hold handles
+        st: int32 = cast[int32](v_pin[h])
+        if st != 1:                    # already permanent? nothing to do
+            if ext_scope_depth > 0 and st == 0:
+                if ext_pj_top < EXT_PJ_CAP:
+                    v_pin[h] = cast[uint8](2)      # scoped: released on return
+                    ext_pj[ext_pj_top] = h
+                    ext_pj_top = ext_pj_top + 1
+                else:
+                    v_pin[h] = cast[uint8](1)      # journal full: leak, not free
+                    ext_perm_note(h)
+            elif ext_scope_depth == 0:
+                v_pin[h] = cast[uint8](1)          # the CELL: tables hold handles
+                ext_perm_note(h)
         if h >= v_pin_hi:
             v_pin_hi = h + 1
-        if cast[int32](v_tag[h]) == TAG_OBJ:
-            o: int32 = v_ref[h]
-            if o >= 0 and o < n_objs:
-                obj_pin[o] = cast[uint8](1)
     return h
 
 
@@ -808,6 +863,39 @@ def js_str_ptr(val: int32) -> Ptr[uint8]:
 def js_set_host_dispatch(fn: Fn[int32, int32]):
     host_dispatch_addr = cast[uint64](fn)
     host_dispatch_set = 1
+
+
+# ---- external ROOT seam (the other half of the ext_pin split) ----
+# The embedder registers fn(0) -> 0, called once per collection in BOTH the
+# value pass and the object pass. Inside it the embedder walks its own tables
+# and calls js_ext_mark_root() for every JS VALUE HANDLE it is holding (or
+# js_ext_mark_root_obj() for a raw object id). Outside a collection both
+# markers are no-ops, so calling them is always safe.
+#
+# WHY THIS EXISTS: before it, the engine kept the embedder's handles alive by
+# pinning FOREVER everything that crossed the js_* boundary, which made the
+# immortal set linear in what a page DOES and was the WPT object-arena wall.
+# See the long note above ext_pin. Registering this hook is MANDATORY for any
+# embedder that stores handles across a host-native dispatch; without it those
+# handles are freed underneath it.
+def js_set_ext_root_hook(fn: Fn[int32, int32]):
+    ext_root_hook_addr = cast[uint64](fn)
+    ext_root_hook_set = 1
+
+
+# Mark a value handle the embedder is holding. Valid only from inside the root
+# hook (ext_mark_phase says which collector is asking); a no-op otherwise.
+def js_ext_mark_root(h: int32):
+    if ext_mark_phase == 1:
+        gc_m(h)
+    elif ext_mark_phase == 2:
+        obj_gc_mv(h)
+
+
+# Same, for a RAW OBJECT ID (not a value handle).
+def js_ext_mark_root_obj(o: int32):
+    if ext_mark_phase == 2:
+        obj_gc_m(o)
 
 
 # ---- named-global seam (see g_named_lookup_nid) ----

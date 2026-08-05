@@ -11246,6 +11246,165 @@ def _live_cls_resolve(anchor: int32, out_len: Ptr[int32]) -> Ptr[uint8]:
     return p
 
 
+# ---- EXTERNAL GC ROOTS: every JS handle the DOM is holding ------------------
+# Registered with js_set_ext_root_hook and called once per collection, in both
+# the value pass and the object pass. It is the reason the engine may now stop
+# pinning boundary-crossing handles forever — see the note above ext_pin in
+# lib/web/js/api.ad. That pin WAS the WPT object-arena wall: the immortal set
+# grew linearly with what a page did, because a native constructor builds its
+# result with js_new_object_v().
+#
+# CONSERVATIVE BY CONSTRUCTION. Every table is scanned over its FULL DECLARED
+# RANGE, not up to its live count, and liveness side-tables (evl_dead, cre_gone,
+# mo_used, mreg_active, io_used, ro_used, *_active, mrec_pending) are IGNORED.
+# That is deliberate:
+#   * several of these tables keep a handle in a slot after the slot is
+#     logically dead (they never clear it), so honouring the flag would free a
+#     handle the DOM can still read back;
+#   * two of them — g_evpath and frag_st_arr — hold their live depth in an
+#     Adder LOCAL, so there is no count to read;
+#   * a stale slot costs retention, a missed slot costs a use-after-free, and
+#     only one of those two is recoverable.
+# Total ~100k slots, marked once per collection: cheap next to the 48k-object
+# and 1M-value arena scans the collector already does.
+#
+# A NEW MODULE-LEVEL TABLE THAT STORES A JS HANDLE MUST BE ADDED HERE. Marking
+# 0 / -1 / a non-object handle is safe (js_ext_mark_root ignores them), so when
+# in doubt, add it.
+def _dom_gc_ext_roots(ignored: int32) -> int32:
+    i: int32 = 0
+    # --- bindings.ad: per-element tables (indexed by dom id) ---
+    while i < 8192:
+        js_ext_mark_root(dom_obj[i])
+        js_ext_mark_root(dom_clsobj[i])
+        js_ext_mark_root(dom_onclick_fn[i])
+        js_ext_mark_root(dom_oninput_fn[i])
+        js_ext_mark_root(dom_onchange_fn[i])
+        js_ext_mark_root(dom_onsubmit_fn[i])
+        js_ext_mark_root(cre_obj[i])          # createElement/createTextNode nodes
+        js_ext_mark_root(stx_obj[i])          # source-anchored Text nodes
+        i = i + 1
+    i = 0
+    while i < 2048:
+        js_ext_mark_root(nsa_obj[i])          # namespaced-attribute owners
+        i = i + 1
+    i = 0
+    while i < 1024:
+        js_ext_mark_root(evl_fn[i])           # addEventListener callbacks
+        js_ext_mark_root(frag_st_arr[i])      # innerHTML fragment-parse stack
+        js_ext_mark_root(clsown_list[i])
+        js_ext_mark_root(clsown_obj[i])
+        js_ext_mark_root(dsown_list[i])
+        js_ext_mark_root(dsown_obj[i])
+        i = i + 1
+    i = 0
+    while i < 512:
+        js_ext_mark_root(ihc_el[i])           # innerHTML cache KEY (an element)
+        js_ext_mark_root(ihc_val[i])
+        js_ext_mark_root(attrc_el[i])         # attributes cache KEY (an element)
+        js_ext_mark_root(attrc_map[i])
+        i = i + 1
+    i = 0
+    while i < 256:
+        js_ext_mark_root(cv_sstk_fill[i])     # canvas ctx.save() style stacks
+        js_ext_mark_root(cv_sstk_strk[i])
+        js_ext_mark_root(cv_sstk_lw[i])
+        js_ext_mark_root(cv_sstk_font[i])
+        js_ext_mark_root(cv_sstk_alpha[i])
+        i = i + 1
+    i = 0
+    while i < 64:
+        js_ext_mark_root(implown_impl[i])
+        js_ext_mark_root(implown_doc[i])
+        i = i + 1
+    i = 0
+    while i < 16:
+        js_ext_mark_root(g_ev_proto[i])       # per-flavour Event prototypes
+        i = i + 1
+    i = 0
+    while i < 8:
+        js_ext_mark_root(canv_ctxobj[i])
+        i = i + 1
+    js_ext_mark_root(g_cur_event)
+    js_ext_mark_root(js_doc)
+    js_ext_mark_root(js_win)
+    # --- bindings.ad: the interface prototype set ---
+    js_ext_mark_root(g_proto_style)
+    js_ext_mark_root(g_proto_clslist)
+    js_ext_mark_root(g_proto_node)
+    js_ext_mark_root(g_proto_elem)
+    js_ext_mark_root(g_proto_text)
+    js_ext_mark_root(g_proto_comm)
+    js_ext_mark_root(g_proto_frag)
+    js_ext_mark_root(g_proto_doc)
+    js_ext_mark_root(g_proto_doctype)
+    js_ext_mark_root(g_proto_impl)
+    js_ext_mark_root(g_proto_attr)
+    js_ext_mark_root(g_proto_pi)
+    js_ext_mark_root(g_proto_cdata)
+    js_ext_mark_root(g_proto_range)
+    js_ext_mark_root(g_proto_tw)
+    js_ext_mark_root(g_proto_ni)
+    js_ext_mark_root(g_nodefilter)
+    js_ext_mark_root(g_proto_nnm)
+    js_ext_mark_root(g_proto_evtgt)
+    js_ext_mark_root(g_proto_nodelist)
+    js_ext_mark_root(g_proto_htmlcoll)
+    js_ext_mark_root(g_proto_abortsig)
+    js_ext_mark_root(g_proto_abortctl)
+    js_ext_mark_root(g_proto_html)
+    js_ext_mark_root(g_proto_head)
+    js_ext_mark_root(g_proto_body)
+    js_ext_mark_root(g_proto_title)
+    js_ext_mark_root(g_proto_domexc)
+    js_ext_mark_root(g_domexc_ctor)
+    # --- canvas.ad ---
+    i = 0
+    while i < 512:
+        js_ext_mark_root(scrrun_obj[i])       # <script>s already run
+        js_ext_mark_root(shc_obj[i])          # <style> element
+        js_ext_mark_root(shc_sheet[i])        # its CSSStyleSheet
+        js_ext_mark_root(mrec_target[i])      # MutationRecord fields
+        js_ext_mark_root(mrec_added[i])
+        js_ext_mark_root(mrec_removed[i])
+        js_ext_mark_root(mrec_attr[i])
+        js_ext_mark_root(mrec_oldv[i])
+        i = i + 1
+    i = 0
+    while i < 256:
+        js_ext_mark_root(g_evpath[i])         # capture-phase ancestor chain
+        js_ext_mark_root(mreg_target[i])      # MutationObserver targets
+        js_ext_mark_root(ioreg_target[i])     # IntersectionObserver targets
+        js_ext_mark_root(roreg_target[i])     # ResizeObserver targets
+        i = i + 1
+    i = 0
+    while i < 128:
+        js_ext_mark_root(jshist_state[i])     # history.pushState states
+        i = i + 1
+    i = 0
+    while i < 68:
+        js_ext_mark_root(g_iface_proto[i])    # the 68 HTML*Element prototypes
+        i = i + 1
+    i = 0
+    while i < 64:
+        js_ext_mark_root(stysup_obj[i])
+        js_ext_mark_root(mo_this[i])
+        js_ext_mark_root(mo_cb[i])
+        js_ext_mark_root(io_this[i])
+        js_ext_mark_root(io_cb[i])
+        js_ext_mark_root(ro_this[i])
+        js_ext_mark_root(ro_cb[i])
+        i = i + 1
+    js_ext_mark_root(g_argv1[0])              # argv scratch, LIVE across js_call_fn
+    js_ext_mark_root(g_obs_argv2[0])
+    js_ext_mark_root(g_obs_argv2[1])
+    js_ext_mark_root(g_js_history)
+    js_ext_mark_root(g_js_location)
+    # --- query.ad ---
+    js_ext_mark_root(g_cs_gpv)                # cached getPropertyValue fn
+    return 0
+
+
 def _run_scripts() -> int32:
     # A live JS context is needed if the page has a <script> element OR any
     # inline on<evt>="" handler (no <script> required for interactivity).
@@ -11266,6 +11425,9 @@ def _run_scripts() -> int32:
     js_hbase = js_host_base()
     js_set_host_dispatch(cast[Fn[int32, int32]](cast[uint64](_js_host_dispatch)))
     js_set_member_hook(cast[Fn[int32, int32]](cast[uint64](_js_member_set_hook)))
+    # MANDATORY: without this the engine cannot see any handle the DOM holds,
+    # and the scoped external pin would free them underneath it.
+    js_set_ext_root_hook(cast[Fn[int32, int32]](cast[uint64](_dom_gc_ext_roots)))
     js_set_named_global_hook(js_hbase + NID_NAMED_GLOBAL)
     _js_build_document()
     _dom_build_tree_index()                               # parent/child overlay (round 2)
