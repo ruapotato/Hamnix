@@ -3145,6 +3145,20 @@ def _inner_accessor(rel: int32) -> int32:
     if rel == NID_TC_GET:
         if idx < 0:
             return _node_text_content(thisv)
+        # A SOURCE-anchored element has TWO representations of its content: the
+        # parse-time span [cstart,cend) and the live child list. Reading the
+        # span answered from the one representation script mutations never
+        # touch, so `el.appendChild(document.createElement('span'))` left
+        # el.childNodes.length == 2 and el.innerHTML == 'start<span>x</span>'
+        # while el.textContent still read 'start' — the appended child's text
+        # was simply not in the source. (innerHTML above already had this fixed:
+        # it takes the cheap slice only while g_dom_mutated == 0 and
+        # re-serialises the live subtree afterwards. This is the same latch.)
+        # Once the page has mutated the source tree, the LIVE TREE is the only
+        # authority; do not sync the span, read the tree.
+        if g_dom_mutated != 0:
+            _dom_wire_tree(idx)
+            return _node_text_content(thisv)
         n: int32 = _text_into_tw(cast[uint64](dom_cstart[idx]), \
                                  cast[uint64](dom_cend[idx]))
         # NOT memoised. js_set_own here installed an own data property that

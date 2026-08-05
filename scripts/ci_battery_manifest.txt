@@ -4320,6 +4320,20 @@ bash scripts/ci_run_gate.sh scripts/test_de_desktop_live_view.sh
 # real page proving embedder-held (DOM) handles survive 200k objects of churn.
 # ~4 min, QEMU-free.
 bash scripts/test_jsengine_gc_obj_host.sh
+# scripts/test_dom_textcontent_livetree_host.sh: the textContent READ-BACK gate.
+# A source-anchored element had TWO representations of its content — the
+# parse-time source span (what the textContent getter read) and the live child
+# list (what every mutation writes, and what childNodes/innerHTML/the renderer
+# read) — so after el.appendChild(createElement('span')) the tree was RIGHT
+# (childNodes.length 2, innerHTML 'start<span>MADE</span>') and el.textContent
+# still read 'start'. The D-series read-back shape again. 20 chromium-measured
+# facts over append / nested created subtree / removeChild / insertBefore /
+# Text.data / entities / comments / <script> text / <template> inertness /
+# fragment + comment + text nodeValue, with no GC and no churn involved, plus a
+# live chromium re-measure of the constants when chromium is installed (the
+# baked assertions run either way, so it is never a dark gate). ~1 min,
+# QEMU-free. REGISTERED 2026-08-05.
+bash scripts/test_dom_textcontent_livetree_host.sh
 # The three ASYNC pools (deferred-callback queue, promise reactions, Map/Set
 # entries). All three were bump-only, so an async SPA's setTimeout render loop
 # stopped dead at 4,096 turns, a .then chain at 4,096 and a Map-per-turn loop at

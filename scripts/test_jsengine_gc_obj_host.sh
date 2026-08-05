@@ -341,6 +341,12 @@ document.getElementById("b").click();
 var made = document.createElement("span");
 made.textContent = "made-" + (el.__stash.deep.v + seen);
 el.appendChild(made);
+// Report the three views of the same state SEPARATELY before collapsing them.
+// When they disagree the culprit is the READ-BACK, not the collector, and this
+// line is what says so: a freed handle loses the child (kids=1), a broken
+// textContent getter keeps the child but reads the parse-time source span.
+console.log("DOMRB kids=" + el.childNodes.length + " ih=" + el.innerHTML +
+            " tc=" + el.textContent);
 el.textContent = el.textContent;             // force a readback of the live subtree
 document.title = "DOMGC seen=" + seen + " churn=" + s;
 </script>
@@ -357,7 +363,23 @@ EOF
         echo "[js-gc-obj] FAIL: an embedder-held (DOM) object was freed or the churn failed"
         echo "  want: $WANT_D"; grep -o "DOMGC[^\"<]*" "$dout" | head -1 | sed 's/^/  got:  /'; fail=1
     elif ! grep -qF "made-8484" "$dout"; then
-        echo "[js-gc-obj] FAIL: the dynamically created + appended element did not survive"; fail=1
+        # DIAGNOSE before blaming the collector. The DOMRB line reports the three
+        # views of one piece of state; only "kids=1" is a lifetime bug. If the
+        # child is in childNodes and in innerHTML but missing from textContent,
+        # this is the READ-BACK class (the textContent getter answering from the
+        # parse-time source span instead of the live tree) and the collector is
+        # innocent — sending a reader to lib/web/js/gc.ad wastes the whole trip.
+        rb=$(sed -n 's/^JSLOG \(DOMRB .*\)$/\1/p' "$dout" | head -1)
+        echo "  readback: ${rb:-<no DOMRB line — the page died before it>}"
+        case "$rb" in
+            *"kids=1"*)
+                echo "[js-gc-obj] FAIL: the created+appended element did not SURVIVE (it is gone from childNodes) — collector/ext_pin";;
+            *"made-8484</span>"*)
+                echo "[js-gc-obj] FAIL: the element survived (it is in childNodes and innerHTML) but el.textContent does not descend into it — READ-BACK bug in the textContent getter (lib/web/dom/canvas.ad _inner_accessor NID_TC_GET), NOT the GC";;
+            *)
+                echo "[js-gc-obj] FAIL: the created+appended element is not readable back off its parent";;
+        esac
+        fail=1
     else
         echo "[js-gc-obj] PASS: DOM wrapper property, listener closure and created subtree survived 200k-object churn"
     fi

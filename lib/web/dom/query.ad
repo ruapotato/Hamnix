@@ -2013,6 +2013,17 @@ def _dom_node_kids(idx: int32) -> int32:
     if t < 0:
         return js_null()
     nd: int32 = js_new_array_v()
+    # A <template>'s children are parsed into a SEPARATE inert fragment
+    # ("template contents"), so the element itself has NO child nodes:
+    # chromium reports tmpl.childNodes.length === 0 and tmpl.textContent === "".
+    # The source-span text walk already knows this (_extract_text skips template
+    # bodies, see _template_skip), but the tx tree does not register elements
+    # inside a template, so the whole body came back as one text run — which is
+    # invisible until a reader walks the live tree. `.content` is built from
+    # this.innerHTML (the JS prelude), so it is unaffected.
+    if _el_tag_is(idx, cast[Ptr[uint8]]("template")) != 0:
+        js_set_own(o, cast[Ptr[uint8]]("childNodes"), 10, nd)
+        return nd
     ign: int32 = _node_children_of_tx(t, o, nd)
     js_set_own(o, cast[Ptr[uint8]]("childNodes"), 10, nd)
     return nd
