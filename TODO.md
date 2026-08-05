@@ -430,14 +430,38 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   CI manifest, RED-on-main-verified, and it re-measures live chromium so it cannot go
   dark. Floors: livedom 18/1 held, reactmount PASS, ratchet nothing-regressed with
   PASS 15829 → **15830**. [[feedback_two_writers_defect_shape]]
-- [~] **A DOM detach path.** `cre_obj`/`dom_obj` keep every node the DOM ever made —
-  8000 dropped detached `<div>`s leave 25439 live objects and zero collections. Banked
-  as a ceiling in `test_js_ext_pin_leak_host.sh`, not a target. Dispatched 08-05, and
-  briefed to MEASURE FIRST: if few live objects are reachable only from those stores,
-  the detach path is not the lever and the finding is the deliverable.
-  Re-dispatched 08-05 (`js/dom-detach-measure-r1`) — two agents have now died with
-  their sessions without committing. Phase 1 is measurement ONLY; a small number is
-  a successful disproof and ends the front.
+- [x] ✔ **CLOSED 2026-08-05 (`37070a6f`) — a DOM detach path is DISPROVED as the lever,
+  and the front ends on the disproof.** The open item claimed `cre_obj`/`dom_obj`
+  retention was the WPT object-arena lever because 8000 dropped detached `<div>`s leave
+  25439 live objects and zero collections. **A live-object total says an object SURVIVED;
+  it cannot say WHY** — the claim was about REACHABILITY and the evidence could not speak
+  to it. The counterfactual census (`js_arena_stat` 55-58, the collector's own root set
+  and transitive closure run WITHOUT sweeping, with the embedder tables omitted via
+  `ext_census_skip`) measures exactly the set a perfect detach path could reclaim:
+
+      8000 bare createElement, dropped        reachable 25391   store-only 23997  94.5%
+      4000 trivial test(), NO DOM at all      reachable 47606   store-only     0   0.0%
+      4000 test() + create/append/remove      reachable 47417   store-only  5679  12.0%
+
+  and on the five vendored WPT files that actually die `object pool exhausted`, the node
+  stores hold **0.0% on four of the five** (Range-comparePoint 23.8%; isPointInRange,
+  mutations-appendData, Range-set, TreeWalker all 0.0%). **The 94.5% row is a probe
+  measuring itself** — a page that does nothing but `createElement` is created nodes by
+  construction. A perfect detach path moves the wall by nothing, so Phase 2 was correctly
+  never entered. The DOM-churn page also dies EARLIER than the DOM-free one (1893 vs 2162
+  subtests), so reclaiming its whole 12% only buys back what the churn cost. The wall is
+  testharness.js's own live graph against `MAX_OBJ`, as `lib/web/js/api.ad` already said.
+  Banked as `scripts/test_js_dom_store_share_host.sh` (in the CI manifest, ceilings on the
+  store-only counts, verified in BOTH directions, and it reports 125/never-PASS if the
+  census says nothing) so this cannot be re-briefed from memory; the misleading paragraphs
+  in `test_js_ext_pin_leak_host.sh` and `lib/web/js/api.ad` are corrected in place.
+  Orchestrator-reverified on the branch before merge: store-share PASS, **wpt ratchet PASS
+  (floor 15830, current 15830, baseline failures 3097 = current 3097)**, livedom pass=18
+  fail=1 floor held, ext-pin PASS. The ratchet's own truncation list corroborates it —
+  the object-pool deaths ARE the Range/TreeWalker files the census measured at 0%.
+  Generalises: **a retention count is not a reachability claim; only a counterfactual
+  census can size a reclamation lever.** Same shape as
+  [[feedback_first_bail_histogram_upper_bound]] one layer up.
 - [~] **Leak census pass 24 — the first run whose attributions are REAL.** Every
   earlier hours-scale verdict was reached with ~100% of frames unattributed (site 0);
   pass 22 (`7f4a116f`) boot-arms the tracker and pass 23 (`c1ad90db`) stopped the
