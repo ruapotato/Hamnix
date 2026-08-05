@@ -396,6 +396,53 @@ ssa_mem_native: uint32 = 0              # 1 => native local-memory model
 # implementing the construct could unlock, never a promise.
 ssa_census_mem_native: uint32 = 1       # analysis-lane value for ssa_mem_native
 ssa_census_mem_model: uint32 = 0        # analysis-lane value for ssa_mem_model
+
+# ----- CLUSTER lift levers (MEASUREMENT ONLY; scripts/ssa_lift_diff.sh) -------
+# `--ssa-memmodel` lifts the WHOLE remaining axis at once (61.14% -> 88.23%), so
+# it sizes the ceiling but names no target.  These six levers DECOMPOSE that one
+# number by CONSTRUCT CLUSTER, and they are deliberately SUBTRACTIVE: each one
+# says "even with ssa_mem_model armed, keep bailing this cluster the way the
+# native lane does".  Two readings fall out of the same mechanism:
+#
+#   memmodel + every keep_*            == the shipped native baseline, if and
+#                                         only if the clusters are EXHAUSTIVE.
+#                                         That equality is the decomposition's
+#                                         own self-check: any residual is a
+#                                         construct no cluster names.
+#   memmodel + every keep_* EXCEPT X   == baseline PLUS cluster X.  This is the
+#                                         ADDITIVE lift — what implementing X
+#                                         alone could unlock on today's tree.
+#   memmodel + keep_X only             == ceiling MINUS cluster X, i.e. X's
+#                                         MARGINAL value once everything else
+#                                         is already in.
+#
+# Additive and marginal differ exactly when gates are ENTANGLED, which is the
+# whole reason a histogram cannot size a target (site 66: 36.9% of bails, +0.13
+# points implemented alone, +24.5 points as a cluster).  Reporting both is the
+# point.
+#
+# Why SUBTRACTIVE rather than six additive flags: an additive flag would have to
+# thread a per-cluster condition through every helper that BUILDS the modelled
+# form (ssa_lower_member, ssa_index_addr_general, ssa_percpu_load, ...).  A keep
+# flag only has to reach the cluster's ENTRY gate — if the entry bails, the
+# helper is never called — so the edit is local, mechanical and auditable.
+#
+# ALL SIX DEFAULT TO 0, and the predicates below then reduce to a bare
+# `ssa_mem_model` read, so this commit is a no-op for every lane that does not
+# set them.  Only ssa_run_program (the --dump-ssa ANALYSIS lane) ever sets them;
+# ssa_emit_program assigns ssa_mem_model/ssa_mem_native itself and never touches
+# a census lever, so the real --opt emit lane cannot observe a lift and its byte
+# output is unchanged by construction (md5-verified, see the commit message).
+#
+# VALID FOR COUNTING ONLY — same caveat as ssa_census_mem_model: a lifted gate
+# can leave SVO ops the x86 emitter has no lowering for, so every row is an
+# UPPER BOUND on what implementing that cluster could unlock, never a promise.
+ssa_census_keep_call: uint32 = 0        # keep native call-shape whitelist bails
+ssa_census_keep_arity: uint32 = 0       # keep the >6 arg / >6 param bails
+ssa_census_keep_member: uint32 = 0      # keep obj.field / struct-value bails
+ssa_census_keep_float: uint32 = 0       # keep float scalar / float dest bails
+ssa_census_keep_addr: uint32 = 0        # keep global-Ptr[T] / N-D / &expr bails
+ssa_census_keep_nonlocal: uint32 = 0    # keep %gs percpu / bare-function-name bails
 ssa_ismem: Array[256, uint32]           # 1 => name id is a memory-modeled local
 ssa_mem_addr: Array[256, uint32]        # its SVO_ALLOCA vid (the slot's i64 address)
 ssa_mem_esz: Array[256, uint32]         # scalar/element byte width (1/2/4/8)
@@ -1296,6 +1343,75 @@ def ssa_mem_any() -> uint32:
     if ssa_mem_model != 0:
         return 1
     return ssa_mem_native
+
+
+# ----- the six CLUSTER predicates (see ssa_census_keep_* above) ---------------
+# Each answers "is this construct modelled on this lane?".  With its keep lever
+# at 0 — which is every lane except an explicitly-flagged census run — each is
+# EXACTLY the bare `ssa_mem_model` read it replaced, so behaviour and emitted
+# bytes are unchanged by construction.  Shaped after ssa_mem_any() above.
+
+# CALL SHAPES: indirect call through a local or global fn-pointer, the by-name
+# intrinsic families codegen.ad intercepts inline (__syscallN, asm_volatile, the
+# port-I/O intrinsics, len(slice)), the keyword/default-arg normalisation, and
+# the direct-call-symbol WHITELIST that 63131c78 had to install after a
+# blacklist miscompiled enum-variant constructors.  Sites 28/31/87/88/89/90/92.
+def ssa_mm_call() -> uint32:
+    if ssa_census_keep_call != 0:
+        return 0
+    return ssa_mem_model
+
+
+# CALL ARITY: args 7+ / params 7+ live on the SysV stack.  The native round-trip
+# spills only the 6 register args.  Sites 32 and 79.  Split out of the call
+# cluster on purpose: it is a pure ABI-marshalling job with no typing question
+# attached, so it can be implemented independently of the whitelist.
+def ssa_mm_arity() -> uint32:
+    if ssa_census_keep_arity != 0:
+        return 0
+    return ssa_mem_model
+
+
+# STRUCT MEMBERS: `obj.field` rvalue and store, `c.buf[i]` index through a
+# pointer field, `&obj.field`, container_of, and an in-place struct/class local
+# VALUE (which needs a slot sized st_total, not 8).  Needs real struct typing on
+# the native path.  Sites 47/61/69/86, and the 9-19/84/85 helper family behind
+# them (unreached once the entry gate bails, so they need no lever of their own).
+def ssa_mm_member() -> uint32:
+    if ssa_census_keep_member != 0:
+        return 0
+    return ssa_mem_model
+
+
+# FLOAT: a float scalar local, a cast whose DESTINATION is float, a float
+# literal, and a float aug-assign into a memory slot.  All need SSE lowering the
+# native emitter does not have.  Sites 40/46/53/63.
+def ssa_mm_float() -> uint32:
+    if ssa_census_keep_float != 0:
+        return 0
+    return ssa_mem_model
+
+
+# COMPUTED ADDRESSES: indexing a global `Ptr[T]` (`gptr[i]`), 2-D and N-D global
+# arrays, `&expr[i]` on a computed base, and `&*p`.  Everything here is address
+# ARITHMETIC over a base the native model cannot currently name.  Sites
+# 22/23/24/25/26/41/43/49/51.
+def ssa_mm_addr() -> uint32:
+    if ssa_census_keep_addr != 0:
+        return 0
+    return ssa_mem_model
+
+
+# NON-LOCAL IDENTS beyond a plain scalar global: a %gs-relative Percpu[T] read
+# and a bare FUNCTION NAME used as an rvalue (address decay).  Sites 101/102/103
+# of the site-34 sub-attribution.  NOTE the census caveat on site 34 itself: the
+# census compiles each .ad STANDALONE while a real build import-merges the
+# module closure, so a cross-module name bails here and resolves in the real
+# compiler.  That artifact is NOT liftable by this lever and is reported apart.
+def ssa_mm_nonlocal() -> uint32:
+    if ssa_census_keep_nonlocal != 0:
+        return 0
+    return ssa_mem_model
 
 
 def ssa_name_promotable(nid: uint32) -> uint32:
@@ -3150,20 +3266,20 @@ def ssa_lower_addr_of(operand: uint32) -> uint32:
         # `&function`: the function symbol's address (LLVM path only).  A known
         # ND_FUNCTION name lowers to `ptrtoint ptr @name to i64`; an unknown
         # ident still bails (a wrong address is a silent miscompile).
-        if ssa_mem_model != 0 and ssa_is_function(nd_name_off[operand], nd_name_len[operand]) != 0:
+        if ssa_mm_nonlocal() != 0 and ssa_is_function(nd_name_off[operand], nd_name_len[operand]) != 0:
             return ssa_funcaddr(operand, ssa_cur_bb)
         ssa_set_bail_at(SBR_MEMORY, 22)                        # unknown symbol
         return 0
     if k == ND_INDEX:
         base: uint32 = nd_a[operand]
         # &g[i][j] : element address of a 2-D scalar-element global array.
-        if ssa_mem_model != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
+        if ssa_mm_addr() != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
             g2a: uint32 = ssa_global_array_2d(nd_name_off[nd_a[base]], nd_name_len[nd_a[base]])
             if g2a != 0:
                 return ssa_index2_addr(g2a, operand)
         if nd_kind[base] != ND_IDENT:
             # Phase 4b: `&expr[i]` with a computed / member / deref index base.
-            if ssa_mem_model != 0:
+            if ssa_mm_addr() != 0:
                 ga: uint32 = ssa_index_addr_general(operand)
                 if ga != 0:
                     return ga
@@ -3185,11 +3301,11 @@ def ssa_lower_addr_of(operand: uint32) -> uint32:
         # &gptr[i] on a GLOBAL Ptr[T]: (loaded pointer value) + i*elem, no load.
         gpg2: uint32 = 0
         gpe2: uint32 = ssa_global_ptr_esz(nd_name_off[base], nd_name_len[base], &gpg2)
-        if ssa_mem_model != 0 and gpe2 != 0:
+        if ssa_mm_addr() != 0 and gpe2 != 0:
             return ssa_global_ptr_index_addr(gpg2, nd_b[operand], gpe2)
         # Phase 4b: `&g[i]` on any other recognised container (local struct
         # array, global Ptr[Struct], ...) via the recursive region resolver.
-        if ssa_mem_model != 0:
+        if ssa_mm_addr() != 0:
             ga2: uint32 = ssa_index_addr_general(operand)
             if ga2 != 0:
                 return ga2
@@ -3197,7 +3313,7 @@ def ssa_lower_addr_of(operand: uint32) -> uint32:
         return 0
     # Phase 4b: `&obj.field` — the member's field address (no load).  Works for
     # scalar, array (decays), and nested-struct fields.
-    if ssa_mem_model != 0 and k == ND_MEMBER:
+    if ssa_mm_member() != 0 and k == ND_MEMBER:
         msz: uint32 = 0
         msgn: uint32 = 0
         maddr: uint32 = ssa_member_field_addr(operand, &msz, &msgn)
@@ -3205,7 +3321,7 @@ def ssa_lower_addr_of(operand: uint32) -> uint32:
             return maddr
         return 0                                  # member_field_addr set the bail
     # Phase 4b: `&*p` == the pointer VALUE of a resolvable pointer expr.
-    if ssa_mem_model != 0 and k == ND_UNARY and nd_aux[operand] == UNOP_DEREF:
+    if ssa_mm_addr() != 0 and k == ND_UNARY and nd_aux[operand] == UNOP_DEREF:
         if ssa_deref_esz(nd_a[operand]) != 0:
             return ssa_lower_expr(nd_a[operand], ssa_cur_bb)
         st3: uint32 = 0
@@ -3355,14 +3471,14 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
     # and a global-fn-pointer call still lowers directly in codegen.ad.
     callee_val: uint32 = 0
     if cid < NM_MAX and ssa_islocal[cid] != 0:
-        if ssa_mem_model == 0:
+        if ssa_mm_call() == 0:
             # calling through a local (fn-pointer) -> bail (indirect not modeled).
             ssa_set_bail_at(SBR_NONSUBSET_EXPR, 28)
             return 0
         callee_val = ssa_lower_expr(callee, ssa_cur_bb)
         if callee_val == 0:
             return 0
-    elif ssa_mem_model != 0 and glob_lookup(nd_name_off[callee], nd_name_len[callee]) != 0:
+    elif ssa_mm_call() != 0 and glob_lookup(nd_name_off[callee], nd_name_len[callee]) != 0:
         # A global VARIABLE (not a function) invoked as a call == a global
         # fn-pointer; load its 8-byte value and call through it.
         callee_val = ssa_lower_expr(callee, ssa_cur_bb)
@@ -3395,7 +3511,7 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
     # are used, so the exposure was real rather than theoretical.  Bail the
     # whole function to legacy — the constructs stay outside the subset until
     # the native emitter grows real inline lowering for them.
-    if ssa_mem_model == 0:
+    if ssa_mm_call() == 0:
         if syscall_builtin_args(nd_name_off[callee], nd_name_len[callee]) != 0:
             ssa_set_bail_at(SBR_CALL, 87)
             return 0
@@ -3432,7 +3548,7 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
     # (no GLOBALADDR / no @asm_volatile call).  The result is void (statement
     # position only — the Adder asm_volatile form yields no value; the kernel
     # parks any output in RIP-relative globals).
-    if ssa_mem_model != 0 and name_eq_cstr(nd_name_off[callee], nd_name_len[callee], "asm_volatile") != 0:
+    if ssa_mm_call() != 0 and name_eq_cstr(nd_name_off[callee], nd_name_len[callee], "asm_volatile") != 0:
         # Require exactly one string-literal argument; anything else bails so we
         # never emit malformed inline asm.
         astr: uint32 = nd_b[node]
@@ -3453,7 +3569,7 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
     # result in rax; clobbers rcx/r11/memory).  The native path never reaches here
     # (codegen.ad intercepts by name), so codegen.ad output is unchanged.
     scn: uint32 = 0
-    if ssa_mem_model != 0:
+    if ssa_mm_call() != 0:
         scn = syscall_builtin_args(nd_name_off[callee], nd_name_len[callee])
     if scn != 0:
         # __syscallN takes N+1 actual args (the syscall number + N syscall args).
@@ -3489,7 +3605,7 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
             # A float-returning in-unit callee is accepted on the LLVM path (the
             # result lands in xmm0 and is typed float).
             cfw = ssa_callee_ret_fw(nd_name_off[callee], nd_name_len[callee])
-            if ssa_mem_model == 0:
+            if ssa_mm_call() == 0:
                 # Native path: accept the raw-%rax i64 model for an extern /
                 # narrow-int / unknown callee (identical to legacy gen_call,
                 # which never narrows %rax); only float and by-value-aggregate
@@ -3524,7 +3640,7 @@ def ssa_lower_call(node: uint32, result_used: uint32) -> uint32:
     # hand-x86 path only spills the 6 register args, so it still bails.  On the
     # LLVM path (ssa_mem_model != 0) LLVM's calling-convention lowering handles
     # any arity, so the SVO_CALL is emitted with all operands.
-    if argc > 6 and ssa_mem_model == 0:
+    if argc > 6 and ssa_mm_arity() == 0:
         ssa_set_bail_at(SBR_MANYARGS, 32)
         return 0
     sv_aux[cv] = argc
@@ -3639,7 +3755,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
             # a percpu scalar reads via a %gs-relative (addrspace 256) load on
             # the LLVM path; anything else (aggregate/array global, function
             # name, unknown) bails.
-            if ssa_mem_model != 0:
+            if ssa_mm_nonlocal() != 0:
                 pgi: uint32 = ssa_percpu_scalar(nd_name_off[node], nd_name_len[node])
                 if pgi != 0:
                     return ssa_percpu_load(pgi, ssa_cur_bb)
@@ -3648,7 +3764,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
                 return ssa_global_load(gi, ssa_cur_bb)
             # A bare FUNCTION name used as an rvalue decays to its address (a
             # function pointer): `register_hook(the_fn)`.  LLVM path only.
-            if ssa_mem_model != 0 and ssa_is_function(nd_name_off[node], nd_name_len[node]) != 0:
+            if ssa_mm_nonlocal() != 0 and ssa_is_function(nd_name_off[node], nd_name_len[node]) != 0:
                 return ssa_funcaddr(node, ssa_cur_bb)
             ssa_set_bail_at(SBR_NONLOCAL, ssa_nonlocal_subsite(nd_name_off[node], nd_name_len[node]))
             return 0
@@ -3821,7 +3937,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         # bail at their leaves), so the float-source SSE path never applies.
         tnode: uint32 = nd_a[node]
         dfw: uint32 = type_float_width(tnode)     # dest float width (0/4/8)
-        if dfw != 0 and ssa_mem_model == 0:
+        if dfw != 0 and ssa_mm_float() == 0:
             ssa_set_bail_at(SBR_FLOAT, 40)               # native path: float dest bails
             return 0
         opv: uint32 = ssa_lower_expr(nd_b[node], ssa_cur_bb)
@@ -3901,7 +4017,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         # multi-dim bases, etc. fall back.
         base: uint32 = nd_a[node]
         # `c.buf[i]` / `c[0].buf[i]`: index through a POINTER FIELD (LLVM path).
-        if ssa_mem_model != 0 and nd_kind[base] == ND_MEMBER:
+        if ssa_mm_member() != 0 and nd_kind[base] == ND_MEMBER:
             mesz: uint32 = 0
             mesgn: uint32 = 0
             maddr: uint32 = ssa_member_ptr_index_addr(base, nd_b[node], &mesz, &mesgn)
@@ -3909,7 +4025,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
                 return 0
             return ssa_load_at(maddr, mesz, mesgn)
         # `g[i][j]` rvalue: 2-D scalar-element GLOBAL array (LLVM path).
-        if ssa_mem_model != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
+        if ssa_mm_addr() != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
             g2: uint32 = ssa_global_array_2d(nd_name_off[nd_a[base]], nd_name_len[nd_a[base]])
             if g2 != 0:
                 a2d: uint32 = ssa_index2_addr(g2, node)
@@ -3919,7 +4035,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         if nd_kind[base] != ND_IDENT:
             # Non-identifier base (LLVM path): N-D global array (`g[i][j][k]`) or
             # a pointer-returning rvalue (`foo()[i]`).  Integer-element only.
-            if ssa_mem_model != 0:
+            if ssa_mm_addr() != 0:
                 niesz: uint32 = 0
                 niesgn: uint32 = 0
                 nifw: uint32 = 0
@@ -3952,7 +4068,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
             # value then *(ptr + i*elem).
             gpg: uint32 = 0
             gpe: uint32 = ssa_global_ptr_esz(nd_name_off[base], nd_name_len[base], &gpg)
-            if ssa_mem_model != 0 and gpe != 0:
+            if ssa_mm_addr() != 0 and gpe != 0:
                 gpaddr: uint32 = ssa_global_ptr_index_addr(gpg, nd_b[node], gpe)
                 if gpaddr == 0:
                     return 0
@@ -3984,7 +4100,7 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         # LLVM path: a bare float literal is a float64 whose EXACT bit pattern the
         # lexer stashed in nd_num (nd_aux == 1).  An opt-folded integer-valued
         # ND_FLOAT_LIT (nd_aux == 0) is not produced by a fresh parse and bails.
-        if ssa_mem_model != 0 and nd_aux[node] == 1:
+        if ssa_mm_float() != 0 and nd_aux[node] == 1:
             fl: uint32 = sv_new(SVO_FCONST)
             if fl == 0:
                 return 0
@@ -3995,11 +4111,11 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
             return fl
         ssa_set_bail_at(SBR_FLOAT, 46)
     elif k == ND_MEMBER:
-        if ssa_mem_model != 0:
+        if ssa_mm_member() != 0:
             return ssa_lower_member(node)
         ssa_set_bail_at(SBR_MEMORY, 47)
     elif k == ND_CONTAINER_OF:
-        if ssa_mem_model != 0:
+        if ssa_mm_member() != 0:
             return ssa_lower_container_of(node)
         ssa_set_bail_at(SBR_NONSUBSET_EXPR, 86)
     else:
@@ -4013,17 +4129,17 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
 def ssa_lower_index_store(bb: uint32, stmt: uint32, target: uint32) -> uint32:
     base: uint32 = nd_a[target]
     # `c.buf[i] = rhs` / `c[0].buf[i] = rhs`: store through a POINTER FIELD.
-    if ssa_mem_model != 0 and nd_kind[base] == ND_MEMBER:
+    if ssa_mm_member() != 0 and nd_kind[base] == ND_MEMBER:
         return ssa_lower_member_index_store(bb, stmt, target)
     # `g[i][j] = rhs`: 2-D scalar-element GLOBAL array store (LLVM path).
-    if ssa_mem_model != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
+    if ssa_mm_addr() != 0 and nd_kind[base] == ND_INDEX and nd_kind[nd_a[base]] == ND_IDENT:
         g2s: uint32 = ssa_global_array_2d(nd_name_off[nd_a[base]], nd_name_len[nd_a[base]])
         if g2s != 0:
             return ssa_lower_index2_store(bb, stmt, target, g2s)
     if nd_kind[base] != ND_IDENT:
         # Non-identifier base (LLVM path): N-D global array (`g[i][j][k] = rhs`)
         # or a pointer-returning rvalue (`foo()[i] = rhs`).  Integer-element only.
-        if ssa_mem_model != 0:
+        if ssa_mm_addr() != 0:
             return ssa_lower_nonident_index_store(bb, stmt, target)
         ssa_set_bail_at(SBR_MEMORY, 49)
         return bb
@@ -4041,7 +4157,7 @@ def ssa_lower_index_store(bb: uint32, stmt: uint32, target: uint32) -> uint32:
         # `gptr[i] = rhs` on a GLOBAL Ptr[T] (LLVM path).
         sgg: uint32 = 0
         sge: uint32 = ssa_global_ptr_esz(nd_name_off[base], nd_name_len[base], &sgg)
-        if ssa_mem_model != 0 and sge != 0:
+        if ssa_mm_addr() != 0 and sge != 0:
             return ssa_lower_global_ptr_index_store(bb, stmt, target, sgg, sge)
         ssa_set_bail_at(SBR_MEMORY, 51)
         return bb
@@ -4529,7 +4645,7 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
     # non-promotable case does, so codegen.ad never sees this branch.
     sidx1: uint32 = struct_lookup_by_node(tnode)
     if sidx1 != 0 and ssa_name_promotable(nid) == 0:
-        if ssa_mem_model == 0:
+        if ssa_mm_member() == 0:
             ssa_set_bail_at(SBR_NONPROMOTABLE, 61)
             return NM_MAX
         ssa_islocal[nid] = 1
@@ -4553,7 +4669,7 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
         # Float scalar.  Native path bails (SSE, unchanged).  LLVM path: a
         # PROMOTABLE float scalar becomes an ordinary SSA value carrying an
         # SVT_F32/F64 type (mem2reg keeps it in an xmm reg).
-        if ssa_mem_model == 0:
+        if ssa_mm_float() == 0:
             ssa_set_bail_at(SBR_FLOAT, 63)
             return NM_MAX
         if ssa_name_promotable(nid) == 0:
@@ -4707,7 +4823,7 @@ def ssa_lower_stmt(bb: uint32, stmt: uint32) -> uint32:
         if ssa_mem_any() != 0 and nd_kind[target] == ND_UNARY and nd_aux[target] == UNOP_DEREF:
             # `*p = e` / `*p op= e`: store through a pointer.
             return ssa_lower_deref_store(bb, stmt, target)
-        if ssa_mem_model != 0 and nd_kind[target] == ND_MEMBER:
+        if ssa_mm_member() != 0 and nd_kind[target] == ND_MEMBER:
             # `obj.field = e` / `obj.field op= e`: store into a struct field.
             return ssa_lower_member_store(bb, stmt, target)
         if nd_kind[target] != ND_IDENT:
@@ -5174,7 +5290,7 @@ def ssa_build_function(fn: uint32) -> uint32:
             # The native round-trip only spills the 6 register args, so it bails.
             # On the LLVM path (ssa_mem_model != 0) LLVM lowers the calling
             # convention, so any param arity is accepted (SVO_PARAM per index).
-            if pidx >= 6 and ssa_mem_model == 0:
+            if pidx >= 6 and ssa_mm_arity() == 0:
                 ssa_set_bail_at(SBR_MANYARGS, 79)
                 return 0
             nid: uint32 = ssa_intern_local(nd_name_off[p], nd_name_len[p], nd_a[p])
