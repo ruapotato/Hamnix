@@ -727,6 +727,15 @@ bash scripts/test_jsengine_stdlib_host.sh
 # un-cleared interval hits the 10000-invocation cap and terminates (no hang),
 # microtask-before-macrotask, and captured-arg forwarding.
 bash scripts/test_jsengine_timers_host.sh
+# scripts/test_js_task_reentry_host.sh: QEMU-free gate that a task ALREADY ON
+# THE STACK is never selected and run a second time. `await` is a synchronous
+# nested drain that runs inside the current task's invoke(), so a selection
+# loop that reads only timer_active — cleared after invoke() returns — re-runs
+# the callback it is standing inside, one level deeper per await, until the GC
+# root stack hits its cap. That is what "gc root stack overflow" was on 20 of
+# 706 vendored WPT files. Invisible to every other timer gate, because they all
+# test tasks that do not await.
+bash scripts/test_js_task_reentry_host.sh
 # scripts/test_hambrowse_timers_host.sh: QEMU-free gate for the HTML EVENT-LOOP
 # ORDERING across timers + microtasks + requestAnimationFrame. Frameworks and
 # real sites depend on the RELATIVE order of setTimeout/setInterval, Promise
