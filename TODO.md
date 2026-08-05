@@ -18,10 +18,13 @@ Markers: `[ ]` open · `[~]` in flight.
 
 ## ⚠ 2026-08-03 — a LIVE `--opt` miscompile on `main` (native codegen.ad lane)
 
-Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
-*right now*, not historical.
+**✔ CLOSED 2026-08-04 by `63131c78` — this whole section is now HISTORY.** Both
+[~] items below were fixed by the `ssa_callee_direct_symbol_ok` whitelist (see
+the ✔ entry further down) and re-verified RED-on-main first. The text is kept
+because it is the clearest statement of the two shapes; do not re-brief from it
+as if it were open.
 
-- [~] **Keyword args / omitted defaults are marshalled positionally by the SSA
+- [x] **Keyword args / omitted defaults are marshalled positionally by the SSA
   builder.** `gen_call` re-shapes such calls via `normalize_call_args`; the SSA
   builder walks the argument chain in *written* order. Repro through the native
   lane (`tests/fuzz/ad_codegen_host.py`: `build_driver` → `run_dump(opt=…)` →
@@ -33,7 +36,7 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
   `--opt` off → **37** (correct), `--opt` on → **30**. The Python seed is
   unaffected (37 both ways). The shape sits squarely inside the accepted SSA
   subset, so nothing else was stopping it.
-- [~] **codegen.ad's by-NAME call interceptions have no linkable symbol.**
+- [x] **codegen.ad's by-NAME call interceptions have no linkable symbol.**
   `__syscallN`, `asm_volatile`, the port-I/O + atomic intrinsics and
   `len(slice)` lower to inline bytes, but the SSA lane never enters `gen_call`,
   so a statement-position `__syscall1(60, x)` emits `call rel32` + a fixup
@@ -90,11 +93,20 @@ Orchestrator-verified against pristine `main` @ `70cfde1d`, so this is open
       briefed candidates: function-name address decay = 3 functions, aggregate/
       array globals = 0, out of 21276. Guarded by
       `scripts/test_ssa_census_fidelity.sh`, verified RED on main first.
-- [ ] **Next subset target: `SBR_NONPROMOTABLE` site 66 (36.9% of bails)** — an
-      address-taken scalar local on the native path; the native x86 emitter has
-      no alloca lowering (`ssa.ad:4534`). Substantially bigger than a gate
-      relaxation. The correctness bar is still the hard part: a wrong accept
-      SILENTLY MISCOMPILES, which is exactly what `63131c78` had to fix.
+- [x] ✔ **DONE 2026-08-05 (`90f3a590`) — native local-memory model, accepted
+      subset 36.65% → 61.15%.** And it carries the campaign's most reusable
+      lesson: **a census site's share is an UPPER BOUND, not the win.** Site 66
+      was briefed at 36.9% of bails; implementing *exactly* it moved the subset
+      **+0.13%**, because a bail histogram is a FIRST-bail histogram and the
+      function simply re-bails one statement later. What moved the number was
+      landing the whole CLUSTER the site sits in. Size the next target by
+      lift-and-diff (`scripts/ssa_lift_diff.sh`), not by a histogram row.
+- [ ] **Next: SSA rewrite Phase 4 cutover** (make the native SSA lane the
+      default path, not the opt-in one). Re-measure the subset first — do not
+      brief it from the 61.15% figure above without re-running the census, and
+      confirm the census still runs the SAME pipeline the product does
+      (`scripts/test_ssa_census_fidelity.sh` exists precisely because it once
+      did not).
 - [ ] **The census measures a STANDALONE compile of each `.ad`; a real build
       import-merges the module closure.** A global defined in another module is
       invisible to it and bails at site 34 — the residual 566 is an upper bound,
@@ -370,15 +382,27 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   0 miscompiles) — what is dead is every "the lever actually fired" assertion. The
   lane also misreports the failure as `found a genuine miscompile`, which sends the
   reader to the wrong place. A permanently-red gate becomes wallpaper. Dispatched.
-- [ ] **`textContent` does not recurse into an appended element child** — red on main.
-  After `el.appendChild(span)`, `childNodes.length==2` and `innerHTML` serialise
-  correctly but `el.textContent` reads `"start"` instead of `"startMADE"`. The
-  read-back (D-series) shape; `test_jsengine_gc_obj_host.sh` PART E misreports it as
-  a GC survival failure. Check the two-writers shape FIRST [[feedback_two_writers_defect_shape]].
-  Dispatched.
-- [ ] **A DOM detach path.** `cre_obj`/`dom_obj` keep every node the DOM ever made —
+- [x] ✔ **CLOSED 2026-08-05 (`72b1da5c` + `32a08646`) — `textContent` answered from
+  the parse-time source span, not the live tree.** The two-writers shape for the
+  SEVENTH time, and it took TWO deletions to close: the stale READER (the getter now
+  walks the live tree past the `g_dom_mutated` latch, exactly as the innerHTML getter
+  already did) and then the stale WRITER (`_append_sync_text`, which concatenated an
+  appended Text node onto an own `textContent` property and, once the getter was on
+  the tree, double-counted it — `"mountedmounted"`). Fixed `<template>` inertness on
+  the way (chromium: `childNodes.length === 0`, `textContent === ""`). New gate
+  `scripts/test_dom_textcontent_livetree_host.sh`, 22 chromium-measured facts, in the
+  CI manifest, RED-on-main-verified, and it re-measures live chromium so it cannot go
+  dark. Floors: livedom 18/1 held, reactmount PASS, ratchet nothing-regressed with
+  PASS 15829 → **15830**. [[feedback_two_writers_defect_shape]]
+- [~] **A DOM detach path.** `cre_obj`/`dom_obj` keep every node the DOM ever made —
   8000 dropped detached `<div>`s leave 25439 live objects and zero collections. Banked
-  as a ceiling in `test_js_ext_pin_leak_host.sh`, not a target.
+  as a ceiling in `test_js_ext_pin_leak_host.sh`, not a target. Dispatched 08-05, and
+  briefed to MEASURE FIRST: if few live objects are reachable only from those stores,
+  the detach path is not the lever and the finding is the deliverable.
+- [~] **Leak census pass 24 — the first run whose attributions are REAL.** Every
+  earlier hours-scale verdict was reached with ~100% of frames unattributed (site 0);
+  pass 22 (`7f4a116f`) boot-arms the tracker and pass 23 (`c1ad90db`) stopped the
+  adjudicator from excusing boot-armed unattributed survivors. Dispatched 08-05.
 - [ ] **SSA next target = site 92** (call-symbol whitelist, 55.7% of what remains) —
   but read it as a CLUSTER, and mind the standalone-TU caveat that inflates it, same
   as site 34. A census site's share is an UPPER BOUND on the win, never the win.
