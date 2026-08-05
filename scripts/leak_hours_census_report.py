@@ -241,7 +241,23 @@ def parse_orgl_detail(text):
     return out
 
 
-def check_unrecorded_owners(arm, net, e, detail):
+def parse_boot_armed(log):
+    """1 iff this boot armed the page tracker from mem_init (leak pass 22).
+
+    The kernel prints `[trk] boot-arm mode=N frames=N` during bringup, before
+    one frame leaves the buddy allocator. A boot-arm that FAILED prints
+    `[trk] boot-arm FAILED` and no mode=, so it does not match here and the
+    log is adjudicated as the userland-armed shape it actually is.
+
+    WHY A PARSER AND NOT AN ASSUMPTION (leak pass 23): the pre-arming excuse
+    below is only sound when there IS a pre-arming population. Once the
+    tracker is armed at boot there is none, and the same evidence means the
+    opposite thing. A log has to say which world it came from.
+    """
+    return 1 if re.search(r'\[trk\] boot-arm mode=\d+ frames=\d+', log) else 0
+
+
+def check_unrecorded_owners(arm, net, e, detail, boot_armed=0):
     """Adjudicate an arm's `owner-unrecorded` population BY SITE, not by count.
 
     Called only for arms with a positive inter-sample net — the population the
@@ -280,13 +296,38 @@ def check_unrecorded_owners(arm, net, e, detail):
                       'not clean.' % (arm, unrec, len(seen)))
         return
     if prearm and not named:
-        notes.append('arm %d: all %d owner-unrecorded survivor(s) carry site=0 '
-                     'and va=0, i.e. they were allocated BEFORE `track full` '
-                     'armed the tracker — pa_set_owner is a no-op while '
-                     'disarmed (mm/page_alloc.ad), so no owner COULD have been '
-                     'recorded. This is the pre-arming population, not a hole '
-                     'in the discriminator; arming at boot removes it.'
-                     % (arm, len(prearm)))
+        if boot_armed:
+            # LEAK PASS 23. Pass 21 wrote this excuse for a world where the
+            # tracker was armed from userland after a settle window, so
+            # site=0 + va=0 + owner-unrecorded arrived together and
+            # necessarily: the frame predated the arm. Pass 22 armed the
+            # tracker in mem_init BEFORE the first buddy allocation, and
+            # `[trk] boot-arm ... site0=0` is printed on this very log. There
+            # is no pre-arming population left to be a member of, so the
+            # SAME evidence now means the opposite: an allocation that ran
+            # with the tracker armed and called neither pa_set_site nor
+            # pa_set_owner. Keeping the note would be a false green bought
+            # by a fix — the ugliest kind, because landing the fix is what
+            # switched the reading's sign.
+            inconc.append('arm %d: %d owner-unrecorded survivor(s) carry '
+                          'site=0 and va=0, but this boot ARMED THE TRACKER '
+                          'AT BOOT (`[trk] boot-arm` is in this log), so the '
+                          'pre-arming population that used to explain them '
+                          'does not exist. These frames were allocated with '
+                          'the tracker RUNNING and still stamped neither a '
+                          'site nor an owner — an allocation path that calls '
+                          'neither pa_set_site nor pa_set_owner. That is a '
+                          'hole in the discriminator, and owner-dead=0 over '
+                          'those frames says nothing.' % (arm, len(prearm)))
+        else:
+            notes.append('arm %d: all %d owner-unrecorded survivor(s) carry '
+                         'site=0 and va=0, i.e. they were allocated BEFORE '
+                         '`track full` armed the tracker — pa_set_owner is a '
+                         'no-op while disarmed (mm/page_alloc.ad), so no '
+                         'owner COULD have been recorded. This is the '
+                         'pre-arming population, not a hole in the '
+                         'discriminator; arming at boot removes it.'
+                         % (arm, len(prearm)))
 
 
 def parse_tasks(text):
@@ -460,11 +501,24 @@ def main():
         pass
 
     samples = split_samples(log)
+    # WHEN was the tracker armed? Every per-site number in this report means a
+    # different thing depending on the answer, so it is printed first and it
+    # gates the pre-arming excuse in check_unrecorded_owners (leak pass 23).
+    boot_armed = parse_boot_armed(log)
     # The labels this run actually produced, in order. A two-sample log yields
     # exactly ['A', 'B'] and every rule below collapses to the pass-20 one.
     labs = sorted(k for k in samples if k in stamps) or sorted(samples)
     print('=== leak pass 21: N-sample census on ONE boot (%d sample%s) ==='
           % (len(labs), '' if len(labs) == 1 else 's'))
+    if boot_armed:
+        print('tracker: ARMED AT BOOT (mem_init, leak pass 22) — site 0 '
+              '(unknown) started EMPTY, so it is a real attribution and not '
+              'a pre-arming population. The re-attribution credit and the '
+              'pre-arming excuse are BOTH void on this log.')
+    else:
+        print('tracker: armed from USERLAND (`track full`) — site 0 holds '
+              'everything allocated before the arm, so per-site numbers are '
+              'differences of attributions and site 0 can credit a grower.')
     if len(labs) < 2:
         for s in ('A', 'B'):
             if s not in samples:
@@ -880,7 +934,7 @@ def main():
         # anything else touches this arm. Pass 20 left "9 of 29 survivors are
         # owner-unrecorded" standing as an open residual for a whole pass
         # because the tally line is only a count.
-        check_unrecorded_owners(arm, net, e, orgl_detail)
+        check_unrecorded_owners(arm, net, e, orgl_detail, boot_armed)
         if not e or 'dead' not in e or 'stray' not in e:
             inconc.append('arm %d: net %+d across the gap with no owner '
                           'discriminator dump at sample B — unadjudicated, '
