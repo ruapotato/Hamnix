@@ -81,9 +81,23 @@ N_EL=8000
 #     detached <div>   live objects 25,439 and ZERO collections. A created node
 #         is still immortal — not because of the pin any more, but because the
 #         DOM's own cre_obj / dom_obj tables keep every node it ever made, and
-#         the root hook faithfully reports that. Reclaiming those needs a
-#         DETACH path in the DOM, which is a separate open item.
+#         the root hook faithfully reports that.
 # Reading only objpinned would score the second case as fixed. It is not.
+#
+# ★ CORRECTED 2026-08-05, same day. This block used to end "reclaiming those
+# needs a DETACH path in the DOM, which is a separate open item", and that
+# conclusion was drawn from THIS PROBE ALONE. It does not survive being
+# measured. js_arena_stat gained a counterfactual reachability census (55-58:
+# the collector's own roots and closure, run without sweeping, with the
+# created-node stores omitted), and it says the 25,439 above is 23,997 objects
+# held ONLY by cre_obj — 94.5% — because a page that does nothing but
+# createElement is created nodes by construction. THE PROBE IS MEASURING
+# ITSELF. On the workload that actually ends WPT files (testharness.js, object
+# pool exhausted at 2,162 subtests) the stores hold ZERO, and on four of the
+# five vendored WPT files that die on the object pool the term is likewise
+# exactly zero. The detach path is NOT the lever; the number below stays as a
+# regression ceiling and NOT as a target. See
+# scripts/test_js_dom_store_share_host.sh for the table and the method.
 CEILING_AC=1000         # objpinned after 20k dropped AbortControllers
 CEILING_EL=1000         # objpinned after 8k dropped detached <div>s
 CEILING_AC_LIVE=5000    # LIVE objects, same probe
@@ -173,8 +187,10 @@ if [ "$rc" = 0 ]; then
     echo "$TAG RESULT: PASS (the immortal set did not worsen)"
     echo "$TAG NOTE: the AbortController numbers are now HEALTHY — the objects are"
     echo "$TAG   reclaimed. The detached-element live count is NOT: the DOM's own"
-    echo "$TAG   cre_obj/dom_obj tables keep every node it ever made, so it is a"
-    echo "$TAG   banked ceiling on an OPEN item (a DOM detach path), not a target."
+    echo "$TAG   cre_obj/dom_obj tables keep every node it ever made — but that is"
+    echo "$TAG   94.5% of THIS probe and 0% of the WPT object-pool wall, so it is a"
+    echo "$TAG   REGRESSION CEILING and not a target. See"
+    echo "$TAG   scripts/test_js_dom_store_share_host.sh for the measurement."
 else
     echo "$TAG RESULT: FAIL — the immortal set grew; see ext_pin in lib/web/js/api.ad"
     echo "$TAG   and _dom_gc_ext_roots in lib/web/dom/canvas.ad."

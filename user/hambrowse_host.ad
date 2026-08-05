@@ -166,6 +166,11 @@ def _dump_arena_stats():
     _stat_pair(cast[Ptr[uint8]]("objsym="), 52)
     _stat_pair(cast[Ptr[uint8]]("objfreeslots="), 53)
     _stat_pair(cast[Ptr[uint8]]("objpinned="), 54)
+    # Counterfactual reachability: what the DOM's node stores cost, on their own.
+    _stat_pair(cast[Ptr[uint8]]("objreach="), 55)
+    _stat_pair(cast[Ptr[uint8]]("objreachnocre="), 56)
+    _stat_pair(cast[Ptr[uint8]]("objreachnodom="), 57)
+    _stat_pair(cast[Ptr[uint8]]("objreachnonode="), 58)
     _stat_pair(cast[Ptr[uint8]]("props="), 14)
     _stat_pair(cast[Ptr[uint8]]("propmax="), 15)
     _stat_pair(cast[Ptr[uint8]]("sptop="), 47)

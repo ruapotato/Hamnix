@@ -1075,6 +1075,14 @@ bash scripts/test_js_ext_root_set_host.sh
 # never registered while it was measuring an OPEN leak; registered now that the
 # leak is fixed, because a ratchet nobody runs cannot hold a fix in place.
 bash scripts/test_js_ext_pin_leak_host.sh
+# scripts/test_js_dom_store_share_host.sh: QEMU-free counterfactual census —
+# of the objects the collector cannot free, how many are held up by the DOM's
+# node stores (cre_obj/stx_obj) AND NOTHING ELSE. Banks the ceilings and the
+# disproof: the sibling ext-pin gate's 25,439-live reading is 94.5% node stores
+# only because that probe does nothing but createElement, and the term is 0% on
+# the testharness workload that actually ends WPT files. Registered so "a DOM
+# detach path is the next lever" cannot be re-briefed from memory.
+bash scripts/test_js_dom_store_share_host.sh
 # scripts/test_jsengine_gc_phase2_host.sh: QEMU-free gate for Phase-2 GC — the
 # higher-order Array builtins (map/filter/reduce/reduceRight/forEach/some/every/
 # find/findIndex/findLast/findLastIndex/flatMap/sort/toSorted) are now root-pinned

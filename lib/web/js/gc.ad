@@ -578,9 +578,42 @@ def ext_pin_rebuild_objs():
 # (the only trigger) with gc_disabled == 0: at that moment every live object is
 # reachable from a root below — a pinned value handle, an arena slot, a raw-id
 # stack, or an obj_pin'd external handle — and the object about to be created
-# does not exist yet.
+# does not exist yet. The root set and the closure live in obj_gc_mark_all
+# below; this is the sweep and the trigger policy.
 def gc_collect_objs():
     obj_collections = obj_collections + 1
+    obj_gc_mark_all()
+    # ---- SWEEP ----------------------------------------------------------
+    freed: int32 = 0
+    o: int32 = n_objs - 1
+    while o >= 0:
+        if obj_mark[o] == 0:
+            obj_gc_free(o)
+            freed = freed + 1
+        o = o - 1
+    obj_last_freed = freed
+    # ---- resolver "alreadyCalled" cells, reclaimed off the same sweep ----------
+    gc_res_sweep()
+    # ---- trigger policy for the NEXT object collection (mirrors gc_collect) ----
+    if gc_stress != 0:
+        nw2: int32 = n_objs + OBJ_STRESS_GAP
+        if nw2 > MAX_OBJ:
+            nw2 = MAX_OBJ
+        obj_hi_water = nw2
+    elif freed >= OBJ_MIN_FREE:
+        obj_hi_water = obj_base_water
+    else:
+        nw: int32 = n_objs + OBJ_GROW
+        if nw > MAX_OBJ:
+            nw = MAX_OBJ
+        obj_hi_water = nw
+
+
+# The MARK half of gc_collect_objs, split out so that a measurement can run the
+# EXACT root set the collector runs without sweeping. Marks are scratch state
+# owned by this file and cleared at entry, so a mark-only call leaves the arena
+# untouched (see js_obj_reachable_census).
+def obj_gc_mark_all():
     # ---- clear marks over the live extent ----
     i: int32 = 0
     while i < n_objs:
@@ -738,30 +771,32 @@ def gc_collect_objs():
     while obj_work_n > 0:
         obj_work_n = obj_work_n - 1
         obj_gc_trace(obj_work[obj_work_n])
-    # ---- SWEEP ----------------------------------------------------------
-    freed: int32 = 0
-    o: int32 = n_objs - 1
-    while o >= 0:
-        if obj_mark[o] == 0:
-            obj_gc_free(o)
-            freed = freed + 1
-        o = o - 1
-    obj_last_freed = freed
-    # ---- resolver "alreadyCalled" cells, reclaimed off the same sweep ----------
-    gc_res_sweep()
-    # ---- trigger policy for the NEXT object collection (mirrors gc_collect) ----
-    if gc_stress != 0:
-        nw2: int32 = n_objs + OBJ_STRESS_GAP
-        if nw2 > MAX_OBJ:
-            nw2 = MAX_OBJ
-        obj_hi_water = nw2
-    elif freed >= OBJ_MIN_FREE:
-        obj_hi_water = obj_base_water
-    else:
-        nw: int32 = n_objs + OBJ_GROW
-        if nw > MAX_OBJ:
-            nw = MAX_OBJ
-        obj_hi_water = nw
+
+
+# ---- COUNTERFACTUAL REACHABILITY CENSUS -----------------------------------
+# Runs the collector's OWN root set and transitive closure without sweeping,
+# with a named subset of the embedder's tables omitted, and returns how many
+# non-free objects came out reachable. skip == 0 is the collector's real answer
+# ("how many objects would survive a collection right now"); a non-zero skip is
+# the counterfactual, and the DIFFERENCE is the number of live objects that
+# nothing but that table is holding up.
+#
+# This is the only honest way to ask whether a store is a leak. The live-object
+# total says an object survived; it cannot say WHY, and a node the page still
+# references through the document tree looks identical to one only a store
+# remembers. Allocation-free, O(live graph), and safe to call at any point: the
+# real collector clears obj_mark at its own entry.
+def js_obj_reachable_census(skip: int32) -> int32:
+    ext_census_skip = skip
+    obj_gc_mark_all()
+    ext_census_skip = 0
+    n: int32 = 0
+    i: int32 = 0
+    while i < n_objs:
+        if obj_freed[i] == 0 and obj_mark[i] != 0:
+            n = n + 1
+        i = i + 1
+    return n
 
 
 # Rebuild the resolver-flag free list. Runs at the END of gc_collect_objs, where
@@ -1140,6 +1175,23 @@ def js_arena_stat(which: int32) -> int32:
                 pc = pc + 1
             j = j + 1
         return pc
+    # ---- COUNTERFACTUAL REACHABILITY (see js_obj_reachable_census) ---------
+    #  55 reachable with the real root set (what a collection here would keep)
+    #  56 reachable with cre_obj/stx_obj omitted
+    #  57 reachable with dom_obj omitted
+    #  58 reachable with both omitted
+    # 55-56 is the number of live objects held up by the created-node store
+    # ALONE; 55-58 is the whole DOM node-store term. Anything still reachable
+    # through the document tree, a JS variable or an event handler is counted in
+    # all four, so this separates "the store remembers it" from "the page uses it".
+    if which == 55:
+        return js_obj_reachable_census(0)
+    if which == 56:
+        return js_obj_reachable_census(1)
+    if which == 57:
+        return js_obj_reachable_census(2)
+    if which == 58:
+        return js_obj_reachable_census(3)
     if which >= 49 and which <= 53:
         want: int32 = which - 49          # 49->OK_PLAIN .. 52->OK_SYMBOL
         cnt: int32 = 0

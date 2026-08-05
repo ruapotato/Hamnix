@@ -11263,18 +11263,30 @@ def _live_cls_resolve(anchor: int32, out_len: Ptr[int32]) -> Ptr[uint8]:
 # A NEW MODULE-LEVEL TABLE THAT STORES A JS HANDLE MUST BE ADDED HERE. Marking
 # 0 / -1 / a non-object handle is safe (js_ext_mark_root ignores them), so when
 # in doubt, add it.
+#
+# The ONE exception to "full declared range" is ext_census_skip, which omits a
+# named table so js_obj_reachable_census can price it. It is zero during every
+# real collection — the only writer is that census, which does not sweep — and
+# it is how "cre_obj/dom_obj keep every node the DOM ever made" was turned from
+# a story into a number. See scripts/test_js_dom_store_share_host.sh.
 def _dom_gc_ext_roots(ignored: int32) -> int32:
     i: int32 = 0
+    # MEASUREMENT-ONLY suppression. ext_census_skip is zero during every real
+    # collection; js_obj_reachable_census sets it to ask what a table costs.
+    skip_cre: int32 = ext_census_skip & 1     # cre_obj / stx_obj (created nodes)
+    skip_dom: int32 = ext_census_skip & 2     # dom_obj (source-anchored nodes)
     # --- bindings.ad: per-element tables (indexed by dom id) ---
     while i < 8192:
-        js_ext_mark_root(dom_obj[i])
+        if skip_dom == 0:
+            js_ext_mark_root(dom_obj[i])
         js_ext_mark_root(dom_clsobj[i])
         js_ext_mark_root(dom_onclick_fn[i])
         js_ext_mark_root(dom_oninput_fn[i])
         js_ext_mark_root(dom_onchange_fn[i])
         js_ext_mark_root(dom_onsubmit_fn[i])
-        js_ext_mark_root(cre_obj[i])          # createElement/createTextNode nodes
-        js_ext_mark_root(stx_obj[i])          # source-anchored Text nodes
+        if skip_cre == 0:
+            js_ext_mark_root(cre_obj[i])      # createElement/createTextNode nodes
+            js_ext_mark_root(stx_obj[i])      # source-anchored Text nodes
         i = i + 1
     i = 0
     while i < 2048:
