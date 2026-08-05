@@ -332,14 +332,33 @@ The one remaining failure is `06_class_style_toggle`, deferred on purpose
         `g_cur_event`) as roots — which inverts the `js/` → `dom/` layering and so
         needs a **registered mark callback**, not a direct reference.
         Verify any attempt under `gc_stress` **with the census, not a WPT score**.
-      - [ ] **★ 42 of 706 files — 8044 of 18 422 subtests (44%) — do not run to
+      - [~] **★ 42 of 706 files — 8044 of 18 422 subtests (44%) — did not run to
         completion**, across **FOUR** ceilings, not one: **22** `gc root stack
-        overflow` (clustered on `dom/nodes/moveBefore/*` — a stuck-open root and a
-        real bug shape, own item), **13** string pool, **10** object pool, plus
-        engine wall-clock timeout. **24 produce ZERO subtests** and had been
-        sitting unexplained in the "no results" bucket. **So the banked floor
-        15433 is substantially a memory reading.** A fifth silent cap surfaced:
-        `document.createElement` has a hard per-page **`CRE_MAX=8192`**.
+        overflow` (clustered on `dom/nodes/moveBefore/*`), **13** string pool,
+        **10** object pool, plus engine wall-clock timeout. **24 produce ZERO
+        subtests.** A fifth silent cap surfaced: `document.createElement` has a
+        hard per-page **`CRE_MAX=8192`**.
+        - **✔ 2026-08-05 (`f8886eda`, floor banked 16094 in `43fd3bb8`):
+          truncating files 42 → 12.** `gc root stack overflow` **20 → 0**, string
+          pool **12 → 2**, object pool **10 → 10**. Zero-subtest files 108 → 85;
+          suite 2m12s → 1m39s. This delta IS conformance: all 30 moved files went
+          TRUNCATED → RUNNING TO COMPLETION and the survivors' cut-off points are
+          byte-identical.
+        - **⚠ THE "stuck-open root" ASSERTION ABOVE WAS WRONG, and it was an
+          assertion, not a measurement.** There was no root leak. `run_one_task`
+          selected a task **already on the stack** (`timer_busy` held the "taken"
+          fact; the selection path only read `timer_active`, cleared after
+          `invoke()` returns), so every `await` inside a task recursed on itself
+          until the 4096-entry root stack was simply the first ceiling it touched.
+          10 of the 12 string-pool truncations were the same recursion burning
+          string pool on the way down. **A resource ceiling names whatever the
+          runaway touched first, not the bug** — carry that to the remaining 10.
+        - [ ] **Object pool (10 files, `dom/ranges/*` + TreeWalker) — OPEN, agent
+          dispatched.** Do NOT assume retention; measure it. The instrument now
+          exists (`HAMNIX_JS_GCROOT=1`: root high-water, per-frame net roots blamed
+          on the INNERMOST leaking frame, frame-depth high-water, node-kind
+          histogram at the deepest moment) and it is what distinguishes a
+          stuck-open root from a genuinely deep working set.
       - **Now instrumented, so this can never silently recur:** the live-object
         census (`js_arena_stat` 49-54, `HAMNIX_JS_ARENA_STATS=1` — `n_objs` is an
         **extent** that never falls, so a retention bug and a genuine working set
