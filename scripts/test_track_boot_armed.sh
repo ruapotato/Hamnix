@@ -40,7 +40,10 @@ BOOT_WAIT="${BOOT_WAIT:-300}"
 OUT_DIR="${OUT_DIR:-build/track_boot_armed}"
 HANDOFF_MARKER="handing off to interactive shell"
 
-[ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP-RUNTIME: no $INSTALLER_IMG" >&2; exit 0; }
+# A missing prerequisite is INCONCLUSIVE (125), never 0. Exiting 0 here made
+# this gate report green on a host with no image built -- the dark-gate class
+# that already let real bugs ship.
+[ -f "$INSTALLER_IMG" ] || { echo "$TAG SKIP-RUNTIME: no $INSTALLER_IMG" >&2; exit 125; }
 
 OVMF_FD="${OVMF_FD:-}"
 if [ -z "$OVMF_FD" ]; then
@@ -54,7 +57,7 @@ if [ -z "$OVMF_FD" ]; then
         [ -f "$c" ] && OVMF_FD="$c" && break
     done
 fi
-[ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "$TAG SKIP-RUNTIME: no OVMF" >&2; exit 0; }
+[ -n "$OVMF_FD" ] && [ -f "$OVMF_FD" ] || { echo "$TAG SKIP-RUNTIME: no OVMF" >&2; exit 125; }
 
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/serial.log"

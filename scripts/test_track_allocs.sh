@@ -127,5 +127,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "[test_track_allocs] PASS — allocation tracking arms, attributes," \
-     "disarms, and costs nothing when off (qemu rc=$rc)"
+echo "[test_track_allocs] PASS — the page tracker is armed at boot, attributes," \
+     "and really disarms; kmtrack still costs nothing when off (qemu rc=$rc)"
