@@ -200,7 +200,18 @@ def run_one_task() -> int32:
     best_micro: int32 = 0
     i: int32 = 0
     while i < timer_next:
-        if cast[int32](timer_active[i]) != 0 and \
+        # timer_busy[i] != 0 => this slot's callback is ALREADY ON THE STACK.
+        # It must not be selected again. "Has this task been taken?" had two
+        # writers and the reader saw the wrong one: the take was recorded by
+        # timer_active = 0 / timer_free AFTER invoke() returned, but `await`
+        # runs drain_until_settled -> run_one_task INSIDE that invoke, and the
+        # nested scan still saw timer_active == 1 and re-ran the same callback.
+        # Every `await` in a task therefore recursed one level deeper on the
+        # SAME task, forever: the awaited promise could never settle because
+        # the drain never got past the task that was waiting on it. That is the
+        # whole of "gc root stack overflow" — it is the interpreter recursion
+        # blowing the root stack, not a stuck-open root.
+        if cast[int32](timer_active[i]) != 0 and timer_busy[i] == 0 and \
            (task_micro_only == 0 or cast[int32](timer_micro[i]) != 0):
             cm: int32 = cast[int32](timer_micro[i])
             take: int32 = 0
