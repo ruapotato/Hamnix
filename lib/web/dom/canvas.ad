@@ -14711,6 +14711,21 @@ def _click_activate_post(obj: int32, kind: int32, evtidx: int32, \
         return
     if _nd_is_connected(obj) == 0:
         return
+    # NO STATE CHANGE, NO EVENTS. Clicking an ALREADY-CHECKED radio is silent in
+    # every browser: the pre-click steps set a checkedness that was already set,
+    # and "fire an event named input ... fire an event named change" are steps of
+    # the activation behaviour that run only when the checkedness actually
+    # CHANGED. We fired both unconditionally, so `radio.click()` on the member
+    # the page had already marked `checked` emitted a spurious change — and a
+    # change handler is exactly where a page refetches the dependent half of a
+    # form, so the ordinary click-the-choice-you-already-have gesture did the
+    # expensive thing twice. A checkbox click always toggles, so this is the
+    # radio case and any future control whose pre-click step is idempotent.
+    now: int32 = 0
+    if js_to_bool(js_get_prop(obj, cast[Ptr[uint8]]("checked"), 7)) != 0:
+        now = 1
+    if now == was:
+        return
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("input"), 5)
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("change"), 6)
 

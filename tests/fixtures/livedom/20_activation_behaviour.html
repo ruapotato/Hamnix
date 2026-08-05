@@ -1,0 +1,30 @@
+<!doctype html><html><head><title>activation behaviour</title></head><body>
+<input type="checkbox" id="c">
+<input type="radio" name="g" id="r1" checked>
+<input type="radio" name="g" id="r2">
+<div id="log">-</div>
+<script>
+// D5 guard. el.click() must run the HTML ACTIVATION BEHAVIOUR, not merely
+// dispatch a click event:
+//   * a click listener observes the ALREADY-FLIPPED .checked (pre-click
+//     activation steps run before dispatch),
+//   * a change event follows the click, in that order,
+//   * clicking an already-checked radio is silent (no state change, no change
+//     event), while clicking its sibling moves the whole group,
+//   * .value of a bare checkbox is the default-on value "on", not "".
+var log = [];
+var c = document.getElementById('c');
+c.addEventListener('click', function (e) { log.push('K' + e.target.checked); });
+c.addEventListener('change', function (e) { log.push('G' + e.target.checked); });
+document.getElementById('r1').addEventListener('change', function () { log.push('r1'); });
+document.getElementById('r2').addEventListener('change', function () { log.push('r2'); });
+window.__act = function () {
+  c.click();
+  c.click();
+  document.getElementById('r1').click();
+  document.getElementById('r2').click();
+  log.push('v=' + c.value);
+  document.getElementById('log').textContent = log.join(' ');
+};
+</script>
+</body></html>
