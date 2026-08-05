@@ -159,3 +159,58 @@
 # node's handler never running, 19 fails on FIVE of the six lines above.
 14_inline_handler_onclick
 19_handler_idl_reflection
+# RAISED 2026-08-05 to TWENTY-ONE, by rescuing three regression fixtures off the
+# orphaned branch worktree-agent-af65fb2b6bac6d09f and closing the two gaps they
+# still measured on main. The SEVENTH and EIGHTH instances of the two-writers
+# shape, and the first ones found by a fixture main did not have.
+#
+# THE FIXTURE-NUMBER COLLISION, recorded because it nearly ate three fixtures.
+# That branch was cut before D2b/D3/D4 landed and added its own 16/17/18
+# (activation_behaviour / select_selectedness / script_rawtext) while main
+# independently landed a DIFFERENT 16/17/18 (classlist_attr_mirror /
+# insertbefore_fragment / parentnode_after_remove). Resolving this file by
+# taking either side of that conflict deletes three landed fixtures and their
+# BASELINE rows while the gate still reports a plausible count — a coverage
+# loss wearing a green badge, which `git merge` cannot see because both sides
+# are textually valid. The incoming three are renumbered 20/21/22 and this file
+# is the UNION: 19 + 3 = 22 fixtures, 18 + 3 = 21 banked names.
+#
+# 22_script_rawtext PASSED ON UNMODIFIED MAIN — D7 (_rawtext_close) had already
+# landed by a different route, so it is pure added coverage and no code moved
+# for it. The other two were RED on main (983b1335, clean-tree run, pass=18
+# fail=1 -> pass=19 fail=3 with the three added) and each named a real gap:
+#
+#   20_activation_behaviour — clicking an ALREADY-CHECKED radio fired a change
+#       event. _click_activate_post ran the activation behaviour's "fire input,
+#       then change" unconditionally, but those are steps that run only when the
+#       checkedness actually CHANGED. chromium logs `r2`; we logged `r1 r2`. A
+#       change handler is where a page reloads dependent data, so the ordinary
+#       re-click-your-current-choice gesture did the expensive thing twice.
+#
+#   21_select_selectedness — the selection was TWO stores again, and the fix
+#       that was supposed to have unified it only went half way. selectedIndex
+#       had been made a view, but over `select.value`, which was itself a
+#       stamped own data property seeded from the selected option's TEXT; the
+#       option elements' own `selected` was never reflected for a source option
+#       and never written by anything. So `<option value="c" selected>Cherry`
+#       answered s.value === "Cherry" (chromium: "c"), every option read back
+#       unselected, and `s.value = 'nope'` stored a string nothing offers
+#       instead of deselecting (chromium: value "", selectedIndex -1).
+#       The ONE store is now each option's `selected` property, reflected at
+#       registration; selectedIndex is a view over it, value is a view over
+#       selectedIndex, and the select's shadowing `value` data property is gone
+#       from _dom_register_el. The render read-back stops reading select.value
+#       (the renderer needs the option's TEXT, .value is its VALUE attribute —
+#       different strings for the ordinary <option value="a">Apple</option>,
+#       which is exactly why the two were allowed to drift) and reads the
+#       derived selectedIndex instead.
+#
+# The FOUR commits this rescue was briefed to rebase are SUPERSEDED, not
+# landed: main had already reached D5/D6/D7 by a different route (3aec4142),
+# and their perf commit's premise — select accessors sitting on
+# HTMLElement.prototype — was never true of main, which put them on
+# HTMLSelectElement.prototype. Only the fixtures and the two gaps above
+# survived contact with a measurement.
+20_activation_behaviour
+21_select_selectedness
+22_script_rawtext

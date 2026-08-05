@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>script raw text</title></head><body>
+<div id="out">-</div>
+<script>
+/* D7 guard. A bare less-than inside a script body -- the most ordinary line in
+   JavaScript there is, a counting for-loop -- must not be read as markup. When
+   it was, the close-tag scan for THIS script ran past its own end tag, the
+   element got an empty content span, and its ENTIRE source came back as a TEXT
+   NODE sibling of the script element in body.childNodes. The tell is the node
+   count, so this fixture asserts nothing by hand: chromium's body has no such
+   text node and ours must not either. (This comment is deliberately free of
+   markup characters -- the ONLY less-than in this file's script is the one in
+   the loop condition, so a failure here can mean nothing else.) */
+var n = 0;
+var i;
+for (i = 0; i < 3; i++) { n = n + i; }
+window.__act = function () {
+  document.getElementById('out').textContent = 'sum=' + n;
+};
+</script>
+</body></html>
