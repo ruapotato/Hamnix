@@ -92,13 +92,13 @@ def sources(kernel_only):
     return sorted(set(out))
 
 
-def run(files):
+def run(files, driver_args=()):
     funcs = accepted = fallback = 0
     parsefail = []
     reasons, sites = {}, {}
     for f in files:
         try:
-            r = subprocess.run([str(DRIVER), "--dump-ssa", str(f)],
+            r = subprocess.run([str(DRIVER), "--dump-ssa", *driver_args, str(f)],
                                capture_output=True, text=True, timeout=600)
         except subprocess.TimeoutExpired:
             parsefail.append((f, "timeout"))
@@ -133,13 +133,17 @@ def main():
     ap.add_argument("--kernel", action="store_true")
     ap.add_argument("--json")
     ap.add_argument("--top", type=int, default=25)
+    ap.add_argument("--driver-arg", action="append", default=[],
+                    help="extra flag passed to the dump driver (repeatable); "
+                         "used by scripts/ssa_lift_diff.sh to run the "
+                         "lift-and-diff counterfactuals")
     a = ap.parse_args()
     if not DRIVER.exists():
         sys.exit("driver not built: python3 -c \"import sys;"
                  "sys.path.insert(0,'tests/fuzz');import ad_codegen_host as h;"
                  "h.build_driver()\"")
     files = sources(a.kernel)
-    res = run(files)
+    res = run(files, a.driver_arg)
     scope = "KERNEL" if a.kernel else "WHOLE TREE"
     f, acc = res["funcs"], res["accepted"]
     pct = (100.0 * acc / f) if f else 0.0

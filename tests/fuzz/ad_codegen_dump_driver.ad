@@ -213,6 +213,8 @@ from compiler.ssa import (
     ssa_stat_blocks,
     ssa_stat_phis,
     ssa_stat_fail_code,
+    ssa_census_mem_native,
+    ssa_census_mem_model,
 )
 
 # Phase-1b SSA machine-code emission lane.  Under ADDER_OPT2 (env), each
@@ -390,6 +392,20 @@ def is_novec_flag(s: Ptr[uint8]) -> uint32:
         if s[i] != nm[i]:
             return 0
         i = i + 1
+    return 1
+
+
+# True iff the NUL-terminated C strings `s` and `lit` are equal.  Used by the
+# --dump-ssa subset-LIFT flags below; the older per-flag matchers above predate
+# string literals being usable here and are left alone.
+def flag_eq(s: Ptr[uint8], lit: Ptr[uint8]) -> uint32:
+    i: uint32 = 0
+    while lit[i] != 0:
+        if s[i] != lit[i]:
+            return 0
+        i = i + 1
+    if s[i] != 0:
+        return 0
     return 1
 
 
@@ -795,6 +811,13 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
     want_holes: uint32 = 0
     want_novec: uint32 = 0
     want_ssa: uint32 = 0
+    # --dump-ssa subset-LIFT levers (measurement only; scripts/ssa_lift_diff.sh).
+    # They size a subset target by the ONLY sound method: lift the gate, re-run
+    # the census, diff the accepted count.  Analysis lane only — ssa_emit_program
+    # sets ssa_mem_model/ssa_mem_native itself and never reads these, so real
+    # codegen can never see a lift.  Defaults mirror the real --opt lane.
+    want_memnative: uint32 = 1
+    want_memmodel: uint32 = 0
     ai: int32 = 1
     while ai < argc:
         a: Ptr[uint8] = cast[Ptr[uint8]](argv[ai])
@@ -822,6 +845,10 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
             ir_set_castcall_break(1)
         elif is_novec_flag(a) != 0:
             want_novec = 1
+        elif flag_eq(a, "--ssa-no-memnative") != 0:
+            want_memnative = 0
+        elif flag_eq(a, "--ssa-memmodel") != 0:
+            want_memmodel = 1
         elif is_checkbounds_flag(a) != 0:
             # Opt-in userspace array-bounds checking. The dump driver always
             # emits a userspace (Linux exit_group) image, so it is the userspace
@@ -882,6 +909,12 @@ def main(argc: int32, argv: Ptr[uint64]) -> int32:
         layout_classes(prog)
         register_enums(prog)
         layout_globals(prog)
+        # Arm the subset-LIFT levers (measurement only, this lane only).  See
+        # scripts/ssa_lift_diff.sh for why a bail-site histogram cannot size a
+        # target and a lift-and-diff can.  Unflagged these hold the same values
+        # ssa_emit_program arms, so the census still measures the real subset.
+        ssa_census_mem_native = want_memnative
+        ssa_census_mem_model = want_memmodel
         ssa_run_program(prog)
         emit("SSA_FUNCS ")
         put_u32(ssa_stat_funcs)
