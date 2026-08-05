@@ -391,7 +391,8 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   branch regression. Correctness IS still covered (500/500 accepted, 500 CORRECT,
   0 miscompiles) — what is dead is every "the lever actually fired" assertion. The
   lane also misreports the failure as `found a genuine miscompile`, which sends the
-  reader to the wrong place. A permanently-red gate becomes wallpaper. Dispatched.
+  reader to the wrong place. A permanently-red gate becomes wallpaper.
+  [~] Re-dispatched 08-05 after a session restart killed the first agent.
 - [x] ✔ **CLOSED 2026-08-05 (`72b1da5c` + `32a08646`) — `textContent` answered from
   the parse-time source span, not the live tree.** The two-writers shape for the
   SEVENTH time, and it took TWO deletions to close: the stale READER (the getter now
@@ -409,10 +410,15 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   as a ceiling in `test_js_ext_pin_leak_host.sh`, not a target. Dispatched 08-05, and
   briefed to MEASURE FIRST: if few live objects are reachable only from those stores,
   the detach path is not the lever and the finding is the deliverable.
+  Re-dispatched 08-05 (the first agent died with its session, no commits).
 - [~] **Leak census pass 24 — the first run whose attributions are REAL.** Every
   earlier hours-scale verdict was reached with ~100% of frames unattributed (site 0);
   pass 22 (`7f4a116f`) boot-arms the tracker and pass 23 (`c1ad90db`) stopped the
-  adjudicator from excusing boot-armed unattributed survivors. Dispatched 08-05.
+  adjudicator from excusing boot-armed unattributed survivors. Dispatched 08-05;
+  the first agent's 6 h soak was cut off by a session death — its PRE-RUN evidence
+  survives as `docs/leak_pass24_boot_armed_census.md` (`42dbd687`, cherry-picked:
+  boot-arm mode=2 site0=0 confirmed on that boot's own serial log, 45/45 report
+  mutations caught) and the soak is re-dispatched to fill in the RESULTS section.
 - [ ] **SSA next target = site 92** (call-symbol whitelist, 55.7% of what remains) —
   but read it as a CLUSTER, and mind the standalone-TU caveat that inflates it, same
   as site 34. A census site's share is an UPPER BOUND on the win, never the win.
