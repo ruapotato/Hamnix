@@ -62,6 +62,7 @@ cat > "$page" <<'EOF'
 <div id="d">d1<!--comment-->d2</div>
 <div id="e">e1<script>var zz=1;</script>e2</div>
 <div id="p">P<b id="k">K</b>Q</div>
+<div id="x">pre</div>
 <template id="t"><p>HID</p></template>
 <script>
 function g(i){ return document.getElementById(i); }
@@ -115,6 +116,15 @@ say("T7_tmpl_tc", g("t").textContent);
 say("T7_content_tc", g("t").content.textContent);
 say("T8_inline_tmpl", g("b").textContent);
 
+// ---- T10: an appended created TEXT node counts ONCE. _append_sync_text used
+// to concatenate it onto an own textContent property as well, and once the
+// getter walked the live tree that second writer double-counted it
+// ("mountedmounted" in test_hambrowse_reactmount_host.sh).
+var x = g("x");
+x.appendChild(document.createTextNode("X"));
+say("T10_kids", x.childNodes.length);
+say("T10_tc", x.textContent);
+
 // ---- T9: the sibling getters over the same state.
 say("T9_el_nodeValue", g("c").nodeValue);
 var f = document.createDocumentFragment();
@@ -146,6 +156,8 @@ TC T7_tmpl_kids=[0]
 TC T7_tmpl_tc=[]
 TC T7_content_tc=[HID]
 TC T8_inline_tmpl=[AB]
+TC T10_kids=[2]
+TC T10_tc=[preX]
 TC T9_el_nodeValue=[null]
 TC T9_fragment_tc=[frag-F]
 TC T9_comment_tc=[CC]
@@ -166,7 +178,7 @@ fi
 fail=0
 printf '%s\n' "$WANT" > "$OUT/dom_tc_want.txt"
 if diff -u "$OUT/dom_tc_want.txt" "$got" > "$OUT/dom_tc_diff.txt"; then
-    echo "[dom-tc] PASS: all 20 textContent read-back facts match chromium"
+    echo "[dom-tc] PASS: all 22 textContent read-back facts match chromium"
 else
     echo "[dom-tc] FAIL: textContent read-back differs from chromium"
     sed -n '3,60p' "$OUT/dom_tc_diff.txt" | sed 's/^/[dom-tc]     /'

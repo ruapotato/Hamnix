@@ -4326,8 +4326,9 @@ bash scripts/test_jsengine_gc_obj_host.sh
 # list (what every mutation writes, and what childNodes/innerHTML/the renderer
 # read) — so after el.appendChild(createElement('span')) the tree was RIGHT
 # (childNodes.length 2, innerHTML 'start<span>MADE</span>') and el.textContent
-# still read 'start'. The D-series read-back shape again. 20 chromium-measured
-# facts over append / nested created subtree / removeChild / insertBefore /
+# still read 'start'. The D-series read-back shape again. 22 chromium-measured
+# facts over append / appended Text node / nested created subtree / removeChild /
+# insertBefore /
 # Text.data / entities / comments / <script> text / <template> inertness /
 # fragment + comment + text nodeValue, with no GC and no churn involved, plus a
 # live chromium re-measure of the constants when chromium is installed (the

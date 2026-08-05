@@ -2675,44 +2675,24 @@ def _frag_clear(fragv: int32):
     js_set_prop(fragv, cast[Ptr[uint8]]("lastChild"), 9, js_null())
 
 
-# Extend a SOURCE-ANCHORED element's textContent override with an appended Text
-# node's data. Source elements answer textContent from their [cstart,cend) HTML
-# slice, which cannot see a node script appended, so the override is how a
-# mutation becomes visible -- and js_has_own("textContent") is also what the
-# render readback tests to decide the element changed. CREATED nodes deliberately
-# do NOT get one: their textContent is computed from the tree (below), and an
-# own property would shadow that accessor for good.
-def _append_sync_text(parentv: int32, childv: int32):
-    if _find_el_by_obj(parentv) < 0:
-        return
-    cid2: int32 = _find_cre_by_obj(childv)
-    # cre_is_text is a KIND (1 text, 2 comment, 3 processing instruction). Only
-    # a real Text child contributes: a comment or PI must not, or
-    # `<div><!--x--></div>`.textContent reads back "x".
-    if cid2 < 0 or cre_is_text[cid2] != 1:
-        return
-    tsbuf: Array[8192, uint8]
-    tw: int32 = 0
-    exv: int32 = js_get_prop(parentv, cast[Ptr[uint8]]("textContent"), 11)
-    exp2: Ptr[uint8] = js_str_ptr(exv)
-    exn: int32 = _cstr_len(exp2)
-    if _is_undef_str(exp2, exn) != 0:
-        exn = 0
-    i: int32 = 0
-    while i < exn and tw < 8191:
-        tsbuf[tw] = exp2[i]
-        tw = tw + 1
-        i = i + 1
-    nvp: Ptr[uint8] = js_str_ptr(js_get_prop(childv, cast[Ptr[uint8]]("data"), 4))
-    nvn: int32 = _cstr_len(nvp)
-    if _is_undef_str(nvp, nvn) == 0:
-        j: int32 = 0
-        while j < nvn and tw < 8191:
-            tsbuf[tw] = nvp[j]
-            tw = tw + 1
-            j = j + 1
-    js_set_own(parentv, cast[Ptr[uint8]]("textContent"), 11, \
-               js_new_string(&tsbuf[0], cast[uint64](tw)))
+# _append_sync_text lived here: on appendChild of a created Text node to a
+# SOURCE-anchored element it CONCATENATED the child's data onto an own
+# `textContent` data property, because the getter answered from the [cstart,cend)
+# HTML slice and could not see the appended node.
+#
+# It was the SECOND WRITER for the element's content, and the getter now reads
+# the live tree (see _inner_accessor NID_TC_GET), so it is DELETED rather than
+# made consistent — the shape feedback_two_writers_defect_shape describes. With
+# both alive the child was counted TWICE: appendChild pushes it into childNodes
+# first, so the js_get_prop("textContent") this function did to read the
+# "existing" value already included it, and `root.appendChild(
+# document.createTextNode("mounted"))` read back "mountedmounted"
+# (scripts/test_hambrowse_reactmount_host.sh TEXT-SOURCE).
+#
+# The render read-back does not lose anything: an appended created node is
+# emitted into the rewritten markup from the ap_/cc_ append tables by
+# _emit_created, which is the same path an appended ELEMENT child has always
+# taken. The own property was never load-bearing for the paint of a text append.
 
 
 # ---- Node.textContent, computed ---------------------------------------------
@@ -2930,8 +2910,6 @@ def _append_child_v(parentv: int32, childv: int32):
             js_set_prop(childv, cast[Ptr[uint8]]("parentNode"), 10, parentv)
             js_set_prop(childv, cast[Ptr[uint8]]("parentElement"), 13, parentv)
     _mo_record_childlist(parentv, childv, -1)
-    # A TEXT child extends the parent's live textContent. Without this an
-    _append_sync_text(parentv, childv)
     _maybe_run_inserted_script(childv)
 
 
