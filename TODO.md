@@ -431,9 +431,38 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   Do NOT re-dispatch it and do NOT kill stray QEMU — the orchestrator collects the
   results directly. Generalises: a `nohup`ed measurement is the one thing that
   survives a session death, so long soaks should always be launched that way.
-- [ ] **SSA next target = site 92** (call-symbol whitelist, 55.7% of what remains) —
-  but read it as a CLUSTER, and mind the standalone-TU caveat that inflates it, same
-  as site 34. A census site's share is an UPPER BOUND on the win, never the win.
+- [ ] ~~**SSA next target = site 92**~~ — **WITHDRAWN 08-05. Site-picking is not a
+  route to subset coverage at all**, and the whole "next target = the biggest bail
+  site" strategy is disproved. Evidence sits UNMERGED on
+  `worktree-agent-a2c468f66677acd3e` (`0c0796d3`, `42b46b27`) and must not be lost a
+  third time — a session restart has already orphaned it twice.
+  - A function bails at its **FIRST** failing gate and is counted once there, so the
+    histogram ranks gates by **which one is checked earliest**, not by how many
+    functions each blocks. A bail count is an upper bound and can be arbitrarily loose.
+  - The only sound sizing is the **counterfactual**: lift the gate, re-run the
+    whole-tree census, diff the ACCEPTED count. `scripts/ssa_lift_diff.sh` does this.
+  - Measured, whole tree (21279 fns): baseline **36.65%**, lift104 **+0**, lift105
+    **+0**, both together **+0** (so they do not merely mask each other), and the
+    local memory model as ONE unit **88.26%, +10983 functions / +51.6 points**.
+  - Site 66 was also two unrelated things blended: 104 = the address genuinely
+    escaped (1853), 105 = a legacy -O0 register-allocator write-through hint where
+    nothing takes an address (3118). **Nearly two thirds of the "alloca gap" was
+    never an alloca problem.** Lifting each relocated its bails one line down
+    (66 → 39/50 and 66 → 42/92) and admitted exactly zero new functions.
+  - **So the real item is: land the native local memory model as ONE piece** — alloca
+    + sized load/store + index + deref + member — which the LLVM lane already has and
+    the native x86 emitter does not. Incremental gate-picking cannot get there because
+    the gates are mutually entangled: a function that takes an address also indexes
+    and also derefs.
+  - [~] **Blocked on a rebase.** The branch was cut at `0d1c1df1`; it now conflicts
+    with main in `ssa_emit.ad` and `ssa_subset_census.py` (main gained the
+    `63131c78` whitelist since). Next free agent slot: rebase onto main, re-run the
+    lift-diff table, re-confirm codegen is byte-identical (the change is claimed
+    behaviour-neutral — only the bail SITE NUMBER moves), then merge.
+  - Generalises [[feedback_first_bail_histogram_upper_bound]]: that memory said a
+    site's share is an upper bound on the win. This is the stronger statement — for
+    an entangled gate cluster the upper bound can be **zero**, and the histogram
+    cannot tell you which case you are in. Only the lift-and-diff can.
 
 ---
 
