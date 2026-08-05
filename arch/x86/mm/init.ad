@@ -16,7 +16,7 @@
 # which holds for our image (~ 0x108000 < 0x200000).
 
 from mm.memblock import memblock_init, memblock_region_top, memblock_region_base
-from mm.page_alloc import page_alloc_init
+from mm.page_alloc import page_alloc_init, page_alloc_track_boot_arm
 from mm.slab import slab_init
 from mm.cow import cow_init
 from mm.swap import swap_init
@@ -130,6 +130,17 @@ def mem_init():
     # the active/inactive LRU lists, and dirty-page writeback accounting.
     page_desc_init()
     page_alloc_init()
+    # Leak pass 22: arm the page tracker HERE — after page_alloc_init() has
+    # zeroed the counters and before one single frame has left the buddy
+    # allocator. Every later allocation on this boot is therefore attributed
+    # at the moment it happens, and site 0 ("the tracker was not watching")
+    # starts empty. Arming from a shell after boot, which is what the leak
+    # campaign did for twenty-one passes, can only ever describe the window
+    # after the arm; bringup — the densest allocation window the system has
+    # — was structurally invisible, and its ~6000 frames landed in site 0
+    # where they funded a "re-attribution credit" that made three separate
+    # findings INCONCLUSIVE (docs/leak_pass21_n_sample_census.md §6.3).
+    page_alloc_track_boot_arm()
     # KPTI #94, step 1: install the kernel-private high-half direct map
     # (page_offset, PML4[273]) aliasing all physical RAM. ADDITIVE — the
     # low identity map is kept, so no vaddr==phys consumer breaks; this

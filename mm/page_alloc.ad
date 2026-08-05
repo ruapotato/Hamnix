@@ -390,8 +390,17 @@ PA_SITE_EXECVE:       uint64 = 20  # execve eager user-stack prefix
 PA_SITE_REGION:       uint64 = 21  # region_alloc contiguous carve (ELF image,
                                    # PT_INTERP, wsys large shadow)
 
+# Mode the boot path arms with (leak pass 22). 0 would restore the old
+# default-OFF behaviour; 2 is the mode the leak census actually uses, and
+# arming at 1 then letting the census upgrade to 2 would leave every frame
+# allocated during bringup without a tag word — i.e. it would move the blind
+# spot rather than close it.
+PA_TRK_BOOT_MODE: uint64 = 2
+
 # Mode: 0 = off, 1 = site + order/owner metadata, 2 = also per-frame tags.
 _pa_trk_mode:   uint64 = 0
+_pa_trk_armed_at_boot: uint64 = 0  # 1 = armed by mem_init, not by userland
+_pa_trk_bytes:  uint64 = 0         # memblock bytes the arrays hold
 _pa_trk_frames: uint64 = 0
 _pa_trk_site:   uint64 = 0         # byte per frame: site id
 _pa_trk_meta:   uint64 = 0         # uint32 per frame: order | owner << 4
@@ -585,6 +594,7 @@ def page_alloc_track_enable(mode: uint64) -> int32:
         _pa_trk_mode = 0
         return 1
     _pa_own_init()
+    fresh: uint64 = 0
     if _pa_trk_site == 0:
         top: uint64 = memblock_region_top()
         if top == 0:
@@ -599,6 +609,8 @@ def page_alloc_track_enable(mode: uint64) -> int32:
         _pa_trk_frames = frames
         _pa_trk_meta = mb
         _pa_trk_site = sb
+        _pa_trk_bytes = frames + (frames << 2)
+        fresh = 1
     if mode >= 2 and _pa_trk_tag == 0:
         tb: uint64 = _pa_trk_carve(_pa_trk_frames << 3)
         if tb == 0:
@@ -607,9 +619,72 @@ def page_alloc_track_enable(mode: uint64) -> int32:
             mode = 1
         else:
             _pa_trk_tag = tb
-    page_alloc_track_reset()
+            _pa_trk_bytes = _pa_trk_bytes + (_pa_trk_frames << 3)
+    # RE-BASELINE ONLY ON A FRESH ARM. page_alloc_track_reset() parks the
+    # whole live population under PA_SITE_UNKNOWN, which is the honest thing
+    # to do exactly once — when the arrays did not exist and the tracker
+    # therefore never saw those frames allocated. It is the WRONG thing to
+    # do on any later call, and doing it unconditionally is what made
+    # arming at boot pointless: the census arms with `track full` after its
+    # settle window, and that second arm used to throw away every
+    # attribution bringup had recorded and re-park it all in site 0. The
+    # per-frame site bytes survive `track off` (the stamp path guards on
+    # the ARRAY, not the mode), so the live histogram stays true across an
+    # off/on cycle and needs no re-baseline either. `track reset` is still
+    # there for anyone who explicitly wants a new baseline.
+    if fresh != 0:
+        page_alloc_track_reset()
     _pa_trk_mode = mode
     return 1
+
+
+def page_alloc_track_boot_arm():
+    # ARM AT BOOT (leak pass 22). Called from the arch mem_init() flow the
+    # instant the buddy allocator is up and BEFORE anything has allocated
+    # from it, so site 0 (PA_SITE_UNKNOWN, "allocated before the tracker
+    # was watching") starts EMPTY and stays a real signal instead of a
+    # 6000-page pre-arming population that every later reading has to
+    # argue around.
+    #
+    # This is a kernel-internal call on the boot path. It is NOT a poll, it
+    # is not driven from userland, and nothing about reclamation depends on
+    # it: free_pages unstamps under the same buddy lock that frees, on
+    # death, exactly as before. Userland's /proc/meminfo verbs remain the
+    # way to READ tracker state and to re-baseline it; they are no longer
+    # the way it gets turned on.
+    #
+    # Cost is PA_TRK_BOOT_MODE-dependent and proportional to RAM:
+    #   mode 1 =  5 bytes/frame (site + meta)  = 0.12% of RAM
+    #   mode 2 = 13 bytes/frame (+ tag words)  = 0.32% of RAM
+    # carved from memblock before the buddy pool is populated, so it is
+    # never handed out as usable RAM — the same discipline cow_init() and
+    # page_desc_init() already follow.
+    if PA_TRK_BOOT_MODE == 0:
+        return
+    if page_alloc_track_enable(PA_TRK_BOOT_MODE) == 0:
+        # memblock could not supply the arrays. Tracking stays OFF rather
+        # than half-armed, and the failure is LOUD: a silently-disarmed
+        # tracker would make every later leak reading a false negative.
+        printk0("[trk] boot-arm FAILED — memblock could not supply the arrays\n")
+        return
+    _pa_trk_armed_at_boot = 1
+    printk2("[trk] boot-arm mode=%d frames=%d\n", _pa_trk_mode, _pa_trk_frames)
+    printk2("[trk] boot-arm bytes=%d site0=%d\n",
+            _pa_trk_bytes, _pa_trk_live[PA_SITE_UNKNOWN])
+
+
+def page_alloc_track_armed_at_boot() -> uint64:
+    # 1 iff the tracker was armed by the boot path rather than by a write
+    # to /proc/meminfo. A reader needs this to know whether its numbers
+    # cover the whole system lifetime or only a window.
+    return _pa_trk_armed_at_boot
+
+
+def page_alloc_track_bytes() -> uint64:
+    # Bytes of memblock the tracking arrays hold. Reported as a file field
+    # so the memory cost of arming is measurable ON DEVICE rather than
+    # computed from a formula in a doc.
+    return _pa_trk_bytes
 
 
 def page_alloc_track_mode() -> uint64:

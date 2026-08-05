@@ -43,6 +43,7 @@ from mm.page_alloc import (
     page_alloc_census_plant, page_alloc_census_unplant,
     page_alloc_census_orphans, PA_SITE_VMA_ANON,
     page_alloc_track_mode, page_alloc_site_live, page_alloc_site_allocs,
+    page_alloc_track_armed_at_boot, page_alloc_track_bytes,
     page_alloc_site_frees, PA_SITE_MAX,
     alloc_pages, free_pages, pa_set_site,
     PA_SITE_TMPFS, PA_SITE_COW_RESOLVE, PA_SITE_UNKNOWN,
@@ -282,6 +283,20 @@ def _build_meminfo(out: Ptr[uint8], cap: uint64) -> uint64:
     if page_alloc_track_mode() != 0:
         pos = _emit_count_line(out, pos, "PgTrackMode:    ",
                                page_alloc_track_mode())
+        # WHEN was this armed? (leak pass 22.) A reader cannot interpret a
+        # site histogram without knowing whether it covers the whole system
+        # lifetime or only the window since somebody echoed `track full`.
+        # 1 = armed by the boot path (mem_init), so bringup is INSIDE the
+        # accounting and site 0 is a real signal rather than a pre-arming
+        # population. 0 = armed from userland, the pre-pass-22 shape, where
+        # site 0 is just "everything that happened before you looked".
+        # Exposed as a FILE field, not a syscall: capabilities are files.
+        pos = _emit_count_line(out, pos, "PgTrackBoot:    ",
+                               page_alloc_track_armed_at_boot())
+        # The memory the tracker itself costs, so arming is auditable on
+        # device instead of trusted from a formula in a doc.
+        pos = _emit_count_line(out, pos, "PgTrackBytes:   ",
+                               page_alloc_track_bytes())
         si: uint64 = 0
         while si < PA_SITE_MAX:
             pos = _mi_emit_str(out, pos, "PgSite")
