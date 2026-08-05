@@ -102,15 +102,29 @@ as if it were open.
       landing the whole CLUSTER the site sits in. Size the next target by
       **lift-and-diff** (lift one construct, re-run the census, diff the accepted
       set), not by a histogram row.
-- [ ] **UNMERGED, needs verification: `worktree-agent-a2c468f66677acd3e`** carries
-      that lift-and-diff harness (`scripts/ssa_lift_diff.sh`,
-      `scripts/test_ssa_bailsite_66_split.sh`, census + dump-driver changes) and the
-      measurement behind the lesson above — site 66 splits into 104/105 and **both
-      halves are worth 0% accepts**. It branched from `0d1c1df1`, BEFORE the memory
-      model landed in `90f3a590`, and it touches `ssa.ad`/`ssa_emit.ad` — which that
-      commit rewrote. `git merge-tree` reports no textual conflict, which is exactly
-      the case [[feedback_worktree_stale_base]] warns about. Verify the MERGED result
-      against main's SSA gates, and re-run the census on the merge, not on the branch.
+- [x] ✔ **LANDED 2026-08-05 (`983b1335`) — the lift-and-diff harness, rebased.**
+      The stale-base branch `worktree-agent-a2c468f66677acd3e` was rebased onto the
+      landed memory model rather than fast-merged (it branched from `0d1c1df1`,
+      BEFORE `90f3a590` rewrote `ssa.ad`/`ssa_emit.ad`; `git merge-tree` reported no
+      textual conflict, which is exactly the trap [[feedback_worktree_stale_base]]
+      warns about). What landed: `scripts/ssa_lift_diff.sh`, the analysis-lane-only
+      levers `ssa_census_mem_native`/`ssa_census_mem_model`, and
+      `scripts/test_ssa_bailsite_66_split.sh` (now in CI beside
+      `test_ssa_census_fidelity` + `test_ssa_native_mem`).
+      **The levers are read ONLY by `ssa_run_program` (the `--dump-ssa` analysis
+      lane); their defaults reproduce exactly what `ssa_emit_program` arms, so an
+      unflagged census still measures the shipped `--opt` subset and the emit lane's
+      bytes are unchanged by construction** — proven by emitting the whole bare-metal
+      kernel under `--opt` with and without the commit: same md5, from two compilers
+      of different size. A lifted row is an **UPPER BOUND** on what implementing the
+      construct could unlock, never a promise: arming the lever leaves SVO ops the
+      x86 emitter has no lowering for. Verified before merge:
+      `test_ssa_census_fidelity` PASS, `test_ssa_native_mem` PASS,
+      `test_ssa_bailsite_66_split` PASS.
+      Follow-on in flight: `ssa/next-lever-census-r1` — rank the remaining bail gates
+      **clustered by construct** and size each cluster by whole-tree lift-and-diff,
+      including joint lifts (entanglement is the point: the memory model's halves were
+      each +0 and together +51.6 points).
 - [ ] **Next: SSA rewrite Phase 4 cutover** (make the native SSA lane the
       default path, not the opt-in one). Re-measure the subset first — do not
       brief it from the 61.15% figure above without re-running the census, and
@@ -388,8 +402,12 @@ fixed population as site 0 drains into the named sites — not growth of the mac
   agent, neither may be fast-merged.** Found by sweeping ALL branches with
   `git log main..<b>` after the second session death. Both worktrees are CLEAN (no
   hidden half-fix), and both were cut before main's most recent landings.
-  - `worktree-agent-a2c468f66677acd3e` — the SSA lift-and-diff measurement (see the
-    site-92 withdrawal below). Conflicts in `ssa_emit.ad`, `ssa_subset_census.py`.
+  - ~~`worktree-agent-a2c468f66677acd3e`~~ — **CLOSED: rebased and LANDED as
+    `983b1335`.** See the ✔ entry above.
+  - ⚠ **The first rebase attempt on the live-DOM half produced NOTHING.** The
+    branch `livedom/select-activation-rebase-r1` exists and is **0 commits ahead of
+    main** — a session death killed the agent before it committed. A named branch is
+    not evidence of work; `git log main..<b>` is. Re-dispatched 2026-08-05.
   - `worktree-agent-af65fb2b6bac6d09f` — 4 commits of real live-DOM fixes:
     `select.value`/`.selectedIndex`/`option.selected` are ONE state (the two-writers
     shape again — see [[feedback_two_writers_defect_shape]]), activation behaviour
