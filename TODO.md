@@ -100,7 +100,17 @@ as if it were open.
       **+0.13%**, because a bail histogram is a FIRST-bail histogram and the
       function simply re-bails one statement later. What moved the number was
       landing the whole CLUSTER the site sits in. Size the next target by
-      lift-and-diff (`scripts/ssa_lift_diff.sh`), not by a histogram row.
+      **lift-and-diff** (lift one construct, re-run the census, diff the accepted
+      set), not by a histogram row.
+- [ ] **UNMERGED, needs verification: `worktree-agent-a2c468f66677acd3e`** carries
+      that lift-and-diff harness (`scripts/ssa_lift_diff.sh`,
+      `scripts/test_ssa_bailsite_66_split.sh`, census + dump-driver changes) and the
+      measurement behind the lesson above — site 66 splits into 104/105 and **both
+      halves are worth 0% accepts**. It branched from `0d1c1df1`, BEFORE the memory
+      model landed in `90f3a590`, and it touches `ssa.ad`/`ssa_emit.ad` — which that
+      commit rewrote. `git merge-tree` reports no textual conflict, which is exactly
+      the case [[feedback_worktree_stale_base]] warns about. Verify the MERGED result
+      against main's SSA gates, and re-run the census on the merge, not on the branch.
 - [ ] **Next: SSA rewrite Phase 4 cutover** (make the native SSA lane the
       default path, not the opt-in one). Re-measure the subset first — do not
       brief it from the 61.15% figure above without re-running the census, and
