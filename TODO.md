@@ -464,21 +464,51 @@ fixed population as site 0 drains into the named sites — not growth of the mac
     branch `livedom/select-activation-rebase-r1` exists and is **0 commits ahead of
     main** — a session death killed the agent before it committed. A named branch is
     not evidence of work; `git log main..<b>` is. Re-dispatched 2026-08-05.
-  - `worktree-agent-af65fb2b6bac6d09f` — 4 commits of real live-DOM fixes:
-    `select.value`/`.selectedIndex`/`option.selected` are ONE state (the two-writers
-    shape again — see [[feedback_two_writers_defect_shape]]), activation behaviour
-    fires `input`/`change` only when connected, `el.click()` runs activation
-    behaviour, and a script's own body is raw text. Conflicts in
-    `lib/web/dom/{bindings,canvas,query}.ad` and `tests/fixtures/livedom/BASELINE`.
-  - ⚠ **FIXTURE-NUMBER COLLISION — do not resolve the BASELINE conflict by taking
-    either side.** The branch adds `16_activation_behaviour`,
-    `17_select_selectedness`, `18_script_rawtext`; main independently landed
-    `16_classlist_attr_mirror`, `17_insertbefore_fragment`,
-    `18_parentnode_after_remove` at the same numbers. Taking the branch's side
-    DELETES three landed fixtures and their BASELINE rows while the gate still
-    reports a plausible count. Renumber the incoming three to 20/21/22 and rebuild
-    BASELINE from both sets. This is [[feedback_worktree_stale_base]] with a fresh
-    face: the collision is invisible to `git merge`, which sees only a text conflict.
+  - ~~`worktree-agent-af65fb2b6bac6d09f`~~ — **CLOSED 2026-08-05 (`5149e6b2`), and
+    the brief that chased it was WRONG.** It was briefed as "4 commits of real
+    stranded live-DOM fixes needing a rescue." It is a **parallel line of the same
+    afternoon's work that main had already landed by another route as `3aec4142`** —
+    main already has `_rawtext_close` (D7), `_click_activate_pre/post` (D5), the
+    checkbox default-on value, connected-only gating, and selectedIndex-as-a-view
+    (D6). The agent MEASURED the premise instead of executing it; that is the
+    behaviour we want. **Retire the branch — do not re-brief it on a future sweep.**
+    - `a59359b3` (the perf commit) is **moot, and its premise never applied to
+      main**: it moves the select accessors off `HTMLElement.prototype`, but main
+      never put them there — main's live on `HTMLSelectElement.prototype`, so there
+      is no conflict with D8 (`c16fb668`) either. Porting its native `NID_SEL_*`
+      implementation would have installed a **second mechanism for the same state**,
+      i.e. re-created the exact defect being fixed.
+    - What survived was the **three fixtures**, and they found two real still-open
+      gaps: activation fired `input`/`change` unconditionally rather than only on a
+      real checkedness change, and **the two-writers shape a SEVENTH time** —
+      `select.value` was itself a second store (a data property stamped from the
+      option's *text*) under D6's `selectedIndex`-as-a-view, while
+      `option.selected` was never reflected for source options. Drift was
+      inevitable: `.value` is the value *attribute*, the render read-back needs the
+      option's *text*.
+    - Fixtures renumbered 20/21/22 and BASELINE rebuilt as the **union**;
+      orchestrator-verified zero fixtures removed and zero BASELINE rows deleted.
+      Live-DOM floor **18 → 21** (fail=1, `06` deferred); WPT ratchet PASS, 0
+      newly-failing.
+  - ⚠ **The FIXTURE-NUMBER COLLISION was real and is the reusable lesson.** The
+    branch added `16_activation_behaviour`, `17_select_selectedness`,
+    `18_script_rawtext`; main independently landed `16_classlist_attr_mirror`,
+    `17_insertbefore_fragment`, `18_parentnode_after_remove` **at the same numbers**.
+    Taking either side DELETES three landed fixtures and their BASELINE rows **while
+    the gate still reports a plausible count**. Resolve as a UNION and prove it
+    (`comm` both fixture lists against main; assert zero removals). This is
+    [[feedback_worktree_stale_base]] with a fresh face: the collision is invisible to
+    `git merge`, which sees only a text conflict.
+  - ⚠ **A gross WPT total is not a floor.** This work reads 16066 vs the banked
+    15830, but the delta sits inside files that still truncate — a memory reading,
+    not conformance, so **no new floor was banked**. The agent's own first cut
+    regressed the ratchet by 60 subtests on `Range-comparePoint.html` with no
+    assertion changed (pure object-pool truncation) and fixed it rather than
+    excusing it as "just the arena wall": stacking the two views instead of adding
+    two named prelude helpers removed six per-page function objects and landed 52
+    *better* than main. **The JS prelude is a whole-page allocation cost** — a new
+    lever on the arena wall, and one that was found by refusing to excuse a
+    regression.
 
 - [ ] **The `ADDER_OPT=1` lever assertions are ALL DEAD.** `rm -rf build/fuzz_ad_codegen;
   ADDER_OPT=1 bash scripts/fuzz_adder_diff.sh` exits rc=1 with **20** `never fired`
