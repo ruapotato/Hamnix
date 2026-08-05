@@ -352,6 +352,26 @@ ssa_local_size: Array[256, uint32]
 # (base + idx*elem reusing the same pure BINOP arithmetic the global-array subset
 # uses — no new SVO_GEP op is required).
 ssa_mem_model: uint32 = 0               # 1 => model local memory (LLVM path)
+# NATIVE local-memory subset (--opt / ADDER_OPT2, ssa_emit.ad).  Narrower than
+# ssa_mem_model by CONSTRUCTION: it opens exactly the local-memory shapes that
+# reduce to SVO_ALLOCA / SVO_LOAD / SVO_STORE over integer BINOP address
+# arithmetic (+ SVO_GLOBALADDR) —
+#
+#     address-taken (`&x`) machine-width INTEGER scalar locals and params,
+#     `*p`, `p[i]`, `p[i] = e`, local `Array[N, T]`, string literals
+#
+# — every opcode of which the x86 emitter lowers.  FLOAT slots, struct/class
+# VALUES, `obj.field`, %gs percpu, `&function` and inline asm keep testing
+# ssa_mem_model and stay LLVM-only, because they need SVO ops that have no x86
+# lowering here.  ssa_emit.ad's se_op_lowerable is the backstop: a function
+# carrying any non-lowerable opcode falls back to gen_function, so widening this
+# set can cost a fallback but never correctness.
+#
+# WHY A SEPARATE FLAG rather than `ssa_mem_model = 1` on the native lane: a
+# blacklist ("model everything except …") is what 63131c78 had to unpick for
+# call shapes.  Two named models, each opened construct by measured construct,
+# is the maintainable direction.
+ssa_mem_native: uint32 = 0              # 1 => native local-memory model
 ssa_ismem: Array[256, uint32]           # 1 => name id is a memory-modeled local
 ssa_mem_addr: Array[256, uint32]        # its SVO_ALLOCA vid (the slot's i64 address)
 ssa_mem_esz: Array[256, uint32]         # scalar/element byte width (1/2/4/8)
@@ -1241,6 +1261,19 @@ def ssa_binop_is_cmp(op: uint32) -> uint32:
 
 # Promotability of a local name id: address never taken, slot never read directly
 # (reuses cfg.ad's cl_build outputs — §2.5).
+# 1 iff SOME local-memory model is armed: the LLVM one (everything) or the
+# native scalar-slot whitelist (ssa_mem_native).  Used at the gates whose ONLY
+# requirement is that a local can live in memory and that the construct reduces
+# to SVO_ALLOCA/LOAD/STORE + integer BINOP arithmetic — the opcodes
+# se_op_lowerable admits.  Gates with an additional LLVM-specific requirement
+# (float values, %gs percpu, inline asm, function addresses, >6-arg calls) keep
+# testing ssa_mem_model directly and stay LLVM-only.
+def ssa_mem_any() -> uint32:
+    if ssa_mem_model != 0:
+        return 1
+    return ssa_mem_native
+
+
 def ssa_name_promotable(nid: uint32) -> uint32:
     if nid >= NM_MAX:
         return 0
@@ -3699,11 +3732,14 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
 
     if k == ND_UNARY:
         uop: uint32 = nd_aux[node]
-        # address-of / pointer deref: modeled only on the LLVM (memory) path; the
-        # native path keeps bailing (byte-identical).
-        if ssa_mem_model != 0 and uop == UNOP_ADDR:
+        # address-of / pointer deref.  ssa_lower_addr_of's products are an
+        # alloca vid, an SVO_GLOBALADDR, or base+idx*scale BINOP arithmetic over
+        # one of those — all lowerable natively.  Its own internal ssa_mem_model
+        # sub-gates (&function, 2-D globals, &member, &*p, the general
+        # computed-base index) stay LLVM-only and still bail on the native lane.
+        if ssa_mem_any() != 0 and uop == UNOP_ADDR:
             return ssa_lower_addr_of(nd_a[node])
-        if ssa_mem_model != 0 and uop == UNOP_DEREF:
+        if ssa_mem_any() != 0 and uop == UNOP_DEREF:
             desz: uint32 = ssa_deref_esz(nd_a[node])
             if desz == 0:
                 ssa_set_bail_at(SBR_MEMORY, 38)          # unknown/aggregate pointee
@@ -3878,8 +3914,8 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
                 if laddr == 0:
                     return 0
                 return ssa_load_at(laddr, ssa_mem_esz[bnid], ssa_mem_esgn[bnid])
-            # `p[i]` on a POINTER local/param (LLVM path): *(p + i*elem).
-            if ssa_mem_model != 0 and ssa_ptr_esz[bnid] != 0:
+            # `p[i]` on a POINTER local/param: *(p + i*elem).
+            if ssa_mem_any() != 0 and ssa_ptr_esz[bnid] != 0:
                 paddr: uint32 = ssa_ptr_index_addr(bnid, nd_b[node])
                 if paddr == 0:
                     return 0
@@ -3908,8 +3944,9 @@ def ssa_lower_expr(node: uint32, bb: uint32) -> uint32:
         # String literal (LLVM path): intern its bytes as a `[N x i8]` data
         # global and yield the symbol's address (exactly how codegen interns a
         # `.asciz` into .rodata and hands out a RIP-relative pointer).  The
-        # native path keeps bailing (NONSUBSET_EXPR) so it stays byte-identical.
-        if ssa_mem_model != 0:
+        # native lane reaches the SAME intern_string table legacy codegen uses,
+        # so the two agree on the data blob by construction.
+        if ssa_mem_any() != 0:
             sgi: uint32 = ssa_intern_string_global(nd_name_off[node], nd_name_len[node])
             if sgi == 0:
                 ssa_set_bail_at(SBR_MEMORY, 44)
@@ -3970,8 +4007,8 @@ def ssa_lower_index_store(bb: uint32, stmt: uint32, target: uint32) -> uint32:
     if bnid < NM_MAX and ssa_islocal[bnid] != 0:
         if ssa_ismem[bnid] != 0 and ssa_mem_isarr[bnid] != 0 and ssa_mem_rowstride[bnid] == 0:
             return ssa_lower_local_index_store(bb, stmt, target, bnid)
-        # `p[i] = rhs` on a POINTER local/param (LLVM path).
-        if ssa_mem_model != 0 and ssa_ptr_esz[bnid] != 0:
+        # `p[i] = rhs` on a POINTER local/param.
+        if ssa_mem_any() != 0 and ssa_ptr_esz[bnid] != 0:
             return ssa_lower_ptr_index_store(bb, stmt, target, bnid)
         ssa_set_bail_at(SBR_MEMORY, 50)                  # non-array local indexed
         return bb
@@ -4406,10 +4443,10 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
     # before any phi is typed), so this is inert for native codegen.
     ssa_local_fw[nid] = 0
     ssa_mem_rowstride[nid] = 0                # cleared here; re-stamped by the 2-D arm
-    # ---- local Array[N, T]: a stack slot addressed by index (LLVM path) -------
+    # ---- local Array[N, T]: a stack slot addressed by index --------------
     if nd_kind[tnode] == ND_ARRAY_TYPE:
-        if ssa_mem_model == 0:
-            ssa_set_bail_at(SBR_MEMORY, 56)          # native path: arrays stay bailed
+        if ssa_mem_any() == 0:
+            ssa_set_bail_at(SBR_MEMORY, 56)          # no memory model armed
             return NM_MAX
         elem: uint32 = nd_a[tnode]
         # A 2-D local `Array[N, Array[M, T]]` gets ONE flat N*M*esz slot in
@@ -4531,8 +4568,21 @@ def ssa_intern_local(off: uint32, len_: uint32, tnode: uint32) -> uint32:
         # Address is taken (`&x`) or the slot is read directly: this scalar must
         # live in memory.  On the native path that bails (unchanged); on the LLVM
         # path it becomes an alloca'd slot with sized load/store at every use.
-        if ssa_mem_model == 0:
-            ssa_set_bail_at(SBR_NONPROMOTABLE, 66)
+        if ssa_mem_model == 0 and ssa_mem_native == 0:
+            # SUB-ATTRIBUTION of what used to be the blended site 66 (36.9% of
+            # all bails, and the largest single one).  The two causes of
+            # non-promotability are NOT the same construct: cl_set is a real
+            # `&x` escape (37% — needs a frame slot), nm_slotread is a
+            # LEGACY-CODEGEN artifact (63% — `p[i]` / a call through a
+            # function-pointer local, where the address never escapes at all).
+            # Both are now MODELLED rather than bailed whenever a memory model
+            # is armed, so these two sites only fire for a lane that arms
+            # neither.  They are kept because the split is the evidence that
+            # site 66 was one name for two problems.
+            if cl_set[nid] != 0:
+                ssa_set_bail_at(SBR_NONPROMOTABLE, 104)   # true `&x` escape
+            else:
+                ssa_set_bail_at(SBR_NONPROMOTABLE, 105)   # slot-read only
             return NM_MAX
         ssa_islocal[nid] = 1
         ssa_ismem[nid] = 1
@@ -4630,8 +4680,8 @@ def ssa_lower_stmt(bb: uint32, stmt: uint32) -> uint32:
         if nd_kind[target] == ND_INDEX:
             # store into a 1-D scalar-element GLOBAL or LOCAL array element.
             return ssa_lower_index_store(bb, stmt, target)
-        if ssa_mem_model != 0 and nd_kind[target] == ND_UNARY and nd_aux[target] == UNOP_DEREF:
-            # `*p = e` / `*p op= e`: store through a pointer (LLVM path).
+        if ssa_mem_any() != 0 and nd_kind[target] == ND_UNARY and nd_aux[target] == UNOP_DEREF:
+            # `*p = e` / `*p op= e`: store through a pointer.
             return ssa_lower_deref_store(bb, stmt, target)
         if ssa_mem_model != 0 and nd_kind[target] == ND_MEMBER:
             # `obj.field = e` / `obj.field op= e`: store into a struct field.
@@ -5143,10 +5193,10 @@ def ssa_build_function(fn: uint32) -> uint32:
     if ssa_bail != 0:
         return 0
 
-    # Reserve memory-local stack slots in the entry block before lowering (LLVM
-    # path only; the native path leaves ssa_mem_model=0 and skips this, staying
-    # byte-identical).
-    if ssa_mem_model != 0:
+    # Reserve memory-local stack slots in the entry block before lowering, so
+    # every alloca dominates its uses and none is appended after a terminator.
+    # Skipped entirely when no memory model is armed (byte-identical).
+    if ssa_mem_model != 0 or ssa_mem_native != 0:
         ssa_prealloc_scan(nd_c[fn])
         if ssa_bail != 0:
             return 0
@@ -5494,6 +5544,12 @@ def ssa_process_function(fn: uint32) -> uint32:
 
 # Walk the program's ND_FUNCTION decl chain (ND_PROGRAM: b = decl chain head).
 def ssa_run_program(prog: uint32):
+    # CENSUS FIDELITY (see scripts/test_ssa_census_fidelity.sh): this analysis
+    # lane must apply the SAME subset gates ssa_emit_program applies, or the
+    # instrument that picks the optimizer's next target measures a subset no
+    # compiler ever emits.  ssa_emit_program sets both of these; mirror them.
+    ssa_mem_model = 0
+    ssa_mem_native = 1
     ssa_stats_reset()
     if prog == 0:
         return

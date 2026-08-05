@@ -84,6 +84,7 @@ from compiler.ssa import (
     ssa_bail,
     ssa_prog_decls,
     ssa_mem_model,
+    ssa_mem_native,
     SVO_CONST,
     SVO_UNDEF,
     SVO_PARAM,
@@ -93,6 +94,7 @@ from compiler.ssa import (
     SVO_BITNOT,
     SVO_TRUNC,
     SVO_GLOBALADDR,
+    SVO_ALLOCA,
     SVO_LOAD,
     SVO_STORE,
     SVO_ICMP,
@@ -141,6 +143,7 @@ from compiler.codegen import (
     emit_movzx_al_rax,
     emit_ext_rax,
     emit_lea_global_rax,
+    emit_lea_local_rax,
     emit_load_mem_rax,
     emit_load_mem_rax_signed,
     emit_store_mem_rcx,
@@ -387,6 +390,22 @@ se_fold_ok: Array[65536, uint32]      # 1 => LOAD/STORE v uses a SIB memory oper
 se_fold_base: Array[65536, uint32]    # vid supplying the base register
 se_fold_index: Array[65536, uint32]   # vid supplying the index register
 se_fold_scale: Array[65536, uint32]   # SIB scale in {1,2,4,8}
+
+# ---- NATIVE ALLOCA SLOTS (ssa_mem_native) ---------------------------------
+# An address-taken scalar local is an SVO_ALLOCA in the entry block.  The frame
+# already carries two disjoint 8-byte-per-value regions — value slots at
+# -8*v and phi-temp slots at -8*(nvals+v) — so the alloca arena is placed BELOW
+# both, starting at -8*2*sv_count and growing downward in 8-byte-aligned steps.
+# se_alloca_off[v] is that positive byte distance from %rbp, so the slot address
+# is `lea -(se_alloca_off[v])(%rbp)`.
+#
+# It MUST live inside the frame the prologue subtracts from %rsp: the whole
+# point of the construct is that the address is handed to a CALLEE, and anything
+# below %rsp is scratch the callee (or a signal frame) may overwrite.
+# se_alloca_end therefore feeds the `sub $frame, %rsp`.
+se_alloca_off: Array[65536, uint32]   # byte distance below %rbp of alloca `v`
+se_alloca_end: uint32 = 0             # low-water mark of the alloca arena
+SE_FRAME_MAX: uint32 = 16777216       # 16 MiB: well inside the disp32 range
 
 # reverse map: linear position -> vid defined there (0 = none).
 sra_posval: Array[8192, uint32]
@@ -1214,6 +1233,12 @@ def ssa_emit_value(v: uint32):
         se_store_rax(v)
         return
 
+    if op == SVO_ALLOCA:
+        # the slot's address: one `leaq -off(%rbp), %rax` (no memory traffic).
+        emit_lea_local_rax(0 - cast[int32](se_alloca_off[v]))
+        se_store_rax(v)
+        return
+
     if op == SVO_GLOBALADDR:
         # RIP-relative lea of a scalar global; sv_imm = data offset, sv_c = is_bss.
         emit_lea_global_rax(cast[uint32](sv_imm[v]), sv_c[v])
@@ -1376,6 +1401,54 @@ def ssa_emit_term(v: uint32, bb: uint32):
 
 
 # =======================================================================
+# EMITTER-SIDE OPCODE WHITELIST — the load-bearing safety net.
+#
+# ssa_emit_value's dispatch ends in a bare `return`: an opcode it does not
+# recognise emits NOTHING and the value's stack slot keeps whatever was there.
+# That is a SILENT MISCOMPILE, and it is one construction-subset widening away
+# at all times — exactly the failure mode 63131c78 had to unpick for call
+# shapes, where a blacklist of intercepted gen_call families kept re-opening as
+# new interceptions were added.
+#
+# So state the rule in the only maintainable direction: enumerate what the x86
+# lowering CAN emit, and fall the whole function back to gen_function if a
+# single value carries anything else.  Widening the construction subset can then
+# only ever cost a fallback, never correctness — which is what makes it safe to
+# open new constructs (see ssa_mem_native) without re-auditing every emitter.
+# =======================================================================
+def se_op_lowerable(op: uint32) -> uint32:
+    if op == SVO_CONST or op == SVO_UNDEF or op == SVO_PARAM:
+        return 1
+    if op == SVO_BINOP or op == SVO_ICMP:
+        return 1
+    if op == SVO_NEG or op == SVO_NOT or op == SVO_BITNOT or op == SVO_TRUNC:
+        return 1
+    if op == SVO_ALLOCA or op == SVO_LOAD or op == SVO_STORE:
+        return 1
+    if op == SVO_GLOBALADDR:
+        return 1
+    if op == SVO_CALL or op == SVO_PHI:
+        return 1
+    if op == SVO_BR or op == SVO_CONDBR or op == SVO_RET:
+        return 1
+    # FCONST / FCMP / ZEXT / SEXT / BITCAST / I2F / F2I / GEP / SYSCALL /
+    # PERCPU / FPEXT / FPTRUNC / FNEG / INLINEASM / FUNCADDR: LLVM-lane ops with
+    # no x86 lowering here.
+    return 0
+
+
+# 1 iff every LINKED value in the function is lowerable by ssa_emit_value.
+def se_function_lowerable() -> uint32:
+    v: uint32 = 1
+    while v < sv_count:
+        if sv_block[v] != 0:
+            if se_op_lowerable(sv_op[v]) == 0:
+                return 0
+        v = v + 1
+    return 1
+
+
+# =======================================================================
 # whole-function emission.  Returns 1 if the function was emitted through the
 # SSA pipeline, 0 if it bailed (escape hatch -> caller emits legacy).
 # =======================================================================
@@ -1395,6 +1468,37 @@ def ssa_emit_function(fn: uint32) -> uint32:
         ssa_emit_stat_fallback = ssa_emit_stat_fallback + 1
         return 0
 
+    # Opcode whitelist (see se_op_lowerable): checked AFTER the opt passes, so a
+    # pass that introduces a non-lowerable op is caught too.
+    if se_function_lowerable() == 0:
+        ssa_emit_stat_fallback = ssa_emit_stat_fallback + 1
+        return 0
+
+    ssa_nvals = sv_count
+    # Lay out the alloca arena BELOW both per-value slot regions, in value order
+    # (entry-block order), 8-byte aligned.  Done before the prologue because the
+    # arena size is part of the frame `sub $N, %rsp`.
+    se_alloca_end = 2 * sv_count * 8
+    av: uint32 = 1
+    while av < sv_count:
+        if sv_op[av] == SVO_ALLOCA and sv_block[av] != 0:
+            asz: uint32 = cast[uint32](sv_imm[av])
+            if asz == 0:
+                asz = 8
+            asz = (asz + 7) & cast[uint32](0xFFFFFFF8)
+            se_alloca_end = se_alloca_end + asz
+            se_alloca_off[av] = se_alloca_end
+        av = av + 1
+
+    # Frame budget.  Every slot is addressed `disp32(%rbp)` and the whole frame
+    # is one `sub $N, %rsp`, so a function whose slots + alloca arena outgrow the
+    # budget falls back to gen_function rather than emitting a frame its own
+    # encodings cannot address.  (A local `Array[3145728, uint8]` is a real
+    # declaration in this tree.)
+    if se_alloca_end > SE_FRAME_MAX:
+        ssa_emit_stat_fallback = ssa_emit_stat_fallback + 1
+        return 0
+
     # Phase 3: SSA linear-scan register allocation (value-based liveness ->
     # intervals -> linear scan -> overlap-invariant check).  Fills sra_vreg /
     # sra_used_mask; on any bound overflow it falls back to all-memory, which
@@ -1405,7 +1509,6 @@ def ssa_emit_function(fn: uint32) -> uint32:
     # operands (reads the allocation, never mutates it).
     se_analyze_folds()
 
-    ssa_nvals = sv_count
     ssa_last_fn_start = code_len
     se_fix_n = 0
     # clear block offsets
@@ -1421,7 +1524,7 @@ def ssa_emit_function(fn: uint32) -> uint32:
     # register allocated this is byte-identical to the trivial all-memory prologue.
     fn_define(nd_name_off[fn], nd_name_len[fn], code_len)
     kpop: uint32 = sra_popcount(sra_used_mask)
-    frame: uint32 = ((2 * sv_count * 8) + 15) & cast[uint32](0xFFFFFFF0)
+    frame: uint32 = (se_alloca_end + 15) & cast[uint32](0xFFFFFFF0)
     if (kpop & 1) != 0:
         frame = frame + 8
     emit_endbr64()
@@ -1470,10 +1573,16 @@ def ssa_emit_function(fn: uint32) -> uint32:
 # interoperate through the same symbol table / call fixups.
 # =======================================================================
 def ssa_emit_program(prog: uint32) -> uint32:
-    # The native --opt backend NEVER models local memory (no alloca lowering in
-    # the x86 emitter); keep the subset narrow so its bail set — and byte output —
-    # is identical to the pre-memory build.
+    # ssa_mem_model is the LLVM-lane memory model (float slots, %gs percpu,
+    # struct members, function addresses); it stays OFF here — those produce SVO
+    # ops with no x86 lowering.
     ssa_mem_model = 0
+    # ssa_mem_native is the NATIVE one: local memory expressed purely as
+    # SVO_ALLOCA / SVO_LOAD / SVO_STORE over integer BINOP address arithmetic,
+    # every opcode of which se_op_lowerable admits.  This is what lets an
+    # address-taken scalar (and the `*p` / `p[i]` / local-array / string-literal
+    # shapes it drags in) be COMPILED instead of bailing to gen_function.
+    ssa_mem_native = 1
     ssa_emit_stats_reset()
     ssa_prog_decls = nd_b[prog]
     cg_prog_decls = nd_b[prog]
