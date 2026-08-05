@@ -2262,10 +2262,34 @@ def _dom_register_el() -> int32:
     if _tag_has_alt(g_el_ns, g_el_nl) != 0:
         _reflect_str_attr(o, te, cast[Ptr[uint8]]("alt"), 3)
     _reflect_str_attr(o, te, cast[Ptr[uint8]]("title"), 5)
+    # <option> SELECTEDNESS. The option element's own `selected` property is the
+    # ONE store the whole selection is derived from — select.value and
+    # select.selectedIndex are views over it (see the option/select block of the
+    # JS prelude in lib/web/dom/canvas.ad). It did not exist for a SOURCE option
+    # at all: a parsed `<option selected>` left every option reading
+    # `selected === undefined`, so the only thing that could answer "which one
+    # is picked?" was the select's own stamped `value` string — a second store,
+    # seeded from the option's TEXT rather than its value attribute, that no
+    # option ever heard about. `defaultSelected` is the never-moving twin (the
+    # content attribute), which is what form reset restores.
+    if _idbytes_eq(g_el_ns, g_el_ns + g_el_nl, cast[Ptr[uint8]]("option"), 6) != 0:
+        osel: int32 = 0
+        if hx_has_bool_attr(g_el_ns, te, cast[Ptr[uint8]]("selected")) != 0:
+            osel = 1
+        js_set_own(o, cast[Ptr[uint8]]("selected"), 8, js_bool(osel))
+        js_set_own(o, cast[Ptr[uint8]]("defaultSelected"), 15, js_bool(osel))
     # form-control DOM properties: value / checked / type / name (+ selectedIndex).
-    if kind == 1 or kind == 2 or kind == 3 or kind == 4:
+    #
+    # kind 3 (<select>) is DELIBERATELY EXCLUDED from the `value` stamp. An own
+    # data property shadows a prototype accessor in member_set as well as
+    # member_get, so stamping it here would put the second writer straight back:
+    # `s.value = 'c'` would land in the stamped copy and the options — the store
+    # every other reader consults — would never move. A select's value is the
+    # derived accessor on HTMLSelectElement.prototype and nothing else.
+    if kind == 1 or kind == 2 or kind == 4:
         js_set_prop(o, cast[Ptr[uint8]]("value"), 5, \
                     js_new_string(&dom_txtbuf[ovo], cast[uint64](ovl)))
+    if kind == 1 or kind == 2 or kind == 3 or kind == 4:
         # name attribute
         nmo: int32 = dom_idbuf_len
         nml: int32 = 0

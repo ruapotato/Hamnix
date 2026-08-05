@@ -10043,9 +10043,41 @@ def _js_install_prelude():
     _pre_put(cast[Ptr[uint8]]("function selOpts(s){var r=[],k=s.childNodes,i,c,g,j;for(i=0;i<k.length;i++){c=k[i];if(c.nodeType!==1)continue;"))
     _pre_put(cast[Ptr[uint8]]("if(c.tagName==='OPTION'){r.push(c);}else if(c.tagName==='OPTGROUP'){g=c.childNodes;for(j=0;j<g.length;j++){if(g[j].nodeType===1&&g[j].tagName==='OPTION')r.push(g[j]);}}}return r;}"))
     _pre_nl()
-    _pre_put(cast[Ptr[uint8]]("def(HTMLSelectElement.prototype,'selectedIndex',function(){var o=selOpts(this),v=this.value,i;"))
-    _pre_put(cast[Ptr[uint8]]("for(i=0;i<o.length;i++){if(o[i].value===v)return i;}for(i=0;i<o.length;i++){if(optText(o[i])===v)return i;}return -1;},"))
-    _pre_put(cast[Ptr[uint8]]("function(n){var o=selOpts(this);n=n|0;if(n>=0&&n<o.length)this.value=o[n].value;else this.value='';});"))
+    # selIdx / selSet are the ONLY writers of the selection, and they write the
+    # ONE store: each option's own `selected`. selectedIndex derived from
+    # `this.value` (which is what stood here) was still two stores deep — the
+    # select carried a stamped `value` STRING seeded from the selected option's
+    # TEXT, so a parsed `<option value="c" selected>Cherry</option>` answered
+    # s.value === "Cherry", every option read back unselected, and
+    # `s.value = 'nope'` stuck a string nothing offers into the store and left
+    # selectedIndex pointing at it. Both spellings are views now.
+    #
+    # HTML's "ask for a reset" default (a single-line select with no `selected`
+    # attribute anywhere has its FIRST option selected) is applied ONCE, into
+    # the store, rather than guessed on every read: the difference is
+    # observable, and chromium is the referee. After `s.value = 'no-such'`
+    # NOTHING is selected and selectedIndex is -1 — an answer a read-time guess
+    # can never give, because it cannot tell "never touched" from "deliberately
+    # deselected". __selinit is that one bit.
+    # KEEP THIS SMALL — it is a WHOLE-PAGE COST. Every function object the
+    # prelude creates is allocated on every page the engine loads, and the WPT
+    # arena is the tightest budget in the browser: an earlier cut of this block
+    # carried two named helpers (selIdx/selSet) on top of the four accessor
+    # functions, and dom/ranges/Range-comparePoint.html — which already runs to
+    # "object pool exhausted" — lost its last 60 subtests to the six objects,
+    # 2113 -> 2053. That is a MEMORY reading rather than a conformance one, but
+    # the ratchet counts it either way and the ratchet decides. So the two views
+    # are STACKED instead of duplicated: selectedIndex derives from the store,
+    # value derives from selectedIndex, and nothing needs a helper.
+    _pre_put(cast[Ptr[uint8]]("def(HTMLSelectElement.prototype,'selectedIndex',function(){var o=selOpts(this),i;"))
+    _pre_put(cast[Ptr[uint8]]("for(i=0;i<o.length;i++)if(o[i].selected)return i;"))
+    _pre_put(cast[Ptr[uint8]]("if(!o.length||this.type==='select-multiple'||this.__selinit)return -1;"))
+    _pre_put(cast[Ptr[uint8]]("this.__selinit=1;o[0].selected=true;return 0;},"))
+    _pre_put(cast[Ptr[uint8]]("function(n){var o=selOpts(this),i;n=n|0;this.__selinit=1;for(i=0;i<o.length;i++)o[i].selected=(i===n);});"))
+    _pre_nl()
+    _pre_put(cast[Ptr[uint8]]("def(HTMLSelectElement.prototype,'value',function(){var i=this.selectedIndex;"))
+    _pre_put(cast[Ptr[uint8]]("return i<0?'':selOpts(this)[i].value;},"))
+    _pre_put(cast[Ptr[uint8]]("function(v){var o=selOpts(this),i;v=''+v;for(i=0;i<o.length;i++)if(o[i].value===v){this.selectedIndex=i;return;}this.selectedIndex=-1;});"))
     _pre_nl()
     _pre_put(cast[Ptr[uint8]]("function urlOf(e){var h=e.getAttribute('href');if(h===null)return null;try{return new URL(h,document.baseURI||location.href);}catch(x){return null;}}"))
     _pre_nl()
@@ -10928,8 +10960,19 @@ def _dom_readback():
             dom_ov_cls_off[idx] = cco
             dom_ov_cls_len[idx] = kc
             changed = 1
-        # form value / checked read-back (input / textarea / select).
-        if dom_kind[idx] == 1 or dom_kind[idx] == 2 or dom_kind[idx] == 3:
+        # form value / checked read-back (input / textarea).
+        #
+        # <select> is NOT read back through .value any more, and it never should
+        # have been. The RENDERER needs the selected option's displayed TEXT —
+        # _rw_select_options below matches this override against each option's
+        # text run to decide which one gets ` selected` — while .value is the
+        # option's VALUE attribute, and for the overwhelmingly ordinary
+        # `<option value="a">Apple</option>` those are two different strings.
+        # That collision is exactly why the two spellings were allowed to drift.
+        # The selectedIndex arm below covers the select, and it now covers ALL
+        # of it — `s.value = x`, `s.selectedIndex = n` and a real click all move
+        # the same one store, so one arm sees every one of them.
+        if dom_kind[idx] == 1 or dom_kind[idx] == 2:
             vv: int32 = js_get_prop(o, cast[Ptr[uint8]]("value"), 5)
             vp: Ptr[uint8] = js_str_ptr(vv)
             vn: int32 = _cstr_len(vp)
@@ -10944,11 +10987,27 @@ def _dom_readback():
                 dom_ov_val_off[idx] = voff
                 dom_ov_val_len[idx] = kv
                 changed = 1
-        # NO separate `selectedIndex` branch here any more. It existed because a
-        # JS `selectedIndex = N` write moved a store the .value read-back above
-        # could not see — the third writer of one piece of state. selectedIndex
-        # is now an accessor over .value, so such a write lands in .value and
-        # the branch above already renders it.
+        # select: the DERIVED selectedIndex resolves to the Nth option's TEXT so
+        # the control re-marks and re-renders. This is not the "second writer"
+        # the old version of this branch was — that one also wrote .value back
+        # onto the object, making the read-back a WRITER of the state it was
+        # supposed to be observing. It only reads now.
+        if dom_kind[idx] == 3 and dom_ov_val_len[idx] < 0:
+            siv: int32 = js_get_prop(o, cast[Ptr[uint8]]("selectedIndex"), 13)
+            si: int32 = cast[int32](js_to_number(siv))
+            oi: int32 = _select_index(cast[uint64](dom_cstart[idx]))
+            if si != oi and si >= 0:
+                sn: int32 = _select_optext_at(cast[uint64](dom_cstart[idx]), si)
+                if sn >= 0:
+                    soff: int32 = dom_ov_len
+                    ks: int32 = 0
+                    while ks < sn and dom_ov_len < DOM_OV_CAP:
+                        dom_ovbuf[dom_ov_len] = fbuf[ks]
+                        dom_ov_len = dom_ov_len + 1
+                        ks = ks + 1
+                    dom_ov_val_off[idx] = soff
+                    dom_ov_val_len[idx] = ks
+                    changed = 1
         if dom_origchecked[idx] >= 0:
             ckv: int32 = js_get_prop(o, cast[Ptr[uint8]]("checked"), 7)
             ckb: int32 = 0
@@ -14710,6 +14769,21 @@ def _click_activate_post(obj: int32, kind: int32, evtidx: int32, \
         js_set_prop(obj, cast[Ptr[uint8]]("checked"), 7, js_bool(was))
         return
     if _nd_is_connected(obj) == 0:
+        return
+    # NO STATE CHANGE, NO EVENTS. Clicking an ALREADY-CHECKED radio is silent in
+    # every browser: the pre-click steps set a checkedness that was already set,
+    # and "fire an event named input ... fire an event named change" are steps of
+    # the activation behaviour that run only when the checkedness actually
+    # CHANGED. We fired both unconditionally, so `radio.click()` on the member
+    # the page had already marked `checked` emitted a spurious change — and a
+    # change handler is exactly where a page refetches the dependent half of a
+    # form, so the ordinary click-the-choice-you-already-have gesture did the
+    # expensive thing twice. A checkbox click always toggles, so this is the
+    # radio case and any future control whose pre-click step is idempotent.
+    now: int32 = 0
+    if js_to_bool(js_get_prop(obj, cast[Ptr[uint8]]("checked"), 7)) != 0:
+        now = 1
+    if now == was:
         return
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("input"), 5)
     _fire_value_evt(evtidx, cast[Ptr[uint8]]("change"), 6)
