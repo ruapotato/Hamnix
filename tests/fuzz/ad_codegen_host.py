@@ -335,7 +335,21 @@ def run_dump(src_path: Path, timeout=30, opt=False, split_break=False,
                       ssaemit_emitted=meta.get("SSAEMIT_EMITTED", 0),
                       ssaemit_fallback=meta.get("SSAEMIT_FALLBACK", 0),
                       ssaemit_memop=meta.get("SSAEMIT_MEMOP", 0),
-                      ssaemit_overlapviol=meta.get("SSAEMIT_OVERLAPVIOL", 0))
+                      ssaemit_overlapviol=meta.get("SSAEMIT_OVERLAPVIOL", 0),
+                      # SSA OPTIMIZER pass counters. These are the LIVE levers:
+                      # since the opt1 retirement (ba2e4bcf) `--opt` arms
+                      # ssa_opt_run(), so SSAOPT_* is where "did the optimizer
+                      # fire?" is actually answered. The legacy FOLDS/CSE/LICM/
+                      # DCE/CONSTBRANCH/COPYPROP keys above belong to the
+                      # DELETED adder/compiler/opt.ad and are structurally 0 —
+                      # reading them as "the optimizer fired" is a false red.
+                      ssaopt_instcombine=meta.get("SSAOPT_INSTCOMBINE", 0),
+                      ssaopt_gvn=meta.get("SSAOPT_GVN", 0),
+                      ssaopt_licm=meta.get("SSAOPT_LICM", 0),
+                      ssaopt_sccp=meta.get("SSAOPT_SCCP", 0),
+                      ssaopt_sccp_edges=meta.get("SSAOPT_SCCP_EDGES", 0),
+                      ssaopt_dce=meta.get("SSAOPT_DCE", 0),
+                      ssaopt_verify_fail=meta.get("SSAOPT_VERIFY_FAIL", 0))
 
 
 # --------------------------------------------------------------------------
@@ -728,6 +742,14 @@ class CodegenRun:
         self.ssaemit_fallback = kw.get("ssaemit_fallback", 0)
         self.ssaemit_memop = kw.get("ssaemit_memop", 0)
         self.ssaemit_overlapviol = kw.get("ssaemit_overlapviol", 0)
+        # LIVE SSA-optimizer pass counters (see the DumpResult note above).
+        self.ssaopt_instcombine = kw.get("ssaopt_instcombine", 0)
+        self.ssaopt_gvn = kw.get("ssaopt_gvn", 0)
+        self.ssaopt_licm = kw.get("ssaopt_licm", 0)
+        self.ssaopt_sccp = kw.get("ssaopt_sccp", 0)
+        self.ssaopt_sccp_edges = kw.get("ssaopt_sccp_edges", 0)
+        self.ssaopt_dce = kw.get("ssaopt_dce", 0)
+        self.ssaopt_verify_fail = kw.get("ssaopt_verify_fail", 0)
 
 
 def run_through_codegen_ad(seed, body, work_dir: Path, keep=False, opt=False,
@@ -803,6 +825,21 @@ def run_through_codegen_ad(seed, body, work_dir: Path, keep=False, opt=False,
     storeimm = getattr(dump, "storeimm", 0)
     imulimm = getattr(dump, "imulimm", 0)
     cmpjcc = getattr(dump, "cmpjcc", 0)
+    # LIVE lane counters: SSA emission coverage + SSA optimizer pass fires.
+    ssa_kw = {
+        "ssaemit_funcs": getattr(dump, "ssaemit_funcs", 0),
+        "ssaemit_emitted": getattr(dump, "ssaemit_emitted", 0),
+        "ssaemit_fallback": getattr(dump, "ssaemit_fallback", 0),
+        "ssaemit_memop": getattr(dump, "ssaemit_memop", 0),
+        "ssaemit_overlapviol": getattr(dump, "ssaemit_overlapviol", 0),
+        "ssaopt_instcombine": getattr(dump, "ssaopt_instcombine", 0),
+        "ssaopt_gvn": getattr(dump, "ssaopt_gvn", 0),
+        "ssaopt_licm": getattr(dump, "ssaopt_licm", 0),
+        "ssaopt_sccp": getattr(dump, "ssaopt_sccp", 0),
+        "ssaopt_sccp_edges": getattr(dump, "ssaopt_sccp_edges", 0),
+        "ssaopt_dce": getattr(dump, "ssaopt_dce", 0),
+        "ssaopt_verify_fail": getattr(dump, "ssaopt_verify_fail", 0),
+    }
     if rp.returncode < 0:
         return CodegenRun("runfail", detail=f"signal {-rp.returncode}",
                           stdout=out, exit=rp.returncode, folds=folds, cse=cse,
@@ -812,7 +849,8 @@ def run_through_codegen_ad(seed, body, work_dir: Path, keep=False, opt=False,
                           idxsel=idxsel,
                           strengthred=strengthred, paritymod=paritymod, isel=isel, vec=vec, aluload=aluload,
                           basehoist=basehoist,
-                          ivsr=ivsr, storeelim=storeelim, paramhome=paramhome, alelide=alelide, fpsel=fpsel, fpmov=fpmov, fpcmp=fpcmp, constif=constif, idxreg=idxreg, rcxclean=rcxclean, storeimm=storeimm, imulimm=imulimm, cmpjcc=cmpjcc)
+                          ivsr=ivsr, storeelim=storeelim, paramhome=paramhome, alelide=alelide, fpsel=fpsel, fpmov=fpmov, fpcmp=fpcmp, constif=constif, idxreg=idxreg, rcxclean=rcxclean, storeimm=storeimm, imulimm=imulimm, cmpjcc=cmpjcc,
+                          **ssa_kw)
     return CodegenRun("ok", stdout=out, exit=rp.returncode & 0xFF,
                       folds=folds, ffold=ffold, cse=cse, loadcse=loadcse,
                       licm=licm, dce=dce,
@@ -822,7 +860,8 @@ def run_through_codegen_ad(seed, body, work_dir: Path, keep=False, opt=False,
                       idxsel=idxsel, spineleaf=spineleaf,
                       strengthred=strengthred, paritymod=paritymod, isel=isel, vec=vec, aluload=aluload,
                       basehoist=basehoist, splithoist=splithoist,
-                      ivsr=ivsr, storeelim=storeelim, paramhome=paramhome, alelide=alelide, fpsel=fpsel, fpmov=fpmov, fpcmp=fpcmp, constif=constif, idxreg=idxreg, rcxclean=rcxclean, storeimm=storeimm, imulimm=imulimm, cmpjcc=cmpjcc)
+                      ivsr=ivsr, storeelim=storeelim, paramhome=paramhome, alelide=alelide, fpsel=fpsel, fpmov=fpmov, fpcmp=fpcmp, constif=constif, idxreg=idxreg, rcxclean=rcxclean, storeimm=storeimm, imulimm=imulimm, cmpjcc=cmpjcc,
+                      **ssa_kw)
 
 
 if __name__ == "__main__":
