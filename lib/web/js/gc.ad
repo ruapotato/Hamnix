@@ -1192,6 +1192,28 @@ def js_arena_stat(which: int32) -> int32:
         return js_obj_reachable_census(2)
     if which == 58:
         return js_obj_reachable_census(3)
+    # ---- GC ROOT STACK ---------------------------------------------------
+    #  59 gc_top now  60 gc_hw (depth high-water)  61 GC_ROOT_CAP
+    #  1000+k / 1200+k: net roots leaked, blamed on the innermost eval_expr /
+    #  exec_stmt frame of node kind k that returned above its entry mark
+    #  (js_set_gcroot_debug(1)). A flat-zero blame table with gc_hw at the cap
+    #  means the stack is a genuine working set, not a stuck-open root.
+    if which == 59:
+        return gc_top
+    if which == 60:
+        return gc_hw
+    if which == 61:
+        return GC_ROOT_CAP
+    if which == 62:
+        return gc_depth_hw
+    if which == 63:
+        return gc_top_at_hw
+    if which >= 1400 and which < 1528:
+        return gc_kind_at_hw[which - 1400]
+    if which >= 1000 and which < 1128:
+        return gc_leak_e[which - 1000]
+    if which >= 1200 and which < 1328:
+        return gc_leak_s[which - 1200]
     if which >= 49 and which <= 53:
         want: int32 = which - 49          # 49->OK_PLAIN .. 52->OK_SYMBOL
         cnt: int32 = 0

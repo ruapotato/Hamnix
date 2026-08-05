@@ -1113,7 +1113,54 @@ def eval_tmpl(node: int32, env: int32) -> int32:
     return r
 
 
+# Root-stack blame wrapper (off unless js_set_gcroot_debug(1)). A frame that
+# returns with gc_top ABOVE its entry mark left a root pinned forever. Blaming
+# only the innermost such frame (gc_blame_ct unchanged across the callee) names
+# the actual site instead of every ancestor on the stack.
 def eval_expr(node: int32, env: int32) -> int32:
+    if gc_dbg == 0:
+        return eval_expr_i(node, env)
+    gb: int32 = gc_top
+    nb: int32 = gc_blame_ct
+    k: int32 = -1
+    if node >= 0:
+        k = cast[int32](n_kind[node])
+    if k >= 0 and k < 128:
+        gc_kind_live[k] = gc_kind_live[k] + 1
+    gc_depth = gc_depth + 1
+    if gc_depth > gc_depth_hw:
+        gc_depth_hw = gc_depth
+    rv: int32 = eval_expr_i(node, env)
+    gc_depth = gc_depth - 1
+    if k >= 0 and k < 128:
+        gc_kind_live[k] = gc_kind_live[k] - 1
+        if gc_top > gb and gc_blame_ct == nb:
+            gc_leak_e[k] = gc_leak_e[k] + (gc_top - gb)
+            gc_blame_ct = gc_blame_ct + 1
+    return rv
+
+
+def exec_stmt(node: int32, env: int32):
+    if gc_dbg == 0:
+        exec_stmt_i(node, env)
+        return
+    gb2: int32 = gc_top
+    nb2: int32 = gc_blame_ct
+    k2: int32 = -1
+    if node >= 0:
+        k2 = cast[int32](n_kind[node])
+    gc_depth = gc_depth + 1
+    if gc_depth > gc_depth_hw:
+        gc_depth_hw = gc_depth
+    exec_stmt_i(node, env)
+    gc_depth = gc_depth - 1
+    if k2 >= 0 and k2 < 128:
+        if gc_top > gb2 and gc_blame_ct == nb2:
+            gc_leak_s[k2] = gc_leak_s[k2] + (gc_top - gb2)
+            gc_blame_ct = gc_blame_ct + 1
+
+
+def eval_expr_i(node: int32, env: int32) -> int32:
     if node < 0:
         return v_undef()
     if err_flag != 0:
@@ -2712,7 +2759,7 @@ def eval_new(node: int32, env: int32) -> int32:
 
 
 # ---- statement execution ----
-def exec_stmt(node: int32, env: int32):
+def exec_stmt_i(node: int32, env: int32):
     if node < 0:
         return
     if err_flag != 0:

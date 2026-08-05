@@ -35,6 +35,25 @@ n_vals: int32 = 4                 # 0..3 reserved for the singletons
 GC_ROOT_CAP: int32 = 4096
 gc_root: Array[4096, int32]       # explicit pin stack of value handles
 gc_top:  int32 = 0
+# ---- root-stack diagnostics -------------------------------------------------
+# "gc root stack overflow" has two utterly different causes and the message
+# alone cannot tell them apart: a STUCK-OPEN root (some site pushes and returns
+# without popping to its entry mark, so the stack ratchets upward across a run)
+# or a genuinely DEEP working set (every frame balances, the program is just
+# recursing 4096-deep). Sizing the fix needs the difference, so measure it:
+# gc_hw is the depth high-water, and when gc_dbg is on the interpreter blames
+# each net-positive return on the INNERMOST frame that leaked, per node kind.
+gc_hw:   int32 = 0                # depth high-water for the whole run
+gc_dbg:  int32 = 0                # 1 = attribute unbalanced returns per node kind
+gc_blame_ct: int32 = 0            # bumped when a frame is blamed; lets an outer
+                                  # frame see a descendant already took the blame
+gc_leak_e: Array[128, int32]      # net roots leaked, blamed on an eval_expr kind
+gc_leak_s: Array[128, int32]      # ... and on an exec_stmt kind
+gc_depth: int32 = 0               # current interpreter frame depth
+gc_depth_hw: int32 = 0            # frame-depth high-water
+gc_top_at_hw: int32 = 0           # interpreter depth at the moment gc_hw was set
+gc_kind_live: Array[128, int32]   # node kinds currently ON the interpreter stack
+gc_kind_at_hw: Array[128, int32]  # ... snapshotted at the depth high-water
 v_mark:  Array[1000000, uint8]    # per-value mark bit (GC scratch; parallels v_*)
 gc_free_head: int32 = -1          # intrusive free list head; chained through v_ref (-1 = empty)
 gc_disabled:  int32 = 0           # >0 suppresses auto-collection (inside natives/builtins)
@@ -174,6 +193,17 @@ def gc_push(h: int32) -> int32:
         return gc_top
     gc_root[gc_top] = h
     gc_top = gc_top + 1
+    if gc_top > gc_hw:
+        gc_hw = gc_top
+        if gc_dbg != 0:
+            # Snapshot WHAT the interpreter was doing at the deepest moment.
+            # If the stack is a working set, this histogram is the recursion
+            # that owns it; if it is a stuck-open root, it is noise.
+            gc_top_at_hw = gc_depth
+            kk: int32 = 0
+            while kk < 128:
+                gc_kind_at_hw[kk] = gc_kind_live[kk]
+                kk = kk + 1
     return gc_top
 
 

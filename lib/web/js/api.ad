@@ -886,6 +886,12 @@ def js_set_host_dispatch(fn: Fn[int32, int32]):
     host_dispatch_set = 1
 
 
+# Turn on root-stack blame accounting (js_arena_stat 59-61, 1000+k, 1200+k).
+# Off by default: it costs one extra frame per interpreter node.
+def js_set_gcroot_debug(v: int32):
+    gc_dbg = v
+
+
 # ---- external ROOT seam (the other half of the ext_pin split) ----
 # The embedder registers fn(0) -> 0, called once per collection in BOTH the
 # value pass and the object pass. Inside it the embedder walks its own tables
