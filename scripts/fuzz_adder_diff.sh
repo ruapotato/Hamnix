@@ -227,10 +227,53 @@ echo "[fuzz_adder_diff] call-shapes result: $REGC_OUT (expect 'ok/ok off=399 on=
 
 # ---- Seeded differential batch -----------------------------------------
 echo "[fuzz_adder_diff] differential: count=$FUZZ_COUNT seed=$FUZZ_SEED"
+DIFF_LOG="$WORK/differential.log"
 python3 tests/fuzz/adder_fuzzer.py --ad-codegen \
-    --count "$FUZZ_COUNT" --seed "$FUZZ_SEED" --max-fail 25
-RC=$?
-[ "$RC" -eq 0 ] || fail "codegen.ad differential found a genuine miscompile (see report above)"
+    --count "$FUZZ_COUNT" --seed "$FUZZ_SEED" --max-fail 25 2>&1 \
+    | tee "$DIFF_LOG"
+RC=${PIPESTATUS[0]}
+# DIAGNOSE, don't guess. The fuzzer exits nonzero for FOUR different reasons and
+# this line used to report every one of them as "found a genuine miscompile",
+# sending readers to the codegen backend when the actual failure was in the
+# lane's own instrumentation. A red gate that lies about WHY is worse than one
+# that is merely red. Classify from the report the fuzzer just printed.
+if [ "$RC" -ne 0 ]; then
+    # NOTE: `grep -c` prints 0 and exits 1 on no-match, so a `|| echo 0`
+    # fallback would produce the string "0\n0" and break the -gt tests.
+    N_MIS="$(grep -c '^  \[miscompile\]' "$DIFF_LOG" 2>/dev/null)"; N_MIS="${N_MIS:-0}"
+    N_PYMIS="$(grep -c '^  \[py-miscompile\]' "$DIFF_LOG" 2>/dev/null)"; N_PYMIS="${N_PYMIS:-0}"
+    N_OPTLANE="$(grep -c '\[ADDER_OPT FAIL\]' "$DIFF_LOG" 2>/dev/null)"; N_OPTLANE="${N_OPTLANE:-0}"
+    N_CFGLANE="$(grep -c '\[ADDER_CFG FAIL\]\|\[CFG INVARIANT BROKEN\]' \
+                 "$DIFF_LOG" 2>/dev/null)"; N_CFGLANE="${N_CFGLANE:-0}"
+    echo "[fuzz_adder_diff] failure classification:" \
+         "miscompiles=$N_MIS py-miscompiles=$N_PYMIS" \
+         "opt-lane-assertions=$N_OPTLANE cfg-lane=$N_CFGLANE"
+    if [ "$N_MIS" -gt 0 ]; then
+        fail "codegen.ad differential found $N_MIS GENUINE MISCOMPILE(S)" \
+             "-- accepted programs produced the wrong answer (see [miscompile]" \
+             "lines above; repro commands are printed with each)"
+    elif [ "$N_PYMIS" -gt 0 ]; then
+        fail "the PYTHON (primary) backend disagreed with the oracle on" \
+             "$N_PYMIS program(s) -- this is a primary-backend bug, NOT a" \
+             "codegen.ad bug (see [py-miscompile] lines above)"
+    elif [ "$N_CFGLANE" -gt 0 ]; then
+        fail "the ADDER_CFG=1 analysis lane broke a CFG/liveness invariant" \
+             "($N_CFGLANE finding(s)). NO miscompile was found; codegen output" \
+             "was correct. See the [CFG INVARIANT BROKEN] lines above."
+    elif [ "$N_OPTLANE" -gt 0 ]; then
+        fail "the ADDER_OPT=1 lane's OWN ASSERTIONS failed ($N_OPTLANE" \
+             "assertion(s)) -- NOT a miscompile. Every accepted program still" \
+             "matched the oracle. These are 'the optimizer lever fired'" \
+             "instrumentation checks; a wall of them usually means the lane is" \
+             "pointed at counters the current --opt path no longer moves." \
+             "Read the [ADDER_OPT FAIL] lines above for which levers, and" \
+             "check scripts/_opt1_lane_probe.py before touching the optimizer."
+    else
+        fail "adder_fuzzer.py exited $RC but printed no classified failure" \
+             "-- treat as INCONCLUSIVE (tooling error), not as a miscompile." \
+             "Full report: $DIFF_LOG"
+    fi
+fi
 
 # ---- ADDER_OPT=1 legacy optimizer lane: REMOVED ------------------------
 # opt1 (the AST optimizer opt.ad + its linear-scan allocator) has been RETIRED
