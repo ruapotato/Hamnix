@@ -361,6 +361,30 @@ fixed population as site 0 drains into the named sites — not growth of the mac
 
 ---
 
+## 2026-08-05 — open items found while verifying (orchestrator)
+- [ ] **The `ADDER_OPT=1` lever assertions are ALL DEAD.** `rm -rf build/fuzz_ad_codegen;
+  ADDER_OPT=1 bash scripts/fuzz_adder_diff.sh` exits rc=1 with **20** `never fired`
+  corpus failures and every lever counter at zero (const-fold, CSE, LICM, DCE,
+  constbr, copyprop). Byte-identical on unmodified `origin/main`, so it is not a
+  branch regression. Correctness IS still covered (500/500 accepted, 500 CORRECT,
+  0 miscompiles) — what is dead is every "the lever actually fired" assertion. The
+  lane also misreports the failure as `found a genuine miscompile`, which sends the
+  reader to the wrong place. A permanently-red gate becomes wallpaper. Dispatched.
+- [ ] **`textContent` does not recurse into an appended element child** — red on main.
+  After `el.appendChild(span)`, `childNodes.length==2` and `innerHTML` serialise
+  correctly but `el.textContent` reads `"start"` instead of `"startMADE"`. The
+  read-back (D-series) shape; `test_jsengine_gc_obj_host.sh` PART E misreports it as
+  a GC survival failure. Check the two-writers shape FIRST [[feedback_two_writers_defect_shape]].
+  Dispatched.
+- [ ] **A DOM detach path.** `cre_obj`/`dom_obj` keep every node the DOM ever made —
+  8000 dropped detached `<div>`s leave 25439 live objects and zero collections. Banked
+  as a ceiling in `test_js_ext_pin_leak_host.sh`, not a target.
+- [ ] **SSA next target = site 92** (call-symbol whitelist, 55.7% of what remains) —
+  but read it as a CLUSTER, and mind the standalone-TU caveat that inflates it, same
+  as site 34. A census site's share is an UPPER BOUND on the win, never the win.
+
+---
+
 ## 2026-07-22 — LLVM = PRIMARY backend: compile EVERYTHING (USER)
 USER 07-22: "make LLVM the primary compile pathway"; "build the kernel and all packages with llvm" for the speedup; "get the new LLVM backend to compile EVERYTHING, keeping the kernel LAST but still on the TODO after we get all other apps compiled via llvm."
 - ✅ LLVM backend PROVEN: 0.86× gcc-O2; native-link → real ELF64 native binaries; **panel (662/662 fns) compiled via LLVM BOOTS + launches apps (3/3)**; on-device compilation works (host_ac emits .ll on live OS via PIE). Native SSA stays the BOOTSTRAP FLOOR (builds host_ac; can't drop).
