@@ -185,9 +185,28 @@ def merged(base, extra):
     return d
 
 
-def case(name, a, b, rc, why, gap=7200):
+def case(name, a, b, rc, why, gap=7200, boot_armed=False):
     write(name, a, b, gap)
+    if boot_armed:
+        prepend_boot_arm(name)
     CASES[name] = (rc, '2', why)
+
+
+def prepend_boot_arm(name):
+    """Put pass 22's bringup marker at the top of a case's log.
+
+    This is the ONLY difference between `arm_unrec_prearming` and
+    `arm_unrec_prearming_boot_armed`, and it has to flip the verdict: the
+    per-frame evidence is byte-identical and it means the opposite thing
+    depending on whether a pre-arming population could exist at all.
+    """
+    p = os.path.join(work, name, 'serial.log')
+    with open(p) as f:
+        body = f.read()
+    with open(p, 'w') as f:
+        f.write("[000196] [trk] boot-arm mode=2 frames=261632\n"
+                "[000197] [trk] boot-arm bytes=3401216 site0=0\n")
+        f.write(body)
 
 
 def ncase(name, per_sample, rc, why, gaps=None, min_samples=2):
@@ -447,6 +466,20 @@ case('arm_unrec_prearming', {},
           orgl=orgl_with(23, 29, 9,
                          [(0, 0, True)] * 9 + [(6, 0x7f0000, False)] * 20)), 0,
      'unrecorded owners on site=0/va=0 are the PRE-ARMING population')
+# LEAK PASS 23. THE SAME EVIDENCE, ONE LINE OF BRINGUP LOG DIFFERENT. Pass 22
+# armed the tracker in mem_init before the first buddy allocation, and this
+# log says so. There is then no pre-arming population for these frames to
+# belong to, so site=0 + va=0 + owner-unrecorded stops being structural and
+# becomes an allocation path that ran ARMED and called neither pa_set_site nor
+# pa_set_owner. Without this case, landing the pass-22 fix silently converted
+# pass 21's excuse into a false green — a green bought BY a fix, which is the
+# worst kind because nothing in the campaign would have flagged it.
+case('arm_unrec_prearming_boot_armed', {},
+     dict(arms=ARM_NET,
+          orgl=orgl_with(23, 29, 9,
+                         [(0, 0, True)] * 9 + [(6, 0x7f0000, False)] * 20)), 125,
+     'boot-armed: site=0/va=0 unrecorded owners have no pre-arming population '
+     'to belong to any more', boot_armed=True)
 # The opposite finding from the same count: those frames were allocated with
 # the tracker ARMED (they carry a named site) and that path never called
 # pa_set_owner. A hole in the discriminator, with an address.
