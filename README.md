@@ -10,6 +10,17 @@
 
 # Hamnix
 
+> **Sibling repositories.** The Adder language and compiler now also live on
+> their own at **[HamnixOS/adder](https://github.com/HamnixOS/adder)**, and a
+> second, parallel line — the same Adder userland running on the **Linux
+> kernel** — has started at
+> **[HamnixOS/hamnix-linux](https://github.com/HamnixOS/hamnix-linux)**. Both
+> were split out with full history. Neither supersedes anything here: Hamnix
+> 1.0 (tag [`v1.0`](https://github.com/HamnixOS/Hamnix/releases/tag/v1.0)) keeps
+> its version number and its zero-C-in-the-kernel claim, and this tree still
+> builds standalone. `hamnix-linux` is a sibling in the way Debian GNU/Hurd is a
+> sibling of Debian, not a later release of it.
+
 **A from-scratch x86_64 OS (with an in-progress AArch64 port), written
 in Adder — a Python-syntax systems language with its own compiler.**
 Hamnix is the OS; Adder is the language and compiler used to write it.
